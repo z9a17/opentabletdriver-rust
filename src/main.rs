@@ -5,6 +5,7 @@ mod mapping;
 mod original_driver;
 mod output;
 mod protocol;
+mod radial_follow;
 mod session;
 mod state;
 

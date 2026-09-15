@@ -32,8 +32,19 @@ impl MouseOutput {
     }
 
     pub fn emit(&mut self, frame: Frame, mapper: Mapper) -> Result<bool, std::io::Error> {
+        self.emit_filtered(frame, mapper, None)
+    }
+
+    pub fn emit_filtered(
+        &mut self,
+        frame: Frame,
+        mapper: Mapper,
+        filtered_position: Option<(f32, f32)>,
+    ) -> Result<bool, std::io::Error> {
         let position = if let Some((x, y)) = frame.position {
-            let Some(position) = mapper.map(x, y) else {
+            let mapped = filtered_position
+                .map_or_else(|| mapper.map(x, y), |(fx, fy)| mapper.map_filtered(fx, fy));
+            let Some(position) = mapped else {
                 // Area limiting ignores a report outside the configured area.
                 return Ok(false);
             };

@@ -173,25 +173,7 @@ impl Mapper {
     /// Returns normalized virtual-desktop coordinates for SendInput.
     pub fn map(self, x: u32, y: u32) -> Option<(i32, i32)> {
         if let Some(t) = self.otd {
-            let mut px = t.a * f64::from(x) + t.b * f64::from(y) + t.tx;
-            let mut py = t.c * f64::from(x) + t.d * f64::from(y) + t.ty;
-            if t.limiting && (px < t.min_x || px > t.max_x || py < t.min_y || py > t.max_y) {
-                return None;
-            }
-            if t.clipping || t.limiting {
-                px = px.clamp(t.min_x, (t.max_x - 1.0).max(t.min_x));
-                py = py.clamp(t.min_y, (t.max_y - 1.0).max(t.min_y));
-            }
-            let screen = self.virtual_screen;
-            let nx = ((px - f64::from(screen.left)) * 65_535.0
-                / f64::from((screen.width() - 1).max(1)))
-            .round()
-            .clamp(0.0, 65_535.0) as i32;
-            let ny = ((py - f64::from(screen.top)) * 65_535.0
-                / f64::from((screen.height() - 1).max(1)))
-            .round()
-            .clamp(0.0, 65_535.0) as i32;
-            return Some((nx, ny));
+            return self.map_otd(t, f64::from(x), f64::from(y));
         }
         let crop = self.crop;
         let u = x.saturating_sub(crop.x).min(crop.width);
@@ -215,6 +197,36 @@ impl Mapper {
             65_535,
         );
         Some((nx.clamp(0, 65_535), ny.clamp(0, 65_535)))
+    }
+
+    /// The pre-transform filter returns fractional report coordinates. Keep
+    /// those fractions through the area transform, as OpenTabletDriver does.
+    pub fn map_filtered(self, x: f32, y: f32) -> Option<(i32, i32)> {
+        let transform = self.otd?;
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        self.map_otd(transform, f64::from(x), f64::from(y))
+    }
+
+    fn map_otd(self, t: OtdTransform, x: f64, y: f64) -> Option<(i32, i32)> {
+        let mut px = t.a * x + t.b * y + t.tx;
+        let mut py = t.c * x + t.d * y + t.ty;
+        if t.limiting && (px < t.min_x || px > t.max_x || py < t.min_y || py > t.max_y) {
+            return None;
+        }
+        if t.clipping || t.limiting {
+            px = px.clamp(t.min_x, (t.max_x - 1.0).max(t.min_x));
+            py = py.clamp(t.min_y, (t.max_y - 1.0).max(t.min_y));
+        }
+        let screen = self.virtual_screen;
+        let nx = ((px - f64::from(screen.left)) * 65_535.0 / f64::from((screen.width() - 1).max(1)))
+            .round()
+            .clamp(0.0, 65_535.0) as i32;
+        let ny = ((py - f64::from(screen.top)) * 65_535.0 / f64::from((screen.height() - 1).max(1)))
+            .round()
+            .clamp(0.0, 65_535.0) as i32;
+        Some((nx, ny))
     }
 }
 
@@ -310,5 +322,38 @@ mod tests {
         )
         .unwrap();
         assert_eq!(limited.map(0, 0), None);
+    }
+
+    #[test]
+    fn filtered_fractional_report_position_is_preserved() {
+        let screen = Rect {
+            left: 0,
+            top: 0,
+            right: 2560,
+            bottom: 1440,
+        };
+        let settings = OtdMapping {
+            display: OtdArea {
+                width: 2560.0,
+                height: 1440.0,
+                x: 1280.0,
+                y: 720.0,
+                rotation: 0.0,
+            },
+            tablet: OtdArea {
+                width: 85.0,
+                height: 47.8125,
+                x: 110.0,
+                y: 23.90625,
+                rotation: 0.0,
+            },
+            clipping: true,
+            limiting: false,
+        };
+        let mapper = Mapper::from_otd(settings, screen).unwrap();
+        let integer = mapper.map(22_000, 4_780).unwrap();
+        let fractional = mapper.map_filtered(22_000.5, 4_780.5).unwrap();
+        assert!(fractional.0 > integer.0);
+        assert!(fractional.1 > integer.1);
     }
 }

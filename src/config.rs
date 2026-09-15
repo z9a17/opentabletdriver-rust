@@ -6,6 +6,7 @@ use serde::Deserialize;
 
 use crate::mapping::{Crop, OtdArea, OtdMapping};
 use crate::protocol::MAX_PRESSURE;
+use crate::radial_follow::{FILTER_NAME, FILTER_PATH, RadialFollowSettings};
 
 #[derive(Clone, Copy, Debug)]
 pub struct ContactPolicy {
@@ -34,6 +35,8 @@ pub struct Profile {
     pub device_path: Option<String>,
     pub otd_mapping: Option<OtdMapping>,
     pub contact: ContactPolicy,
+    pub radial_follow: Vec<RadialFollowSettings>,
+    pub auto_enabled_radial_follow: usize,
     pub ignored_filters: usize,
     pub source: String,
 }
@@ -47,6 +50,8 @@ impl Default for Profile {
             device_path: None,
             otd_mapping: None,
             contact: ContactPolicy::default(),
+            radial_follow: Vec::new(),
+            auto_enabled_radial_follow: 0,
             ignored_filters: 0,
             source: "built-in full-area defaults".into(),
         }
@@ -150,6 +155,41 @@ fn binding_enabled(store: Option<&OtdStore>, expected: &str) -> Result<bool, Str
     Ok(true)
 }
 
+fn radial_property(store: &OtdStore, name: &str, default: f64) -> Result<f64, String> {
+    let Some(value) = store
+        .settings
+        .iter()
+        .find(|setting| setting.property == name)
+        .map(|setting| &setting.value)
+    else {
+        return Ok(default);
+    };
+    value
+        .as_f64()
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| format!("{FILTER_NAME} setting {name} must be a finite number"))
+}
+
+fn radial_settings(store: &OtdStore) -> Result<RadialFollowSettings, String> {
+    let defaults = RadialFollowSettings::default();
+    Ok(RadialFollowSettings {
+        outer_radius: radial_property(store, "OuterRadius", defaults.outer_radius)?,
+        inner_radius: radial_property(store, "InnerRadius", defaults.inner_radius)?,
+        smoothing_coefficient: radial_property(
+            store,
+            "SmoothingCoefficient",
+            defaults.smoothing_coefficient,
+        )?,
+        soft_knee_scale: radial_property(store, "SoftKneeScale", defaults.soft_knee_scale)?,
+        smoothing_leak_coefficient: radial_property(
+            store,
+            "SmoothingLeakCoefficient",
+            defaults.smoothing_leak_coefficient,
+        )?,
+    }
+    .clamped())
+}
+
 /// OpenTabletDriver rewrites pressure before its tip binding. The resulting
 /// integer pressure first becomes nonzero at this raw value.
 fn activation_raw(percent: f64) -> Result<u16, String> {
@@ -210,6 +250,19 @@ impl Profile {
         }
         let tip_enabled = binding_enabled(selected.bindings.tip_button.as_ref(), "Tip")?;
         let eraser_enabled = binding_enabled(selected.bindings.eraser_button.as_ref(), "Eraser")?;
+        let mut radial_follow = Vec::new();
+        let mut auto_enabled_radial_follow = 0;
+        let mut ignored_filters = 0;
+        for filter in &selected.filters {
+            if filter.path == FILTER_PATH {
+                radial_follow.push(radial_settings(filter)?);
+                if !filter.enable {
+                    auto_enabled_radial_follow += 1;
+                }
+            } else if filter.enable {
+                ignored_filters += 1;
+            }
+        }
         Ok(Self {
             otd_mapping: Some(OtdMapping {
                 display: selected.absolute_mode_settings.display,
@@ -227,11 +280,9 @@ impl Profile {
                     selected.bindings.eraser_activation_threshold,
                 )?),
             },
-            ignored_filters: selected
-                .filters
-                .iter()
-                .filter(|filter| filter.enable)
-                .count(),
+            radial_follow,
+            auto_enabled_radial_follow,
+            ignored_filters,
             source: format!("OpenTabletDriver settings: {}", path.display()),
             ..Self::default()
         })
@@ -289,6 +340,23 @@ impl Profile {
             if self.ignored_filters > 0 {
                 println!("Skipped {} enabled plugin filter(s).", self.ignored_filters);
             }
+            for (index, filter) in self.radial_follow.iter().enumerate() {
+                println!(
+                    "Enabled {FILTER_NAME} #{}: OuterRadius={:.4} mm, InnerRadius={:.4} mm, SmoothingCoefficient={:.4}, SoftKneeScale={:.4}, SmoothingLeakCoefficient={:.4}",
+                    index + 1,
+                    filter.outer_radius,
+                    filter.inner_radius,
+                    filter.smoothing_coefficient,
+                    filter.soft_knee_scale,
+                    filter.smoothing_leak_coefficient
+                );
+            }
+            if self.auto_enabled_radial_follow > 0 {
+                println!(
+                    "Rust auto-enabled {} Radial Follow filter(s) despite OpenTabletDriver Enable=false.",
+                    self.auto_enabled_radial_follow
+                );
+            }
         } else {
             println!(
                 "Tablet crop: {:?}; rotation: {}°; monitor: {:?}",
@@ -317,5 +385,29 @@ mod tests {
         assert_eq!(profile.contact.tip_threshold_raw, Some(83));
         assert!(profile.contact.tip_enabled);
         assert_eq!(profile.ignored_filters, 1);
+    }
+
+    #[test]
+    fn enables_radial_follow_with_original_setting_names() {
+        let json = r#"{"Profiles":[{"Tablet":"Wacom PTH-660","OutputMode":{"Path":"OpenTabletDriver.Desktop.Output.AbsoluteMode","Enable":true},"Filters":[{"Path":"RadialFollow.RadialFollowSmoothingTabletSpace","Enable":true,"Settings":[{"Property":"OuterRadius","Value":0.7039},{"Property":"InnerRadius","Value":0.302},{"Property":"SmoothingCoefficient","Value":0.302},{"Property":"SoftKneeScale","Value":0.603},{"Property":"SmoothingLeakCoefficient","Value":0.201}]}],"AbsoluteModeSettings":{"Display":{"Width":2560,"Height":1440,"X":1280,"Y":720,"Rotation":0},"Tablet":{"Width":85,"Height":47.8125,"X":110,"Y":23.90625,"Rotation":0},"EnableClipping":true,"EnableAreaLimiting":false},"Bindings":{}}]}"#;
+        let profile = Profile::from_otd_text(json, Path::new("settings.json")).unwrap();
+        assert_eq!(profile.ignored_filters, 0);
+        assert_eq!(profile.radial_follow.len(), 1);
+        assert_eq!(profile.auto_enabled_radial_follow, 0);
+        let filter = profile.radial_follow[0];
+        assert_eq!(filter.outer_radius, 0.7039);
+        assert_eq!(filter.inner_radius, 0.302);
+        assert_eq!(filter.smoothing_coefficient, 0.302);
+        assert_eq!(filter.soft_knee_scale, 0.603);
+        assert_eq!(filter.smoothing_leak_coefficient, 0.201);
+    }
+
+    #[test]
+    fn automatically_enables_saved_radial_follow_when_otd_flag_is_off() {
+        let json = r#"{"Profiles":[{"Tablet":"Wacom PTH-660","OutputMode":{"Path":"OpenTabletDriver.Desktop.Output.AbsoluteMode","Enable":true},"Filters":[{"Path":"RadialFollow.RadialFollowSmoothingTabletSpace","Enable":false,"Settings":[{"Property":"OuterRadius","Value":0.7039}]}],"AbsoluteModeSettings":{"Display":{"Width":2560,"Height":1440,"X":1280,"Y":720,"Rotation":0},"Tablet":{"Width":85,"Height":47.8125,"X":110,"Y":23.90625,"Rotation":0},"EnableClipping":true,"EnableAreaLimiting":false},"Bindings":{}}]}"#;
+        let profile = Profile::from_otd_text(json, Path::new("settings.json")).unwrap();
+        assert_eq!(profile.radial_follow.len(), 1);
+        assert_eq!(profile.auto_enabled_radial_follow, 1);
+        assert_eq!(profile.radial_follow[0].outer_radius, 0.7039);
     }
 }

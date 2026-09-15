@@ -1,8 +1,8 @@
 [package]
 name = "opentabletdriver-rust"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
-license = "LGPL-3.0-only"
+license = "GPL-3.0-only"
 description = "User-mode USB tablet driver for Wacom PTH-660 on Windows 11"
 
 [dependencies]

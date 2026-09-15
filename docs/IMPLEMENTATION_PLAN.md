@@ -1,6 +1,6 @@
 # Implementation plan: Windows 11 USB driver for Wacom PTH-660
 
-Status: the initial Windows 11 Rust implementation is in this repository. Its executable and package are named `opentabletdriver-rust`. It now reads the user's active OpenTabletDriver PTH-660 absolute profile and starts as a visible console daemon. The earlier cursor and click path passed a live user test; the active-profile build still needs a live pen check. See the README and hardware-validation guide for the remaining lifecycle checks.
+Status: the Windows 11 Rust implementation reads the user's active OpenTabletDriver PTH-660 absolute profile and starts as a visible console daemon. The 0.2.0 active-profile build passed a live movement and click test. Version 0.3.0 adds a built-in Rust port of AbstractQbit's tablet-space Radial Follow filter; its live pen feel awaits a test after the user stops the currently running 0.2.0 build.
 
 ## 1. Objective and limits
 
@@ -18,7 +18,7 @@ This is a focused replacement for the hardware-to-pointer part of the OpenTablet
 
 **Excluded from the first release**
 
-- Bluetooth PTH-660, other tablets, touch input, pen side-button output, express keys, touch wheel, gestures, smoothing filters, plugin loading, scripts, a GUI, and OpenTabletDriver RPC compatibility.
+- Bluetooth PTH-660, other tablets, touch input, pen side-button output, express keys, touch wheel, gestures, other smoothing filters, generic plugin loading, scripts, a GUI, and OpenTabletDriver RPC compatibility.
 - Pressure, tilt, and eraser *output* to Windows Ink or drawing applications. The daemon may decode and display those values diagnostically, but SendInput mouse events do not expose pen pressure. Native pen output is a separate later milestone.
 - Kernel driver development or blanket HID/WinUSB driver replacement.
 
@@ -142,11 +142,11 @@ Instrument internal counters for reports read, accepted, malformed, ignored IDs,
 
 ## 9. Configuration and user operation
 
-The executable starts with the current `%LOCALAPPDATA%\OpenTabletDriver\settings.json` PTH-660 profile when it exists. It reads the enabled absolute mode, tablet and display areas, clipping, area limiting, and tip/eraser binding activation thresholds. It skips enabled plugin filters and reports their count in the console. It does not copy the user's settings into the repository. If the file is absent, it falls back to full-tablet/full-desktop defaults; a separate Rust TOML profile can override the automatic selection. Parse settings once at startup; dynamic reload is deferred. Reject unsupported output modes, tip actions, invalid crop dimensions, and monitor IDs with clear errors before opening the device.
+The executable starts with the current `%LOCALAPPDATA%\OpenTabletDriver\settings.json` PTH-660 profile when it exists. It reads the enabled absolute mode, tablet and display areas, clipping, area limiting, and tip/eraser binding activation thresholds. The exact `RadialFollow.RadialFollowSmoothingTabletSpace` filter is applied natively in Rust before area transformation whenever it appears in the profile, even if its OpenTabletDriver `Enable` flag is false; the Rust console reports this deliberate auto-enable override. Other enabled plugin filters are skipped and counted in the console. It does not copy the user's settings into the repository. If the file is absent, it falls back to full-tablet/full-desktop defaults; a separate Rust TOML profile can override the automatic selection. Parse settings once at startup; dynamic reload is deferred. Reject unsupported output modes, tip actions, invalid crop dimensions, and monitor IDs with clear errors before opening the device.
 
 OpenTabletDriver's [absolute transformation](https://github.com/OpenTabletDriver/OpenTabletDriver/blob/fdeaa7b0c6d6f5260f511f19fb693ed33524af4e/OpenTabletDriver.Plugin/Output/AbsoluteOutputMode.cs) converts raw X/Y to millimeters, subtracts the configured tablet-area center, rotates around it, scales to the display-area size, and adds the display-area center. Its [pressure rewrite](https://github.com/OpenTabletDriver/OpenTabletDriver/blob/fdeaa7b0c6d6f5260f511f19fb693ed33524af4e/OpenTabletDriver.Desktop/Binding/PressureRewriteFilter.cs) applies the configured percentage before tip activation; [AdaptiveBinding](https://github.com/OpenTabletDriver/OpenTabletDriver/blob/fdeaa7b0c6d6f5260f511f19fb693ed33524af4e/OpenTabletDriver.Desktop/Binding/AdaptiveBinding.cs) maps Tip and Eraser to left mouse input in mouse-output mode. The Rust driver precomputes the equivalent area transform and raw pressure threshold at startup.
 
-Provide read-only commands or modes for listing detected candidate collections and showing their VID/PID, input report length, usage, and openability; for showing the active mapping; and for collecting a bounded, opt-in report trace. Raw traces should omit serial numbers and user-specific paths by default. No GUI, RPC, plugin settings, or network service is needed.
+Provide read-only commands or modes for listing detected candidate collections and showing their VID/PID, input report length, usage, and openability; for showing the active mapping and the built-in Radial Follow settings; and for collecting a bounded, opt-in report trace. Raw traces should omit serial numbers and user-specific paths by default. No GUI, RPC, generic plugin manager, or network service is needed.
 
 The install package contains the console executable, example profile, source, license, setup guide, and uninstall/rollback instructions. Opening the executable temporarily pauses an already-running original OpenTabletDriver daemon/UX and restores them when the Rust process stops normally, preventing duplicate cursor injectors. Run as the signed-in user. Do not change Windows HID drivers or startup registration. Autostart is an optional later feature.
 
@@ -198,6 +198,6 @@ Separate agents may work on pure protocol fixtures, Windows HID API wrappers, an
 - Exact HID open mode and overlapped-read wrapper, to be validated on Windows 11 with this device.
 - Whether 0x1E is needed during normal operation or only recognized for robustness.
 - Whether a Rust Windows API crate or a very small direct FFI layer gives the clearest audited implementation. Select after the API surface is fixed; pin versions.
-- License for this private repository and treatment of any upstream code reuse. Record the upstream LGPL-3.0 source and make an explicit decision before copying code or publishing binaries.
+- License for this private repository and treatment of upstream code reuse. The original driver source retains its LGPL-3.0-only terms; AbstractQbit's RadialFollow 0.3.0 is GPL-3.0-only, so the combined 0.3.0 executable is GPL-3.0-only with both license texts and source attribution included.
 
 The first release is complete when the acceptance checklist passes on an actual PTH-660/Windows 11 setup. Any future Linux, Bluetooth, Windows Ink, tablet-key, or plugin work should be planned as a distinct milestone after that.

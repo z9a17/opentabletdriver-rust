@@ -14,6 +14,7 @@ use crate::hid::{self, Candidate, Event, Notification};
 use crate::mapping::Mapper;
 use crate::output::MouseOutput;
 use crate::protocol;
+use crate::radial_follow::RadialFollowSmoothingTabletSpace;
 use crate::state;
 
 #[derive(Clone, Copy)]
@@ -159,6 +160,16 @@ pub fn run(
     let mut snapshot = DisplaySnapshot::read().map_err(io::Error::other)?;
     let mut mapper = Some(snapshot.mapper(profile).map_err(io::Error::other)?);
     let mut output = MouseOutput::new();
+    let mut filters: Vec<_> = if matches!(mode, Mode::Driver) {
+        profile
+            .radial_follow
+            .iter()
+            .copied()
+            .map(RadialFollowSmoothingTabletSpace::new)
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut next_refresh = Instant::now() + Duration::from_secs(1);
     let mut last_output_warning = Instant::now() - Duration::from_secs(10);
     let mut counters = Counters::default();
@@ -273,7 +284,21 @@ pub fn run(
                     if let Mode::Capture { .. } = mode {
                         capture_trace.pen(bytes, pen);
                     } else if let Some(active_mapper) = mapper {
-                        match output.emit(state::frame(pen, profile.contact), active_mapper) {
+                        let frame = state::frame(pen, profile.contact);
+                        let filtered_position = frame.position.and_then(|(x, y)| {
+                            let (first, remaining) = filters.split_first_mut()?;
+                            let mut position = first.filter_raw(x, y);
+                            for filter in remaining {
+                                position = filter.filter_raw_f32(position.0, position.1);
+                            }
+                            Some(position)
+                        });
+                        let emitted = if filtered_position.is_some() {
+                            output.emit_filtered(frame, active_mapper, filtered_position)
+                        } else {
+                            output.emit(frame, active_mapper)
+                        };
+                        match emitted {
                             Ok(true) => counters.injected += 1,
                             Ok(false) => {}
                             Err(error) => {
