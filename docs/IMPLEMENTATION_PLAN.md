@@ -124,7 +124,7 @@ Removal, failed reads, or a stale handle must cancel/complete outstanding I/O, r
 
 Ctrl+C and normal process termination should request stop, cancel reads, release buttons, unregister notifications, close handles, and exit. A forced process kill cannot guarantee a release event; document that limit and ensure normal stop paths are reliable. Sleep/wake should revalidate the handle and rediscover if it is stale.
 
-Only one instance may inject for a selected device. An instance guard should prevent duplicate launches of this Rust daemon. Packaging instructions must tell the user to stop OpenTabletDriver and any other tablet daemon before live testing, because two active pointer injectors produce duplicate movement.
+Only one instance may inject for a selected device. An instance guard prevents duplicate launches of this Rust daemon. The executable pauses an existing original OpenTabletDriver daemon/UX during cursor output and restores them on normal stop. Users must stop any other tablet daemon before live testing, because two active pointer injectors produce duplicate movement.
 
 ## 8. Performance design
 
@@ -190,7 +190,7 @@ Separate agents may work on pure protocol fixtures, Windows HID API wrappers, an
 - Windows API wrappers handle every owned handle and registration exactly once.
 - Format, lint, build, and relevant tests pass in CI.
 - A release build has no successful-report-path allocation, no active-path sleep, and no unbounded input queue.
-- The README and setup guide state the mouse-only pressure limitation and how to stop another tablet daemon during use.
+- The README and setup guide state the mouse-only pressure limitation and how the original OpenTabletDriver is paused and restored during use.
 
 ## 12. Decisions deliberately reserved for evidence
 

@@ -6,7 +6,7 @@ This repository is licensed under LGPL-3.0-only. The PTH-660 USB identification 
 
 ## Open the driver
 
-On Windows, double-click **opentabletdriver-rust.exe**. It is a console application and starts the daemon with no arguments, showing the active mapping, connection, and reconnection status. Before injecting cursor input, it temporarily pauses any running original OpenTabletDriver daemon and UX. Press **Ctrl+C** for a normal stop; the Rust process restores those original processes afterward. Keep the console open while using the tablet. It does not modify Windows HID drivers or startup registration.
+On Windows, double-click **opentabletdriver-rust.exe**. It is a console application and starts the daemon with no arguments, showing the active mapping, connection, and reconnection status. Before injecting cursor input, it temporarily pauses any running original OpenTabletDriver daemon and UX; stop any other tablet daemon yourself. Press **Ctrl+C** for a normal stop; the Rust process restores those original processes afterward. Keep the console open while using the tablet. It does not modify Windows HID drivers or startup registration.
 
 With no arguments, the driver reads `%LOCALAPPDATA%\OpenTabletDriver\settings.json` and selects its **Wacom PTH-660** profile. It follows the enabled absolute output mode, tablet and display area sizes and centers, tablet rotation, clipping, area limiting, and enabled tip/eraser bindings with their pressure activation thresholds. The current development-machine profile maps an 85 × 47.8125 mm tablet area to a 2560 × 1440 display area with clipping and a 1% tip threshold. Profile values are read at launch, so restart the daemon after changing them in OpenTabletDriver.
 
