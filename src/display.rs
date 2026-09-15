@@ -80,6 +80,10 @@ impl DisplaySnapshot {
     }
 
     pub fn mapper(&self, profile: &Profile) -> Result<Mapper, String> {
+        if let Some(settings) = profile.otd_mapping {
+            return Mapper::from_otd(settings, self.virtual_screen)
+                .ok_or_else(|| "invalid OpenTabletDriver absolute-area mapping".into());
+        }
         let dest = if let Some(index) = profile.monitor {
             *self
                 .monitors

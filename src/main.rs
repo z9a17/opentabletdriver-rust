@@ -2,6 +2,7 @@ mod config;
 mod display;
 mod hid;
 mod mapping;
+mod original_driver;
 mod output;
 mod protocol;
 mod session;
@@ -18,7 +19,7 @@ use crate::hid::{Candidate, Event, Notification, OwnedHandle};
 use crate::session::Mode;
 
 fn usage() -> &'static str {
-    "Usage:\n  pth660-driver list [--paths]\n  pth660-driver displays\n  pth660-driver run [--config driver.toml]\n  pth660-driver capture [--config driver.toml] [--seconds 1..60]\n\nThe run command injects cursor and mouse-button input. Capture reads reports without injecting."
+    "Usage:\n  opentabletdriver-rust.exe                  Start the visible cursor daemon\n  opentabletdriver-rust.exe run [--config driver.toml | --otd-settings settings.json]\n  opentabletdriver-rust.exe settings [--config driver.toml | --otd-settings settings.json]\n  opentabletdriver-rust.exe list [--paths]\n  opentabletdriver-rust.exe displays\n  opentabletdriver-rust.exe capture [--config driver.toml | --otd-settings settings.json] [--seconds 1..60]\n\nWithout a profile argument, the daemon reads your OpenTabletDriver PTH-660 settings.json if present. Capture does not inject cursor input."
 }
 
 enum Command {
@@ -26,21 +27,32 @@ enum Command {
         paths: bool,
     },
     Displays,
+    Settings {
+        config: Option<PathBuf>,
+        otd_settings: Option<PathBuf>,
+    },
     Run {
         config: Option<PathBuf>,
+        otd_settings: Option<PathBuf>,
     },
     Capture {
         config: Option<PathBuf>,
+        otd_settings: Option<PathBuf>,
         seconds: u64,
     },
+    Help,
 }
 
 fn parse_args() -> Result<Command, String> {
     let mut args = std::env::args().skip(1);
     let Some(command) = args.next() else {
-        return Err(usage().into());
+        return Ok(Command::Run {
+            config: None,
+            otd_settings: None,
+        });
     };
     match command.as_str() {
+        "--help" | "-h" | "help" => Ok(Command::Help),
         "list" => {
             let mut paths = false;
             for arg in args {
@@ -59,14 +71,19 @@ fn parse_args() -> Result<Command, String> {
                 Ok(Command::Displays)
             }
         }
-        "run" | "capture" => {
+        "run" | "capture" | "settings" => {
             let mut config = None;
+            let mut otd_settings = None;
             let mut seconds = 10;
             while let Some(arg) = args.next() {
                 match arg.as_str() {
                     "--config" => {
                         let value = args.next().ok_or("--config needs a file path")?;
                         config = Some(PathBuf::from(value));
+                    }
+                    "--otd-settings" => {
+                        let value = args.next().ok_or("--otd-settings needs a file path")?;
+                        otd_settings = Some(PathBuf::from(value));
                     }
                     "--seconds" if command == "capture" => {
                         let value = args.next().ok_or("--seconds needs a number")?;
@@ -80,10 +97,23 @@ fn parse_args() -> Result<Command, String> {
                     _ => return Err(format!("unknown option: {arg}\n{}", usage())),
                 }
             }
-            if command == "run" {
-                Ok(Command::Run { config })
-            } else {
-                Ok(Command::Capture { config, seconds })
+            if config.is_some() && otd_settings.is_some() {
+                return Err("choose either --config or --otd-settings".into());
+            }
+            match command.as_str() {
+                "run" => Ok(Command::Run {
+                    config,
+                    otd_settings,
+                }),
+                "settings" => Ok(Command::Settings {
+                    config,
+                    otd_settings,
+                }),
+                _ => Ok(Command::Capture {
+                    config,
+                    otd_settings,
+                    seconds,
+                }),
             }
         }
         _ => Err(usage().into()),
@@ -156,10 +186,42 @@ fn choose<'a>(
     Ok(first)
 }
 
-fn run(config: Option<PathBuf>, capture_seconds: Option<u64>) -> Result<(), String> {
-    let profile = Profile::load(config.as_deref())?;
+fn load_profile(
+    config: Option<&PathBuf>,
+    otd_settings: Option<&PathBuf>,
+) -> Result<Profile, String> {
+    if let Some(path) = otd_settings {
+        Profile::load_otd(path)
+    } else {
+        Profile::load(config.map(PathBuf::as_path))
+    }
+}
+
+fn show_settings(config: Option<PathBuf>, otd_settings: Option<PathBuf>) -> Result<(), String> {
+    let profile = load_profile(config.as_ref(), otd_settings.as_ref())?;
+    display::DisplaySnapshot::read()?.mapper(&profile)?;
+    profile.print_summary();
+    Ok(())
+}
+
+fn run(
+    config: Option<PathBuf>,
+    otd_settings: Option<PathBuf>,
+    capture_seconds: Option<u64>,
+) -> Result<(), String> {
+    let profile = load_profile(config.as_ref(), otd_settings.as_ref())?;
     let initial_display = display::DisplaySnapshot::read()?;
     initial_display.mapper(&profile)?;
+    println!(
+        "opentabletdriver-rust {} — Windows 11 USB PTH-660 daemon",
+        env!("CARGO_PKG_VERSION")
+    );
+    profile.print_summary();
+    if capture_seconds.is_none() {
+        println!("Reading pen input and moving the cursor. Press Ctrl+C to stop.");
+    } else {
+        println!("Read-only capture; no cursor input is injected.");
+    }
     let _instance = single_instance()?;
     let stop_event = Event::create(true).map_err(|e| format!("stop event failed: {e}"))?;
     let stop_handle = stop_event.raw() as usize;
@@ -174,6 +236,15 @@ fn run(config: Option<PathBuf>, capture_seconds: Option<u64>) -> Result<(), Stri
         deadline: Instant::now() + Duration::from_secs(seconds),
         limit: 10_000,
     });
+    let _original_driver = if capture_seconds.is_none() {
+        Some(
+            original_driver::OriginalDriverGuard::pause().map_err(|error| {
+                format!("could not pause the original OpenTabletDriver safely: {error}")
+            })?,
+        )
+    } else {
+        None
+    };
     let mut waiting = false;
     loop {
         if unsafe { WaitForSingleObject(stop_event.raw(), 0) } == WAIT_OBJECT_0 {
@@ -218,8 +289,23 @@ fn main() {
     let result = match parse_args() {
         Ok(Command::List { paths }) => list(paths),
         Ok(Command::Displays) => displays(),
-        Ok(Command::Run { config }) => run(config, None),
-        Ok(Command::Capture { config, seconds }) => run(config, Some(seconds)),
+        Ok(Command::Settings {
+            config,
+            otd_settings,
+        }) => show_settings(config, otd_settings),
+        Ok(Command::Run {
+            config,
+            otd_settings,
+        }) => run(config, otd_settings, None),
+        Ok(Command::Capture {
+            config,
+            otd_settings,
+            seconds,
+        }) => run(config, otd_settings, Some(seconds)),
+        Ok(Command::Help) => {
+            println!("{}", usage());
+            Ok(())
+        }
         Err(error) => Err(error),
     };
     if let Err(error) = result {

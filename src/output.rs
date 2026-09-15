@@ -32,7 +32,15 @@ impl MouseOutput {
     }
 
     pub fn emit(&mut self, frame: Frame, mapper: Mapper) -> Result<bool, std::io::Error> {
-        let position = frame.position.map(|(x, y)| mapper.map(x, y));
+        let position = if let Some((x, y)) = frame.position {
+            let Some(position) = mapper.map(x, y) else {
+                // Area limiting ignores a report outside the configured area.
+                return Ok(false);
+            };
+            Some(position)
+        } else {
+            None
+        };
         let result = self.emit_normalized(position, frame.contact);
         if position.is_none() {
             self.last_position = None;

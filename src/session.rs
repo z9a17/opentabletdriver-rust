@@ -273,7 +273,7 @@ pub fn run(
                     if let Mode::Capture { .. } = mode {
                         capture_trace.pen(bytes, pen);
                     } else if let Some(active_mapper) = mapper {
-                        match output.emit(state::frame(pen), active_mapper) {
+                        match output.emit(state::frame(pen, profile.contact), active_mapper) {
                             Ok(true) => counters.injected += 1,
                             Ok(false) => {}
                             Err(error) => {

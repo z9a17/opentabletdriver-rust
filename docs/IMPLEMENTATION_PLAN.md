@@ -1,6 +1,6 @@
 # Implementation plan: Windows 11 USB driver for Wacom PTH-660
 
-Status: the initial Windows 11 Rust implementation is in this repository. The real PTH-660 cursor and click path has passed a live user test. See the README and hardware-validation guide for build, use, and outstanding replug, sleep/wake, and display-change checks.
+Status: the initial Windows 11 Rust implementation is in this repository. Its executable and package are named `opentabletdriver-rust`. It now reads the user's active OpenTabletDriver PTH-660 absolute profile and starts as a visible console daemon. The earlier cursor and click path passed a live user test; the active-profile build still needs a live pen check. See the README and hardware-validation guide for the remaining lifecycle checks.
 
 ## 1. Objective and limits
 
@@ -142,11 +142,13 @@ Instrument internal counters for reports read, accepted, malformed, ignored IDs,
 
 ## 9. Configuration and user operation
 
-The first executable should start with sensible defaults and a small documented profile. Limit configuration to the device selection, output target (full desktop or chosen monitor), and optional input crop/rotation. Parse it once at startup; dynamic settings reload can be deferred. Reject invalid crop dimensions and monitor IDs with a clear error before opening the device.
+The executable starts with the current `%LOCALAPPDATA%\OpenTabletDriver\settings.json` PTH-660 profile when it exists. It reads the enabled absolute mode, tablet and display areas, clipping, area limiting, and tip/eraser binding activation thresholds. It skips enabled plugin filters and reports their count in the console. It does not copy the user's settings into the repository. If the file is absent, it falls back to full-tablet/full-desktop defaults; a separate Rust TOML profile can override the automatic selection. Parse settings once at startup; dynamic reload is deferred. Reject unsupported output modes, tip actions, invalid crop dimensions, and monitor IDs with clear errors before opening the device.
+
+OpenTabletDriver's [absolute transformation](https://github.com/OpenTabletDriver/OpenTabletDriver/blob/fdeaa7b0c6d6f5260f511f19fb693ed33524af4e/OpenTabletDriver.Plugin/Output/AbsoluteOutputMode.cs) converts raw X/Y to millimeters, subtracts the configured tablet-area center, rotates around it, scales to the display-area size, and adds the display-area center. Its [pressure rewrite](https://github.com/OpenTabletDriver/OpenTabletDriver/blob/fdeaa7b0c6d6f5260f511f19fb693ed33524af4e/OpenTabletDriver.Desktop/Binding/PressureRewriteFilter.cs) applies the configured percentage before tip activation; [AdaptiveBinding](https://github.com/OpenTabletDriver/OpenTabletDriver/blob/fdeaa7b0c6d6f5260f511f19fb693ed33524af4e/OpenTabletDriver.Desktop/Binding/AdaptiveBinding.cs) maps Tip and Eraser to left mouse input in mouse-output mode. The Rust driver precomputes the equivalent area transform and raw pressure threshold at startup.
 
 Provide read-only commands or modes for listing detected candidate collections and showing their VID/PID, input report length, usage, and openability; for showing the active mapping; and for collecting a bounded, opt-in report trace. Raw traces should omit serial numbers and user-specific paths by default. No GUI, RPC, plugin settings, or network service is needed.
 
-The initial install package should contain the single executable, example profile, a concise Windows 11 setup guide, and uninstall/rollback instructions. Run as the signed-in user. Do not change Windows HID drivers, startup registration, or other tablet-driver installations during normal install. Autostart is an optional later packaging feature.
+The install package contains the console executable, example profile, source, license, setup guide, and uninstall/rollback instructions. Opening the executable temporarily pauses an already-running original OpenTabletDriver daemon/UX and restores them when the Rust process stops normally, preventing duplicate cursor injectors. Run as the signed-in user. Do not change Windows HID drivers or startup registration. Autostart is an optional later feature.
 
 ## 10. Work breakdown for agents
 
