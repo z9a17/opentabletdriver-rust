@@ -1,0 +1,17 @@
+# Copy this file to driver.toml and change only the settings you need.
+# Omit monitor to map to the entire virtual desktop.
+# Monitor indices follow the order shown by: pth660-driver displays
+# monitor = 0
+
+rotation = 0
+
+# If more than one PTH-660 pen collection is attached, use a path from
+# pth660-driver list --paths. A TOML literal string avoids backslash escaping.
+# device_path = '\\?\hid#vid_056a&pid_0357...'
+
+# Optional input crop in the PTH-660 raw digitizer range.
+# [crop]
+# x = 0
+# y = 0
+# width = 44800
+# height = 29600

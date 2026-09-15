@@ -1,24 +1,24 @@
 # Implementation plan: Windows 11 USB driver for Wacom PTH-660
 
-Status: planning only. No Rust code has been written.
+Status: the initial Windows 11 Rust implementation is in this repository. The real PTH-660 cursor and click path has passed a live user test. See the README and hardware-validation guide for build, use, and outstanding replug, sleep/wake, and display-change checks.
 
 ## 1. Objective and limits
 
-Build a standalone, user-mode Rust executable that reads a Wacom PTH-660 connected by USB and drives the Windows 11 cursor. The first usable release must provide absolute pen position across the desktop, pen contact as left-button down/up, two pen side buttons, and reliable startup, shutdown, unplug, and replug behavior.
+Build a standalone, user-mode Rust executable that reads a Wacom PTH-660 connected by USB and drives the Windows 11 cursor. The first usable release must provide absolute pen position across the desktop, pen contact as left-button down/up, and reliable startup, shutdown, unplug, and replug behavior. Pen side-button output is not a first-release requirement.
 
 This is a focused replacement for the hardware-to-pointer part of the OpenTabletDriver daemon, not an implementation of its full RPC or plugin ecosystem. It should run in the signed-in user's desktop session. Its normal operation should require neither a background GUI nor administrator elevation.
 
 **Included in the first release**
 
 - USB PTH-660 identification and HID input access.
-- Pen reports, proximity, position, pressure capture, contact transition, eraser flag capture, tilt capture, and two side-button transitions.
+- Pen reports, proximity, position, pressure capture, contact transition, eraser flag capture, and tilt capture.
 - Absolute mapping to one selected display or the full virtual desktop.
-- Mouse event injection for cursor movement and buttons.
+- Mouse event injection for cursor movement and tip contact.
 - A small fixed device/profile configuration, diagnostics, graceful recovery, and packaging instructions.
 
 **Excluded from the first release**
 
-- Bluetooth PTH-660, other tablets, touch input, express keys, touch wheel, gestures, smoothing filters, plugin loading, scripts, a GUI, and OpenTabletDriver RPC compatibility.
+- Bluetooth PTH-660, other tablets, touch input, pen side-button output, express keys, touch wheel, gestures, smoothing filters, plugin loading, scripts, a GUI, and OpenTabletDriver RPC compatibility.
 - Pressure, tilt, and eraser *output* to Windows Ink or drawing applications. The daemon may decode and display those values diagnostically, but SendInput mouse events do not expose pen pressure. Native pen output is a separate later milestone.
 - Kernel driver development or blanket HID/WinUSB driver replacement.
 
@@ -38,12 +38,11 @@ The upstream PTH-660 configuration records:
 | Digitizer range | X 0..44800; Y 0..29600 |
 | Pressure range | 0..8191 |
 | Nominal active size | 224 x 148 mm |
-| Pen side buttons | 2 |
 | Bluetooth product ID | 0x0360, excluded |
 
 Both USB collections use the IntuosV2 parser in upstream configuration. The parser dispatches report IDs **0x10** (pen), **0x1E** (offset pen), **0x11** (auxiliary), **0x21** and **0xD2** (touch). The first release processes 0x10 and 0x1E for pen input. It recognizes but ignores touch and auxiliary reports. The auxiliary collection can remain unopened initially; it must never be mistaken for the pen collection.
 
-The current upstream 0x10 parser reads X from bytes 2..4, Y from bytes 5..7, pressure from bytes 8..9, tilt from bytes 10..11, rotation from bytes 12..13, proximity and side-button flags from byte 1, and hover distance from byte 16. The 0x1E offset report has a different layout. These offsets are **reference facts, not permission to assume every report is valid**. The Rust parser must check report ID and returned byte count before indexing, reject out-of-range data, and confirm the layout with a real PTH-660 capture.
+The current upstream 0x10 parser reads X from bytes 2..4, Y from bytes 5..7, pressure from bytes 8..9, tilt from bytes 10..11, rotation from bytes 12..13, proximity flags from byte 1, and hover distance from byte 16. The 0x1E offset report has a different layout. These offsets are **reference facts, not permission to assume every report is valid**. The Rust parser must check report ID and returned byte count before indexing, reject out-of-range data, and confirm the layout with a real PTH-660 capture.
 
 The upstream configuration lists no feature or output initialization reports for this USB device. Do not send undocumented initialization data. If the user's firmware actually needs a mode switch, capture and document the evidence before adding it.
 
@@ -51,7 +50,7 @@ The upstream configuration lists no feature or output initialization reports for
 
 1. Which HID collection(s) are present on this Windows 11 machine, and are 192/44-byte capabilities reported exactly?
 2. Does the pen stream deliver both 0x10 and 0x1E, and under what conditions?
-3. Which flag or pressure transition reliably signals tip contact? Upstream exposes pressure and proximity but does not by itself specify the first release's mouse-click policy.
+3. Which flag or pressure transition reliably signals tip contact? A real Windows 11 capture shows pen flag bit 0 switches on during contact, accompanied by pressure rising above zero, and both return to zero on lift. The implementation uses bit 0 while in proximity.
 4. What happens when the pen leaves proximity, the cable is unplugged, or reports are truncated?
 5. Is the Windows Wacom driver or another tablet daemon holding the intended collection open? Report this clearly without changing system drivers automatically.
 
@@ -95,15 +94,15 @@ Microsoft documents [HID collection discovery/opening](https://learn.microsoft.c
 
 ## 5. Protocol and pen state
 
-The parser should return a compact, typed result with report kind, raw X/Y, pressure, proximity, contact candidate, two side-button bits, eraser, tilt, rotation where available, and hover distance where available. Use explicit little-endian reads and checked slices. Unknown IDs are counted and ignored; malformed known IDs are counted and ignored. No malformed report may inject a cursor move or button transition.
+The parser should return a compact, typed result with report kind, raw X/Y, pressure, proximity, eraser, tilt, rotation where available, and hover distance where available. Use explicit little-endian reads and checked slices. Unknown IDs are counted and ignored; malformed known IDs are counted and ignored. No malformed report may inject a cursor move or contact transition.
 
 Clamp or reject raw coordinates outside the configured hardware range using a policy chosen after captures. Do not wrap integers, index beyond a short report, or trust a report merely because its buffer has the collection's maximum size. Maintain a clear distinction between raw report length, returned byte count, and ID-specific minimum length.
 
-The pen state machine owns the previous proximity/contact/side-button state. It emits only changes for buttons, preserves the order of cursor movement and button transitions within one report, and never repeats button-down for a held button. A tip-contact policy may use pressure > 0 if captures confirm that this matches the tablet's contact behavior; otherwise use the verified report flag. Configure side-button mappings as right and middle mouse buttons by default, with the option to disable either.
+The pen state and output own proximity/contact and the last successfully emitted left-button state. They emit only contact transitions, preserve the order of cursor movement and contact change within one report, and never repeat button-down for a held tip. A real Windows 11 capture confirms pen flag bit 0 during contact and zero on lift.
 
 When proximity is lost, or the HID session ends, synthesize releases for every button held by this daemon exactly once. Avoid moving the cursor from stale/out-of-proximity coordinates. After reconnect, start from a neutral state rather than carrying over an old pressure or button bit. Eraser/tilt/rotation/hover distance remain parsed state and diagnostics in release one, not fabricated mouse events.
 
-Protocol tests should be fixture-driven: captured 0x10 and 0x1E samples for hover, contact, both side buttons, release, edge coordinates, and proximity loss. Add short/truncated/unknown/out-of-range cases. Test button-transition sequences separately from report decoding. Do not use fixtures copied from the parser implementation as the only evidence.
+Protocol tests should be fixture-driven: captured 0x10 samples for hover, contact, release, and proximity loss, plus 0x1E samples if that report ID occurs on the target hardware. Add short/truncated/unknown/out-of-range cases. Test contact-transition sequences separately from report decoding. Do not use fixtures copied from the parser implementation as the only evidence.
 
 ## 6. Desktop mapping and output
 
@@ -143,7 +142,7 @@ Instrument internal counters for reports read, accepted, malformed, ignored IDs,
 
 ## 9. Configuration and user operation
 
-The first executable should start with sensible defaults and a small documented profile. Limit configuration to the device selection, output target (full desktop or chosen monitor), optional input crop/rotation, side-button actions, and diagnostics level. Parse it once at startup; dynamic settings reload can be deferred. Reject invalid crop dimensions, monitor IDs, and button mappings with a clear error before opening the device.
+The first executable should start with sensible defaults and a small documented profile. Limit configuration to the device selection, output target (full desktop or chosen monitor), and optional input crop/rotation. Parse it once at startup; dynamic settings reload can be deferred. Reject invalid crop dimensions and monitor IDs with a clear error before opening the device.
 
 Provide read-only commands or modes for listing detected candidate collections and showing their VID/PID, input report length, usage, and openability; for showing the active mapping; and for collecting a bounded, opt-in report trace. Raw traces should omit serial numbers and user-specific paths by default. No GUI, RPC, plugin settings, or network service is needed.
 
@@ -159,7 +158,7 @@ Each item can become a narrow PR with a clear review boundary. Agent work should
 | P1 | HID discovery/diagnostic mode and hardware capture procedure. | Lists the real PTH-660 pen collection and distinguishes it from the 44-byte auxiliary collection; records actual report IDs and byte counts. |
 | P2 | Pure protocol parser plus captured fixtures. | Correct typed values and robust rejection of short, unknown, and invalid reports. |
 | P3 | Pen state machine and desktop mapping. | Deterministic corner mapping and exactly-once button transitions/release in sequence tests. |
-| P4 | Windows HID read session and SendInput output. | Cursor moves, tip click, side buttons work with the real tablet; no per-report allocation or busy loop. |
+| P4 | Windows HID read session and SendInput output. | Cursor moves and tip click works with the real tablet; no per-report allocation or busy loop. |
 | P5 | Notifications, replug, shutdown, sleep/wake, and failure diagnostics. | Survives repeated cable unplug/replug and shutdown during a pending read; releases held buttons. |
 | P6 | Configuration, package, user guide, and release checklist. | A fresh Windows 11 user can run and remove it without changing system HID drivers. |
 
@@ -172,7 +171,7 @@ Separate agents may work on pure protocol fixtures, Windows HID API wrappers, an
 - Detects only USB PTH-660 product 0x0357, selects the 192-byte pen collection, and does not select Bluetooth product 0x0360 or the 44-byte auxiliary collection as the pen.
 - A no-config launch moves the cursor smoothly over the whole virtual desktop when the pen is in proximity.
 - Tablet corners map to desktop edges; a negative-origin secondary monitor works.
-- Tip contact causes one left-button down, lift causes one up; each side button causes one mapped down/up; releases occur on proximity loss and normal disconnect.
+- Tip contact causes one left-button down, lift causes one up; releases occur on proximity loss and normal disconnect.
 - Pressure, tilt, eraser, proximity, and coordinates decoded from captured reports match the observed device values, even though only mouse events are emitted.
 
 **Recovery**
@@ -193,7 +192,7 @@ Separate agents may work on pure protocol fixtures, Windows HID API wrappers, an
 
 ## 12. Decisions deliberately reserved for evidence
 
-- Exact contact semantics: pressure > 0 versus a device flag, to be settled from real hover/contact captures.
+- Exact contact semantics: settled by real hover/contact captures as pen flag bit 0 while in proximity, with pressure > 0 observed alongside it.
 - Exact HID open mode and overlapped-read wrapper, to be validated on Windows 11 with this device.
 - Whether 0x1E is needed during normal operation or only recognized for robustness.
 - Whether a Rust Windows API crate or a very small direct FFI layer gives the clearest audited implementation. Select after the API surface is fixed; pin versions.
