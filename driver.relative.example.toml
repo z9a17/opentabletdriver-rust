@@ -1,0 +1,15 @@
+# Relative mouse output for USB PTH-660. Run with:
+# opentabletdriver-rust.exe run --config driver.relative.example.toml
+# Preview without injecting input by replacing "run" with "settings".
+# Absolute monitor/crop/top-level rotation options do not apply in this mode.
+
+# Optional device selection belongs above [relative].
+# device_path = '\\?\hid#vid_056a&pid_0357...'
+
+[relative]
+# Mouse counts per mm, before Windows pointer speed/acceleration.
+# Zero disables an axis; a negative value inverts it.
+x_sensitivity = 10.0
+y_sensitivity = 10.0
+rotation = 0.0
+reset_delay_ms = 100

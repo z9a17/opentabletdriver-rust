@@ -1,12 +1,14 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::Deserialize;
 
 use crate::mapping::{Crop, OtdArea, OtdMapping};
 use crate::protocol::MAX_PRESSURE;
 use crate::radial_follow::{FILTER_NAME, FILTER_PATH, RadialFollowSettings};
+use crate::relative::RelativeSettings;
 
 #[derive(Clone, Copy, Debug)]
 pub struct ContactPolicy {
@@ -34,6 +36,7 @@ pub struct Profile {
     pub rotation: u16,
     pub device_path: Option<String>,
     pub otd_mapping: Option<OtdMapping>,
+    pub relative: Option<RelativeSettings>,
     pub contact: ContactPolicy,
     pub radial_follow: Vec<RadialFollowSettings>,
     pub auto_enabled_radial_follow: usize,
@@ -49,6 +52,7 @@ impl Default for Profile {
             rotation: 0,
             device_path: None,
             otd_mapping: None,
+            relative: None,
             contact: ContactPolicy::default(),
             radial_follow: Vec::new(),
             auto_enabled_radial_follow: 0,
@@ -65,6 +69,17 @@ struct RawProfile {
     rotation: Option<u16>,
     crop: Option<RawCrop>,
     device_path: Option<String>,
+    relative: Option<RawRelative>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRelative {
+    x_sensitivity: f64,
+    y_sensitivity: f64,
+    #[serde(default)]
+    rotation: f64,
+    reset_delay_ms: u64,
 }
 
 #[derive(Deserialize)]
@@ -87,7 +102,8 @@ struct OtdSettings {
 struct OtdProfile {
     tablet: String,
     output_mode: OtdStore,
-    absolute_mode_settings: OtdAbsolute,
+    absolute_mode_settings: Option<OtdAbsolute>,
+    relative_mode_settings: Option<OtdRelative>,
     bindings: OtdBindings,
     #[serde(default)]
     filters: Vec<OtdStore>,
@@ -100,6 +116,68 @@ struct OtdAbsolute {
     tablet: OtdArea,
     enable_clipping: bool,
     enable_area_limiting: bool,
+}
+
+#[derive(Deserialize)]
+struct OtdRelative {
+    #[serde(rename = "XSensitivity")]
+    x_sensitivity: f64,
+    #[serde(rename = "YSensitivity")]
+    y_sensitivity: f64,
+    #[serde(rename = "RelativeRotation")]
+    rotation: f64,
+    #[serde(rename = "RelativeResetDelay")]
+    reset_delay: String,
+}
+
+/// Newtonsoft serializes TimeSpan as [days.]hh:mm:ss[.fffffff]. Parse integer
+/// ticks, so fractional milliseconds and the strict reset boundary survive.
+fn parse_reset_delay(value: &str) -> Result<Duration, String> {
+    fn parse(value: &str) -> Option<Duration> {
+        fn number(value: &str) -> Option<u64> {
+            if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            value.parse().ok()
+        }
+        let mut parts = value.split(':');
+        let day_hours = parts.next()?;
+        let minutes = number(parts.next()?)?;
+        let seconds_fraction = parts.next()?;
+        if parts.next().is_some() {
+            return None;
+        }
+        let (days, hours) = match day_hours.split_once('.') {
+            Some((days, hours)) => (number(days)?, number(hours)?),
+            None => (0, number(day_hours)?),
+        };
+        let (seconds, nanos) = match seconds_fraction.split_once('.') {
+            Some((seconds, fraction)) => {
+                if fraction.len() > 7 {
+                    return None;
+                }
+                let nanos = number(fraction)? * 10u64.pow(9 - fraction.len() as u32);
+                (number(seconds)?, nanos as u32)
+            }
+            None => (number(seconds_fraction)?, 0),
+        };
+        if hours >= 24 || minutes >= 60 || seconds >= 60 {
+            return None;
+        }
+        let total = days
+            .checked_mul(86_400)?
+            .checked_add(hours * 3_600 + minutes * 60 + seconds)?;
+        let ticks = total
+            .checked_mul(10_000_000)?
+            .checked_add(u64::from(nanos / 100))?;
+        if ticks > i64::MAX as u64 {
+            return None;
+        }
+        Some(Duration::new(total, nanos))
+    }
+    parse(value).ok_or_else(|| {
+        "RelativeResetDelay must be a nonnegative TimeSpan: [days.]hh:mm:ss[.fffffff]".into()
+    })
 }
 
 #[derive(Deserialize)]
@@ -240,14 +318,47 @@ impl Profile {
             .into_iter()
             .find(|profile| profile.tablet == "Wacom PTH-660")
             .ok_or("OpenTabletDriver settings have no Wacom PTH-660 profile")?;
-        if !selected.output_mode.enable
-            || selected.output_mode.path != "OpenTabletDriver.Desktop.Output.AbsoluteMode"
-        {
-            return Err(format!(
-                "the PTH-660 profile must use enabled Absolute Mode; found {}",
-                selected.output_mode.path
-            ));
+        if !selected.output_mode.enable {
+            return Err("the PTH-660 output mode is disabled".into());
         }
+        let (otd_mapping, relative) = match selected.output_mode.path.as_str() {
+            "OpenTabletDriver.Desktop.Output.AbsoluteMode" => {
+                let absolute = selected
+                    .absolute_mode_settings
+                    .ok_or("Absolute Mode requires AbsoluteModeSettings")?;
+                (
+                    Some(OtdMapping {
+                        display: absolute.display,
+                        tablet: absolute.tablet,
+                        clipping: absolute.enable_clipping,
+                        limiting: absolute.enable_area_limiting,
+                    }),
+                    None,
+                )
+            }
+            "OpenTabletDriver.Desktop.Output.RelativeMode" => {
+                let relative = selected
+                    .relative_mode_settings
+                    .ok_or("Relative Mode requires RelativeModeSettings")?;
+                (
+                    None,
+                    Some(
+                        RelativeSettings {
+                            sensitivity: (relative.x_sensitivity, relative.y_sensitivity),
+                            rotation: relative.rotation,
+                            reset_delay: parse_reset_delay(&relative.reset_delay)?,
+                        }
+                        .validate()?,
+                    ),
+                )
+            }
+            _ => {
+                return Err(format!(
+                    "unsupported PTH-660 output mode: {}; choose Absolute Mode or Relative Mode",
+                    selected.output_mode.path
+                ));
+            }
+        };
         let tip_enabled = binding_enabled(selected.bindings.tip_button.as_ref(), "Tip")?;
         let eraser_enabled = binding_enabled(selected.bindings.eraser_button.as_ref(), "Eraser")?;
         let mut radial_follow = Vec::new();
@@ -264,12 +375,8 @@ impl Profile {
             }
         }
         Ok(Self {
-            otd_mapping: Some(OtdMapping {
-                display: selected.absolute_mode_settings.display,
-                tablet: selected.absolute_mode_settings.tablet,
-                clipping: selected.absolute_mode_settings.enable_clipping,
-                limiting: selected.absolute_mode_settings.enable_area_limiting,
-            }),
+            otd_mapping,
+            relative,
             contact: ContactPolicy {
                 tip_enabled,
                 eraser_enabled,
@@ -291,9 +398,30 @@ impl Profile {
     fn load_toml(path: &Path) -> Result<Self, String> {
         let text = fs::read_to_string(path)
             .map_err(|e| format!("cannot read profile {}: {e}", path.display()))?;
-        let raw: RawProfile = toml::from_str(&text)
-            .map_err(|e| format!("invalid profile {}: {e}", path.display()))?;
+        Self::from_toml_text(&text, path)
+    }
+
+    fn from_toml_text(text: &str, path: &Path) -> Result<Self, String> {
+        let raw: RawProfile =
+            toml::from_str(text).map_err(|e| format!("invalid profile {}: {e}", path.display()))?;
+        if raw.relative.is_some()
+            && (raw.monitor.is_some() || raw.crop.is_some() || raw.rotation.is_some())
+        {
+            return Err("relative profiles use [relative].rotation; omit absolute monitor, crop, and top-level rotation".into());
+        }
+        let relative = raw
+            .relative
+            .map(|settings| {
+                RelativeSettings {
+                    sensitivity: (settings.x_sensitivity, settings.y_sensitivity),
+                    rotation: settings.rotation,
+                    reset_delay: Duration::from_millis(settings.reset_delay_ms),
+                }
+                .validate()
+            })
+            .transpose()?;
         let profile = Self {
+            relative,
             monitor: raw.monitor,
             crop: raw.crop.map_or_else(Crop::default, |c| Crop {
                 x: c.x,
@@ -317,7 +445,23 @@ impl Profile {
 
     pub fn print_summary(&self) {
         println!("Profile: {}", self.source);
-        if let Some(mapping) = self.otd_mapping {
+        if let Some(relative) = self.relative {
+            println!(
+                "Relative Mode: X={:.4}, Y={:.4} counts/mm; rotation={:.2}°; reset delay={:.4} ms",
+                relative.sensitivity.0,
+                relative.sensitivity.1,
+                relative.rotation,
+                relative.reset_delay.as_secs_f64() * 1_000.0
+            );
+            println!("Windows pointer speed and acceleration apply to relative movement.");
+            println!(
+                "Tip threshold: {:?} raw / {}; eraser threshold: {:?} raw / {}",
+                self.contact.tip_threshold_raw,
+                self.contact.tip_enabled,
+                self.contact.eraser_threshold_raw,
+                self.contact.eraser_enabled
+            );
+        } else if let Some(mapping) = self.otd_mapping {
             let t = mapping.tablet;
             let d = mapping.display;
             println!(
@@ -337,30 +481,30 @@ impl Profile {
                 self.contact.eraser_threshold_raw.unwrap_or(0),
                 self.contact.eraser_enabled
             );
-            if self.ignored_filters > 0 {
-                println!("Skipped {} enabled plugin filter(s).", self.ignored_filters);
-            }
-            for (index, filter) in self.radial_follow.iter().enumerate() {
-                println!(
-                    "Enabled {FILTER_NAME} #{}: OuterRadius={:.4} mm, InnerRadius={:.4} mm, SmoothingCoefficient={:.4}, SoftKneeScale={:.4}, SmoothingLeakCoefficient={:.4}",
-                    index + 1,
-                    filter.outer_radius,
-                    filter.inner_radius,
-                    filter.smoothing_coefficient,
-                    filter.soft_knee_scale,
-                    filter.smoothing_leak_coefficient
-                );
-            }
-            if self.auto_enabled_radial_follow > 0 {
-                println!(
-                    "Rust auto-enabled {} Radial Follow filter(s) despite OpenTabletDriver Enable=false.",
-                    self.auto_enabled_radial_follow
-                );
-            }
         } else {
             println!(
                 "Tablet crop: {:?}; rotation: {}°; monitor: {:?}",
                 self.crop, self.rotation, self.monitor
+            );
+        }
+        if self.ignored_filters > 0 {
+            println!("Skipped {} enabled plugin filter(s).", self.ignored_filters);
+        }
+        for (index, filter) in self.radial_follow.iter().enumerate() {
+            println!(
+                "Enabled {FILTER_NAME} #{}: OuterRadius={:.4} mm, InnerRadius={:.4} mm, SmoothingCoefficient={:.4}, SoftKneeScale={:.4}, SmoothingLeakCoefficient={:.4}",
+                index + 1,
+                filter.outer_radius,
+                filter.inner_radius,
+                filter.smoothing_coefficient,
+                filter.soft_knee_scale,
+                filter.smoothing_leak_coefficient
+            );
+        }
+        if self.auto_enabled_radial_follow > 0 {
+            println!(
+                "Rust auto-enabled {} Radial Follow filter(s) despite OpenTabletDriver Enable=false.",
+                self.auto_enabled_radial_follow
             );
         }
     }
@@ -409,5 +553,117 @@ mod tests {
         assert_eq!(profile.radial_follow.len(), 1);
         assert_eq!(profile.auto_enabled_radial_follow, 1);
         assert_eq!(profile.radial_follow[0].outer_radius, 0.7039);
+    }
+
+    fn relative_profile() -> serde_json::Value {
+        serde_json::json!({"Profiles": [{
+            "Tablet": "Wacom PTH-660",
+            "OutputMode": {"Path": "OpenTabletDriver.Desktop.Output.RelativeMode", "Enable": true},
+            "RelativeModeSettings": {
+                "XSensitivity": 12.5, "YSensitivity": 8.0,
+                "RelativeRotation": 30.0, "RelativeResetDelay": "00:00:00.1000000"
+            },
+            "Bindings": {
+                "TipActivationThreshold": 1,
+                "TipButton": {"Path": "OpenTabletDriver.Desktop.Binding.AdaptiveBinding", "Enable": true,
+                    "Settings": [{"Property": "Binding", "Value": "Tip"}]}
+            },
+            "Filters": [{"Path": "RadialFollow.RadialFollowSmoothingTabletSpace", "Enable": true}]
+        }]})
+    }
+
+    #[test]
+    fn imports_relative_mode_without_absolute_areas() {
+        let profile =
+            Profile::from_otd_text(&relative_profile().to_string(), Path::new("relative.json"))
+                .unwrap();
+        let relative = profile.relative.unwrap();
+        assert_eq!(relative.sensitivity, (12.5, 8.0));
+        assert_eq!(relative.rotation, 30.0);
+        assert_eq!(relative.reset_delay, Duration::from_millis(100));
+        assert!(profile.otd_mapping.is_none());
+        assert!(profile.contact.tip_enabled);
+        assert_eq!(profile.contact.tip_threshold_raw, Some(83));
+        assert_eq!(profile.radial_follow.len(), 1);
+    }
+
+    #[test]
+    fn parses_timespan_days_and_submillisecond_precision() {
+        assert_eq!(parse_reset_delay("00:00:00").unwrap(), Duration::ZERO);
+        assert_eq!(
+            parse_reset_delay("00:00:00.1").unwrap(),
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            parse_reset_delay("1.02:03:04.1234567").unwrap(),
+            Duration::new(93_784, 123_456_700)
+        );
+        assert_eq!(
+            parse_reset_delay("10675199.02:48:05.4775807")
+                .unwrap()
+                .as_nanos(),
+            (i64::MAX as u128) * 100
+        );
+        for invalid in [
+            "",
+            "100",
+            "-00:00:00.1",
+            "00:00:00.",
+            "00:00:00.12345678",
+            "24:00:00",
+            "00:60:00",
+            "00:00:60",
+            "00:00:00:00",
+            "NaN",
+            "1e3:00:00",
+            "18446744073709551615.00:00:00",
+            "10675199.02:48:05.4775808",
+        ] {
+            assert!(parse_reset_delay(invalid).is_err(), "accepted {invalid}");
+        }
+    }
+
+    #[test]
+    fn rejects_missing_relative_settings_disabled_and_unknown_modes() {
+        for (field, value) in [
+            ("RelativeModeSettings", serde_json::Value::Null),
+            (
+                "OutputMode",
+                serde_json::json!({"Path": "OpenTabletDriver.Desktop.Output.RelativeMode", "Enable": false}),
+            ),
+            (
+                "OutputMode",
+                serde_json::json!({"Path": "Unknown.Mode", "Enable": true}),
+            ),
+        ] {
+            let mut json = relative_profile();
+            json["Profiles"][0][field] = value;
+            assert!(Profile::from_otd_text(&json.to_string(), Path::new("invalid.json")).is_err());
+        }
+    }
+
+    #[test]
+    fn reads_relative_toml_and_rejects_ambiguous_absolute_options() {
+        let text = "[relative]\nx_sensitivity = 10.0\ny_sensitivity = 20.0\nrotation = -45.0\nreset_delay_ms = 100\n";
+        let profile = Profile::from_toml_text(text, Path::new("relative.toml")).unwrap();
+        assert_eq!(profile.relative.unwrap().rotation, -45.0);
+        assert_eq!(profile.relative.unwrap().sensitivity, (10.0, 20.0));
+        for prefix in [
+            "rotation = 0\n",
+            "monitor = 0\n",
+            "[crop]\nx=0\ny=0\nwidth=10\nheight=10\n",
+        ] {
+            assert!(
+                Profile::from_toml_text(&format!("{prefix}{text}"), Path::new("invalid.toml"))
+                    .is_err()
+            );
+        }
+        for invalid in [
+            text.replace("10.0", "nan"),
+            text.replace("20.0", "inf"),
+            text.replace("100\n", "-1\n"),
+        ] {
+            assert!(Profile::from_toml_text(&invalid, Path::new("invalid.toml")).is_err());
+        }
     }
 }

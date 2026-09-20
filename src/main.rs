@@ -6,8 +6,11 @@ mod original_driver;
 mod output;
 mod protocol;
 mod radial_follow;
+mod relative;
 mod session;
 mod state;
+#[cfg(test)]
+mod test_alloc;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -200,7 +203,9 @@ fn load_profile(
 
 fn show_settings(config: Option<PathBuf>, otd_settings: Option<PathBuf>) -> Result<(), String> {
     let profile = load_profile(config.as_ref(), otd_settings.as_ref())?;
-    display::DisplaySnapshot::read()?.mapper(&profile)?;
+    if profile.relative.is_none() {
+        display::DisplaySnapshot::read()?.mapper(&profile)?;
+    }
     profile.print_summary();
     Ok(())
 }
@@ -211,8 +216,9 @@ fn run(
     capture_seconds: Option<u64>,
 ) -> Result<(), String> {
     let profile = load_profile(config.as_ref(), otd_settings.as_ref())?;
-    let initial_display = display::DisplaySnapshot::read()?;
-    initial_display.mapper(&profile)?;
+    if profile.relative.is_none() {
+        display::DisplaySnapshot::read()?.mapper(&profile)?;
+    }
     println!(
         "opentabletdriver-rust {} — Windows 11 USB PTH-660 daemon",
         env!("CARGO_PKG_VERSION")

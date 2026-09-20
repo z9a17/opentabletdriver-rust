@@ -12,6 +12,17 @@ The automated parser, state, and mapping tests do not prove that a specific phys
 
 Record the Windows build, PTH-660 firmware/connection mode, whether another tablet driver was running, and the result of each step in a hardware-validation issue or PR. A failed step is a release blocker for the first usable driver.
 
+## Relative mode validation (pending)
+
+1. Preview `settings --config driver.relative.example.toml`, then run the same profile. Confirm the first hover does not jump to an absolute screen position and tip clicks still work.
+2. Compare one-mm horizontal/vertical movements at 10/10 sensitivity, then unequal sensitivities and 90-degree rotation. Record Windows pointer speed and acceleration settings; they affect relative output.
+3. Move slowly to verify sub-count movement accumulates; repeat equal steps to check that equal nonzero deltas are not suppressed.
+4. Leave proximity and return at another tablet position, both quickly and after 100 ms. Confirm no cross-tablet jump or leftover fractional movement. Test pauses longer than the configured reset delay as well.
+5. Hold the tip, unplug, reconnect, and stop with Ctrl+C. Confirm releases and that the first report after reconnect establishes a new origin.
+6. Import an OpenTabletDriver relative profile with Radial Follow enabled and compare filtering and pressure thresholds. Change display topology during relative output and verify continuous motion without a reset.
+
+Automated recorded-report replay and allocation checks cover the new CPU path, but these live relative-mode checks have not yet been performed.
+
 ## Development-machine results
 
 - Windows 11 USB PTH-660 enumeration: one readable 192-byte pen collection, one readable 44-byte auxiliary collection, and one unreadable 4-byte mouse collection, all 056a:0357.

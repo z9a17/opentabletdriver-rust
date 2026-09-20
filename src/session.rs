@@ -15,6 +15,7 @@ use crate::mapping::Mapper;
 use crate::output::MouseOutput;
 use crate::protocol;
 use crate::radial_follow::RadialFollowSmoothingTabletSpace;
+use crate::relative::RelativeMapper;
 use crate::state;
 
 #[derive(Clone, Copy)]
@@ -116,11 +117,15 @@ fn trace_report(bytes: &[u8], pen: Option<protocol::PenReport>) {
 }
 
 fn refresh_display(
-    snapshot: &mut DisplaySnapshot,
+    snapshot: &mut Option<DisplaySnapshot>,
     mapper: &mut Option<Mapper>,
     profile: &Profile,
     output: &mut MouseOutput,
 ) {
+    let Some(snapshot) = snapshot else {
+        // Relative mouse motion is independent of the monitor topology.
+        return;
+    };
     let Ok(current) = DisplaySnapshot::read() else {
         return;
     };
@@ -157,8 +162,21 @@ pub fn run(
         hEvent: read_event.raw(),
         ..Default::default()
     };
-    let mut snapshot = DisplaySnapshot::read().map_err(io::Error::other)?;
-    let mut mapper = Some(snapshot.mapper(profile).map_err(io::Error::other)?);
+    let mut relative_mapper = profile
+        .relative
+        .map(RelativeMapper::new)
+        .transpose()
+        .map_err(io::Error::other)?;
+    let mut snapshot = if relative_mapper.is_none() {
+        Some(DisplaySnapshot::read().map_err(io::Error::other)?)
+    } else {
+        None
+    };
+    let mut mapper = snapshot
+        .as_ref()
+        .map(|s| s.mapper(profile))
+        .transpose()
+        .map_err(io::Error::other)?;
     let mut output = MouseOutput::new();
     let mut filters: Vec<_> = if matches!(mode, Mode::Driver) {
         profile
@@ -283,7 +301,7 @@ pub fn run(
                     counters.accepted += 1;
                     if let Mode::Capture { .. } = mode {
                         capture_trace.pen(bytes, pen);
-                    } else if let Some(active_mapper) = mapper {
+                    } else if relative_mapper.is_some() || mapper.is_some() {
                         let frame = state::frame(pen, profile.contact);
                         let filtered_position = frame.position.and_then(|(x, y)| {
                             let (first, remaining) = filters.split_first_mut()?;
@@ -293,10 +311,16 @@ pub fn run(
                             }
                             Some(position)
                         });
-                        let emitted = if filtered_position.is_some() {
+                        let emitted = if let Some(relative) = &mut relative_mapper {
+                            let delta =
+                                relative.map_at(frame.position, filtered_position, Instant::now());
+                            // Consume failed movement rather than accumulating a
+                            // cursor jump. MouseOutput retries button transitions.
+                            output.emit_relative(delta, frame.contact)
+                        } else if let Some(active_mapper) = mapper {
                             output.emit_filtered(frame, active_mapper, filtered_position)
                         } else {
-                            output.emit(frame, active_mapper)
+                            unreachable!()
                         };
                         match emitted {
                             Ok(true) => counters.injected += 1,

@@ -1,5 +1,7 @@
 # Implementation plan: Windows 11 USB driver for Wacom PTH-660
 
+This document preserves the original first-release plan. Subsequent porting progress and remaining scope are tracked in [PORTING_STATUS.md](PORTING_STATUS.md). Relative mouse output is now implemented; its behavior and verification are documented in [RELATIVE_MODE.md](RELATIVE_MODE.md).
+
 Status: the Windows 11 Rust implementation reads the user's active OpenTabletDriver PTH-660 absolute profile and starts as a visible console daemon. The 0.2.0 active-profile build passed a live movement and click test. Version 0.3.0 adds a built-in Rust port of AbstractQbit's tablet-space Radial Follow filter; its live pen feel awaits a test after the user stops the currently running 0.2.0 build.
 
 ## 1. Objective and limits
