@@ -254,7 +254,10 @@ public static unsafe class EntryPoints
                     .Where(t => !t.IsAbstract && typeof(IPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(t))
                     .Select(t => new {
                         type_name = t.FullName,
-                        settings = t.GetProperties().Where(p => p.GetCustomAttribute<PropertyAttribute>() != null)
+                        // Omitted values preserve the plugin constructor's defaults.
+                        // A null placeholder would instead coerce many value types to zero.
+                        settings = t.GetProperties().Where(p => p.GetCustomAttribute<PropertyAttribute>() != null
+                            && p.GetCustomAttribute<DefaultPropertyValueAttribute>() != null)
                             .ToDictionary(p => p.Name, p => p.GetCustomAttribute<DefaultPropertyValueAttribute>()?.Value)
                     }).ToArray();
                 byte[] bytes = Encoding.UTF8.GetBytes(Newtonsoft.Json.JsonConvert.SerializeObject(types));

@@ -161,6 +161,11 @@ impl Plugin {
         let name = std::str::from_utf8(&api.name[..length])
             .map_err(|_| "invalid plugin name")?
             .to_owned();
+        let name = if config.kind == PluginKind::Dotnet {
+            config.type_name.clone()
+        } else {
+            name
+        };
         let settings = if config.kind == PluginKind::Dotnet {
             serde_json::json!({
                 "assembly_path": config.path.canonicalize().map_err(|e| e.to_string())?,
