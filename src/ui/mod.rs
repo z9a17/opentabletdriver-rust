@@ -52,7 +52,8 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows_sys::Win32::System::SystemInformation::GetLocalTime;
 use windows_sys::Win32::System::Threading::{
-    CreateMutexW, OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE,
+    CreateMutexW, GetStartupInfoW, OpenMutexW, STARTF_USESHOWWINDOW, STARTUPINFOW,
+    SYNCHRONIZATION_SYNCHRONIZE,
 };
 use windows_sys::Win32::UI::Controls::Dialogs::*;
 use windows_sys::Win32::UI::Controls::{
@@ -828,6 +829,40 @@ fn claim_panel() -> Result<Option<OwnedHandle>, String> {
     Ok(None)
 }
 
+/// Shows the new window. A launch that asks for a minimized window, such as
+/// a shortcut set to run minimized, starts the panel in the tray. Windows
+/// substitutes the launch's show command only for a plain `SW_SHOW`, so a
+/// panel saved maximized asks for it here and still restores maximized.
+fn show_initial(window: HWND, maximized: bool) {
+    let mut startup = STARTUPINFOW {
+        cb: size_of::<STARTUPINFOW>() as u32,
+        ..Default::default()
+    };
+    unsafe { GetStartupInfoW(&mut startup) };
+    let minimized = startup.dwFlags & STARTF_USESHOWWINDOW != 0
+        && [
+            SW_MINIMIZE,
+            SW_SHOWMINIMIZED,
+            SW_SHOWMINNOACTIVE,
+            SW_FORCEMINIMIZE,
+        ]
+        .contains(&i32::from(startup.wShowWindow));
+    if !(minimized && maximized) {
+        unsafe { ShowWindow(window, if maximized { SW_SHOWMAXIMIZED } else { SW_SHOW }) };
+        return;
+    }
+    let mut placement = WINDOWPLACEMENT {
+        length: size_of::<WINDOWPLACEMENT>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        GetWindowPlacement(window, &mut placement);
+        placement.showCmd = SW_SHOWMINNOACTIVE as u32;
+        placement.flags |= WPF_RESTORETOMAXIMIZED;
+        SetWindowPlacement(window, &placement);
+    }
+}
+
 unsafe extern "system" fn window_proc(
     window: HWND,
     message: u32,
@@ -1265,13 +1300,12 @@ pub fn run() -> Result<(), String> {
     let accelerators = app.accelerators;
     let first_tab = app.c.tabs[0];
     app.set_icons();
-    // Before the first ShowWindow: a shortcut set to run minimized then
-    // starts the panel in the tray.
+    // Before the window is shown, so a minimized launch goes to the tray.
     app.add_tray();
     APP.with(|slot| *slot.borrow_mut() = Some(app));
     with_app(App::layout);
+    show_initial(window, maximized);
     unsafe {
-        ShowWindow(window, if maximized { SW_SHOWMAXIMIZED } else { SW_SHOW });
         SetFocus(first_tab);
         PostMessageW(window, WM_DETECT, 0, 0);
         if auto_start {
