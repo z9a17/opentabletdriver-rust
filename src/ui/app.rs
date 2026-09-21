@@ -246,7 +246,7 @@ impl App {
             ID_FILTER_LIST,
             WS_TABSTOP
                 | WS_VSCROLL
-                | (LBS_OWNERDRAWFIXED | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT) as u32,
+                | (LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT) as u32,
             Kind::List,
             Surface::Group,
         )?;
@@ -295,6 +295,7 @@ impl App {
             WS_TABSTOP
                 | WS_VSCROLL
                 | (LBS_OWNERDRAWFIXED
+                    | LBS_HASSTRINGS
                     | LBS_NOTIFY
                     | LBS_NOINTEGRALHEIGHT
                     | LBS_EXTENDEDSEL
@@ -635,12 +636,19 @@ impl App {
     pub(super) fn refresh_filters(&mut self) {
         let items = self.editor.filters();
         let count = items.len();
+        let texts: Vec<Vec<u16>> = items
+            .iter()
+            .map(|item| {
+                let state = if item.enabled { "enabled" } else { "disabled" };
+                wide(&format!("{}, {}, {state}", item.name, item.detail))
+            })
+            .collect();
         update_look(|look| look.filters = items);
         self.selected_filter = self.selected_filter.min(count.saturating_sub(1));
         unsafe {
             SendMessageW(self.c.filter_list, LB_RESETCONTENT, 0, 0);
-            for _ in 0..count {
-                SendMessageW(self.c.filter_list, LB_ADDSTRING, 0, 0);
+            for text in &texts {
+                SendMessageW(self.c.filter_list, LB_ADDSTRING, 0, text.as_ptr() as isize);
             }
             SendMessageW(self.c.filter_list, LB_SETCURSEL, self.selected_filter, 0);
         }
@@ -833,9 +841,11 @@ impl App {
         self.status_level = level;
         self.validation_status = false;
         let mut removed = false;
+        let time = local_time();
+        let row = wide(&format!("{time} {} {group}: {message}", level.label()));
         update_look(|look| {
             look.log.push_back(LogEntry {
-                time: local_time(),
+                time,
                 level,
                 group,
                 message,
@@ -849,7 +859,7 @@ impl App {
             if removed {
                 SendMessageW(self.c.log, LB_DELETESTRING, 0, 0);
             }
-            let index = SendMessageW(self.c.log, LB_ADDSTRING, 0, 0);
+            let index = SendMessageW(self.c.log, LB_ADDSTRING, 0, row.as_ptr() as isize);
             if SendMessageW(self.c.log, LB_GETSELCOUNT, 0, 0) <= 0 && index >= 0 {
                 SendMessageW(self.c.log, LB_SETTOPINDEX, index as usize, 0);
             }
