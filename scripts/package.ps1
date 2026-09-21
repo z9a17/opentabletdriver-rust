@@ -19,7 +19,7 @@ try {
         Copy-Item -LiteralPath (Join-Path 'target/release' $file) -Destination $package -ErrorAction Stop
     }
     Copy-Item -LiteralPath 'target/release/compat' -Destination $package -Recurse -ErrorAction Stop
-    foreach ($file in @('README.md', 'LICENSE', 'LICENSE.LGPL-3.0', 'NOTICE.md', 'driver.example.toml', 'driver.relative.example.toml', 'driver.plugins.example.toml', 'docs')) {
+    foreach ($file in @('README.md', 'AGENTS.md', 'LICENSE', 'LICENSE.LGPL-3.0', 'NOTICE.md', 'driver.example.toml', 'driver.relative.example.toml', 'driver.plugins.example.toml', 'docs')) {
         Copy-Item -LiteralPath $file -Destination $package -Recurse -ErrorAction Stop
     }
     $archive = Join-Path $projectRoot "target/$packageName.zip"

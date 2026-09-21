@@ -2,6 +2,8 @@
 
 A Windows 11 USB driver for the Wacom PTH-660, written in Rust. It supports absolute/relative cursor movement, tip clicks, a native Windows control panel, native filter DLLs, and unchanged OpenTabletDriver .NET synchronous tablet-coordinate position filters. Side-button output and Windows Ink remain unimplemented. See [plugin/UI support and compatibility limits](docs/PLUGINS_AND_UI.md) and the [porting status](docs/PORTING_STATUS.md).
 
+For the path to full OpenTabletDriver parity, start with the [full parity roadmap](docs/FULL_PARITY_PLAN.md). It includes [65 implementation tasks](docs/parity/WORK_ITEMS.md), a pinned device/plugin inventory, dependencies, performance and validation gates, and an [agent handoff guide](docs/parity/AGENT_HANDOFF.md). Claim work through the [GitHub workstream tracker](docs/parity/GITHUB_TRACKING.md). These planned capabilities are not yet implemented.
+
 The combined executable is licensed under GPL-3.0-only because its built-in Radial Follow filter is a Rust port of [AbstractQbit's RadialFollow 0.3.0](https://github.com/AbstractQbit/AbstractOTDPlugins/tree/0.3.0/RadialFollow), which is GPL-3.0-only. The earlier driver source retains its LGPL-3.0-only terms in [LICENSE.LGPL-3.0](LICENSE.LGPL-3.0); the combined executable uses [LICENSE](LICENSE). The PTH-660 USB identification and report layout were researched from [OpenTabletDriver 0.6.x](https://github.com/OpenTabletDriver/OpenTabletDriver/tree/fdeaa7b0c6d6f5260f511f19fb693ed33524af4e). The [implementation plan](docs/IMPLEMENTATION_PLAN.md) records source links and acceptance criteria.
 
 ## Open the driver

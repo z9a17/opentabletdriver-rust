@@ -2,6 +2,8 @@
 
 The long-term goal is broader OpenTabletDriver functionality with efficient native Rust report processing. The [original implementation plan](IMPLEMENTATION_PLAN.md) describes the first PTH-660 milestone; its exclusions are historical milestone boundaries, not the final project scope.
 
+The [full parity roadmap](FULL_PARITY_PLAN.md) now defines the complete target against OpenTabletDriver v0.6.7, with [65 scoped tasks](parity/WORK_ITEMS.md), a [capability/source matrix](parity/CAPABILITY_MATRIX.md), a reproducible upstream inventory and [GitHub tracking](parity/GITHUB_TRACKING.md). The 0.4.1 planning release changes documentation/tooling and the package version; driver functionality and plugin compatibility remain as in 0.4.0. The table below records implemented behavior, not roadmap completion.
+
 | Capability | Current Rust status | Remaining work |
 | --- | --- | --- |
 | USB discovery and recovery | Windows PTH-660 pen collection, cancellable reads, reconnect supervisor | Hardware coverage for sleep/wake and repeated reconnects |
