@@ -394,6 +394,9 @@ pub struct UiPrefs {
     /// Normal window size in 96-DPI units.
     pub window_size: Option<(i32, i32)>,
     pub maximized: bool,
+    /// Start the driver when the panel opens, as OpenTabletDriver's UX
+    /// starts its daemon.
+    pub start_driver_on_launch: bool,
 }
 
 impl Default for UiPrefs {
@@ -405,6 +408,7 @@ impl Default for UiPrefs {
             lock_tablet_to_usable_area: true,
             window_size: None,
             maximized: false,
+            start_driver_on_launch: true,
         }
     }
 }
@@ -444,6 +448,7 @@ mod tests {
         let partial: UiPrefs = toml::from_str("theme = 'light'").unwrap();
         assert_eq!(partial.theme, ThemeMode::Light);
         assert!(partial.lock_tablet_to_usable_area);
+        assert!(partial.start_driver_on_launch);
     }
 
     #[test]

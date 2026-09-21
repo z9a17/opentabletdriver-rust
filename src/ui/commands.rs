@@ -225,6 +225,13 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                         "Start driver"
                     },
                 );
+                unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null()) };
+                append(
+                    menu,
+                    checked(app.prefs.start_driver_on_launch),
+                    CMD_AUTOSTART,
+                    "Start driver when the panel opens",
+                );
             }
             2 => {
                 append(menu, MF_STRING, CMD_ADD_DOTNET, "Add .NET plugin...");
@@ -438,6 +445,13 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
                 }
             });
         }
+        CMD_AUTOSTART => {
+            with_app(|app| {
+                app.prefs.start_driver_on_launch = !app.prefs.start_driver_on_launch;
+                app.save_prefs();
+            });
+        }
+        CMD_SHOW => tray::show_panel(window),
         CMD_COPY_LOG => {
             with_app(|app| app.copy_log(true));
         }

@@ -5,6 +5,11 @@
 //! contrast. The message loop stays off the driver thread; stop requests use
 //! a duplicated Windows event handle.
 //!
+//! Like OpenTabletDriver's UX, which starts its daemon, the panel starts the
+//! driver when it opens; it runs in-process on a background thread. The panel
+//! keeps an icon in the notification area and minimizes into it. Opening the
+//! panel again brings the running one forward.
+//!
 //! Child controls are real Win32 controls (keyboard focus, accessibility)
 //! painted through custom draw. Their painting reads the `LOOK` state, which
 //! is only ever borrowed briefly, so controls that repaint synchronously
@@ -18,6 +23,7 @@ mod layout;
 mod model;
 mod paint;
 mod theme;
+mod tray;
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -29,9 +35,11 @@ use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::mpsc::{self, Receiver};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{
-    GlobalFree, HWND, LPARAM, LRESULT, POINT, RECT, SYSTEMTIME, WPARAM,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, GetLastError, GlobalFree, HWND, LPARAM,
+    LRESULT, POINT, RECT, SYSTEMTIME, WPARAM,
 };
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::Storage::FileSystem::{
@@ -43,6 +51,9 @@ use windows_sys::Win32::System::DataExchange::{
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows_sys::Win32::System::SystemInformation::GetLocalTime;
+use windows_sys::Win32::System::Threading::{
+    CreateMutexW, OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE,
+};
 use windows_sys::Win32::UI::Controls::Dialogs::*;
 use windows_sys::Win32::UI::Controls::{
     BST_CHECKED, CDDS_PREPAINT, CDIS_DISABLED, CDIS_FOCUS, CDIS_HOT, CDIS_SELECTED,
@@ -55,8 +66,8 @@ use windows_sys::Win32::UI::Controls::{
 };
 use windows_sys::Win32::UI::HiDpi::{
     AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE,
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, GetSystemMetricsForDpi,
-    GetThreadDpiAwarenessContext, SetThreadDpiAwarenessContext,
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem, GetDpiForWindow,
+    GetSystemMetricsForDpi, GetThreadDpiAwarenessContext, SetThreadDpiAwarenessContext,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     EnableWindow, GetFocus, GetKeyState, IsWindowEnabled, ReleaseCapture, SetCapture, SetFocus,
@@ -67,7 +78,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use crate::config::Profile;
 use crate::display::DisplaySnapshot;
-use crate::hid::Event;
+use crate::hid::{Event, OwnedHandle};
 use crate::mapping::{OtdArea, OtdMapping};
 use crate::plugins::{PluginConfig, PluginKind};
 use crate::radial_follow::RadialFollowSettings;
@@ -105,6 +116,8 @@ const CMD_PREV_TAB: u16 = 251;
 const CMD_START_STOP: u16 = 260;
 const CMD_COPY_LOG: u16 = 261;
 const CMD_CLEAR_LOG: u16 = 262;
+const CMD_AUTOSTART: u16 = 263;
+const CMD_SHOW: u16 = 270;
 const ID_MODE: u16 = 300;
 const ID_DISPLAY: u16 = 310;
 const ID_TABLET: u16 = 320;
@@ -136,6 +149,13 @@ const AREA_DISPLAY: u16 = 840;
 const WM_DRIVER_STATUS: u32 = WM_APP + 1;
 const WM_DRIVER_EXITED: u32 = WM_APP + 2;
 const WM_DETECT: u32 = WM_APP + 3;
+const WM_AUTOSTART: u32 = WM_APP + 4;
+/// Posted by a second launch of the panel.
+const WM_SHOW_PANEL: u32 = WM_APP + 5;
+const WM_TRAY: u32 = WM_APP + 6;
+
+const PANEL_CLASS: &str = "OpenTabletDriverRustControlPanel";
+const PANEL_MUTEX: &str = "Local\\OpenTabletDriverRustPanel";
 
 const TBM_GETPOS: u32 = WM_USER;
 const TBM_SETPOS: u32 = WM_USER + 5;
@@ -175,6 +195,8 @@ thread_local! {
     static LOOK: RefCell<Option<Look>> = const { RefCell::new(None) };
     static QUIET: Cell<u32> = const { Cell::new(0) };
     static LAST_FOCUS: Cell<isize> = const { Cell::new(0) };
+    /// Explorer's "TaskbarCreated" message; its tray starts empty.
+    static TASKBAR_CREATED: Cell<u32> = const { Cell::new(0) };
 }
 
 pub(crate) fn wide(text: &str) -> Vec<u16> {
@@ -594,6 +616,20 @@ enum DriverState {
     Failed,
 }
 
+impl DriverState {
+    fn label(self) -> &'static str {
+        match self {
+            DriverState::Stopped => "Stopped",
+            DriverState::Starting => "Starting",
+            DriverState::Waiting => "Waiting for tablet",
+            DriverState::Connecting => "Connecting",
+            DriverState::Connected => "Running",
+            DriverState::Stopping => "Stopping",
+            DriverState::Failed => "Stopped with an error",
+        }
+    }
+}
+
 struct Running {
     stop: Event,
     thread: JoinHandle<Result<(), String>>,
@@ -670,6 +706,10 @@ struct App {
     status: String,
     status_level: Level,
     validation_status: bool,
+    tray_icon: HICON,
+    /// Whether the notification area has the icon; without it minimizing
+    /// keeps the taskbar button.
+    in_tray: bool,
 }
 
 impl Drop for App {
@@ -680,7 +720,12 @@ impl Drop for App {
             let _ = running.stop.signal();
             let _ = running.thread.join();
         }
-        unsafe { DestroyAcceleratorTable(self.accelerators) };
+        unsafe {
+            DestroyAcceleratorTable(self.accelerators);
+            if !self.tray_icon.is_null() {
+                DestroyIcon(self.tray_icon);
+            }
+        }
     }
 }
 
@@ -743,6 +788,46 @@ fn point_from(lp: LPARAM) -> (i32, i32) {
     )
 }
 
+/// True while another process, such as the console daemon, runs the driver.
+fn driver_instance_running() -> bool {
+    let name = wide(crate::INSTANCE_MUTEX);
+    let handle = unsafe { OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, 0, name.as_ptr()) };
+    if handle.is_null() {
+        // An elevated driver's mutex exists but cannot be opened.
+        return unsafe { GetLastError() } == ERROR_ACCESS_DENIED;
+    }
+    unsafe { CloseHandle(handle) };
+    true
+}
+
+/// Holds the panel's instance mutex, or brings the panel that already holds
+/// it forward and returns `None`.
+fn claim_panel() -> Result<Option<OwnedHandle>, String> {
+    let name = wide(PANEL_MUTEX);
+    let raw = unsafe { CreateMutexW(ptr::null(), 0, name.as_ptr()) };
+    let exists = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+    let handle = OwnedHandle::new(raw).map_err(|e| format!("panel instance guard failed: {e}"))?;
+    if !exists {
+        return Ok(Some(handle));
+    }
+    let class = wide(PANEL_CLASS);
+    // The other panel may still be creating its window.
+    for _ in 0..20 {
+        let window = unsafe { FindWindowW(class.as_ptr(), ptr::null()) };
+        if !window.is_null() {
+            let mut process = 0;
+            unsafe {
+                GetWindowThreadProcessId(window, &mut process);
+                AllowSetForegroundWindow(process);
+                PostMessageW(window, WM_SHOW_PANEL, 0, 0);
+            }
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(None)
+}
+
 unsafe extern "system" fn window_proc(
     window: HWND,
     message: u32,
@@ -752,6 +837,7 @@ unsafe extern "system" fn window_proc(
     let default = || unsafe { DefWindowProcW(window, message, wp, lp) };
     match message {
         WM_DESTROY => {
+            tray::remove(window);
             unsafe { PostQuitMessage(0) };
             0
         }
@@ -763,6 +849,13 @@ unsafe extern "system" fn window_proc(
             0
         }
         WM_SIZE => {
+            if wp as u32 == SIZE_MINIMIZED {
+                // Upstream hides a minimized window into the tray.
+                if with_app(|app| app.in_tray).unwrap_or(false) {
+                    unsafe { ShowWindow(window, SW_HIDE) };
+                }
+                return 0;
+            }
             with_app(App::layout);
             0
         }
@@ -950,6 +1043,18 @@ unsafe extern "system" fn window_proc(
             with_app(App::detect_tablet);
             0
         }
+        WM_AUTOSTART => {
+            with_app(App::auto_start);
+            0
+        }
+        WM_SHOW_PANEL => {
+            tray::show_panel(window);
+            0
+        }
+        WM_TRAY => {
+            tray::notify(window, wp, lp);
+            0
+        }
         WM_ACTIVATE => {
             // Dialog-style focus memory: return to the last focused control.
             if (wp & 0xFFFF) as u32 == WA_INACTIVE {
@@ -973,11 +1078,27 @@ unsafe extern "system" fn window_proc(
             if with_app(|app| app.closing).unwrap_or(false) {
                 return 0;
             }
+            // Close from the tray asks about unsaved edits with the panel shown.
+            if with_app(|app| app.dirty).unwrap_or(false) && unsafe { IsWindowVisible(window) } == 0
+            {
+                tray::show_panel(window);
+            }
             if !confirm_discard(window) {
                 return 0;
             }
             if with_app(App::begin_close).unwrap_or(true) {
                 unsafe { DestroyWindow(window) };
+            }
+            0
+        }
+        _ if message != 0 && message == TASKBAR_CREATED.with(Cell::get) => {
+            let in_tray = with_app(|app| {
+                app.add_tray();
+                app.in_tray
+            });
+            // Never leave the panel hidden without an icon to restore it.
+            if in_tray == Some(false) && unsafe { IsWindowVisible(window) } == 0 {
+                tray::show_panel(window);
             }
             0
         }
@@ -1025,6 +1146,9 @@ fn place_window(window: HWND, prefs: &UiPrefs) {
 }
 
 pub fn run() -> Result<(), String> {
+    let Some(_panel) = claim_panel()? else {
+        return Ok(());
+    };
     // The panel renders at the monitor's DPI; the driver thread and display
     // snapshots keep using the process default (see displays_for_driver).
     let process_dpi = unsafe { GetThreadDpiAwarenessContext() } as isize;
@@ -1042,8 +1166,11 @@ pub fn run() -> Result<(), String> {
     let prefs_path = UiPrefs::path(&directory);
     let prefs = UiPrefs::load(&prefs_path);
 
+    let taskbar_created = unsafe { RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()) };
+    TASKBAR_CREATED.with(|message| message.set(taskbar_created));
+
     let instance = unsafe { GetModuleHandleW(ptr::null()) };
-    let class_name = wide("OpenTabletDriverRustControlPanel");
+    let class_name = wide(PANEL_CLASS);
     let class = WNDCLASSW {
         style: CS_HREDRAW | CS_VREDRAW,
         lpfnWndProc: Some(window_proc),
@@ -1117,24 +1244,39 @@ pub fn run() -> Result<(), String> {
     };
     app.replace_profile(profile, Some(path), false);
     app.set_driver_state(DriverState::Stopped);
+    // A profile that failed to load is replaced by defaults; never drive
+    // the tablet with those unasked.
+    let auto_start = prefs.start_driver_on_launch && loaded.is_ok();
     match loaded {
         Ok(message) => app.log(Level::Info, "Settings", message),
         Err(error) => app.log(Level::Error, "Settings", error),
     }
-    app.log(
-        Level::Info,
-        "UI",
-        "The driver is stopped. Start driver begins reading the tablet with these settings.",
-    );
+    if !auto_start {
+        app.log(
+            Level::Info,
+            "UI",
+            if prefs.start_driver_on_launch {
+                "The driver was not started because the settings could not be loaded. Start driver uses the settings shown."
+            } else {
+                "The driver is stopped. Start driver begins reading the tablet with these settings."
+            },
+        );
+    }
     let accelerators = app.accelerators;
     let first_tab = app.c.tabs[0];
     app.set_icons();
+    // Before the first ShowWindow: a shortcut set to run minimized then
+    // starts the panel in the tray.
+    app.add_tray();
     APP.with(|slot| *slot.borrow_mut() = Some(app));
     with_app(App::layout);
     unsafe {
         ShowWindow(window, if maximized { SW_SHOWMAXIMIZED } else { SW_SHOW });
         SetFocus(first_tab);
         PostMessageW(window, WM_DETECT, 0, 0);
+        if auto_start {
+            PostMessageW(window, WM_AUTOSTART, 0, 0);
+        }
     }
 
     let mut message = MSG::default();

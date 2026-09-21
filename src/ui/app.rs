@@ -209,6 +209,8 @@ impl App {
             status: String::new(),
             status_level: Level::Info,
             validation_status: false,
+            tray_icon: null,
+            in_tray: false,
         };
         app.create_controls()?;
         app.create_tooltips();
@@ -1647,7 +1649,10 @@ impl App {
             let r = placement.rcNormalPosition;
             let dip = |value: i32| (i64::from(value) * 96 / i64::from(self.dpi)) as i32;
             self.prefs.window_size = Some((dip(r.right - r.left), dip(r.bottom - r.top)));
-            self.prefs.maximized = placement.showCmd == SW_SHOWMAXIMIZED as u32;
+            // A panel minimized into the tray keeps the state it restores to.
+            self.prefs.maximized = placement.showCmd == SW_SHOWMAXIMIZED as u32
+                || (placement.showCmd == SW_SHOWMINIMIZED as u32
+                    && placement.flags & WPF_RESTORETOMAXIMIZED != 0);
         }
         if let Err(error) = self.prefs.save(&self.prefs_path) {
             self.log(
@@ -1797,6 +1802,43 @@ impl App {
             self.update_title();
         }
         self.invalidate_status();
+        if self.in_tray {
+            tray::set_tip(self.hwnd, &self.tray_tip());
+        }
+    }
+
+    fn tray_tip(&self) -> String {
+        format!(
+            "OpenTabletDriver Rust\n{TABLET_NAME}: {}",
+            self.driver.label()
+        )
+    }
+
+    /// Adds the notification-area icon, again after Explorer restarts.
+    pub(super) fn add_tray(&mut self) {
+        if self.tray_icon.is_null() {
+            // The notification area uses the system DPI, not the panel's.
+            let size = unsafe { GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForSystem()) };
+            self.tray_icon = canvas::app_icon(size.max(16), Palette::light().accent);
+        }
+        self.in_tray = tray::add(self.hwnd, self.tray_icon, &self.tray_tip());
+    }
+
+    /// Starts the driver when the panel opens, as OpenTabletDriver's UX
+    /// starts its daemon, unless another process already runs it.
+    pub(super) fn auto_start(&mut self) {
+        if self.running.is_some() || self.closing {
+            return;
+        }
+        if driver_instance_running() {
+            self.log(
+                Level::Warning,
+                "Driver",
+                "Another OpenTabletDriver Rust driver is already running, so the panel did not start one. Stop the other driver, then use Start driver.",
+            );
+            return;
+        }
+        self.start();
     }
 
     pub(super) fn start(&mut self) {
