@@ -142,15 +142,7 @@ impl App {
             p.text,
             draw::TEXT_LEFT | DT_NOPREFIX,
         );
-        let state = match self.driver {
-            DriverState::Stopped => "Stopped",
-            DriverState::Starting => "Starting",
-            DriverState::Waiting => "Waiting for tablet",
-            DriverState::Connecting => "Connecting",
-            DriverState::Connected => "Running",
-            DriverState::Stopping => "Stopping",
-            DriverState::Failed => "Stopped with an error",
-        };
+        let state = self.driver.label();
         let left = left + name_width + s(10);
         let (state_width, _) = canvas.measure(style.fonts.ui, state);
         canvas.text(

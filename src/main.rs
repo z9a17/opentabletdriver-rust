@@ -201,8 +201,11 @@ fn displays() -> Result<(), String> {
     Ok(())
 }
 
+/// Held by whichever process is running the driver.
+pub(crate) const INSTANCE_MUTEX: &str = "Local\\PTH660RustDriver";
+
 fn single_instance() -> Result<OwnedHandle, String> {
-    let name: Vec<u16> = "Local\\PTH660RustDriver\0".encode_utf16().collect();
+    let name: Vec<u16> = INSTANCE_MUTEX.encode_utf16().chain(Some(0)).collect();
     let raw = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
     let handle = OwnedHandle::new(raw).map_err(|e| format!("instance guard failed: {e}"))?;
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
