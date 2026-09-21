@@ -9,7 +9,7 @@ kind = 'native'
 enabled = true
 settings_json = '{"alpha":0.35,"reset_ms":50}'
 
-# Unchanged OpenTabletDriver .NET plugin example. Use Add .NET DLL in the UI
+# Unchanged OpenTabletDriver .NET plugin example. Use Plugins > Add .NET plugin in the UI
 # to discover exported type names and default settings. Keep dependencies
 # alongside the original DLL. Set the path before enabling this entry.
 # [[plugins]]
