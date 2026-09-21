@@ -1,0 +1,280 @@
+using System.Numerics;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Runtime.Loader;
+using System.Text;
+using Newtonsoft.Json.Linq;
+using OpenTabletDriver.Plugin.Attributes;
+using OpenTabletDriver.Plugin.DependencyInjection;
+using OpenTabletDriver.Plugin.Output;
+using OpenTabletDriver.Plugin.Tablet;
+
+namespace OtdCompat;
+
+[StructLayout(LayoutKind.Sequential)]
+public struct Sample { public float X, Y; public ulong TimeNs; public uint Pressure, Flags; }
+
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct FilterApi
+{
+    public uint Version, Size;
+    public fixed byte Name[64];
+    public delegate* unmanaged[Cdecl]<byte*, nuint, nint> Create;
+    public delegate* unmanaged[Cdecl]<nint, Sample*, int> Process;
+    public delegate* unmanaged[Cdecl]<nint, void> Reset;
+    public delegate* unmanaged[Cdecl]<nint, void> Destroy;
+}
+
+// Share the official OTD interface assembly with plugins, but resolve each
+// plugin's other managed/native dependencies from its own directory.
+sealed class PluginContext(string path) : AssemblyLoadContext(isCollectible: true)
+{
+    readonly AssemblyDependencyResolver resolver = new(path);
+    readonly string directory = Path.GetDirectoryName(path)!;
+    protected override Assembly? Load(AssemblyName name)
+    {
+        if (name.Name == typeof(ITabletReport).Assembly.GetName().Name)
+            return typeof(ITabletReport).Assembly;
+        string? dependency = resolver.ResolveAssemblyToPath(name);
+        if (dependency == null)
+        {
+            string candidate = Path.Combine(directory, name.Name + ".dll");
+            if (File.Exists(candidate)) dependency = candidate;
+        }
+        return dependency == null ? null : LoadFromAssemblyPath(dependency);
+    }
+    protected override nint LoadUnmanagedDll(string name)
+    {
+        string? path = resolver.ResolveUnmanagedDllToPath(name);
+        return path == null ? 0 : LoadUnmanagedDllFromPath(path);
+    }
+}
+
+sealed class Report : ITabletReport, IEraserReport
+{
+    public byte[] Raw { get; set; } = [];
+    public Vector2 Position { get; set; }
+    public uint Pressure { get; set; }
+    public bool[] PenButtons { get; set; } = new bool[2];
+    public bool Eraser { get; set; }
+}
+
+sealed class Instance : IDisposable
+{
+    readonly PluginContext context;
+    readonly IPositionedPipelineElement<IDeviceReport> filter;
+    readonly Report report = new();
+    readonly OutOfRangeReport outOfRange = new();
+    readonly int ownerThread = Environment.CurrentManagedThreadId;
+    IDeviceReport? emitted;
+    int emissionCount;
+    int consuming;
+    int asyncEmission;
+
+    public Instance(JObject config)
+    {
+        string path = Path.GetFullPath(config.Value<string>("assembly_path") ?? throw new ArgumentException("assembly_path missing"));
+        context = new PluginContext(path);
+        object? created = null;
+        try
+        {
+            Type type = context.LoadFromAssemblyPath(path).GetType(config.Value<string>("type_name") ?? "", true)!;
+            if (!typeof(IPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(type)
+                || typeof(AsyncPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(type))
+                throw new NotSupportedException("Only synchronous OTD position filters are supported; async filters, output modes, tools and bindings are not supported.");
+            created = Activator.CreateInstance(type) ?? throw new InvalidOperationException("Cannot construct filter");
+            filter = (IPositionedPipelineElement<IDeviceReport>)created;
+            ApplySettings(type, created, config["settings"] as JObject ?? new JObject());
+            InjectTablet(type, created);
+            if (filter.Position != PipelinePosition.PreTransform)
+                throw new NotSupportedException("This release supports PreTransform/tablet-coordinate filters only; pixel-space filters are not supported.");
+            filter.Emit += OnEmit;
+        }
+        catch
+        {
+            (created as IDisposable)?.Dispose();
+            context.Unload();
+            throw;
+        }
+    }
+
+    static void ApplySettings(Type type, object value, JObject settings)
+    {
+        var properties = type.GetProperties().Where(p => p.GetCustomAttribute<PropertyAttribute>() != null).ToArray();
+        foreach (var setting in settings.Properties())
+            if (!properties.Any(p => p.Name == setting.Name))
+                throw new ArgumentException($"Unknown plugin setting: {setting.Name}");
+        foreach (var property in properties)
+        {
+            if (!property.CanWrite) continue;
+            if (settings.TryGetValue(property.Name, out JToken? token))
+                property.SetValue(value, token.ToObject(property.PropertyType));
+            else if (property.GetCustomAttribute<DefaultPropertyValueAttribute>() is { } defaults)
+                property.SetValue(value, defaults.Value);
+        }
+    }
+
+    static void InjectTablet(Type type, object value)
+    {
+        var tablet = new TabletReference
+        {
+            Properties = new TabletConfiguration
+            {
+                Name = "Wacom PTH-660", DigitizerIdentifiers = [],
+                Specifications = new TabletSpecifications
+                {
+                    Digitizer = new DigitizerSpecifications { Width = 224, Height = 148, MaxX = 44800, MaxY = 29600 },
+                    Pen = new PenSpecifications { MaxPressure = 8191, ButtonCount = 2 }
+                }
+            }
+        };
+        foreach (var property in type.GetProperties())
+        {
+            bool resolved = property.GetCustomAttribute<ResolvedAttribute>() != null;
+            bool tabletRef = property.GetCustomAttribute<TabletReferenceAttribute>() != null;
+            if ((resolved || tabletRef) && property.PropertyType == typeof(TabletReference))
+                property.SetValue(value, tablet);
+            else if (resolved || tabletRef)
+                throw new NotSupportedException($"Unsupported plugin dependency: {property.Name} ({property.PropertyType.Name})");
+        }
+        foreach (var field in type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+            if (field.GetCustomAttribute<ResolvedAttribute>() != null)
+                throw new NotSupportedException($"Unsupported plugin field dependency: {field.Name}");
+        foreach (var method in type.GetMethods())
+            if (method.GetCustomAttribute<OnDependencyLoadAttribute>() != null)
+                method.Invoke(value, []);
+    }
+
+    void OnEmit(IDeviceReport? value)
+    {
+        if (Environment.CurrentManagedThreadId != ownerThread || Volatile.Read(ref consuming) == 0)
+        { Interlocked.Exchange(ref asyncEmission, 1); return; }
+        emitted = value;
+        emissionCount++;
+    }
+
+    public int Process(ref Sample sample)
+    {
+        if (Volatile.Read(ref asyncEmission) != 0) return 2;
+        report.Position = new Vector2(sample.X, sample.Y);
+        report.Pressure = sample.Pressure;
+        report.Eraser = (sample.Flags & 2) != 0;
+        emitted = null;
+        emissionCount = 0;
+        Volatile.Write(ref consuming, 1);
+        try { filter.Consume(report); }
+        finally { Volatile.Write(ref consuming, 0); }
+        // A reusable report is safe only for synchronous, one-output filters.
+        if (emissionCount != 1 || emitted is not IAbsolutePositionReport output || Volatile.Read(ref asyncEmission) != 0)
+            return 3;
+        sample.X = output.Position.X;
+        sample.Y = output.Position.Y;
+        return 0;
+    }
+
+    public void Reset()
+    {
+        // OTD filters receive a range-loss report; they decide how to reset.
+        emitted = null;
+        Volatile.Write(ref consuming, 1);
+        try { filter.Consume(outOfRange); }
+        finally { Volatile.Write(ref consuming, 0); }
+    }
+
+    public void Dispose()
+    {
+        filter.Emit -= OnEmit;
+        (filter as IDisposable)?.Dispose();
+        context.Unload();
+    }
+}
+
+public static unsafe class EntryPoints
+{
+    [ThreadStatic] static string? lastError;
+    static readonly nint Api = MakeApi();
+    static nint MakeApi()
+    {
+        var api = (FilterApi*)NativeMemory.AllocZeroed((nuint)sizeof(FilterApi));
+        api->Version = 1; api->Size = (uint)sizeof(FilterApi);
+        Encoding.UTF8.GetBytes("OpenTabletDriver .NET compatibility", new Span<byte>(api->Name, 64));
+        api->Create = &Create; api->Process = &Process; api->Reset = &Reset; api->Destroy = &Destroy;
+        return (nint)api;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static FilterApi* GetApi() => (FilterApi*)Api;
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    static nint Create(byte* json, nuint length)
+    {
+        try
+        {
+            if (length > 131072 || json == null) return 0;
+            var settings = JObject.Parse(Encoding.UTF8.GetString(new ReadOnlySpan<byte>(json, (int)length)));
+            return GCHandle.ToIntPtr(GCHandle.Alloc(new Instance(settings)));
+        }
+        catch (Exception e) { lastError = e.GetBaseException().Message; Console.Error.WriteLine($".NET plugin load failed: {lastError}"); return 0; }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    static int Process(nint context, Sample* sample)
+    {
+        try { return ((Instance)GCHandle.FromIntPtr(context).Target!).Process(ref *sample); }
+        catch (Exception e) { Console.Error.WriteLine($".NET plugin disabled: {e.GetBaseException().Message}"); return 1; }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    static void Reset(nint context)
+    {
+        try { ((Instance)GCHandle.FromIntPtr(context).Target!).Reset(); }
+        catch (Exception e) { Console.Error.WriteLine($".NET plugin reset failed: {e.GetBaseException().Message}"); }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    static void Destroy(nint context)
+    {
+        var handle = GCHandle.FromIntPtr(context);
+        try { ((Instance)handle.Target!).Dispose(); }
+        catch (Exception e) { Console.Error.WriteLine($".NET plugin dispose failed: {e.GetBaseException().Message}"); }
+        finally { handle.Free(); }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static int Inspect(byte* path, int length, byte* output, int capacity)
+    {
+        try
+        {
+            string file = Path.GetFullPath(Encoding.UTF8.GetString(new ReadOnlySpan<byte>(path, length)));
+            var context = new PluginContext(file);
+            try
+            {
+                var types = context.LoadFromAssemblyPath(file).GetExportedTypes()
+                    .Where(t => !t.IsAbstract && typeof(IPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(t))
+                    .Select(t => new {
+                        type_name = t.FullName,
+                        settings = t.GetProperties().Where(p => p.GetCustomAttribute<PropertyAttribute>() != null)
+                            .ToDictionary(p => p.Name, p => p.GetCustomAttribute<DefaultPropertyValueAttribute>()?.Value)
+                    }).ToArray();
+                byte[] bytes = Encoding.UTF8.GetBytes(Newtonsoft.Json.JsonConvert.SerializeObject(types));
+                if (bytes.Length > capacity) return -1;
+                bytes.CopyTo(new Span<byte>(output, capacity));
+                return bytes.Length;
+            }
+            finally { context.Unload(); }
+        }
+        catch (Exception e) { lastError = e.GetBaseException().Message; Console.Error.WriteLine($".NET plugin inspection failed: {lastError}"); return -1; }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static int GetError(byte* output, int capacity)
+    {
+        try {
+            byte[] bytes = Encoding.UTF8.GetBytes(lastError ?? "Unknown .NET plugin error");
+            int count = Math.Min(bytes.Length, capacity);
+            bytes.AsSpan(0, count).CopyTo(new Span<byte>(output, capacity));
+            return count;
+        } catch { return 0; }
+    }
+}

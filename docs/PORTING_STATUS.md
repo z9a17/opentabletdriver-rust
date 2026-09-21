@@ -9,11 +9,11 @@ The long-term goal is broader OpenTabletDriver functionality with efficient nati
 | Absolute mouse output | Areas, rotation, clipping, limiting, display selection and refresh | Broader display/hardware validation |
 | Relative mouse output | Per-axis sensitivity, rotation, fractional carry, reset delay, OTD/TOML import | Live hardware validation |
 | Bindings | Tip/eraser mapped to left mouse with pressure thresholds | Pen side buttons, express keys, keyboard/mouse actions, wheel/scroll, shared-action ownership |
-| Filters | Native tablet-space Radial Follow | Other built-in/community filters and a Rust extension design |
+| Filters | Native tablet-space Radial Follow, native DLL API/sample, unchanged synchronous .NET PreTransform position filters | Async/pixel-space filters and additional report properties |
 | Pen output | Mouse injection only; pressure/tilt/eraser are decoded | Native Windows pen/Ink output and application compatibility |
 | Device configuration | One fixed USB PTH-660 model | Upstream configuration database, parser selection, documented initialization reports, multi-device support |
-| Configuration and UI | Startup OTD profile import, independent TOML, console diagnostics | Reload, GUI, IPC/control surface, profile management |
+| Configuration and UI | Native Windows profile editor/plugin list/start-stop, OTD mapping import, TOML save/load, diagnostics | Graphical area editor, automatic reload, richer property editors |
 | Platforms/transports | Windows USB | Linux/macOS backends, Bluetooth where documented |
-| Plugins | One statically compiled filter port | Explicit compatibility scope; existing .NET plugins cannot be loaded directly into Rust |
+| Plugins | Native C ABI and optional in-process .NET compatibility bridge; unchanged RadialFollow DLL verified | Output modes, tools, bindings, async filters, online catalog and automatic plugin-settings migration |
 
 Suggested next increments are button bindings with reliable shared-button ownership, auxiliary collection handling, native pen output, and configuration-driven device support. Each increment needs upstream source references, replay/error tests, and device validation where hardware behavior matters. Preserve fixed-size report/state structures, reuse buffers, avoid report queues and hot-path allocation, and measure CPU work separately from device and OS latency.

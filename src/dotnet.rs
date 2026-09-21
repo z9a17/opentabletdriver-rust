@@ -1,0 +1,228 @@
+//! On-demand CoreCLR hosting using Microsoft's nethost/hostfxr API. Rust-only
+//! profiles never initialize .NET. Managed calls are direct function pointers;
+//! there is no JSON serialization or interprocess message per pen report.
+use crate::plugins::{Library, wide};
+use otd_plugin_api::FilterApi;
+use std::ffi::{OsStr, OsString, c_void};
+use std::os::windows::ffi::OsStringExt;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+type GetApi = unsafe extern "C" fn() -> *const FilterApi;
+type Inspect = unsafe extern "C" fn(*const u8, i32, *mut u8, i32) -> i32;
+type GetError = unsafe extern "C" fn(*mut u8, i32) -> i32;
+struct Bridge {
+    get_api: GetApi,
+    inspect: Inspect,
+    get_error: GetError,
+}
+static BRIDGE: OnceLock<Result<Bridge, String>> = OnceLock::new();
+
+fn bridge_dir() -> Result<PathBuf, String> {
+    if let Some(path) = std::env::var_os("OTD_COMPAT_DIR") {
+        return Ok(path.into());
+    }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let parent = exe.parent().ok_or("executable has no parent directory")?;
+    Ok(parent.join("compat"))
+}
+
+fn load_bridge() -> Result<Bridge, String> {
+    type GetHostPath = unsafe extern "system" fn(*mut u16, *mut usize, *const c_void) -> i32;
+    type Initialize = unsafe extern "C" fn(*const u16, *const c_void, *mut *mut c_void) -> i32;
+    type GetDelegate = unsafe extern "C" fn(*mut c_void, i32, *mut *mut c_void) -> i32;
+    type Close = unsafe extern "C" fn(*mut c_void) -> i32;
+    type LoadAssembly = unsafe extern "system" fn(
+        *const u16,
+        *const u16,
+        *const u16,
+        *const u16,
+        *mut c_void,
+        *mut *mut c_void,
+    ) -> i32;
+    let directory = bridge_dir()?;
+    let nethost = Library::load(&directory.join("nethost.dll"))
+        .map_err(|e| format!(".NET bridge is not installed beside the driver: {e}"))?;
+    let get_path: GetHostPath =
+        unsafe { std::mem::transmute(nethost.symbol(b"get_hostfxr_path\0")?) };
+    let mut path = vec![0u16; 32_768];
+    let mut size = path.len();
+    if unsafe { get_path(path.as_mut_ptr(), &mut size, std::ptr::null()) } != 0 {
+        return Err(
+            ".NET hosting runtime was not found; install the x64 .NET 8 runtime or newer".into(),
+        );
+    }
+    let length = path
+        .iter()
+        .position(|c| *c == 0)
+        .ok_or("invalid hostfxr path")?;
+    let host = Library::load(Path::new(&OsString::from_wide(&path[..length])))?;
+    let initialize: Initialize =
+        unsafe { std::mem::transmute(host.symbol(b"hostfxr_initialize_for_runtime_config\0")?) };
+    let get_delegate: GetDelegate =
+        unsafe { std::mem::transmute(host.symbol(b"hostfxr_get_runtime_delegate\0")?) };
+    let close: Close = unsafe { std::mem::transmute(host.symbol(b"hostfxr_close\0")?) };
+    let config = wide(directory.join("OtdCompat.runtimeconfig.json").as_os_str())?;
+    let mut context = std::ptr::null_mut();
+    let code = unsafe { initialize(config.as_ptr(), std::ptr::null(), &mut context) };
+    if code < 0 || context.is_null() {
+        return Err(format!(
+            "cannot initialize .NET compatibility runtime (0x{code:08x})"
+        ));
+    }
+    let mut delegate = std::ptr::null_mut();
+    let code = unsafe { get_delegate(context, 5, &mut delegate) };
+    unsafe { close(context) };
+    if code != 0 || delegate.is_null() {
+        return Err(format!("cannot get .NET assembly loader (0x{code:08x})"));
+    }
+    let load: LoadAssembly = unsafe { std::mem::transmute(delegate) };
+    let assembly = wide(
+        directory
+            .join("OtdCompat.dll")
+            .canonicalize()
+            .map_err(|e| e.to_string())?
+            .as_os_str(),
+    )?;
+    let type_name = wide(OsStr::new("OtdCompat.EntryPoints, OtdCompat"))?;
+    let entry = |name: &str| -> Result<*mut c_void, String> {
+        let method = wide(OsStr::new(name))?;
+        let mut entry = std::ptr::null_mut();
+        let code = unsafe {
+            load(
+                assembly.as_ptr(),
+                type_name.as_ptr(),
+                method.as_ptr(),
+                usize::MAX as *const u16,
+                std::ptr::null_mut(),
+                &mut entry,
+            )
+        };
+        if code != 0 || entry.is_null() {
+            return Err(format!("cannot load .NET entry {name} (0x{code:08x})"));
+        }
+        Ok(entry)
+    };
+    let bridge = Bridge {
+        get_api: unsafe { std::mem::transmute::<*mut c_void, GetApi>(entry("GetApi")?) },
+        inspect: unsafe { std::mem::transmute::<*mut c_void, Inspect>(entry("Inspect")?) },
+        get_error: unsafe { std::mem::transmute::<*mut c_void, GetError>(entry("GetError")?) },
+    };
+    // The runtime and managed entry points live for this process. Retain the
+    // hosting module as well; do not attempt to unload CoreCLR under plugins.
+    std::mem::forget(host);
+    Ok(bridge)
+}
+
+fn bridge() -> Result<&'static Bridge, String> {
+    BRIDGE
+        .get_or_init(load_bridge)
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
+pub fn filter_api() -> Result<FilterApi, String> {
+    let ptr = unsafe { (bridge()?.get_api)() };
+    if ptr.is_null() {
+        return Err(".NET bridge returned a null API".into());
+    }
+    Ok(unsafe { ptr.read() })
+}
+
+pub fn last_error() -> String {
+    let Ok(bridge) = bridge() else {
+        return ".NET compatibility bridge unavailable".into();
+    };
+    let mut buffer = [0u8; 4096];
+    let length = unsafe { (bridge.get_error)(buffer.as_mut_ptr(), buffer.len() as i32) };
+    if length < 0 || length as usize > buffer.len() {
+        return "Invalid .NET error response".into();
+    }
+    String::from_utf8_lossy(&buffer[..length as usize]).into_owned()
+}
+
+pub fn inspect(path: &Path) -> Result<Vec<crate::plugins::PluginConfig>, String> {
+    let path = path.canonicalize().map_err(|e| e.to_string())?;
+    let path_text = path.to_str().ok_or(".NET DLL path is not Unicode")?;
+    let mut output = vec![0; 65_536];
+    let size = unsafe {
+        (bridge()?.inspect)(
+            path_text.as_ptr(),
+            path_text.len() as i32,
+            output.as_mut_ptr(),
+            output.len() as i32,
+        )
+    };
+    if size < 0 || size as usize > output.len() {
+        return Err(last_error());
+    }
+    #[derive(serde::Deserialize)]
+    struct Entry {
+        type_name: String,
+        settings: serde_json::Value,
+    }
+    let entries: Vec<Entry> =
+        serde_json::from_slice(&output[..size as usize]).map_err(|e| e.to_string())?;
+    Ok(entries
+        .into_iter()
+        .map(|entry| crate::plugins::PluginConfig {
+            path: path.clone(),
+            kind: crate::plugins::PluginKind::Dotnet,
+            enabled: false,
+            type_name: entry.type_name,
+            settings_json: entry.settings.to_string(),
+        })
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugins::{Plugin, PluginConfig, PluginKind};
+    use otd_plugin_api::Sample;
+
+    #[test]
+    #[ignore = "requires bridge and unchanged RadialFollow DLL; set OTD_COMPAT_DIR and OTD_TEST_DOTNET_PLUGIN"]
+    fn dotnet_plugin_round_trip() {
+        let path: PathBuf = std::env::var_os("OTD_TEST_DOTNET_PLUGIN")
+            .expect("set OTD_TEST_DOTNET_PLUGIN")
+            .into();
+        let entries = inspect(&path).unwrap();
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.type_name == "RadialFollow.RadialFollowSmoothingTabletSpace")
+        );
+        let mut config = PluginConfig {
+            path,
+            kind: PluginKind::Dotnet,
+            enabled: true,
+            type_name: "RadialFollow.RadialFollowSmoothingTabletSpace".into(),
+            settings_json: r#"{"InnerRadius":0.5,"OuterRadius":1.0}"#.into(),
+        };
+        let mut plugin = Plugin::load(&config).unwrap();
+        let mut sample = Sample {
+            x: 20_000.0,
+            y: 10_000.0,
+            flags: 1,
+            ..Sample::default()
+        };
+        // Let the original plugin's real 50 ms stopwatch reset to the baseline.
+        std::thread::sleep(std::time::Duration::from_millis(55));
+        assert!(plugin.process(&mut sample));
+        assert_eq!((sample.x, sample.y), (20_000.0, 10_000.0));
+        sample.x += 20.0; // 0.1 mm is inside its configured 0.5 mm dead zone.
+        assert!(plugin.process(&mut sample));
+        assert_eq!(sample.x, 20_000.0);
+        plugin.reset();
+        drop(plugin);
+        config.type_name = "RadialFollow.RadialFollowSmoothingScreenSpace".into();
+        assert!(
+            Plugin::load(&config).is_err(),
+            "pixel-space type must be rejected"
+        );
+        config.type_name = "RadialFollow.RadialFollowSmoothingTabletSpace".into();
+        config.settings_json = r#"{"Typo":0.5}"#.into();
+        assert!(Plugin::load(&config).is_err());
+    }
+}

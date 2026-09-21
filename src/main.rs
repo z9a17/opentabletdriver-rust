@@ -1,9 +1,11 @@
 mod config;
 mod display;
+mod dotnet;
 mod hid;
 mod mapping;
 mod original_driver;
 mod output;
+mod plugins;
 mod protocol;
 mod radial_follow;
 mod relative;
@@ -11,6 +13,7 @@ mod session;
 mod state;
 #[cfg(test)]
 mod test_alloc;
+mod ui;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -23,10 +26,28 @@ use crate::hid::{Candidate, Event, Notification, OwnedHandle};
 use crate::session::Mode;
 
 fn usage() -> &'static str {
-    "Usage:\n  opentabletdriver-rust.exe                  Start the visible cursor daemon\n  opentabletdriver-rust.exe run [--config driver.toml | --otd-settings settings.json]\n  opentabletdriver-rust.exe settings [--config driver.toml | --otd-settings settings.json]\n  opentabletdriver-rust.exe list [--paths]\n  opentabletdriver-rust.exe displays\n  opentabletdriver-rust.exe capture [--config driver.toml | --otd-settings settings.json] [--seconds 1..60]\n\nWithout a profile argument, the daemon reads your OpenTabletDriver PTH-660 settings.json if present. Capture does not inject cursor input."
+    "Usage:
+  opentabletdriver-rust-ui.exe              Open the native control panel
+  opentabletdriver-rust.exe ui              Open the same control panel
+  opentabletdriver-rust.exe                 Start the visible cursor daemon
+  opentabletdriver-rust.exe run [--config driver.toml | --otd-settings settings.json]
+  opentabletdriver-rust.exe settings [--config driver.toml | --otd-settings settings.json]
+  opentabletdriver-rust.exe inspect-plugin path/to/managed-plugin.dll
+  opentabletdriver-rust.exe check-plugins driver.toml
+  opentabletdriver-rust.exe list [--paths]
+  opentabletdriver-rust.exe displays
+  opentabletdriver-rust.exe capture [--config driver.toml | --otd-settings settings.json] [--seconds 1..60]
+  opentabletdriver-rust.exe --version
+
+Without a profile argument, the daemon reads your OpenTabletDriver PTH-660 settings.json if present.
+Capture does not inject cursor input. Plugin inspection/checks load trusted executable code."
 }
 
 enum Command {
+    Ui,
+    Version,
+    InspectPlugin(PathBuf),
+    CheckPlugins(PathBuf),
     List {
         paths: bool,
     },
@@ -50,12 +71,29 @@ enum Command {
 fn parse_args() -> Result<Command, String> {
     let mut args = std::env::args().skip(1);
     let Some(command) = args.next() else {
-        return Ok(Command::Run {
-            config: None,
-            otd_settings: None,
-        });
+        return if env!("CARGO_BIN_NAME") == "opentabletdriver-rust-ui" {
+            Ok(Command::Ui)
+        } else {
+            Ok(Command::Run {
+                config: None,
+                otd_settings: None,
+            })
+        };
     };
     match command.as_str() {
+        "ui" if args.next().is_none() => Ok(Command::Ui),
+        "--version" | "version" => Ok(Command::Version),
+        "inspect-plugin" | "check-plugins" => {
+            let path = PathBuf::from(args.next().ok_or("command needs a file path")?);
+            if args.next().is_some() {
+                return Err(usage().into());
+            }
+            if command == "inspect-plugin" {
+                Ok(Command::InspectPlugin(path))
+            } else {
+                Ok(Command::CheckPlugins(path))
+            }
+        }
         "--help" | "-h" | "help" => Ok(Command::Help),
         "list" => {
             let mut paths = false;
@@ -216,6 +254,21 @@ fn run(
     capture_seconds: Option<u64>,
 ) -> Result<(), String> {
     let profile = load_profile(config.as_ref(), otd_settings.as_ref())?;
+    let stop_event = Event::create(true).map_err(|e| format!("stop event failed: {e}"))?;
+    let stop_handle = stop_event.raw() as usize;
+    ctrlc::set_handler(move || {
+        unsafe { SetEvent(stop_handle as windows_sys::Win32::Foundation::HANDLE) };
+    })
+    .map_err(|e| format!("Ctrl+C handler failed: {e}"))?;
+    drive(profile, &stop_event, capture_seconds, |_| {})
+}
+
+fn drive(
+    profile: Profile,
+    stop_event: &Event,
+    capture_seconds: Option<u64>,
+    status: impl Fn(&str),
+) -> Result<(), String> {
     if profile.relative.is_none() {
         display::DisplaySnapshot::read()?.mapper(&profile)?;
     }
@@ -230,12 +283,11 @@ fn run(
         println!("Read-only capture; no cursor input is injected.");
     }
     let _instance = single_instance()?;
-    let stop_event = Event::create(true).map_err(|e| format!("stop event failed: {e}"))?;
-    let stop_handle = stop_event.raw() as usize;
-    ctrlc::set_handler(move || {
-        unsafe { SetEvent(stop_handle as windows_sys::Win32::Foundation::HANDLE) };
-    })
-    .map_err(|e| format!("Ctrl+C handler failed: {e}"))?;
+    let mut plugins = plugins::PluginChain::load(if capture_seconds.is_none() {
+        &profile.plugins
+    } else {
+        &[]
+    })?;
     // Register before enumerating so an arrival between the two is not missed.
     let notification =
         Notification::register().map_err(|e| format!("PnP notification failed: {e}"))?;
@@ -266,9 +318,10 @@ fn run(
         let Some(candidate) = choose(&devices, &profile)? else {
             if !waiting {
                 eprintln!("Waiting for USB PTH-660.");
+                status("Waiting for USB PTH-660");
                 waiting = true;
             }
-            if !session::wait_for_retry(&notification, &stop_event)
+            if !session::wait_for_retry(&notification, stop_event)
                 .map_err(|e| format!("wait failed: {e}"))?
             {
                 break;
@@ -276,14 +329,26 @@ fn run(
             continue;
         };
         waiting = false;
-        match session::run(candidate, &profile, &notification, &stop_event, mode) {
+        status("PTH-660 found; opening pen input");
+        match session::run(
+            candidate,
+            &profile,
+            &notification,
+            stop_event,
+            mode,
+            &mut plugins,
+            &status,
+        ) {
             Ok(()) => {}
-            Err(error) => eprintln!("device session stopped: {error}"),
+            Err(error) => {
+                eprintln!("device session stopped: {error}");
+                status(&format!("Device session stopped: {error}"));
+            }
         }
         if matches!(mode, Mode::Capture { .. }) {
             break;
         }
-        if !session::wait_for_retry(&notification, &stop_event)
+        if !session::wait_for_retry(&notification, stop_event)
             .map_err(|e| format!("wait failed: {e}"))?
         {
             break;
@@ -294,6 +359,26 @@ fn run(
 
 fn main() {
     let result = match parse_args() {
+        Ok(Command::Ui) => ui::run(),
+        Ok(Command::Version) => {
+            println!("opentabletdriver-rust {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
+        Ok(Command::InspectPlugin(path)) => dotnet::inspect(&path).and_then(|entries| {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&entries).map_err(|e| e.to_string())?
+            );
+            Ok(())
+        }),
+        Ok(Command::CheckPlugins(path)) => Profile::load(Some(&path)).and_then(|profile| {
+            let _chain = plugins::PluginChain::load(&profile.plugins)?;
+            println!(
+                "Loaded {} enabled plugin(s); no HID opened or input injected.",
+                profile.plugins.iter().filter(|p| p.enabled).count()
+            );
+            Ok(())
+        }),
         Ok(Command::List { paths }) => list(paths),
         Ok(Command::Displays) => displays(),
         Ok(Command::Settings {

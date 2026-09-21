@@ -9,7 +9,8 @@ use crate::protocol::{MAX_X, MAX_Y};
 pub const FILTER_PATH: &str = "RadialFollow.RadialFollowSmoothingTabletSpace";
 pub const FILTER_NAME: &str = "AbstractQbit's Radial Follow Smoothing (Tablet coordinates)";
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct RadialFollowSettings {
     pub outer_radius: f64,
     pub inner_radius: f64,

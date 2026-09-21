@@ -154,7 +154,10 @@ pub fn run(
     notification: &Notification,
     stop_event: &Event,
     mode: Mode,
+    plugins: &mut crate::plugins::PluginChain,
+    status: &impl Fn(&str),
 ) -> io::Result<()> {
+    plugins.reset();
     let handle = candidate.open_read()?;
     let read_event = Event::create(true)?;
     let mut buffer = Box::new([0u8; hid::PEN_REPORT_LENGTH as usize]);
@@ -198,6 +201,7 @@ pub fn run(
         "PTH-660 connected: HID input length {}, usage {:04x}:{:04x}",
         candidate.input_length, candidate.usage_page, candidate.usage
     );
+    status("PTH-660 connected; receiving pen input");
     let outcome = (|| -> io::Result<()> {
         while !finished {
             if let Mode::Capture { deadline, limit } = mode
@@ -303,7 +307,7 @@ pub fn run(
                         capture_trace.pen(bytes, pen);
                     } else if relative_mapper.is_some() || mapper.is_some() {
                         let frame = state::frame(pen, profile.contact);
-                        let filtered_position = frame.position.and_then(|(x, y)| {
+                        let mut filtered_position = frame.position.and_then(|(x, y)| {
                             let (first, remaining) = filters.split_first_mut()?;
                             let mut position = first.filter_raw(x, y);
                             for filter in remaining {
@@ -311,6 +315,21 @@ pub fn run(
                             }
                             Some(position)
                         });
+                        if let Some((x, y)) = frame.position {
+                            if !plugins.is_empty() {
+                                filtered_position = Some(plugins.process(
+                                    filtered_position.unwrap_or((x as f32, y as f32)),
+                                    pen,
+                                ));
+                            }
+                        } else {
+                            plugins.reset();
+                        }
+                        if let Some(name) = plugins.take_failure() {
+                            status(&format!(
+                                "Disabled failing plugin: {name}. Restart to retry."
+                            ));
+                        }
                         let emitted = if let Some(relative) = &mut relative_mapper {
                             let delta =
                                 relative.map_at(frame.position, filtered_position, Instant::now());

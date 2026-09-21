@@ -12,7 +12,31 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
-      - run: cargo build --release
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '8.0.x'
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace
+      - run: cargo build --locked --workspace --release
+      - run: pwsh -File scripts/build-compat.ps1
+      - name: Native DLL integration
+        shell: pwsh
+        run: |
+          $env:OTD_TEST_PLUGIN = (Resolve-Path target/release/otd_ema_filter.dll).Path
+          cargo test --locked native_plugin_round_trip -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Unchanged .NET plugin integration
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'RadialFollow.zip'
+          Invoke-WebRequest 'https://github.com/AbstractQbit/AbstractOTDPlugins/releases/download/0.3.0/RadialFollow.zip' -OutFile $archive
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'd3f5b0200015e6e90948ee5d7870742ac28d82922cc745e9f1f78527e59f8160') {
+            throw 'Upstream RadialFollow archive checksum mismatch'
+          }
+          $pluginDirectory = Join-Path $env:RUNNER_TEMP 'RadialFollow'
+          Expand-Archive -LiteralPath $archive -DestinationPath $pluginDirectory
+          $env:OTD_COMPAT_DIR = (Resolve-Path target/release/compat).Path
+          $env:OTD_TEST_DOTNET_PLUGIN = (Join-Path $pluginDirectory 'RadialFollow.dll')
+          cargo test --locked dotnet_plugin_round_trip -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -3,14 +3,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::mapping::{Crop, OtdArea, OtdMapping};
+use crate::plugins::PluginConfig;
 use crate::protocol::MAX_PRESSURE;
 use crate::radial_follow::{FILTER_NAME, FILTER_PATH, RadialFollowSettings};
 use crate::relative::RelativeSettings;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct ContactPolicy {
     pub tip_enabled: bool,
     pub eraser_enabled: bool,
@@ -39,6 +41,7 @@ pub struct Profile {
     pub relative: Option<RelativeSettings>,
     pub contact: ContactPolicy,
     pub radial_follow: Vec<RadialFollowSettings>,
+    pub plugins: Vec<PluginConfig>,
     pub auto_enabled_radial_follow: usize,
     pub ignored_filters: usize,
     pub source: String,
@@ -55,6 +58,7 @@ impl Default for Profile {
             relative: None,
             contact: ContactPolicy::default(),
             radial_follow: Vec::new(),
+            plugins: Vec::new(),
             auto_enabled_radial_follow: 0,
             ignored_filters: 0,
             source: "built-in full-area defaults".into(),
@@ -62,27 +66,40 @@ impl Default for Profile {
     }
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Serialize, Default)]
 #[serde(deny_unknown_fields)]
 struct RawProfile {
+    #[serde(skip_serializing_if = "Option::is_none")]
     monitor: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     rotation: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     crop: Option<RawCrop>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     device_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     relative: Option<RawRelative>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    absolute: Option<OtdMapping>,
+    #[serde(default)]
+    bindings: ContactPolicy,
+    #[serde(default)]
+    radial_follow: Vec<RadialFollowSettings>,
+    #[serde(default)]
+    plugins: Vec<PluginConfig>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RawRelative {
     x_sensitivity: f64,
     y_sensitivity: f64,
     #[serde(default)]
     rotation: f64,
-    reset_delay_ms: u64,
+    reset_delay_ms: f64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RawCrop {
     x: u32,
@@ -401,13 +418,60 @@ impl Profile {
         Self::from_toml_text(&text, path)
     }
 
-    fn from_toml_text(text: &str, path: &Path) -> Result<Self, String> {
+    pub fn from_toml_text(text: &str, path: &Path) -> Result<Self, String> {
         let raw: RawProfile =
             toml::from_str(text).map_err(|e| format!("invalid profile {}: {e}", path.display()))?;
         if raw.relative.is_some()
-            && (raw.monitor.is_some() || raw.crop.is_some() || raw.rotation.is_some())
+            && (raw.monitor.is_some()
+                || raw.crop.is_some()
+                || raw.rotation.is_some()
+                || raw.absolute.is_some())
         {
             return Err("relative profiles use [relative].rotation; omit absolute monitor, crop, and top-level rotation".into());
+        }
+        if raw.absolute.is_some()
+            && (raw.monitor.is_some() || raw.crop.is_some() || raw.rotation.is_some())
+        {
+            return Err(
+                "absolute areas cannot be mixed with monitor/crop/top-level rotation".into(),
+            );
+        }
+        for threshold in [
+            raw.bindings.tip_threshold_raw,
+            raw.bindings.eraser_threshold_raw,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if threshold > MAX_PRESSURE {
+                return Err("binding threshold exceeds tablet pressure range".into());
+            }
+        }
+        let base = path.parent().unwrap_or_else(|| Path::new("."));
+        for filter in &raw.radial_follow {
+            if ![
+                filter.outer_radius,
+                filter.inner_radius,
+                filter.smoothing_coefficient,
+                filter.soft_knee_scale,
+                filter.smoothing_leak_coefficient,
+            ]
+            .into_iter()
+            .all(f64::is_finite)
+            {
+                return Err("Radial Follow settings must be finite".into());
+            }
+        }
+        let mut plugins = raw.plugins;
+        if plugins.len() > 32 {
+            return Err("at most 32 plugins are supported per profile".into());
+        }
+        for plugin in &mut plugins {
+            plugin.validate()?;
+            if plugin.path.is_relative() {
+                plugin.path =
+                    std::path::absolute(base.join(&plugin.path)).map_err(|e| e.to_string())?;
+            }
         }
         let relative = raw
             .relative
@@ -415,12 +479,17 @@ impl Profile {
                 RelativeSettings {
                     sensitivity: (settings.x_sensitivity, settings.y_sensitivity),
                     rotation: settings.rotation,
-                    reset_delay: Duration::from_millis(settings.reset_delay_ms),
+                    reset_delay: Duration::try_from_secs_f64(settings.reset_delay_ms / 1000.0)
+                        .map_err(|_| "relative reset delay must be finite and nonnegative")?,
                 }
                 .validate()
             })
             .transpose()?;
         let profile = Self {
+            otd_mapping: raw.absolute,
+            contact: raw.bindings,
+            radial_follow: raw.radial_follow,
+            plugins,
             relative,
             monitor: raw.monitor,
             crop: raw.crop.map_or_else(Crop::default, |c| Crop {
@@ -443,8 +512,43 @@ impl Profile {
         Ok(profile)
     }
 
+    pub fn to_toml(&self) -> Result<String, String> {
+        let simple = self.otd_mapping.is_none() && self.relative.is_none();
+        let raw = RawProfile {
+            monitor: if simple { self.monitor } else { None },
+            rotation: simple.then_some(self.rotation),
+            crop: simple.then_some(RawCrop {
+                x: self.crop.x,
+                y: self.crop.y,
+                width: self.crop.width,
+                height: self.crop.height,
+            }),
+            device_path: self.device_path.clone(),
+            relative: self.relative.map(|r| RawRelative {
+                x_sensitivity: r.sensitivity.0,
+                y_sensitivity: r.sensitivity.1,
+                rotation: r.rotation,
+                reset_delay_ms: r.reset_delay.as_secs_f64() * 1000.0,
+            }),
+            absolute: self.otd_mapping,
+            bindings: self.contact,
+            radial_follow: self.radial_follow.clone(),
+            plugins: self.plugins.clone(),
+        };
+        toml::to_string_pretty(&raw).map_err(|e| e.to_string())
+    }
+
     pub fn print_summary(&self) {
         println!("Profile: {}", self.source);
+        for plugin in &self.plugins {
+            println!(
+                "Plugin {:?}: {} [{}] enabled={}",
+                plugin.kind,
+                plugin.path.display(),
+                plugin.type_name,
+                plugin.enabled
+            );
+        }
         if let Some(relative) = self.relative {
             println!(
                 "Relative Mode: X={:.4}, Y={:.4} counts/mm; rotation={:.2}°; reset delay={:.4} ms",
@@ -519,6 +623,50 @@ mod tests {
         let p = Profile::default();
         assert!(p.crop.valid());
         assert_eq!(p.rotation, 0);
+    }
+
+    #[test]
+    fn gui_profile_serialization_preserves_mapping_bindings_and_plugins() {
+        let mut profile =
+            Profile::from_otd_text(&relative_profile().to_string(), Path::new("otd.json")).unwrap();
+        profile.plugins.push(crate::plugins::PluginConfig {
+            path: PathBuf::from("C:/filters/example.dll"),
+            kind: crate::plugins::PluginKind::Dotnet,
+            enabled: false,
+            type_name: "Example.Filter".into(),
+            settings_json: r#"{"Radius":0.5}"#.into(),
+        });
+        let serialized = profile.to_toml().unwrap();
+        let loaded = Profile::from_toml_text(&serialized, Path::new("driver.toml")).unwrap();
+        assert_eq!(
+            loaded.relative.unwrap().sensitivity,
+            profile.relative.unwrap().sensitivity
+        );
+        assert_eq!(loaded.contact.tip_threshold_raw, Some(83));
+        assert_eq!(loaded.radial_follow.len(), 1);
+        assert_eq!(loaded.plugins[0].type_name, "Example.Filter");
+        assert_eq!(loaded.plugins[0].settings_json, r#"{"Radius":0.5}"#);
+        assert!(!loaded.plugins[0].enabled);
+        let defaults = Profile::default();
+        assert!(
+            Profile::from_toml_text(&defaults.to_toml().unwrap(), Path::new("default.toml"))
+                .unwrap()
+                .crop
+                .valid()
+        );
+    }
+
+    #[test]
+    fn plugin_paths_are_relative_to_profile_and_invalid_filter_settings_are_rejected() {
+        let text = "[[plugins]]\npath='filters/test.dll'\nsettings_json='{}'\n";
+        let path = std::env::temp_dir().join("otd-profile-tests/driver.toml");
+        let profile = Profile::from_toml_text(text, &path).unwrap();
+        assert_eq!(
+            profile.plugins[0].path,
+            path.parent().unwrap().join("filters/test.dll")
+        );
+        assert!(Profile::from_toml_text("[[radial_follow]]\nouter_radius=nan\n", &path).is_err());
+        assert!(Profile::from_toml_text("[bindings]\ntip_threshold_raw=8192\n", &path).is_err());
     }
 
     #[test]

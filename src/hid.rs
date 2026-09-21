@@ -20,12 +20,13 @@ use windows_sys::Win32::Devices::HumanInterfaceDevice::{
     HidD_GetHidGuid, HidD_GetPreparsedData, HidP_GetCaps, PHIDP_PREPARSED_DATA,
 };
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_NO_MORE_ITEMS, GENERIC_READ, HANDLE, INVALID_HANDLE_VALUE,
+    CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_NO_MORE_ITEMS, GENERIC_READ, HANDLE,
+    INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_OVERLAPPED, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
-use windows_sys::Win32::System::Threading::{CreateEventW, SetEvent};
+use windows_sys::Win32::System::Threading::{CreateEventW, GetCurrentProcess, SetEvent};
 use windows_sys::core::GUID;
 
 pub const WACOM_VENDOR: u16 = 0x056a;
@@ -57,6 +58,10 @@ impl Drop for OwnedHandle {
 
 pub struct Event(OwnedHandle);
 
+// SAFETY: An owned Windows event handle can be moved between threads. The UI
+// duplicates its event handle before starting the driver, preserving ownership.
+unsafe impl Send for Event {}
+
 impl Event {
     pub fn create(manual_reset: bool) -> io::Result<Self> {
         let raw = unsafe { CreateEventW(ptr::null(), i32::from(manual_reset), 0, ptr::null()) };
@@ -65,6 +70,50 @@ impl Event {
 
     pub fn raw(&self) -> HANDLE {
         self.0.raw()
+    }
+
+    pub fn duplicate(&self) -> io::Result<Self> {
+        let process = unsafe { GetCurrentProcess() };
+        let mut duplicate = ptr::null_mut();
+        if unsafe {
+            DuplicateHandle(
+                process,
+                self.raw(),
+                process,
+                &mut duplicate,
+                0,
+                0,
+                DUPLICATE_SAME_ACCESS,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self(OwnedHandle::new(duplicate)?))
+    }
+
+    pub fn signal(&self) -> io::Result<()> {
+        if unsafe { SetEvent(self.raw()) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod event_tests {
+    use super::*;
+    use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+    use windows_sys::Win32::System::Threading::WaitForSingleObject;
+
+    #[test]
+    fn ui_stop_event_wakes_worker_and_survives_duplicate_handle_drop() {
+        let event = Event::create(true).unwrap();
+        let worker = event.duplicate().unwrap();
+        let thread = std::thread::spawn(move || unsafe { WaitForSingleObject(worker.raw(), 1000) });
+        event.signal().unwrap();
+        drop(event);
+        assert_eq!(thread.join().unwrap(), WAIT_OBJECT_0);
     }
 }
 

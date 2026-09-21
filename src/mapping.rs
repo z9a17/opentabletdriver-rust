@@ -1,5 +1,5 @@
 use crate::protocol::{MAX_X, MAX_Y};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rect {
@@ -33,7 +33,7 @@ pub struct Crop {
 
 /// OpenTabletDriver stores absolute areas by their center and size. Tablet
 /// coordinates are millimeters; display coordinates are desktop pixels.
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct OtdArea {
     pub width: f64,
@@ -53,7 +53,7 @@ impl OtdArea {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct OtdMapping {
     pub display: OtdArea,
     pub tablet: OtdArea,
@@ -202,11 +202,32 @@ impl Mapper {
     /// The pre-transform filter returns fractional report coordinates. Keep
     /// those fractions through the area transform, as OpenTabletDriver does.
     pub fn map_filtered(self, x: f32, y: f32) -> Option<(i32, i32)> {
-        let transform = self.otd?;
         if !x.is_finite() || !y.is_finite() {
             return None;
         }
-        self.map_otd(transform, f64::from(x), f64::from(y))
+        if let Some(transform) = self.otd {
+            return self.map_otd(transform, f64::from(x), f64::from(y));
+        }
+        let u = (f64::from(x) - f64::from(self.crop.x)).clamp(0.0, f64::from(self.crop.width));
+        let v = (f64::from(y) - f64::from(self.crop.y)).clamp(0.0, f64::from(self.crop.height));
+        let (w, h) = (f64::from(self.crop.width), f64::from(self.crop.height));
+        let (u, v, w, h) = match self.rotation {
+            90 => (v, w - u, h, w),
+            180 => (w - u, h - v, w, h),
+            270 => (h - v, u, h, w),
+            _ => (u, v, w, h),
+        };
+        let px = f64::from(self.destination.left) + u / w * f64::from(self.destination.width() - 1);
+        let py = f64::from(self.destination.top) + v / h * f64::from(self.destination.height() - 1);
+        let screen = self.virtual_screen;
+        Some((
+            ((px - f64::from(screen.left)) * 65_535.0 / f64::from((screen.width() - 1).max(1)))
+                .round()
+                .clamp(0.0, 65_535.0) as i32,
+            ((py - f64::from(screen.top)) * 65_535.0 / f64::from((screen.height() - 1).max(1)))
+                .round()
+                .clamp(0.0, 65_535.0) as i32,
+        ))
     }
 
     fn map_otd(self, t: OtdTransform, x: f64, y: f64) -> Option<(i32, i32)> {
@@ -279,6 +300,26 @@ mod tests {
             ..Crop::default()
         };
         assert!(Mapper::new(crop, 0, screen, screen).is_none());
+    }
+
+    #[test]
+    fn filtered_positions_work_with_simple_profiles_and_keep_fractions() {
+        let screen = Rect {
+            left: -100,
+            top: 0,
+            right: 900,
+            bottom: 1000,
+        };
+        let mapper = Mapper::new(Crop::default(), 0, screen, screen).unwrap();
+        assert_eq!(mapper.map_filtered(0.0, 0.0), Some((0, 0)));
+        assert_eq!(
+            mapper.map_filtered(MAX_X as f32, MAX_Y as f32),
+            Some((65_535, 65_535))
+        );
+        assert!(
+            mapper.map_filtered(100.5, 100.5).unwrap().0
+                > mapper.map_filtered(100.0, 100.0).unwrap().0
+        );
     }
 
     #[test]
