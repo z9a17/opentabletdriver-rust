@@ -287,7 +287,7 @@ fn radial_settings(store: &OtdStore) -> Result<RadialFollowSettings, String> {
 
 /// OpenTabletDriver rewrites pressure before its tip binding. The resulting
 /// integer pressure first becomes nonzero at this raw value.
-fn activation_raw(percent: f64) -> Result<u16, String> {
+pub(crate) fn activation_raw(percent: f64) -> Result<u16, String> {
     if !percent.is_finite() || !(0.0..=100.0).contains(&percent) {
         return Err("tip/eraser activation threshold must be 0..100 percent".into());
     }

@@ -33,7 +33,7 @@ pub struct Crop {
 
 /// OpenTabletDriver stores absolute areas by their center and size. Tablet
 /// coordinates are millimeters; display coordinates are desktop pixels.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct OtdArea {
     pub width: f64,
@@ -53,7 +53,7 @@ impl OtdArea {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 pub struct OtdMapping {
     pub display: OtdArea,
     pub tablet: OtdArea,
