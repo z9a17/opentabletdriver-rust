@@ -12,8 +12,8 @@ The Rust driver handles one device session on one thread, with no queue and no l
 2. `protocol::parse` decodes report `0x10` and `0x1E` into a `PenReport`. Other report IDs are ignored; a short report, or a position or pressure outside the digitizer's range, is malformed. Neither produces output nor changes any state.
 3. `ReportPipeline` (`src/pipeline.rs`) runs the rest for each decoded report:
    1. Contact state, from the raw report ([Pen state](#pen-state-hover-and-contact)).
-   2. The built-in Radial Follow filters, then the enabled DLL filters in profile order.
-   3. Absolute or relative mapping.
+   2. The built-in Radial Follow filters, then enabled PreTransform DLL filters in profile order.
+   3. Absolute or relative mapping, then enabled Pixels/PostTransform DLL filters in profile order when using absolute output.
    4. At most one `SendInput` packet. It carries the move and any button change together, so the button event lands at the new position.
 
 Upstream runs each endpoint on a [`DeviceReader`][DeviceReader] thread. It parses the report, takes the tablet's [lock][InputDeviceTree], and passes it to the output mode ([`OutputMode.Read`][OutputMode]):
@@ -49,7 +49,7 @@ Rust and upstream normalized coordinates for the same transform result differ by
 
 - The built-in Radial Follow port runs per report in tablet millimetres. It resets to the report when 50 ms or more have passed since the previous one, or when its output is not finite, as the original [`RadialFollowCore`][RadialFollowCore] does (`!(elapsed < 50)`).
 - Time is the moment the report's read completed. The Radial Follow reset, the relative reset delay and the DLL filters' `time_ns` all use it. Upstream measures each element's elapsed time with its own `HPETDeltaStopwatch` when the report reaches it. Neither driver uses device timestamps.
-- DLL filters: native ABI version 1 filters position only. The .NET bridge runs PreTransform position filters and applies only their X/Y. DLL filters reset at session start and whenever the pen is not detected. The built-in Radial Follow resets only by its 50 ms rule.
+- DLL filters: native ABI version 1 filters position only. The .NET bridge runs synchronous PreTransform position filters before mapping and Pixels/PostTransform position filters after absolute mapping; it applies only their X/Y. Pixel filters see desktop pixels and cannot run in Relative Mode. DLL filters reset at session start and whenever the pen is not detected. The built-in Radial Follow resets only by its 50 ms rule.
 
 ## Mapping
 
@@ -118,7 +118,7 @@ Replacing the tip threshold's `>=` with `>` makes `absolute-thresholds` fail, wh
 | ID | Behavior | Upstream | Rust | Disposition |
 | --- | --- | --- | --- | --- |
 | BC-01 | Filter order | enabled PreTransform filters in profile order | built-in Radial Follow first, then DLL filters in profile order | P04 |
-| BC-02 | Pixel-space filters | PostTransform (`Pixels`) filters run after the transform | not supported | P04 |
+| BC-02 | Pixel-space filters | PostTransform (`Pixels`) filters run after the transform | synchronous one-output position filters run after absolute mapping; other output modes and emission forms remain open | P04 |
 | BC-03 | Binding input | `BindingHandler` runs after filters and the transform, so a filter can change the pressure it sees | contact comes from the raw report | P04; observable only with a filter that changes pressure |
 | BC-04 | Pen barrel buttons | bits `0x02`/`0x04` (`0x1E`: three buttons) drive pen bindings | ignored | B02 |
 | BC-05 | Auxiliary and touch | `0x11` and `0x21`/`0xD2` parsed; auxiliary endpoint opened | auxiliary endpoint not opened; those IDs ignored | D04 |

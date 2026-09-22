@@ -202,11 +202,18 @@ impl Mapper {
     /// The pre-transform filter returns fractional report coordinates. Keep
     /// those fractions through the area transform, as OpenTabletDriver does.
     pub fn map_filtered(self, x: f32, y: f32) -> Option<(i32, i32)> {
+        let (px, py) = self.map_filtered_pixels(x, y)?;
+        self.normalize_pixels(px, py)
+    }
+
+    /// Returns desktop pixels before SendInput normalization, so a managed
+    /// PostTransform filter sees the same units as OpenTabletDriver.
+    pub fn map_filtered_pixels(self, x: f32, y: f32) -> Option<(f64, f64)> {
         if !x.is_finite() || !y.is_finite() {
             return None;
         }
         if let Some(transform) = self.otd {
-            return self.map_otd(transform, f64::from(x), f64::from(y));
+            return self.map_otd_pixels(transform, f64::from(x), f64::from(y));
         }
         let u = (f64::from(x) - f64::from(self.crop.x)).clamp(0.0, f64::from(self.crop.width));
         let v = (f64::from(y) - f64::from(self.crop.y)).clamp(0.0, f64::from(self.crop.height));
@@ -219,6 +226,13 @@ impl Mapper {
         };
         let px = f64::from(self.destination.left) + u / w * f64::from(self.destination.width() - 1);
         let py = f64::from(self.destination.top) + v / h * f64::from(self.destination.height() - 1);
+        Some((px, py))
+    }
+
+    pub fn normalize_pixels(self, px: f64, py: f64) -> Option<(i32, i32)> {
+        if !px.is_finite() || !py.is_finite() {
+            return None;
+        }
         let screen = self.virtual_screen;
         Some((
             ((px - f64::from(screen.left)) * 65_535.0 / f64::from((screen.width() - 1).max(1)))
@@ -231,6 +245,11 @@ impl Mapper {
     }
 
     fn map_otd(self, t: OtdTransform, x: f64, y: f64) -> Option<(i32, i32)> {
+        let (px, py) = self.map_otd_pixels(t, x, y)?;
+        self.normalize_pixels(px, py)
+    }
+
+    fn map_otd_pixels(self, t: OtdTransform, x: f64, y: f64) -> Option<(f64, f64)> {
         let mut px = t.a * x + t.b * y + t.tx;
         let mut py = t.c * x + t.d * y + t.ty;
         if t.limiting && (px < t.min_x || px > t.max_x || py < t.min_y || py > t.max_y) {
@@ -240,14 +259,7 @@ impl Mapper {
             px = px.clamp(t.min_x, (t.max_x - 1.0).max(t.min_x));
             py = py.clamp(t.min_y, (t.max_y - 1.0).max(t.min_y));
         }
-        let screen = self.virtual_screen;
-        let nx = ((px - f64::from(screen.left)) * 65_535.0 / f64::from((screen.width() - 1).max(1)))
-            .round()
-            .clamp(0.0, 65_535.0) as i32;
-        let ny = ((py - f64::from(screen.top)) * 65_535.0 / f64::from((screen.height() - 1).max(1)))
-            .round()
-            .clamp(0.0, 65_535.0) as i32;
-        Some((nx, ny))
+        Some((px, py))
     }
 }
 

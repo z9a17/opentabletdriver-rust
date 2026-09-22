@@ -1,6 +1,6 @@
 # opentabletdriver-rust
 
-A Windows 11 USB driver for the Wacom PTH-660, written in Rust. It supports absolute/relative cursor movement, tip clicks, a native Windows control panel, native filter DLLs, and unchanged OpenTabletDriver .NET synchronous tablet-coordinate position filters. Side-button output and Windows Ink remain unimplemented. See [plugin/UI support and compatibility limits](docs/PLUGINS_AND_UI.md) and the [porting status](docs/PORTING_STATUS.md).
+A Windows 11 USB driver for the Wacom PTH-660, written in Rust. It supports absolute/relative cursor movement, tip clicks, a native Windows control panel, native filter DLLs, and unchanged OpenTabletDriver .NET synchronous position filters before mapping or, in Absolute Mode, in screen pixels after mapping. Side-button output and Windows Ink remain unimplemented. See [plugin/UI support and compatibility limits](docs/PLUGINS_AND_UI.md) and the [porting status](docs/PORTING_STATUS.md).
 
 For the path to full OpenTabletDriver parity, start with the [full parity roadmap](docs/FULL_PARITY_PLAN.md). It includes [65 implementation tasks](docs/parity/WORK_ITEMS.md), a pinned device/plugin inventory, dependencies, performance and validation gates, and an [agent handoff guide](docs/parity/AGENT_HANDOFF.md). Claim work through the [GitHub workstream tracker](docs/parity/GITHUB_TRACKING.md). These planned capabilities are not yet implemented.
 

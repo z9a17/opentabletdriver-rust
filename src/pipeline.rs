@@ -4,7 +4,7 @@
 //! type, so the traces cover exactly what the driver does.
 //!
 //! Order within one report: contact state from the raw report, built-in
-//! filters, then enabled DLL filters in profile order, then mapping, then at
+//! filters, PreTransform DLL filters, mapping, Pixels DLL filters, then at
 //! most one output packet carrying both the move and any button change. See
 //! `docs/parity/BEHAVIOR_CONTRACTS.md` for how this compares with upstream.
 
@@ -67,9 +67,9 @@ impl ReportPipeline {
             Some(position)
         });
         if let Some((x, y)) = frame.position {
-            if !plugins.is_empty() {
+            if plugins.has_pre() {
                 filtered =
-                    Some(plugins.process(filtered.unwrap_or((x as f32, y as f32)), pen, now));
+                    Some(plugins.process_pre(filtered.unwrap_or((x as f32, y as f32)), pen, now));
             }
         } else {
             plugins.reset();
@@ -80,7 +80,23 @@ impl ReportPipeline {
             // MouseOutput retries button transitions.
             self.output.emit_relative(delta, frame.contact, send)
         } else if let Some(mapper) = mapper {
-            self.output.emit_filtered(frame, mapper, filtered, send)
+            if plugins.has_pixels() {
+                let mapped = frame.position.and_then(|(x, y)| {
+                    let position = filtered.unwrap_or((x as f32, y as f32));
+                    mapper.map_filtered_pixels(position.0, position.1)
+                });
+                if frame.position.is_some() && mapped.is_none() {
+                    // Area limiting stops the report before PostTransform.
+                    return Ok(false);
+                }
+                let position = mapped.and_then(|(x, y)| {
+                    let (x, y) = plugins.process_pixels((x as f32, y as f32), pen, now);
+                    mapper.normalize_pixels(f64::from(x), f64::from(y))
+                });
+                self.output.emit_mapped(position, frame.contact, send)
+            } else {
+                self.output.emit_filtered(frame, mapper, filtered, send)
+            }
         } else {
             Ok(false)
         }

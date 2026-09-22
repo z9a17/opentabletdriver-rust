@@ -20,6 +20,12 @@ pub enum PluginKind {
     Dotnet,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PipelineStage {
+    PreTransform,
+    Pixels,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PluginConfig {
@@ -124,6 +130,7 @@ pub struct Plugin {
     api: FilterApi,
     context: *mut c_void,
     pub name: String,
+    pub stage: PipelineStage,
     disabled: bool,
     // Destroy the context before unloading its callbacks.
     _library: Option<Library>,
@@ -184,10 +191,22 @@ impl Plugin {
                 "{name}: initialization failed; check plugin type/settings and diagnostics"
             ));
         }
+        let stage = if config.kind == PluginKind::Dotnet {
+            match crate::dotnet::position(context) {
+                Ok(stage) => stage,
+                Err(error) => {
+                    unsafe { (api.destroy.unwrap())(context) };
+                    return Err(error);
+                }
+            }
+        } else {
+            PipelineStage::PreTransform
+        };
         Ok(Self {
             api,
             context,
             name,
+            stage,
             disabled: false,
             _library: library,
         })
@@ -227,6 +246,8 @@ impl Drop for Plugin {
 
 pub struct PluginChain {
     plugins: Vec<Plugin>,
+    has_pre: bool,
+    has_pixels: bool,
     epoch: Instant,
     failure: Option<usize>,
 }
@@ -238,15 +259,40 @@ impl PluginChain {
             .filter(|p| p.enabled)
             .map(Plugin::load)
             .collect::<Result<Vec<_>, _>>()?;
+        let has_pre = plugins
+            .iter()
+            .any(|p| p.stage == PipelineStage::PreTransform);
+        let has_pixels = plugins.iter().any(|p| p.stage == PipelineStage::Pixels);
         Ok(Self {
             plugins,
+            has_pre,
+            has_pixels,
             epoch: Instant::now(),
             failure: None,
         })
     }
 
-    pub fn process(
+    pub fn process_pre(
         &mut self,
+        position: (f32, f32),
+        pen: crate::protocol::PenReport,
+        now: Instant,
+    ) -> (f32, f32) {
+        self.process_stage(PipelineStage::PreTransform, position, pen, now)
+    }
+
+    pub fn process_pixels(
+        &mut self,
+        position: (f32, f32),
+        pen: crate::protocol::PenReport,
+        now: Instant,
+    ) -> (f32, f32) {
+        self.process_stage(PipelineStage::Pixels, position, pen, now)
+    }
+
+    fn process_stage(
+        &mut self,
+        stage: PipelineStage,
         position: (f32, f32),
         pen: crate::protocol::PenReport,
         now: Instant,
@@ -270,6 +316,9 @@ impl PluginChain {
                 },
         };
         for (index, plugin) in self.plugins.iter_mut().enumerate() {
+            if plugin.stage != stage {
+                continue;
+            }
             if !plugin.process(&mut sample) {
                 self.failure = Some(index);
                 eprintln!(
@@ -286,8 +335,27 @@ impl PluginChain {
             plugin.reset();
         }
     }
-    pub fn is_empty(&self) -> bool {
-        self.plugins.is_empty()
+    pub fn has_pre(&self) -> bool {
+        self.has_pre
+    }
+
+    pub fn has_pixels(&self) -> bool {
+        self.has_pixels
+    }
+
+    pub fn validate_output_mode(&self, relative: bool) -> Result<(), String> {
+        if relative
+            && let Some(plugin) = self
+                .plugins
+                .iter()
+                .find(|plugin| plugin.stage == PipelineStage::Pixels)
+        {
+            return Err(format!(
+                "{} runs after absolute mapping; pixel-space filters cannot run in Relative Mode",
+                plugin.name
+            ));
+        }
+        Ok(())
     }
 
     pub fn take_failure(&mut self) -> Option<&str> {
@@ -300,6 +368,115 @@ impl PluginChain {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Profile;
+    use crate::mapping::{Crop, Mapper, Rect};
+    use crate::pipeline::ReportPipeline;
+    use crate::protocol::PenReport;
+
+    #[test]
+    fn runs_raw_filters_before_mapping_and_pixel_filters_after_mapping() {
+        #[derive(Default)]
+        struct Seen {
+            x: f32,
+        }
+        unsafe extern "C" fn pre(context: *mut c_void, sample: *mut Sample) -> i32 {
+            unsafe {
+                (*context.cast::<Seen>()).x = (*sample).x;
+                (*sample).x += 200.0;
+            }
+            0
+        }
+        unsafe extern "C" fn pixels(context: *mut c_void, sample: *mut Sample) -> i32 {
+            unsafe {
+                (*context.cast::<Seen>()).x = (*sample).x;
+                (*sample).x += 10.0;
+            }
+            0
+        }
+        unsafe extern "C" fn reset(_: *mut c_void) {}
+        unsafe extern "C" fn destroy(_: *mut c_void) {}
+        fn fake(
+            stage: PipelineStage,
+            context: *mut c_void,
+            process: unsafe extern "C" fn(*mut c_void, *mut Sample) -> i32,
+        ) -> Plugin {
+            Plugin {
+                api: FilterApi {
+                    header: Header::V1,
+                    name: [0; 64],
+                    create: None,
+                    process: Some(process),
+                    reset: Some(reset),
+                    destroy: Some(destroy),
+                },
+                context,
+                name: "stage test".into(),
+                stage,
+                disabled: false,
+                _library: None,
+            }
+        }
+        let mut seen_pre = Seen::default();
+        let mut seen_pixels = Seen::default();
+        // Config order may interleave stages; execution order is by stage.
+        let mut chain = PluginChain {
+            plugins: vec![
+                fake(
+                    PipelineStage::Pixels,
+                    (&mut seen_pixels as *mut Seen).cast(),
+                    pixels,
+                ),
+                fake(
+                    PipelineStage::PreTransform,
+                    (&mut seen_pre as *mut Seen).cast(),
+                    pre,
+                ),
+            ],
+            has_pre: true,
+            has_pixels: true,
+            epoch: Instant::now(),
+            failure: None,
+        };
+        let desktop = Rect {
+            left: -1920,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        let mapper = Mapper::new(Crop::default(), 0, desktop, desktop).unwrap();
+        let pen = PenReport {
+            id: 0x10,
+            x: 22_400,
+            y: 14_800,
+            pressure: 0,
+            in_range: true,
+            sense: true,
+            tip_switch: false,
+            eraser: false,
+            tilt: [0; 2],
+            rotation: Some(0),
+            hover_distance: Some(0),
+        };
+        let mut pipeline = ReportPipeline::new(&Profile::default()).unwrap();
+        let mut sent = None;
+        crate::test_alloc::assert_no_allocations(|| {
+            assert!(
+                pipeline
+                    .process(pen, Instant::now(), Some(mapper), &mut chain, |packet| {
+                        sent = Some(packet);
+                        Ok(())
+                    })
+                    .unwrap()
+            );
+        });
+        assert_eq!(seen_pre.x, 22_400.0);
+        let mapped = mapper.map_filtered_pixels(22_600.0, 14_800.0).unwrap();
+        assert!((seen_pixels.x - mapped.0 as f32).abs() < 0.001);
+        let expected = mapper
+            .normalize_pixels(f64::from(seen_pixels.x + 10.0), f64::from(mapped.1 as f32))
+            .unwrap();
+        assert_eq!((sent.unwrap().dx, sent.unwrap().dy), expected);
+    }
 
     #[test]
     fn invalid_output_disables_once_and_context_is_destroyed() {
@@ -332,6 +509,7 @@ mod tests {
             },
             context: (&mut calls as *mut u32).cast(),
             name: "test".into(),
+            stage: PipelineStage::PreTransform,
             disabled: false,
             _library: None,
         };
