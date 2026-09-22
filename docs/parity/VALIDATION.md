@@ -4,7 +4,7 @@ This defines the evidence required by the [roadmap](../FULL_PARITY_PLAN.md) and 
 
 ## 1. Evidence levels
 
-Track implementation and evidence independently. Recommended evidence states are `source-reviewed`, `unit-tested`, `differential-tested`, `integration-tested`, `hardware-verified`, and `blocked`. More than one may apply; a blocked hardware check does not erase a passing parser test. A capability with merged code and missing required evidence remains open.
+Track implementation and evidence independently in the [evidence ledger](EVIDENCE_LEDGER.md). Evidence kinds are `source-reviewed`, `unit-tested`, `differential-tested`, `integration-tested` and `hardware-verified`; `blocked` is a row state with a reason. More than one evidence kind may apply. A blocked hardware check does not erase a passing parser test. A capability with merged code and missing required evidence remains open.
 
 Every result records task/CAP ID, source and Rust commits, exact command or manual steps, OS/architecture/runtime, device/firmware/transport when relevant, plugin class/version/archive and DLL hashes, configuration/fixture hash, expected/actual behavior, date, tester and links to logs/artifacts. Do not store serial numbers, complete HID paths or personal filesystem paths in public results by default.
 
@@ -28,6 +28,8 @@ cargo build --locked --workspace --release
 pwsh -File scripts/build-compat.ps1
 $env:OTD_TEST_PLUGIN = (Resolve-Path target/release/otd_ema_filter.dll).Path
 cargo test --locked native_plugin_round_trip -- --ignored
+python scripts/parity-evidence.py validate
+python -m unittest discover -s scripts/tests -p 'test_parity_*.py'
 ```
 
 Manual benchmarks print their results rather than pass or fail. The first keeps every CPU busy for about ten seconds; see [input latency](../INPUT_LATENCY.md) for recorded results:
@@ -133,4 +135,4 @@ Reconnect testing must include moving and clicking after recovery, not just an e
 - Retain dependency/license/source notices, package hashes and build provenance.
 - Publish performance and required hardware evidence with unresolved limitations; do not claim full parity while any blocking capability or required evidence remains open.
 
-For this planning release, validate documents/inventory and run the existing release checks. The 65 implementation tasks remain open.
+For an evidence-only release, validate the ledger, inventory and documents as well as the existing release checks. Keep unfinished implementation tasks open.

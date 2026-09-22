@@ -9,4 +9,5 @@
 - Run `gitleaks` on staged changes before committing configuration changes. Use the pinned source links in docs for upstream behavior. Do not claim live pen validation from replay or UI tests.
 - Run `actionlint` for workflow edits and PowerShell ScriptAnalyzer for changed PowerShell scripts.
 - Source inventory reproduction: `pwsh -File scripts/parity-inventory.ps1 -UpstreamRoot <clean-OTD-checkout> -CatalogRoot <clean-catalog-checkout>`. Use the revisions recorded in `docs/parity/upstream-inventory.json`; review baseline changes explicitly.
+- Evidence checks: `python scripts/parity-evidence.py validate` and `python -m unittest discover -s scripts/tests -p 'test_parity_*.py'`. Follow [the ledger process](docs/parity/EVIDENCE_LEDGER.md) when the pinned baseline changes.
 - Coordinate version/tag creation through one release integrator. Never rewrite a published tag. Documentation-only releases must state that driver functionality is unchanged.
