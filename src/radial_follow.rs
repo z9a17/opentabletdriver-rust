@@ -145,15 +145,9 @@ impl RadialFollowSmoothingTabletSpace {
         }
     }
 
-    pub fn filter_raw(&mut self, x: u32, y: u32) -> (f32, f32) {
-        self.filter_raw_f32(x as f32, y as f32)
-    }
-
-    pub fn filter_raw_f32(&mut self, x: f32, y: f32) -> (f32, f32) {
-        self.filter_raw_at(x, y, Instant::now())
-    }
-
-    fn filter_raw_at(&mut self, x: f32, y: f32, now: Instant) -> (f32, f32) {
+    /// Filters one position in report units. `now` is the report's
+    /// processing time, which drives the 50 ms redetection reset.
+    pub fn filter_raw_at(&mut self, x: f32, y: f32, now: Instant) -> (f32, f32) {
         let mm = (x * self.mm_scale.0, y * self.mm_scale.1);
         let filtered = self.core.filter_at(mm, now);
         (filtered.0 / self.mm_scale.0, filtered.1 / self.mm_scale.1)

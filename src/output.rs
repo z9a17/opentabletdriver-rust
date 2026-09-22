@@ -19,14 +19,15 @@ enum Motion {
     Relative(i32, i32),
 }
 
+/// One `MOUSEINPUT`: a move and a button change travel together.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct MousePacket {
-    dx: i32,
-    dy: i32,
-    flags: u32,
+pub struct MousePacket {
+    pub dx: i32,
+    pub dy: i32,
+    pub flags: u32,
 }
 
-fn send_input(packet: MousePacket) -> Result<(), std::io::Error> {
+pub fn send_input(packet: MousePacket) -> Result<(), std::io::Error> {
     let input = INPUT {
         r#type: INPUT_MOUSE,
         Anonymous: INPUT_0 {
@@ -69,6 +70,7 @@ impl MouseOutput {
         frame: Frame,
         mapper: Mapper,
         filtered_position: Option<(f32, f32)>,
+        send: impl FnOnce(MousePacket) -> Result<(), std::io::Error>,
     ) -> Result<bool, std::io::Error> {
         let position = if let Some((x, y)) = frame.position {
             let mapped = filtered_position
@@ -81,15 +83,18 @@ impl MouseOutput {
         } else {
             None
         };
-        let result = self.emit_normalized(position, frame.contact);
+        let result = self.emit_motion_with(Motion::Absolute(position), frame.contact, send);
         if position.is_none() {
             self.last_position = None;
         }
         result
     }
 
-    pub fn release_all(&mut self) -> Result<bool, std::io::Error> {
-        let result = self.emit_normalized(None, false);
+    pub fn release_all(
+        &mut self,
+        send: impl FnOnce(MousePacket) -> Result<(), std::io::Error>,
+    ) -> Result<bool, std::io::Error> {
+        let result = self.emit_motion_with(Motion::Absolute(None), false, send);
         self.last_position = None;
         result
     }
@@ -98,16 +103,9 @@ impl MouseOutput {
         &mut self,
         delta: (i32, i32),
         contact: bool,
+        send: impl FnOnce(MousePacket) -> Result<(), std::io::Error>,
     ) -> Result<bool, std::io::Error> {
-        self.emit_motion_with(Motion::Relative(delta.0, delta.1), contact, send_input)
-    }
-
-    fn emit_normalized(
-        &mut self,
-        position: Option<(i32, i32)>,
-        desired_contact: bool,
-    ) -> Result<bool, std::io::Error> {
-        self.emit_motion_with(Motion::Absolute(position), desired_contact, send_input)
+        self.emit_motion_with(Motion::Relative(delta.0, delta.1), contact, send)
     }
 
     fn emit_motion_with(
@@ -151,149 +149,6 @@ impl MouseOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ContactPolicy;
-    use crate::protocol;
-    use crate::relative::{RelativeMapper, RelativeSettings};
-    use crate::state;
-    use std::time::{Duration, Instant};
-
-    // Independent real USB report prefixes already used by protocol tests.
-    const CAPTURE: [[u8; 17]; 3] = [
-        [
-            0x10, 0x60, 0x14, 0x56, 0x00, 0xa3, 0x16, 0x00, 0x00, 0x00, 0x07, 0x04, 0, 0, 0, 0,
-            0x28,
-        ],
-        [
-            0x10, 0x61, 0x11, 0x55, 0x00, 0x8c, 0x12, 0x00, 0x0e, 0x11, 0x00, 0x07, 0, 0, 0, 0,
-            0x19,
-        ],
-        [
-            0x10, 0x40, 0xb8, 0x51, 0x00, 0x7e, 0x12, 0x00, 0x00, 0x00, 0x00, 0x04, 0, 0, 0, 0,
-            0x3f,
-        ],
-    ];
-
-    fn relative_mapper() -> RelativeMapper {
-        RelativeMapper::new(RelativeSettings {
-            sensitivity: (10.0, 10.0),
-            rotation: 0.0,
-            reset_delay: Duration::from_millis(100),
-        })
-        .unwrap()
-    }
-
-    #[test]
-    fn recorded_hover_contact_high_hover_loss_and_reentry_replay_without_injection() {
-        let mut mapper = relative_mapper();
-        let mut output = MouseOutput::new();
-        let policy = ContactPolicy {
-            tip_threshold_raw: Some(82),
-            ..ContactPolicy::default()
-        };
-        // Synthetic: neither In Range nor Sense, so the pen is not detected.
-        let mut undetected = CAPTURE[2];
-        undetected[1] = 0;
-        let now = Instant::now();
-        let mut packets = Vec::new();
-        for data in [
-            &CAPTURE[0],
-            &CAPTURE[1],
-            &CAPTURE[2],
-            &undetected,
-            &CAPTURE[0],
-        ] {
-            let frame = state::frame(protocol::parse(data).unwrap().unwrap(), policy);
-            let delta = mapper.map_at(frame.position, None, now);
-            output
-                .emit_motion_with(
-                    Motion::Relative(delta.0, delta.1),
-                    frame.contact,
-                    |packet| {
-                        packets.push(packet);
-                        Ok(())
-                    },
-                )
-                .unwrap();
-        }
-        assert_eq!(
-            packets,
-            [
-                // Recorded movement: (-259, -1047) raw units = (-12.95, -52.35) counts.
-                MousePacket {
-                    dx: -12,
-                    dy: -52,
-                    flags: MOUSEEVENTF_MOVE | MOUSEEVENTF_LEFTDOWN
-                },
-                // Lifted above In Range but still sensed: the cursor keeps
-                // following, as in OpenTabletDriver. (-857, -14) raw units plus
-                // the carried fractions = (-43.8, -1.05) counts.
-                MousePacket {
-                    dx: -43,
-                    dy: -1,
-                    flags: MOUSEEVENTF_MOVE | MOUSEEVENTF_LEFTUP
-                },
-                // Not detected, then detected again: a new origin, no jump.
-            ]
-        );
-    }
-
-    fn replay_pipeline(iterations: u32, filtered: bool) -> u64 {
-        use crate::radial_follow::{RadialFollowSettings, RadialFollowSmoothingTabletSpace};
-        use std::hint::black_box;
-
-        let mut mapper = relative_mapper();
-        let mut output = MouseOutput::new();
-        let mut filter = RadialFollowSmoothingTabletSpace::new(RadialFollowSettings::default());
-        let mut emitted = 0;
-        crate::test_alloc::assert_no_allocations(|| {
-            for index in 0..iterations {
-                let bytes = black_box(&CAPTURE[index as usize % CAPTURE.len()]);
-                let frame = state::frame(
-                    protocol::parse(bytes).unwrap().unwrap(),
-                    ContactPolicy::default(),
-                );
-                let position = if filtered {
-                    frame.position.map(|(x, y)| filter.filter_raw(x, y))
-                } else {
-                    None
-                };
-                let delta = mapper.map_at(frame.position, position, Instant::now());
-                output
-                    .emit_motion_with(
-                        Motion::Relative(delta.0, delta.1),
-                        frame.contact,
-                        |packet| {
-                            black_box(packet);
-                            emitted += 1;
-                            Ok(())
-                        },
-                    )
-                    .unwrap();
-            }
-        });
-        emitted
-    }
-
-    #[test]
-    fn relative_report_pipeline_allocates_nothing_with_or_without_filtering() {
-        assert!(replay_pipeline(10_000, false) > 0);
-        assert!(replay_pipeline(10_000, true) > 0);
-    }
-
-    #[test]
-    #[ignore = "manual release-mode timing; does not call HID or SendInput"]
-    fn benchmark_relative_pipeline() {
-        const REPORTS: u32 = 1_000_000;
-        for filtered in [false, true] {
-            let start = Instant::now();
-            let emitted = replay_pipeline(REPORTS, filtered);
-            let elapsed = start.elapsed();
-            println!(
-                "relative replay: filtered={filtered}, reports={REPORTS}, packets={emitted}, {:.1} ns/report; simulated output, no HID or SendInput",
-                elapsed.as_nanos() as f64 / f64::from(REPORTS)
-            );
-        }
-    }
 
     #[test]
     fn contact_emits_once_and_releases_after_proximity_loss() {

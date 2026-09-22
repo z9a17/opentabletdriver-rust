@@ -181,4 +181,137 @@ mod tests {
             }
         }
     }
+
+    /// What the reader's priority costs a game: two busy threads stand in for
+    /// a game such as osu! on an otherwise idle machine. A reader wakes from a
+    /// high-resolution timer about 1000 times a second and works for 30 us,
+    /// more than the driver's real per-report work. Prints how often the game
+    /// threads paused and how often the reader ran on a CPU they were using.
+    #[test]
+    #[ignore = "manual scheduling benchmark; runs for about 40 seconds"]
+    fn benchmark_reader_effect_on_game_threads() {
+        use std::ptr::{null, null_mut};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+        use std::time::{Duration, Instant};
+
+        use crate::hid::OwnedHandle;
+        use windows_sys::Win32::System::Threading::{
+            CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW,
+            GetCurrentProcessorNumber, SetWaitableTimer, TIMER_ALL_ACCESS, WaitForSingleObject,
+        };
+
+        const GAMES: usize = 2;
+        const ROUNDS: usize = 6;
+        const SECONDS: u64 = 2;
+
+        fn busy(duration: Duration) {
+            let start = Instant::now();
+            while start.elapsed() < duration {
+                std::hint::spin_loop();
+            }
+        }
+
+        /// Returns pauses over 50 us, 200 us and 1 ms, the longest pause, and
+        /// (reader wakeups on a game CPU, reader wakeups).
+        fn run(raise: Option<bool>) -> ([u64; 3], Duration, (u32, u32)) {
+            let stop = Arc::new(AtomicBool::new(false));
+            let game_cpus: Arc<Vec<AtomicU32>> =
+                Arc::new((0..GAMES).map(|_| AtomicU32::new(0)).collect());
+            let reader = raise.map(|raise| {
+                let (stop, game_cpus) = (stop.clone(), game_cpus.clone());
+                std::thread::spawn(move || {
+                    let _priority = raise.then(ReaderPriority::raise);
+                    let timer = OwnedHandle::new(unsafe {
+                        CreateWaitableTimerExW(
+                            null(),
+                            null(),
+                            CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                            TIMER_ALL_ACCESS,
+                        )
+                    })
+                    .unwrap();
+                    let due: i64 = -10_000; // 1 ms, relative, in 100 ns units
+                    unsafe { SetWaitableTimer(timer.raw(), &due, 1, None, null_mut(), 0) };
+                    let (mut shared, mut wakeups) = (0, 0);
+                    while !stop.load(Ordering::Relaxed) {
+                        unsafe { WaitForSingleObject(timer.raw(), 100) };
+                        let cpu = unsafe { GetCurrentProcessorNumber() } + 1;
+                        if game_cpus.iter().any(|c| c.load(Ordering::Relaxed) == cpu) {
+                            shared += 1;
+                        }
+                        busy(Duration::from_micros(30));
+                        wakeups += 1;
+                    }
+                    (shared, wakeups)
+                })
+            });
+            let games: Vec<_> = (0..GAMES)
+                .map(|index| {
+                    let (stop, game_cpus) = (stop.clone(), game_cpus.clone());
+                    std::thread::spawn(move || {
+                        let (mut pauses, mut worst) = ([0u64; 3], Duration::ZERO);
+                        let (mut last, mut x) = (Instant::now(), 1u64);
+                        while !stop.load(Ordering::Relaxed) {
+                            for _ in 0..200 {
+                                x = std::hint::black_box(x.wrapping_mul(6_364_136_223_846_793_005));
+                            }
+                            let cpu = unsafe { GetCurrentProcessorNumber() } + 1;
+                            game_cpus[index].store(cpu, Ordering::Relaxed);
+                            let now = Instant::now();
+                            let gap = now - last;
+                            last = now;
+                            worst = worst.max(gap);
+                            for (limit, count) in [50, 200, 1000].into_iter().zip(&mut pauses) {
+                                if gap > Duration::from_micros(limit) {
+                                    *count += 1;
+                                }
+                            }
+                        }
+                        (pauses, worst)
+                    })
+                })
+                .collect();
+            std::thread::sleep(Duration::from_secs(SECONDS));
+            stop.store(true, Ordering::Relaxed);
+            let (mut pauses, mut worst) = ([0u64; 3], Duration::ZERO);
+            for game in games {
+                let (p, w) = game.join().unwrap();
+                pauses.iter_mut().zip(p).for_each(|(total, n)| *total += n);
+                worst = worst.max(w);
+            }
+            let shared = reader.map_or((0, 0), |r| r.join().unwrap());
+            (pauses, worst, shared)
+        }
+
+        let configs = [
+            ("no reader", None),
+            ("normal-priority reader", Some(false)),
+            ("time-critical reader", Some(true)),
+        ];
+        /// Pauses over each limit, worst pause per run, (shared, wakeups).
+        type Totals = ([u64; 3], Vec<Duration>, (u32, u32));
+        let mut totals: [Totals; 3] = std::array::from_fn(|_| ([0; 3], Vec::new(), (0, 0)));
+        // Interleave so background activity affects every configuration alike.
+        for _ in 0..ROUNDS {
+            for (index, (_, raise)) in configs.iter().enumerate() {
+                let (pauses, worst, shared) = run(*raise);
+                let total = &mut totals[index];
+                total.0.iter_mut().zip(pauses).for_each(|(t, n)| *t += n);
+                total.1.push(worst);
+                total.2 = (total.2.0 + shared.0, total.2.1 + shared.1);
+            }
+        }
+        let per_second = (ROUNDS as u64 * SECONDS) as f64;
+        for ((name, _), (pauses, mut worst, (shared, wakeups))) in configs.iter().zip(totals) {
+            worst.sort_unstable();
+            println!(
+                "{GAMES} game threads, {name}: pauses per second over 50 us {:.1}, over 200 us {:.1}, over 1 ms {:.2}; median worst pause {:.0} us; reader on a game thread's CPU {shared} of {wakeups} wakeups",
+                pauses[0] as f64 / per_second,
+                pauses[1] as f64 / per_second,
+                pauses[2] as f64 / per_second,
+                worst[worst.len() / 2].as_secs_f64() * 1e6
+            );
+        }
+    }
 }

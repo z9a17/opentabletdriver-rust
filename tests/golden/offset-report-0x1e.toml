@@ -1,0 +1,49 @@
+description = "The 0x1E offset report layout (position at byte 3, pen flags at byte 2), which upstream's IntuosV2 parser also accepts. Not yet observed from this tablet."
+origin = "synthetic, from upstream's IntuosV2OffsetReport layout"
+virtual_screen = [0, 0, 4480, 1440]
+monitors = [[0, 0, 2560, 1440], [2560, 0, 4480, 1080]]
+end = "none"
+
+profile = '''
+[absolute]
+clipping = true
+limiting = false
+
+[absolute.display]
+Width = 2560.0
+Height = 1440.0
+X = 1280.0
+Y = 720.0
+Rotation = 0.0
+
+[absolute.tablet]
+Width = 85.0
+Height = 47.8125
+X = 110.0
+Y = 23.90625
+Rotation = 0.0
+
+[bindings]
+tip_enabled = true
+eraser_enabled = true
+tip_threshold_raw = 82
+eraser_threshold_raw = 82
+'''
+
+[[step]]
+at_ms = 100
+report = "1e 60 00 14 56 00 a3 16 00 00 00 07 04"
+expect = "move 18808 39743"
+note = "hover"
+
+[[step]]
+at_ms = 105
+report = "1e 60 01 11 55 00 8c 12 00 0e 11 00 07"
+expect = "move 18237 32562 down"
+note = "contact, pressure 4366"
+
+[[step]]
+at_ms = 110
+report = "1e 40 00 11 55 00 8c 12 00 00 00 00 07"
+expect = "up"
+note = "Sense only, pressure 0"

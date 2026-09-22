@@ -25,6 +25,20 @@ Results vary between runs. In an earlier prototype of the same measurement, sing
 
 This measures Windows scheduling alone. It includes no USB transfer, no report processing and no display latency.
 
+### Effect on games
+
+The priority decides when the report thread's work runs, not how much there is. Decoding, Radial Follow and mapping take 40 to 80 ns per report (`benchmark_relative_pipeline`), plus one `SendInput` call. To check that time-critical priority takes nothing measurable from a game such as osu!, a second benchmark runs two busy threads standing in for a game's threads on an otherwise idle CPU. Next to them, a reader wakes about 1000 times a second from a high-resolution timer and works for 30 µs each time, more than the driver does per report. Three runs, 12 seconds per configuration each, on the machine above:
+
+| Reader | Game-thread pauses over 50 µs, per second | Over 1 ms, per second | Reader ran on a CPU a game thread was using |
+| --- | --- | --- | --- |
+| None | 2.7 to 21.8 | 0 to 0.17 | — |
+| Normal priority | 3.6 to 8.0 | 0 to 0.08 | 0 to 4 of about 9600 wakeups |
+| Time-critical | 4.2 to 14.4 | 0 to 0.17 | 1 to 9 of about 9600 wakeups |
+
+The spread comes from other programs on the machine; the time-critical rows fall inside the range without any reader. Windows ran the reader on an idle CPU in more than 99.9 % of wakeups. When it did share a CPU with a game thread, it held that CPU only for its own work.
+
+    cargo test --release --locked benchmark_reader_effect_on_game_threads -- --ignored --nocapture
+
 ## Hover tracking
 
 The PTH-660's report descriptor defines byte 1 of report `0x10` as follows (vendor page `0xFF0D` mirrors the digitizer usages):
