@@ -493,7 +493,7 @@ impl App {
                 let unit_width = if row.unit.is_empty() {
                     0
                 } else {
-                    measure(style.fonts.ui, row.unit).0 + s(8)
+                    measure(style.fonts.ui, &row.unit).0 + s(8)
                 };
                 let field_left = label.right + s(12);
                 let field_width = (line.right - s(10) - unit_width - field_left)
@@ -504,7 +504,7 @@ impl App {
                 if !row.unit.is_empty() {
                     items.push(Item::Label(
                         rect(frame.right + s(8), line.top, line.right, line.bottom),
-                        row.unit.into(),
+                        row.unit.clone(),
                         Tone::Text,
                         draw::TEXT_LEFT,
                     ));

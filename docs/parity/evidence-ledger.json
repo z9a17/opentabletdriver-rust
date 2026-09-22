@@ -264,11 +264,29 @@
     },
     "CAP-33": {
       "state": "open",
-      "owner": null,
-      "pull_request": null,
-      "release": null,
-      "evidence": [],
-      "blockers": []
+      "owner": "P02",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/21",
+      "release": "v0.7.4",
+      "evidence": [
+        {
+          "kind": "integration-tested",
+          "task": "P02",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "536e570e697049156771342bddafc63cb34e3370",
+          "platform": "Windows (GitHub Actions windows-latest)",
+          "architecture": "x86_64",
+          "date": "2026-09-23T00:21:48+02:00",
+          "tester": "GitHub Actions Windows job",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Plugin/Attributes/PropertyAttribute.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/actions/runs/35791667659",
+          "result": "pass",
+          "command": "cargo test --locked dotnet_plugin_round_trip -- --ignored",
+          "dll_sha256": "830d61f29c07b109398f1e001df3c7fbd359b1ad2491a6d12ccc243dacf16383"
+        }
+      ],
+      "blockers": [
+        "Actions, validation, full typed controls, properties without defaults or saved values, and visual UI verification remain open."
+      ]
     },
     "CAP-34": {
       "state": "open",
