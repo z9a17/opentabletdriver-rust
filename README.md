@@ -34,7 +34,7 @@ The executable is `target\release\opentabletdriver-rust.exe`. Read-only commands
     opentabletdriver-rust.exe displays
     opentabletdriver-rust.exe capture --seconds 10
 
-`settings` shows the effective mapping and bindings. `capture` reads a short pen trace without cursor injection. HID paths and serial identifiers are omitted unless you explicitly use `list --paths`.
+`settings` shows the effective mapping and bindings. `capture` reads a short pen trace without cursor injection. [Input latency](docs/INPUT_LATENCY.md) describes the report thread's scheduling, hover tracking and the benchmark commands. HID paths and serial identifiers are omitted unless you explicitly use `list --paths`.
 
 For an independent Rust TOML profile instead of the active OpenTabletDriver settings, use `opentabletdriver-rust.exe run --config driver.toml`; see [driver.example.toml](driver.example.toml). To test a different OpenTabletDriver settings file, use `--otd-settings path\to\settings.json`. To uninstall, stop the console and remove the executable.
 

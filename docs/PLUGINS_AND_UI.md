@@ -1,11 +1,11 @@
-# Control panel and plugins (0.6.0)
+# Control panel and plugins (0.7.0)
 
 Extract the complete Windows release ZIP and open **opentabletdriver-rust-ui.exe**. The control panel follows OpenTabletDriver's desktop layout: a **File / Tablets / Plugins / View / Help** menu bar, **Output**, **Filters**, **Pen Settings** and **Console** tabs, and a bottom bar with the tablet status, **Start driver**, **Save** and **Apply**. The console executable retains its existing no-argument daemon behavior; `opentabletdriver-rust.exe ui` also opens the panel.
 
 - **Output** draws the display area over your monitors and the tablet area over the PTH-660's 224 × 148 mm surface, as upstream's area editors do. Drag an area, type its size, center and tablet rotation, or right-click it for alignment, resizing, flipping, **Set to display**, **Lock to usable area**, **Lock aspect ratio**, **Clamp input outside area** (clipping) and **Ignore input outside area** (area limiting). The dropdown below the editors switches between **Absolute Mode** and **Relative Mode** (X/Y sensitivity, rotation and reset time).
 - **Filters** lists the built-in Radial Follow port and the profile's native and .NET plugin entries. Each has an **Enable** check box and its settings.
 - **Pen Settings** sets the tip and eraser bindings (left click or none) and their activation thresholds in percent. An empty threshold uses the pen's own tip switch.
-- **Console** lists driver, settings and plugin messages with their time and level. **Copy All**, or Ctrl+C on selected rows, copies them.
+- **Console** lists driver, settings and plugin messages with their time and level. When a device session ends it also shows how long reports took from read to output; see [input latency](INPUT_LATENCY.md). **Copy All**, or Ctrl+C on selected rows, copies them.
 
 The panel follows the Windows light or dark app mode and switches when it changes. **View > Theme** picks Light or Dark instead; high-contrast themes use the system colors. The theme, the area locks, the window size and the **Start driver when the panel opens** setting are stored in `ui.toml` beside the profile, never in the profile itself.
 

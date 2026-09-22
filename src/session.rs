@@ -9,10 +9,11 @@ use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED
 use windows_sys::Win32::System::Threading::{ResetEvent, WaitForMultipleObjects};
 
 use crate::config::Profile;
-use crate::display::DisplaySnapshot;
+use crate::display::{DisplayFingerprint, DisplaySnapshot};
 use crate::hid::{self, Candidate, Event, Notification};
 use crate::mapping::Mapper;
 use crate::output::MouseOutput;
+use crate::priority::ReaderPriority;
 use crate::protocol;
 use crate::radial_follow::RadialFollowSmoothingTabletSpace;
 use crate::relative::RelativeMapper;
@@ -34,16 +35,77 @@ struct Counters {
     output_failures: u64,
 }
 
+/// Time from a completed read to the end of its output, in whole
+/// microseconds, and how often a read found its report already queued, which
+/// means the loop fell behind the tablet. Fixed-size; recording does not
+/// allocate. The last bucket holds everything from 1 ms up.
+struct Timing {
+    micros: Box<[u32; Timing::BUCKETS]>,
+    reports: u64,
+    max: Duration,
+    queued: u64,
+}
+
+impl Timing {
+    const BUCKETS: usize = 1001;
+
+    fn new() -> Self {
+        Self {
+            micros: Box::new([0; Self::BUCKETS]),
+            reports: 0,
+            max: Duration::ZERO,
+            queued: 0,
+        }
+    }
+
+    fn record(&mut self, elapsed: Duration) {
+        let micros = usize::try_from(elapsed.as_micros()).unwrap_or(usize::MAX);
+        self.micros[micros.min(Self::BUCKETS - 1)] += 1;
+        self.reports += 1;
+        self.max = self.max.max(elapsed);
+    }
+
+    /// The whole microseconds below which the given fraction of reports fell.
+    fn percentile(&self, fraction: f64) -> String {
+        let target = ((self.reports as f64 * fraction).ceil() as u64).max(1);
+        let mut seen = 0;
+        for (micros, count) in self.micros.iter().enumerate() {
+            seen += u64::from(*count);
+            if seen >= target {
+                return if micros == Self::BUCKETS - 1 {
+                    "1 ms or more".to_owned()
+                } else {
+                    format!("{micros} us")
+                };
+            }
+        }
+        unreachable!("the buckets hold every report")
+    }
+
+    fn summary(&self) -> Option<String> {
+        (self.reports > 0).then(|| {
+            format!(
+                "Processed {} reports; read to output p50 {}, p99 {}, max {} us; {} reads found a report already waiting",
+                self.reports,
+                self.percentile(0.5),
+                self.percentile(0.99),
+                self.max.as_micros(),
+                self.queued
+            )
+        })
+    }
+}
+
 #[derive(Default)]
 struct CaptureTrace {
     initial: u8,
     ignored: u8,
-    last_state: Option<(bool, bool, bool)>,
+    last_state: Option<(bool, bool, bool, bool)>,
 }
 
 impl CaptureTrace {
     fn pen(&mut self, bytes: &[u8], pen: protocol::PenReport) {
-        let state = (pen.proximity, pen.tip_switch, pen.eraser);
+        let state = (pen.in_range, pen.sense, pen.tip_switch, pen.eraser);
         if self.initial < 5 || self.last_state != Some(state) {
             trace_report(bytes, Some(pen));
             self.initial = self.initial.saturating_add(1);
@@ -78,14 +140,6 @@ fn complete_cancelled_read(handle: HANDLE, operation: &mut OVERLAPPED) {
     unsafe { GetOverlappedResult(handle, operation, &mut ignored, 1) };
 }
 
-fn same_device_present(candidate: &Candidate) -> bool {
-    hid::enumerate().is_ok_and(|devices| {
-        devices
-            .iter()
-            .any(|d| d.path == candidate.path && d.is_pen())
-    })
-}
-
 fn trace_report(bytes: &[u8], pen: Option<protocol::PenReport>) {
     let prefix = &bytes[..bytes.len().min(24)];
     let mut hex = String::with_capacity(prefix.len() * 2);
@@ -95,12 +149,13 @@ fn trace_report(bytes: &[u8], pen: Option<protocol::PenReport>) {
     }
     if let Some(pen) = pen {
         println!(
-            "id={:02x} x={} y={} pressure={} proximity={} tip={} eraser={} tilt={:?} bytes={}",
+            "id={:02x} x={} y={} pressure={} in_range={} sense={} tip={} eraser={} tilt={:?} bytes={}",
             pen.id,
             pen.x,
             pen.y,
             pen.pressure,
-            pen.proximity,
+            pen.in_range,
+            pen.sense,
             pen.tip_switch,
             pen.eraser,
             pen.tilt,
@@ -118,6 +173,7 @@ fn trace_report(bytes: &[u8], pen: Option<protocol::PenReport>) {
 
 fn refresh_display(
     snapshot: &mut Option<DisplaySnapshot>,
+    fingerprint: &mut DisplayFingerprint,
     mapper: &mut Option<Mapper>,
     profile: &Profile,
     output: &mut MouseOutput,
@@ -126,6 +182,7 @@ fn refresh_display(
         // Relative mouse motion is independent of the monitor topology.
         return;
     };
+    *fingerprint = DisplayFingerprint::read();
     let Ok(current) = DisplaySnapshot::read() else {
         return;
     };
@@ -159,6 +216,7 @@ pub fn run(
 ) -> io::Result<()> {
     plugins.reset();
     let handle = candidate.open_read()?;
+    let _priority = ReaderPriority::raise();
     let read_event = Event::create(true)?;
     let mut buffer = Box::new([0u8; hid::PEN_REPORT_LENGTH as usize]);
     let mut operation = OVERLAPPED {
@@ -180,6 +238,7 @@ pub fn run(
         .map(|s| s.mapper(profile))
         .transpose()
         .map_err(io::Error::other)?;
+    let mut fingerprint = DisplayFingerprint::read();
     let mut output = MouseOutput::new();
     let mut filters: Vec<_> = if matches!(mode, Mode::Driver) {
         profile
@@ -194,6 +253,7 @@ pub fn run(
     let mut next_refresh = Instant::now() + Duration::from_secs(1);
     let mut last_output_warning = Instant::now() - Duration::from_secs(10);
     let mut counters = Counters::default();
+    let mut timing = Timing::new();
     let mut capture_trace = CaptureTrace::default();
     let mut finished = false;
 
@@ -253,7 +313,7 @@ pub fn run(
                     match event {
                         Some(0) => break,
                         Some(1) => {
-                            if !same_device_present(candidate) {
+                            if !candidate.is_present() {
                                 complete_cancelled_read(handle.raw(), &mut operation);
                                 finished = true;
                                 break;
@@ -272,8 +332,15 @@ pub fn run(
                                 finished = true;
                                 break;
                             }
+                            // Idle: compare the full monitor layout.
                             if Instant::now() >= next_refresh {
-                                refresh_display(&mut snapshot, &mut mapper, profile, &mut output);
+                                refresh_display(
+                                    &mut snapshot,
+                                    &mut fingerprint,
+                                    &mut mapper,
+                                    profile,
+                                    &mut output,
+                                );
                                 next_refresh = Instant::now() + Duration::from_secs(1);
                             }
                         }
@@ -283,6 +350,10 @@ pub fn run(
             }
             if finished {
                 break;
+            }
+            let ready = Instant::now();
+            if started != 0 {
+                timing.queued += 1;
             }
             let mut transferred = 0u32;
             if unsafe { GetOverlappedResult(handle.raw(), &operation, &mut transferred, 0) } == 0 {
@@ -352,6 +423,7 @@ pub fn run(
                                 }
                             }
                         }
+                        timing.record(ready.elapsed());
                     }
                 }
                 Ok(None) => {
@@ -368,8 +440,18 @@ pub fn run(
                     }
                 }
             }
+            // While reports flow, re-read the monitors only when the cheap
+            // fingerprint changed; the idle wait compares the full layout.
             if Instant::now() >= next_refresh {
-                refresh_display(&mut snapshot, &mut mapper, profile, &mut output);
+                if snapshot.is_some() && DisplayFingerprint::read() != fingerprint {
+                    refresh_display(
+                        &mut snapshot,
+                        &mut fingerprint,
+                        &mut mapper,
+                        profile,
+                        &mut output,
+                    );
+                }
                 next_refresh = Instant::now() + Duration::from_secs(1);
             }
         }
@@ -387,6 +469,10 @@ pub fn run(
         counters.injected,
         counters.output_failures
     );
+    if let Some(summary) = timing.summary() {
+        eprintln!("{summary}");
+        status(&summary);
+    }
     outcome
 }
 
@@ -394,5 +480,32 @@ pub fn wait_for_retry(notification: &Notification, stop_event: &Event) -> io::Re
     match wait(&[notification.event(), stop_event.raw()], 2_000)? {
         Some(1) => Ok(false),
         _ => Ok(true),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timing_summary_reports_percentiles_and_late_reads() {
+        let mut timing = Timing::new();
+        assert!(timing.summary().is_none());
+        for _ in 0..98 {
+            timing.record(Duration::from_nanos(5_600));
+        }
+        timing.record(Duration::from_micros(40));
+        timing.record(Duration::from_millis(3));
+        timing.queued = 2;
+        assert_eq!(
+            timing.summary().unwrap(),
+            concat!(
+                "Processed 100 reports; read to output p50 5 us, p99 40 us, max 3000 us; ",
+                "2 reads found a report already waiting"
+            )
+        );
+        let mut slow = Timing::new();
+        slow.record(Duration::from_millis(2));
+        assert_eq!(slow.percentile(0.5), "1 ms or more");
     }
 }

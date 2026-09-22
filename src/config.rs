@@ -285,18 +285,30 @@ fn radial_settings(store: &OtdStore) -> Result<RadialFollowSettings, String> {
     .clamped())
 }
 
-/// OpenTabletDriver rewrites pressure before its tip binding. The resulting
-/// integer pressure first becomes nonzero at this raw value.
+/// First raw pressure at which OpenTabletDriver's tip or eraser binding
+/// presses. Its `ThresholdBindingState` compares
+/// `pressure / MaxPressure * 100 > threshold` in single precision and treats
+/// a 100 % threshold as met at full pressure.
 pub(crate) fn activation_raw(percent: f64) -> Result<u16, String> {
     if !percent.is_finite() || !(0.0..=100.0).contains(&percent) {
         return Err("tip/eraser activation threshold must be 0..100 percent".into());
     }
-    if percent == 100.0 {
-        return Ok(MAX_PRESSURE);
+    let threshold = percent as f32;
+    let presses = |raw: u16| {
+        let value = f32::from(raw) / f32::from(MAX_PRESSURE) * 100.0;
+        value > threshold || (threshold == 100.0 && value == 100.0)
+    };
+    // `presses` is monotonic and true at full pressure.
+    let (mut low, mut high) = (0, MAX_PRESSURE);
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if presses(middle) {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
     }
-    let fraction = percent / 100.0;
-    let first = (f64::from(MAX_PRESSURE) * fraction + 1.0 - fraction).ceil() as u16;
-    Ok(first.min(MAX_PRESSURE))
+    Ok(low)
 }
 
 impl Profile {
@@ -642,7 +654,7 @@ mod tests {
             loaded.relative.unwrap().sensitivity,
             profile.relative.unwrap().sensitivity
         );
-        assert_eq!(loaded.contact.tip_threshold_raw, Some(83));
+        assert_eq!(loaded.contact.tip_threshold_raw, Some(82));
         assert_eq!(loaded.radial_follow.len(), 1);
         assert_eq!(loaded.plugins[0].type_name, "Example.Filter");
         assert_eq!(loaded.plugins[0].settings_json, r#"{"Radius":0.5}"#);
@@ -670,11 +682,31 @@ mod tests {
     }
 
     #[test]
+    fn activation_matches_open_tablet_driver_float_threshold() {
+        // First raw value with pressure / 8191 * 100 > threshold.
+        for (percent, first) in [
+            (0.0, 1),
+            (0.5, 41),
+            (1.0, 82),
+            (10.0, 820),
+            (25.0, 2048),
+            (50.0, 4096),
+            (99.99, MAX_PRESSURE),
+            (100.0, MAX_PRESSURE),
+        ] {
+            assert_eq!(activation_raw(percent), Ok(first), "{percent}%");
+        }
+        assert!(activation_raw(-0.1).is_err());
+        assert!(activation_raw(100.1).is_err());
+        assert!(activation_raw(f64::NAN).is_err());
+    }
+
+    #[test]
     fn reads_absolute_area_and_tip_threshold_from_otd_profile() {
         let json = r#"{"Profiles":[{"Tablet":"Wacom PTH-660","OutputMode":{"Path":"OpenTabletDriver.Desktop.Output.AbsoluteMode","Enable":true},"Filters":[{"Path":"Example.Filter","Enable":true}],"AbsoluteModeSettings":{"Display":{"Width":2560,"Height":1440,"X":1280,"Y":720,"Rotation":0},"Tablet":{"Width":85,"Height":47.8125,"X":110,"Y":23.90625,"Rotation":0},"EnableClipping":true,"EnableAreaLimiting":false},"Bindings":{"TipActivationThreshold":1,"TipButton":{"Path":"OpenTabletDriver.Desktop.Binding.AdaptiveBinding","Enable":true,"Settings":[{"Property":"Binding","Value":"Tip"}]},"EraserActivationThreshold":1,"EraserButton":{"Path":"OpenTabletDriver.Desktop.Binding.AdaptiveBinding","Enable":true,"Settings":[{"Property":"Binding","Value":"Eraser"}]}}}]}"#;
         let profile = Profile::from_otd_text(json, Path::new("settings.json")).unwrap();
         assert_eq!(profile.otd_mapping.unwrap().tablet.width, 85.0);
-        assert_eq!(profile.contact.tip_threshold_raw, Some(83));
+        assert_eq!(profile.contact.tip_threshold_raw, Some(82));
         assert!(profile.contact.tip_enabled);
         assert_eq!(profile.ignored_filters, 1);
     }
@@ -731,7 +763,7 @@ mod tests {
         assert_eq!(relative.reset_delay, Duration::from_millis(100));
         assert!(profile.otd_mapping.is_none());
         assert!(profile.contact.tip_enabled);
-        assert_eq!(profile.contact.tip_threshold_raw, Some(83));
+        assert_eq!(profile.contact.tip_threshold_raw, Some(82));
         assert_eq!(profile.radial_follow.len(), 1);
     }
 

@@ -16,8 +16,12 @@ impl Frame {
 
 /// The built-in profile uses the captured tip flag; OpenTabletDriver profiles
 /// use their pressure activation threshold and enabled tip/eraser binding.
+///
+/// Like OpenTabletDriver, which uses the position of every IntuosV2 pen
+/// report, the cursor follows the pen through the whole Sense range, not only
+/// the lower In Range band. A report with neither bit is not a detected pen.
 pub fn frame(report: PenReport, policy: ContactPolicy) -> Frame {
-    if !report.proximity {
+    if !report.in_range && !report.sense {
         return Frame::NEUTRAL;
     }
     Frame {
@@ -46,7 +50,8 @@ mod tests {
             x: 100,
             y: 200,
             pressure: 0,
-            proximity: true,
+            in_range: true,
+            sense: true,
             tip_switch: false,
             eraser: false,
             tilt: [0; 2],
@@ -63,8 +68,28 @@ mod tests {
         pen.pressure = 10;
         pen.tip_switch = true;
         assert!(frame(pen, policy).contact);
-        pen.proximity = false;
+        pen.in_range = false;
+        pen.sense = false;
         assert_eq!(frame(pen, policy), Frame::NEUTRAL);
+    }
+
+    #[test]
+    fn sense_without_in_range_still_tracks_the_pen() {
+        let mut pen = report();
+        pen.in_range = false;
+        assert_eq!(
+            frame(pen, ContactPolicy::default()),
+            Frame {
+                position: Some((100, 200)),
+                contact: false,
+            }
+        );
+        pen.sense = false;
+        pen.in_range = true;
+        assert_eq!(
+            frame(pen, ContactPolicy::default()).position,
+            Some((100, 200))
+        );
     }
 
     #[test]

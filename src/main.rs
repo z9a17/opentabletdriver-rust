@@ -6,6 +6,7 @@ mod mapping;
 mod original_driver;
 mod output;
 mod plugins;
+mod priority;
 mod protocol;
 mod radial_follow;
 mod relative;

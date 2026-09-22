@@ -5,11 +5,41 @@ use windows_sys::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    GetSystemMetrics, SM_CMONITORS, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN,
 };
 
 use crate::config::Profile;
 use crate::mapping::{Mapper, Rect};
+
+/// The virtual screen and the monitor count: enough to notice a resolution or
+/// monitor change from the report thread without enumerating monitors or
+/// allocating.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DisplayFingerprint {
+    virtual_screen: Rect,
+    monitors: i32,
+}
+
+impl DisplayFingerprint {
+    pub fn read() -> Self {
+        Self {
+            virtual_screen: virtual_screen(),
+            monitors: unsafe { GetSystemMetrics(SM_CMONITORS) },
+        }
+    }
+}
+
+fn virtual_screen() -> Rect {
+    let left = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
+    let top = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
+    Rect {
+        left,
+        top,
+        right: left + unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) },
+        bottom: top + unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) },
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DisplaySnapshot {
@@ -44,16 +74,7 @@ unsafe extern "system" fn enumerate_monitor(
 
 impl DisplaySnapshot {
     pub fn read() -> Result<Self, String> {
-        let left = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
-        let top = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
-        let width = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
-        let height = unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) };
-        let virtual_screen = Rect {
-            left,
-            top,
-            right: left + width,
-            bottom: top + height,
-        };
+        let virtual_screen = virtual_screen();
         if !virtual_screen.valid() {
             return Err("Windows did not report a valid desktop rectangle".into());
         }
@@ -94,5 +115,40 @@ impl DisplaySnapshot {
         };
         Mapper::new(profile.crop, profile.rotation, dest, self.virtual_screen)
             .ok_or_else(|| "invalid tablet-to-display mapping".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn fingerprint_matches_the_full_snapshot() {
+        let snapshot = DisplaySnapshot::read().unwrap();
+        let fingerprint = DisplayFingerprint::read();
+        assert_eq!(fingerprint.virtual_screen, snapshot.virtual_screen);
+        assert_eq!(fingerprint.monitors as usize, snapshot.monitors.len());
+    }
+
+    #[test]
+    #[ignore = "manual timing of the report thread's display checks"]
+    fn benchmark_display_checks() {
+        const READS: u32 = 10_000;
+        let start = Instant::now();
+        for _ in 0..READS {
+            std::hint::black_box(DisplayFingerprint::read());
+        }
+        let fingerprint = start.elapsed();
+        let start = Instant::now();
+        for _ in 0..READS {
+            std::hint::black_box(DisplaySnapshot::read().unwrap());
+        }
+        let snapshot = start.elapsed();
+        println!(
+            "fingerprint {:.2} us, full snapshot {:.2} us per read",
+            fingerprint.as_secs_f64() * 1e6 / f64::from(READS),
+            snapshot.as_secs_f64() * 1e6 / f64::from(READS)
+        );
     }
 }

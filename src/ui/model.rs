@@ -352,9 +352,18 @@ impl Editor {
     }
 }
 
+/// The shortest percentage that `activation_raw` maps back to `raw`.
 pub fn threshold_percent(raw: u16) -> f64 {
-    // Inverse of activation_raw: raw = ceil(1 + fraction * (MAX - 1)).
-    f64::from(raw.saturating_sub(1)) / f64::from(MAX_PRESSURE - 1) * 100.0
+    let max = f64::from(MAX_PRESSURE);
+    let low = f64::from(raw.saturating_sub(1)) / max * 100.0;
+    let middle = (low + f64::from(raw) / max * 100.0) / 2.0;
+    (0..=6)
+        .map(|decimals| {
+            let scale = 10f64.powi(decimals);
+            (middle * scale).round() / scale
+        })
+        .find(|&percent| activation_raw(percent) == Ok(raw))
+        .unwrap_or(low)
 }
 
 pub fn plugin_name(plugin: &PluginConfig) -> String {
@@ -717,7 +726,7 @@ mod tests {
         let mut editor = Editor::new(Profile::default());
         assert_eq!(editor.threshold_percent(false), None);
         editor.set_threshold_percent(false, Some(1.0)).unwrap();
-        assert_eq!(editor.profile.contact.tip_threshold_raw, Some(83));
+        assert_eq!(editor.profile.contact.tip_threshold_raw, Some(82));
         assert_eq!(
             format_number(editor.threshold_percent(false).unwrap(), 2),
             "1"
@@ -730,6 +739,11 @@ mod tests {
             Some(MAX_PRESSURE)
         );
         assert_eq!(threshold_percent(1), 0.0);
+        // Profiles saved before the float comparison fix show their exact value.
+        assert_eq!(threshold_percent(83), 1.01);
+        for raw in 1..=MAX_PRESSURE {
+            assert_eq!(activation_raw(threshold_percent(raw)), Ok(raw), "{raw}");
+        }
         assert!(editor.set_threshold_percent(false, Some(101.0)).is_err());
         editor.set_threshold_percent(false, None).unwrap();
         assert_eq!(editor.profile.contact.tip_threshold_raw, None);

@@ -145,6 +145,23 @@ impl Candidate {
             && self.input_length == PEN_REPORT_LENGTH
     }
 
+    /// Whether this collection's interface still exists. Opens it without
+    /// access rights, which costs far less than enumerating every HID device.
+    pub fn is_present(&self) -> bool {
+        OwnedHandle::new(unsafe {
+            CreateFileW(
+                self.path.as_ptr(),
+                0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                ptr::null(),
+                OPEN_EXISTING,
+                0,
+                ptr::null_mut(),
+            )
+        })
+        .is_ok()
+    }
+
     pub fn open_read(&self) -> io::Result<OwnedHandle> {
         let raw = unsafe {
             CreateFileW(
