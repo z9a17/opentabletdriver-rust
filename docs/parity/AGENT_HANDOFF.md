@@ -30,7 +30,7 @@ Use replay/fake endpoints for automated work; do not start input injection merel
 
 Keep setup/reflection/configuration work away from report callbacks. Retained managed reports require safe ownership even if that means a slower compatibility path. Record performance differences rather than deleting plugin semantics to achieve zero allocations.
 
-Run checks appropriate to the changes using [VALIDATION.md](VALIDATION.md). Always distinguish executed checks, ignored checks, unavailable environments and pending physical tests. Update current status/evidence only for behavior actually delivered. Keep future plans separate from README compatibility claims.
+Run checks appropriate to the changes using [VALIDATION.md](VALIDATION.md). Always distinguish executed checks, ignored checks, unavailable environments and pending physical tests. Update the [evidence ledger](EVIDENCE_LEDGER.md) and current status only for behavior actually delivered. Keep future plans separate from README compatibility claims.
 
 ## Definition of done
 
@@ -45,7 +45,7 @@ Each completed work item has:
 
 The user has authorized pushing completed work and publishing releases. Do not ask for that permission again. Coordinate releases: one integrator assigns the next version/tag and packages the merged source, avoiding competing agents creating or overwriting the same tag. Never force-update a published release tag to include later work. Documentation-only releases must say driver functionality is unchanged.
 
-Closing an issue is not proof of parity. The source inventory records expected scope, the evidence ledger records validation, the workstream issue tracks work, and [PORTING_STATUS.md](../PORTING_STATUS.md) records shipped behavior. Update the relevant records together.
+Closing an issue is not proof of parity. The source inventory records expected scope, the [evidence ledger](EVIDENCE_LEDGER.md) records validation, the workstream issue tracks work, and [PORTING_STATUS.md](../PORTING_STATUS.md) records shipped behavior. Update the relevant records together.
 
 ## PR and handoff format
 

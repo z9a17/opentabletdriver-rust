@@ -1,6 +1,6 @@
 # GitHub parity tracking
 
-The [roadmap](../FULL_PARITY_PLAN.md) and [work items](WORK_ITEMS.md) are the scope reference. GitHub issues track ownership, PRs and current progress. All implementation tasks are initially open; the planning release completes the plan, not these tasks.
+The [roadmap](../FULL_PARITY_PLAN.md) and [work items](WORK_ITEMS.md) are the scope reference. The [evidence ledger](EVIDENCE_LEDGER.md) tracks tested claims. GitHub issues track ownership, PRs and current progress. Check current issue state before taking a task; tracker checkboxes can lag a merged PR.
 
 Start at [parent tracker #13](https://github.com/z9a17/opentabletdriver-rust/issues/13). The [seven GitHub milestones](https://github.com/z9a17/opentabletdriver-rust/milestones) correspond to gates G0-G6. A workstream's issue milestone identifies its primary delivery gate; individual tasks can contribute to other gates.
 
@@ -20,4 +20,4 @@ Start at [parent tracker #13](https://github.com/z9a17/opentabletdriver-rust/iss
 
 The existing [hardware validation issue #1](https://github.com/z9a17/opentabletdriver-rust/issues/1) remains the evidence thread for F06. Do not close it because a new planning issue exists.
 
-Initial tasks ready to claim: [F01](WORK_ITEMS.md#f01), [F03](WORK_ITEMS.md#f03), [P01](WORK_ITEMS.md#p01), [U01](WORK_ITEMS.md#u01), and [F06](WORK_ITEMS.md#f06) for someone able to perform the physical tests. Consult current issue comments before claiming. Follow the [agent handoff procedure](AGENT_HANDOFF.md).
+Consult current issue comments and the [agent handoff procedure](AGENT_HANDOFF.md) before claiming a task. F01 was delivered in v0.7.1; F03 is the evidence-ledger work. F06 still needs physical tablet testing.

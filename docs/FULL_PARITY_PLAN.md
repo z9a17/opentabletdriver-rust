@@ -1,6 +1,6 @@
 # Full OpenTabletDriver parity plan
 
-Status: approved project direction, implementation backlog open. Audited 2026-09-21 against Rust [v0.4.0 / 8d4d90e](https://github.com/z9a17/opentabletdriver-rust/tree/8d4d90eb0d7d2faeac248082c7da7a4c97c669e6). The documentation release does not implement the features below.
+Status: approved project direction, implementation backlog open. The starting-point audit used Rust [v0.4.0 / 8d4d90e](https://github.com/z9a17/opentabletdriver-rust/tree/8d4d90eb0d7d2faeac248082c7da7a4c97c669e6) on 2026-09-21. For shipped behavior, use [PORTING_STATUS.md](PORTING_STATUS.md); the baseline and acceptance gates below remain in force.
 
 The objective is a Rust implementation of the observable functionality of stable OpenTabletDriver, with efficient native report processing and **unchanged existing .NET plugins**. Windows PTH-660 support is the starting point. Full parity includes the upstream device database, Windows/Linux/macOS behavior, configuration and presets, desktop workflows, command-line and daemon interfaces, and the plugin ecosystem.
 
@@ -14,6 +14,7 @@ The objective is a Rust implementation of the observable functionality of stable
 | [Validation and performance](parity/VALIDATION.md) | Evidence levels, test scenarios, budgets, and release gates |
 | [Behavior contracts](parity/BEHAVIOR_CONTRACTS.md) | Current behavior of each stage, golden traces, and every known difference from upstream (F01) |
 | [Source inventory](parity/upstream-inventory.json) | Every baseline configuration, referenced parser, plugin contract source, and catalog record |
+| [Evidence ledger](parity/EVIDENCE_LEDGER.md) | Per-record validation state, evidence rules, and baseline update procedure (F03) |
 | [GitHub tracking](parity/GITHUB_TRACKING.md) | Parent issue and workstream issue links |
 
 The original [implementation plan](IMPLEMENTATION_PLAN.md) is historical. Its first-release exclusions do not limit this roadmap. [PORTING_STATUS.md](PORTING_STATUS.md) describes shipped behavior; this roadmap describes intended work. Do not mark a task complete because this plan exists.
@@ -36,13 +37,13 @@ Windows Ink, VMulti, gestures, and several other workflows are supplied by plugi
 
 Excluded from the parity claim: arbitrary future upstream versions, tablets/transports unsupported by the pinned upstream baseline, and compatibility with every undocumented private implementation detail ever used by third-party code. If a real baseline-compatible plugin exposes such a dependency, record it and resolve its compatibility task; do not silently discard it. FreeBSD symbols alone do not establish an upstream supported release target; assess it separately if supported baseline distributions or users establish that requirement.
 
-## 2. Current starting point
+## 2. Starting-point audit (v0.4.0)
 
 Rust 0.4.0 is a Windows USB PTH-660 driver with absolute/relative mouse output, tip/eraser-to-left-click thresholds, native Radial Follow, native filter DLLs, a limited .NET filter bridge, and a native TOML/JSON editing panel. The console and panel run the driver in their own process; a persistent separate daemon and control protocol do not yet exist.
 
 The managed bridge accepts synchronous PreTransform position filters only, reuses one report object, and applies returned X/Y only. It does not supply complete raw reports, tilt, rotation, pen buttons, auxiliary input, arbitrary services, async scheduling, output modes, tools, or bindings. The unchanged RadialFollow 0.3.0 tablet filter has an integration test; it is one compatibility example, not ecosystem parity.
 
-The last feature release passed 46 unit tests and two DLL integration checks. Live movement/click evidence comes from an earlier build. Current relative/filter behavior, reconnect input, sleep/wake, and several display cases still need hardware evidence. See [hardware validation](HARDWARE_VALIDATION.md) and [issue #1](https://github.com/z9a17/opentabletdriver-rust/issues/1).
+That audit found 46 passing unit tests and two DLL integration checks. Live movement/click evidence came from an earlier build. Relative/filter behavior, reconnect input, sleep/wake, and several display cases still need current hardware evidence. See [hardware validation](HARDWARE_VALIDATION.md) and [issue #1](https://github.com/z9a17/opentabletdriver-rust/issues/1).
 
 Known semantic debt includes force-enabling an imported disabled Radial Follow entry, reporting/skipping unknown imported filters, fixed PTH-660 specifications, a limited report adapter, and raw settings editors. Track these as explicit migration and compatibility work.
 
@@ -89,7 +90,7 @@ The UI talks to the daemon and may close without stopping input. Keep the curren
 
 ## 6. How agents should divide the work
 
-Start with F01, F03, P01, and U01; they can run independently. F06 is also ready when a person with the tablet can perform the physical steps. F02 follows F01; F04/F05 follow F02. Then split between device/report/binding work, configuration/control work, and managed compatibility work once their shared contracts exist.
+F01 established behavior contracts and golden traces; F03 establishes the evidence ledger. P01 and U01 can proceed independently. F06 is ready when a person with the tablet can perform the physical steps. F02 follows F01; F04/F05 follow F02. Then split between device/report/binding work, configuration/control work, and managed compatibility work once their shared contracts exist.
 
 Use the stable task IDs as the unit of ownership. Workstream issues contain checklists, but claiming one task does not claim the whole issue. Follow the [handoff procedure](parity/AGENT_HANDOFF.md), announce the branch and file boundaries, and check existing claims before editing shared modules. Create a small child issue when a task needs multiple PRs; retain the parent task ID and acceptance criteria.
 

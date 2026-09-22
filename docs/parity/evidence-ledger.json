@@ -1,0 +1,4542 @@
+{
+  "schema_version": 1,
+  "source": {
+    "upstream_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+    "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+    "inventory_sha256": "1e4f1f4da3e04b556faae9651b2e40225fb6881d3dc1fdd2a37ed7a78e497129"
+  },
+  "capabilities": {
+    "CAP-01": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-02": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-03": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-04": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-05": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-06": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-07": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-08": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-09": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-10": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-11": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-12": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-13": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-14": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-15": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-16": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-17": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-18": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-19": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-20": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-21": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-22": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-23": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-24": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-25": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-26": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-27": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-28": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-29": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-30": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-31": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-32": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-33": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-34": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-35": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-36": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-37": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-38": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-39": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-40": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-41": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-42": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-43": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-44": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-45": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-46": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-47": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-48": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-49": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-50": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-51": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "CAP-52": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    }
+  },
+  "configurations": {
+    "OpenTabletDriver.Configurations/Configurations/Acepen/AP1060.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Acepen/AP906.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Adesso/Cybertablet K8.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Artisul/A1201.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Artisul/AP604.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Artisul/D16 Pro.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Artisul/D22S.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Artisul/M0610 Pro.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Bosto/BT-12HD.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/FlooGoo/FMA100.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Gaomon/1060 Pro.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Gaomon/GM116HD.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Gaomon/GM156HD.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Gaomon/M106K Pro.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Gaomon/M106K.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Gaomon/M10K Pro.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Gaomon/M10K.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Gaomon/M1220.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Gaomon/M1230.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Gaomon/M5.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Gaomon/M6.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Gaomon/M7.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Gaomon/M8 (Variant 2).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Gaomon/M8.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Gaomon/PD1161.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Gaomon/PD1320.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Gaomon/PD156 Pro.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Gaomon/PD1560.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Gaomon/PD1561.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Gaomon/PD2200.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Gaomon/S56K.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Gaomon/S620.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Gaomon/S630.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Gaomon/S830.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Genius/G-Pen 560.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Genius/G-Pen F509.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Genius/i405x.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Genius/i608x.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/1060 Plus.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/420.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/G10T.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/G930L.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/GC610.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/GT-156HD V2.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/GT-191 V2.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/GT-220 V2 (2048).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/GT-220 V2.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/GT-221 Pro.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/GT-221.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/H1060P.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/H1061P.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/H1161.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/H320M.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/H420.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/H420X.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/H430P.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/H580X.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/H610 Pro V2.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/H610 Pro V3.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/H610 Pro.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/H610X.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/H640P.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/H641P.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/H642.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/H690.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/H950P.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/H951P.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/HC16 (Variant 2).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/HC16.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/HS610.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/HS611.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/HS64.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/HS95.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Kamvas 12.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Kamvas 13 (Gen 3).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Kamvas 13.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Kamvas 16 (2021).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Kamvas 16 (Gen 3).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Kamvas 16.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Kamvas 20.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Kamvas 22 Plus.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Kamvas 22.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Kamvas 24 Plus.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Kamvas 24.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Kamvas Pro 12.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Kamvas Pro 13 (2.5k).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Kamvas Pro 13.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Kamvas Pro 16 (2.5k).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Kamvas Pro 16 (4k).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Kamvas Pro 16 Plus (4k).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Kamvas Pro 16 V2.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Kamvas Pro 16.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Kamvas Pro 19 (4K).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Kamvas Pro 20.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Kamvas Pro 22 (2019).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Kamvas Pro 24 (4K).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Kamvas Pro 24 (Gen 3).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Kamvas Pro 24.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Kamvas Pro 27.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/L310.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/L610.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/New 1060 Plus (2048).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/New 1060 Plus.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Note X10.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Q11K V2.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Q11K.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Q620M.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/Q630M.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/RDS-160.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/RDS-220.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/RTE-100.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/RTM 500.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/RTP-700.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/WH1409 V2 (Variant 2).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/WH1409 V2.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Huion/WH1409.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/KENTING/K5540.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/LetSketch/WP9620C.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Lifetec/LT9570.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Monoprice/10594.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Monoprice/MP1060-HA60.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Parblo/A609.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Parblo/A610 Pro (Variant 2).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Parblo/A610 Pro.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Parblo/A610.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Parblo/A640 V2.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Parblo/A640.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Parblo/Intangbo M.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Parblo/Intangbo S.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Parblo/Intangbo SW.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Parblo/Ninos M.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Parblo/Ninos N4.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Parblo/Ninos N7.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Parblo/Ninos N7B.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Parblo/Ninos S.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/RobotPen/T9A.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Trust/Flex Design Tablet.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Turcom/TS-6580.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/UC-Logic/1060N.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/UC-Logic/PF1209.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/UC-Logic/TWMNA62.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/UGEE/M708 V2.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/UGEE/M708 V3.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/UGEE/M708.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/UGEE/M808.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/UGEE/M908.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/UGEE/S1060.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/UGEE/S640.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/UGEE/U1200.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/UGEE/U1600.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/UGEE/UE16.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/VEIKK/A15 Pro.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/VEIKK/A15 V2.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/VEIKK/A15.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/VEIKK/A30 V2.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/VEIKK/A30.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/VEIKK/A50 (Variant 2).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/VEIKK/A50.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/VEIKK/S640 V2.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/VEIKK/S640.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/VEIKK/VK1060.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/VEIKK/VK1060PRO.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/VEIKK/VK1200.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/VEIKK/VK2200PRO.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/VEIKK/VK430 V2.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/VEIKK/VK430.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/VEIKK/VK640.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/VEIKK/VO1060.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/ViewSonic/Woodpad PF0730.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/ViewSonic/Woodpad PF1030.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTC-4110WL.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTC-6110WL.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTE-430.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTE-440.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTE-450.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTE-460.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTE-630.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTE-640.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTE-650.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTE-660.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTF-430.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTH-300.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTH-301.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTH-460.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTH-461.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTH-470.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTH-480.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTH-490.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTH-661.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTH-670.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTH-680.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTH-690.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTL-4100.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTL-4100WL.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTL-460.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTL-470.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTL-471.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTL-472.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTL-480.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTL-490.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTL-6100.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTL-6100WL.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTL-671.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTL-672.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTL-680.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/CTL-690.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/DTC-121.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/DTC-133.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/DTH-1320.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/DTH-135.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/DTH-2200.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/DTH-227.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/DTH-271.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/DTK-1300.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/DTK-1660.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/DTK-2100.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/DTK-2200.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/DTZ-1200W.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/DTZ-2100.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/ET-0405-U.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/ET-0405A-U.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/FT-0405-U.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/GD-0405-U.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/GD-0608-U.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/GD-0912-U.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/GD-1212-U.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/GD-1218-U.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/MTE-450.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PL-800.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTH-450.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTH-451.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTH-460.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTH-650.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTH-651.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTH-660.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTH-850.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTH-851.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTH-860.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTK-1240.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTK-440.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTK-450.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTK-470.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTK-540WL.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTK-640.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTK-650.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTK-670.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTK-840.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTK-870.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTU-600U.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTZ-1230.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTZ-1231W.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTZ-430.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTZ-431W.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTZ-630.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTZ-631W.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/PTZ-930.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/XD-0405-U.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/XD-0608-U.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/XD-0912-U.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/XD-1212-U.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Wacom/XD-1218-U.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/Waltop/Slim Tablet.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XenceLabs/Pen Tablet Medium.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XenceLabs/Pen Tablet Small.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XENX/P1-640.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XENX/P3-1060.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XENX/X1-640.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XOPPOX/D161.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist 10 (2nd Gen).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist 10S.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist 12 (2nd Gen).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist 12 Pro.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist 12.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist 13 (2nd Gen).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist 13.3 Pro V2.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist 13.3 Pro.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist 13.3.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist 15.6 Pro V2.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist 15.6 Pro.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist 15.6.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist 16 (2nd Gen).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist 16 Pro.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist 16.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist 22 (2nd Gen).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist 22HD.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist 22R Pro.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist 24 Pro.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist 24.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist Pro 14 (Gen2).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist Pro 16 (Gen2).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist Pro 16TP.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist Pro 19 (Gen2).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist Pro 22 (Gen2).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist Pro 24 (Gen2).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/CT1060.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/CT430.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/CT640.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Deco 01 V2 (Variant 2).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Deco 01 V2.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Deco 01 V3 (Variant 2).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Deco 01 V3.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Deco 01.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Deco 02.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Deco 03.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Deco 640 (IT640).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Deco L.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Deco LW.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Deco M.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Deco mini4.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Deco mini7 V2.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Deco mini7.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Deco mini7W V2.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Deco MW.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Deco Pro LW Gen2.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Deco Pro Medium.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Deco Pro MW Gen2.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Deco Pro MW.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Deco Pro Small.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Deco Pro SW.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Deco Pro XLW Gen2.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Innovator 16.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Star 02.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Star 03 Pro.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Star 03 V2.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Star 03.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Star 05 V3.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Star 06.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Star 06C.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Star G430.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Star G430S V2.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Star G430S.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Star G540 Pro.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Star G540.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Star G640 (Variant 2).json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Star G640.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Star G640S.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Star G960.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Star G960S Plus.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations/Configurations/XP-Pen/Star G960S.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    }
+  },
+  "parsers": {
+    "OpenTabletDriver.Configurations.Parsers.Acepen.AcepenReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Bosto.BostoReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.FlooGoo.FmaReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Genius.GeniusReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Genius.GeniusReportParserV2": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Huion.GianoReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Huion.HuionTiltReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Huion.InspiroyReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Lifetec.LifetecReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.RobotPen.RobotPenReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.SkipByteTabletReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicTiltReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicV1ReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicV2ReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Veikk.VeikkA15ReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Veikk.VeikkReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Veikk.VeikkTiltReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Veikk.VeikkV1ReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.ViewSonic.WoodPadReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Wacom.Bamboo.BambooReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Wacom.BambooPad.BambooPadReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Wacom.BambooV2.BambooV2AuxReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Wacom.CintiqV1.CintiqV1ReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Wacom.Graphire.GraphireReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Wacom.Intuos.IntuosReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Wacom.Intuos.WacomDriverIntuosReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Wacom.Intuos3.Intuos3ExtraAuxReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Wacom.Intuos3.Intuos3ReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Wacom.Intuos3.WacomDriverIntuos3ReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Wacom.Intuos4.Intuos4ReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Wacom.Intuos4.WacomDriverIntuos4ReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosPro.IntuosProReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosPro.WacomDriverIntuosProReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV1.IntuosV1ReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV1.WacomDriverIntuosV1ReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV2.IntuosV2ReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV2.WacomDriverIntuosV2ReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV3.IntuosV3ReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Wacom.PL.PLReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Wacom.PTU.PTUReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.Wacom.Wacom64bAuxReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.XenceLabs.XenceLabsReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.XENX.XENXReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenDeco03ReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenDedicatedAuxReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenGen2ReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenOffsetAuxReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenOffsetPressureReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Plugin.Tablet.AuxReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    },
+    "OpenTabletDriver.Plugin.Tablet.TabletReportParser": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": []
+    }
+  },
+  "plugins": {
+    "Repository/0.5.0.0/AbstractQbit/AbstractOTDPlugins/BezierInterpolator.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.0.0/AbstractQbit/AbstractOTDPlugins/RadialFollow.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.0.0/Kuuuube/Kuuube-s-CHATTER-EXTERMINATOR/Kuuube-s-CHATTER-EXTERMINATOR.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.0.0/OpenTabletDriver/TabletDriverFilters/DevocubFilters.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.0.0/OpenTabletDriver/TabletDriverFilters/HawkuFilters.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.0.0/X9VoiD/VoiDPlugins/MeL.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.0.0/X9VoiD/VoiDPlugins/OemKill.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.0.0/X9VoiD/VoiDPlugins/PrecisionControl.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.0.0/X9VoiD/VoiDPlugins/Reconstructor.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.0.0/X9VoiD/VoiDPlugins/ScriptRunner.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.0.0/X9VoiD/VoiDPlugins/TouchEmu.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.0.0/X9VoiD/VoiDPlugins/VMultiMode.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.0.0/X9VoiD/VoiDPlugins/WindowsInk.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.1.0/Kuuuube/Circular_Area/Circular_Area.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.1.0/Kuuuube/Tablet_Area_Randomizer/Tablet_Area_Randomizer.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.2.0/Gess1t/Gess1tsAreaRandomizer/Gess1tsAreaRandomizer.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.2.0/Gess1t/Gess1tsProxyAPI/Gess1tsProxyAPI.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.2.0/Gess1t/OTD.Backport/OTD.Backport.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.2.3/Adryzz/AdryzzTools/AudioToggle.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.3.1/Gess1t/Additional-Keys/Additional-Keys.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.3.1/imkunet/SpringInterpolator/SpringInterpolator.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.3.3/Gess1t/OTD.EnhancedOutputMode/OTD.EnhancedOutputMode.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.3.3/Gess1t/OTD.LEDSandbox/OTD.LEDSandbox.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.3.3/Gess1t/OTD.UX.Remote/OTD.UX.Remote.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.3.3/Gess1t/ScrollBindings/ScrollBindings.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.3.3/Gess1t/Touch-Gestures/Touch-Gestures.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.3.3/Gess1t/WheelAddon/WheelAddon.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.5.3.3/Gess1t/WirelessKitAddon/WirelessKitAddon.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.0.0/AbstractQbit/AbstractOTDPlugins/BezierInterpolator.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.0.0/AbstractQbit/AbstractOTDPlugins/RadialFollow.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.0.0/AbstractQbit/AbstractOTDPlugins/SinCursor.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.0.0/imkunet/SpringInterpolator/SpringInterpolator.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.0.0/Kuuuube/Chatter_Generator/Chatter_Generator.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.0.0/Kuuuube/Circular_Area/Circular_Area.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.0.0/Kuuuube/Flip_Axes/Flip_Axes.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.0.0/Kuuuube/Hover_Distance_Limiter/Hover_Distance_Limiter.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.0.0/Kuuuube/Kuuube-s-CHATTER-EXTERMINATOR/Kuuube-s-CHATTER-EXTERMINATOR.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.0.0/Kuuuube/Tablet_Area_Randomizer/Tablet_Area_Randomizer.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.0.0/Kuuuube/Tablet_Debounce/Tablet_Debounce.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.0.0/OpenTabletDriver/TabletDriverFilters/DevocubFilters.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.0.0/OpenTabletDriver/TabletDriverFilters/HawkuFilters.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.0.3/Gess1t/Additional-Keys/Additional-Keys.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.0.3/Gess1t/Preset.Binding/Preset.Binding.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.0.4/nzbasic/Hand-Speed/HandSpeed.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.0.4/OpenKneeboard/OTD-IPC/OTD-IPC.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.0.4/X9VoiD/VoiDPlugins/MeL.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.0.4/X9VoiD/VoiDPlugins/PrecisionControl.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.0.4/X9VoiD/VoiDPlugins/Reconstructor.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.0.4/X9VoiD/VoiDPlugins/ScriptRunner.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.0.4/X9VoiD/VoiDPlugins/TouchEmu.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.0.4/X9VoiD/VoiDPlugins/VMultiMode.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.0.4/X9VoiD/VoiDPlugins/WindowsInk.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.1.0/jamesbt365/PSSA/PSSA.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.1.0/Kuuuube/Circular_Area/Circular_Area.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.1.0/Kuuuube/Flip_Axes/Flip_Axes.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.1.0/Kuuuube/Monitor_Toggle/Monitor_Toggle.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.1.0/Kuuuube/Slimy_Scylla/Slimy_Scylla.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.1.0/Kuuuube/Tablet_Area_Randomizer/Tablet_Area_Randomizer.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.1.0/Kuuuube/Tablet_Calibration/Tablet_Calibration.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.1.0/nzbasic/Hand-Speed/HandSpeed.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.1.0/X9VoiD/VoiDPlugins/MeL.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.1.0/X9VoiD/VoiDPlugins/PrecisionControl.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.1.0/X9VoiD/VoiDPlugins/Reconstructor.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.1.0/X9VoiD/VoiDPlugins/ScriptRunner.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.1.0/X9VoiD/VoiDPlugins/TouchEmu.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.1.0/X9VoiD/VoiDPlugins/VMultiMode.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.1.0/X9VoiD/VoiDPlugins/WindowsInk.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.2.0/SelenianRanger/MouseUtils/MouseUtils.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.3.0/Ashesh3/CycleBind/CycleBind.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.3.0/jaaakb/ScuffedInterp/ScuffedInterp.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.3.0/Kuuuube/CustomFilter/CustomFilter.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.3.0/Kuuuube/Monitor_Toggle/Monitor_Toggle.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.3.0/shmkle/TemporalResampler/TemporalResampler.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.4.0/Gess1t/OTD.EnhancedOutputMode/OTD.EnhancedOutputMode.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.4.0/Gess1t/OTD.LEDSanbox/OTD.LEDSanbox.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.4.0/Gess1t/OTD.UX.Remote/OTD.UX.Remote.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.4.0/Gess1t/RelativeModeArea/RelativeModeArea.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.4.0/Gess1t/ScrollBindings/ScrollBindings.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.4.0/Gess1t/Touch-Gestures/Touch-Gestures.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.4.0/Gess1t/WirelessKitAddon/WirelessKitAddon.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.4.0/Kuuuube/DualActionBinds/DualActionBinds.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.4.0/Kuuuube/Hover_Distance_Limiter/Hover_Distance_Limiter.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.4.0/shmkle/MabletMapping/MabletMapping.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.4.0/shmkle/TemporalResampler/TemporalResampler.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.4.0/Vineyo/TiltCalibration/TiltCalibration.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.5.1/TheBlueOompaLoompa/BetterCalibrator/BetterCalibrator.json": {
+      "state": "not_applicable",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.6.0/Kuuuube/VoiDPlugins/ScriptRunner.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.6.0/Kuuuube/VoiDPlugins/VMultiMode.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.6.0/Kuuuube/VoiDPlugins/WindowsInk.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.6.0/Kuuuube/VoiDPlugins/WindowsPenPointer.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.6.0/nahkd123/StrokeSnapping/StrokeSnapping.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.6.0/TheBlueOompaLoompa/BetterCalibrator/BetterCalibrator.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.6.2/cfm-miku-en/moonlight-suite/moonlight.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.6.2/clarence112/OTD-Eraser-Button-Plugin/erase-button.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.6.2/rinormaloku/DragThreshold/DragThreshold.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.6.2/shreddism/TheSaturnCollection/TheSaturnCollection.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.7.0/make-42/otd-frenet-serret-frame-predictor/otd-frenet-serret-frame-predictor.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    },
+    "Repository/0.6.7.0/shreddism/TheSaturnCollection/TheSaturnCollection.json": {
+      "state": "open",
+      "owner": null,
+      "pull_request": null,
+      "release": null,
+      "evidence": [],
+      "blockers": [],
+      "classes": [],
+      "class_inventory_complete": false
+    }
+  },
+  "manual_plugins": {},
+  "plugin_classes": {}
+}
