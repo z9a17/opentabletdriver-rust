@@ -1,4 +1,10 @@
 //! Checked decoding of the USB IntuosV2 pen reports used by the PTH-660.
+//!
+//! Byte 1 of report 0x10, per the tablet's own report descriptor (vendor page
+//! 0xFF0D mirrors the digitizer usages): 0x01 Tip Switch, 0x02 Barrel Switch,
+//! 0x04 Secondary Barrel Switch, 0x08 Eraser, 0x10 Invert, 0x20 In Range
+//! (upstream's `NearProximity`) and 0x40 Sense. Sense covers the whole hover
+//! height at which the tablet reports positions; In Range is a lower band.
 
 pub const MAX_X: u32 = 44_800;
 pub const MAX_Y: u32 = 29_600;
@@ -10,7 +16,10 @@ pub struct PenReport {
     pub x: u32,
     pub y: u32,
     pub pressure: u16,
-    pub proximity: bool,
+    /// In Range (usage 0x32), upstream's `NearProximity`.
+    pub in_range: bool,
+    /// Sense (usage 0x36): the pen is detected, possibly above In Range.
+    pub sense: bool,
     pub tip_switch: bool,
     pub eraser: bool,
     pub tilt: [i8; 2],
@@ -60,7 +69,8 @@ pub fn parse(data: &[u8]) -> Result<Option<PenReport>, ParseError> {
             x: u24(data, 2),
             y: u24(data, 5),
             pressure: u16le(data, 8),
-            proximity: flags & (1 << 5) != 0,
+            in_range: flags & (1 << 5) != 0,
+            sense: flags & (1 << 6) != 0,
             tip_switch: flags & 1 != 0,
             eraser: flags & (1 << 4) != 0,
             tilt: [data[10] as i8, data[11] as i8],
@@ -74,7 +84,8 @@ pub fn parse(data: &[u8]) -> Result<Option<PenReport>, ParseError> {
             x: u24(data, 3),
             y: u24(data, 6),
             pressure: u16le(data, 9),
-            proximity: data[1] & (1 << 5) != 0,
+            in_range: data[1] & (1 << 5) != 0,
+            sense: data[1] & (1 << 6) != 0,
             tip_switch: flags & 1 != 0,
             eraser: flags & (1 << 4) != 0,
             tilt: [data[11] as i8, data[12] as i8],
@@ -115,7 +126,7 @@ mod tests {
             (report.x, report.y, report.pressure),
             (MAX_X, MAX_Y, MAX_PRESSURE)
         );
-        assert!(report.eraser && report.proximity);
+        assert!(report.eraser && report.in_range && !report.sense);
         assert!(!report.tip_switch);
         assert_eq!(report.tilt, [-12, 9]);
         assert_eq!(report.rotation, Some(-250));
@@ -167,14 +178,14 @@ mod tests {
         ];
         let pen = parse(&data).unwrap().unwrap();
         assert_eq!((pen.x, pen.y, pen.pressure), (22_036, 5_795, 0));
-        assert!(pen.proximity);
+        assert!(pen.in_range && pen.sense);
         assert_eq!(pen.tilt, [7, 4]);
         assert_eq!(pen.hover_distance, Some(40));
         assert!(!pen.tip_switch);
     }
 
     #[test]
-    fn captured_contact_lift_and_proximity_loss() {
+    fn captured_contact_lift_and_hover_above_in_range() {
         // Independent report prefixes from an actual tap/lift capture.
         let contact = [
             0x10, 0x61, 0x11, 0x55, 0x00, 0x8c, 0x12, 0x00, 0x0e, 0x11, 0x00, 0x07, 0x00, 0x00,
@@ -184,17 +195,19 @@ mod tests {
             0x10, 0x60, 0x49, 0x54, 0x00, 0xe1, 0x0f, 0x00, 0x00, 0x00, 0xe4, 0x10, 0x00, 0x00,
             0x00, 0x00, 0x14,
         ];
-        let out_of_range = [
+        let sensed_only = [
             0x10, 0x40, 0xb8, 0x51, 0x00, 0x7e, 0x12, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00,
             0x00, 0x00, 0x3f,
         ];
         let tap = parse(&contact).unwrap().unwrap();
         let up = parse(&lift).unwrap().unwrap();
-        let away = parse(&out_of_range).unwrap().unwrap();
+        let high = parse(&sensed_only).unwrap().unwrap();
         assert_eq!(tap.pressure, 4_366);
-        assert!(tap.tip_switch && tap.proximity);
+        assert!(tap.tip_switch && tap.in_range && tap.sense);
         assert_eq!(up.pressure, 0);
-        assert!(!up.tip_switch && up.proximity);
-        assert!(!away.tip_switch && !away.proximity);
+        assert!(!up.tip_switch && up.in_range);
+        // Above the In Range band the tablet still reports a real position.
+        assert!(!high.tip_switch && !high.in_range && high.sense);
+        assert_eq!((high.x, high.y), (20_920, 4_734));
     }
 }

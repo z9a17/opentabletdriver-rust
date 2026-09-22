@@ -183,16 +183,25 @@ mod tests {
     }
 
     #[test]
-    fn recorded_hover_contact_loss_and_reentry_replay_without_injection() {
+    fn recorded_hover_contact_high_hover_loss_and_reentry_replay_without_injection() {
         let mut mapper = relative_mapper();
         let mut output = MouseOutput::new();
         let policy = ContactPolicy {
-            tip_threshold_raw: Some(83),
+            tip_threshold_raw: Some(82),
             ..ContactPolicy::default()
         };
+        // Synthetic: neither In Range nor Sense, so the pen is not detected.
+        let mut undetected = CAPTURE[2];
+        undetected[1] = 0;
         let now = Instant::now();
         let mut packets = Vec::new();
-        for data in [&CAPTURE[0], &CAPTURE[1], &CAPTURE[2], &CAPTURE[0]] {
+        for data in [
+            &CAPTURE[0],
+            &CAPTURE[1],
+            &CAPTURE[2],
+            &undetected,
+            &CAPTURE[0],
+        ] {
             let frame = state::frame(protocol::parse(data).unwrap().unwrap(), policy);
             let delta = mapper.map_at(frame.position, None, now);
             output
@@ -215,11 +224,15 @@ mod tests {
                     dy: -52,
                     flags: MOUSEEVENTF_MOVE | MOUSEEVENTF_LEFTDOWN
                 },
+                // Lifted above In Range but still sensed: the cursor keeps
+                // following, as in OpenTabletDriver. (-857, -14) raw units plus
+                // the carried fractions = (-43.8, -1.05) counts.
                 MousePacket {
-                    dx: 0,
-                    dy: 0,
-                    flags: MOUSEEVENTF_LEFTUP
+                    dx: -43,
+                    dy: -1,
+                    flags: MOUSEEVENTF_MOVE | MOUSEEVENTF_LEFTUP
                 },
+                // Not detected, then detected again: a new origin, no jump.
             ]
         );
     }

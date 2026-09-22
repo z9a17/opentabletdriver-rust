@@ -3,7 +3,7 @@
 The automated parser, state, and mapping tests do not prove that a specific physical tablet moves the Windows cursor correctly. Use this checklist on the PTH-660 over USB before calling the first release complete.
 
 1. Run the list command. Expect a readable 192-byte pen collection, a 44-byte auxiliary collection, and possibly an unreadable 4-byte mouse collection. The pen collection must have vendor/product 056a:0357.
-2. Run capture for 10 to 20 seconds. Hover and move the pen, then tap, hold, and lift. Check that X/Y change within 0..44800 and 0..29600, pressure rises during contact and returns to zero on lift, and proximity eventually clears. Save only the relevant report prefixes as fixtures and avoid publishing HID paths or serial numbers.
+2. Run capture for 10 to 20 seconds. Hover and move the pen, then tap, hold, and lift. Check that X/Y change within 0..44800 and 0..29600, pressure rises during contact and returns to zero on lift, and `in_range` and then `sense` clear as the pen rises and leaves. Save only the relevant report prefixes as fixtures and avoid publishing HID paths or serial numbers.
 3. Run `opentabletdriver-rust.exe settings` and compare its effective tablet area, display area, clipping, and tip threshold with the active OpenTabletDriver PTH-660 profile. Double-click the console executable to pause the original daemon/UX and run Rust. Check that the current cropped tablet area maps to the intended display edges; use an independent TOML profile for full-virtual-desktop and negative-origin monitor tests.
 4. Tap and lift repeatedly. Check exactly one left-button down/up pair per contact and a release after leaving proximity.
 5. Unplug and replug during hover and during tip hold. Confirm that the process stays alive, resumes without a restart, and releases a held left mouse button. Stop with Ctrl+C during contact and during an idle pending read.
@@ -22,6 +22,15 @@ Record the Windows build, PTH-660 firmware/connection mode, whether another tabl
 6. Import an OpenTabletDriver relative profile with Radial Follow enabled and compare filtering and pressure thresholds. Change display topology during relative output and verify continuous motion without a reset.
 
 Automated recorded-report replay and allocation checks cover the new CPU path, but these live relative-mode checks have not yet been performed.
+
+## Input latency and hover validation (pending)
+
+These checks cover the 0.7.0 changes described in [input latency](INPUT_LATENCY.md). Run OpenTabletDriver and the Rust driver one at a time; starting the Rust driver pauses OpenTabletDriver.
+
+1. Raise the pen slowly from the surface and note the height at which the cursor stops following. Repeat with OpenTabletDriver. The heights should match; before 0.7.0 the Rust driver stopped lower.
+2. Run `capture --seconds 20` while raising and lowering the pen. Record the `in_range`/`sense` transitions and whether any report arrives with both false; if one does, record its coordinates.
+3. Load every CPU (for example, a parallel build) and move the pen quickly. Compare the cursor with OpenTabletDriver under the same load. Stop the driver and record the Console's `Processed ... reports` line.
+4. With a 1 % tip threshold, press lightly and compare the click point with OpenTabletDriver.
 
 ## Development-machine results
 
