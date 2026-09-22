@@ -261,16 +261,28 @@ public static unsafe class EntryPoints
             {
                 var types = context.LoadFromAssemblyPath(file).GetExportedTypes()
                     .Where(t => !t.IsAbstract && typeof(IPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(t))
-                    .Select(t => new {
-                        type_name = t.FullName,
-                        // Omitted values preserve the plugin constructor's defaults.
-                        // A null placeholder would instead coerce many value types to zero.
-                        settings = t.GetProperties().Where(p => p.GetCustomAttribute<PropertyAttribute>() != null
-                            && p.GetCustomAttribute<DefaultPropertyValueAttribute>() != null)
-                            .ToDictionary(p => p.Name, p => p.GetCustomAttribute<DefaultPropertyValueAttribute>()?.Value)
+                    .Select(t =>
+                    {
+                        var properties = t.GetProperties()
+                            .Where(p => p.GetCustomAttribute<PropertyAttribute>() != null).ToArray();
+                        return new {
+                            type_name = t.FullName,
+                            display_name = t.GetCustomAttribute<PluginNameAttribute>()?.Name,
+                            // Omitted values preserve the plugin constructor's defaults.
+                            // A null placeholder would instead coerce many value types to zero.
+                            settings = properties.Where(p => p.GetCustomAttribute<DefaultPropertyValueAttribute>() != null)
+                                .ToDictionary(p => p.Name, p => p.GetCustomAttribute<DefaultPropertyValueAttribute>()?.Value),
+                            properties = properties.Select(p => new {
+                                name = p.Name,
+                                display_name = p.GetCustomAttribute<PropertyAttribute>()?.DisplayName,
+                                unit = p.GetCustomAttribute<UnitAttribute>()?.Unit,
+                                tooltip = p.GetCustomAttribute<ToolTipAttribute>()?.ToolTip
+                            }).ToArray()
+                        };
                     }).ToArray();
                 byte[] bytes = Encoding.UTF8.GetBytes(Newtonsoft.Json.JsonConvert.SerializeObject(types));
-                if (bytes.Length > capacity) return -1;
+                // Rust can retry with the required size for assemblies with long help text.
+                if (bytes.Length > capacity) return bytes.Length;
                 bytes.CopyTo(new Span<byte>(output, capacity));
                 return bytes.Length;
             }

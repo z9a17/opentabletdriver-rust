@@ -155,38 +155,80 @@ pub fn last_error() -> String {
     String::from_utf8_lossy(&buffer[..length as usize]).into_owned()
 }
 
-pub fn inspect(path: &Path) -> Result<Vec<crate::plugins::PluginConfig>, String> {
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct PropertyMetadata {
+    pub name: String,
+    pub display_name: Option<String>,
+    pub unit: Option<String>,
+    pub tooltip: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct FilterMetadata {
+    pub type_name: String,
+    pub display_name: Option<String>,
+    pub properties: Vec<PropertyMetadata>,
+}
+
+pub struct InspectedFilter {
+    pub config: crate::plugins::PluginConfig,
+    pub metadata: FilterMetadata,
+}
+
+pub fn inspect_details(path: &Path) -> Result<Vec<InspectedFilter>, String> {
     let path = path.canonicalize().map_err(|e| e.to_string())?;
     let path_text = path.to_str().ok_or(".NET DLL path is not Unicode")?;
     let mut output = vec![0; 65_536];
-    let size = unsafe {
-        (bridge()?.inspect)(
-            path_text.as_ptr(),
-            path_text.len() as i32,
-            output.as_mut_ptr(),
-            output.len() as i32,
-        )
+    let size = loop {
+        let size = unsafe {
+            (bridge()?.inspect)(
+                path_text.as_ptr(),
+                path_text.len() as i32,
+                output.as_mut_ptr(),
+                output.len() as i32,
+            )
+        };
+        if size < 0 {
+            return Err(last_error());
+        }
+        let size = size as usize;
+        if size <= output.len() {
+            break size;
+        }
+        if size > 1_048_576 {
+            return Err(".NET plugin metadata exceeds 1 MiB".into());
+        }
+        output.resize(size, 0);
     };
-    if size < 0 || size as usize > output.len() {
-        return Err(last_error());
-    }
     #[derive(serde::Deserialize)]
     struct Entry {
         type_name: String,
+        display_name: Option<String>,
         settings: serde_json::Value,
+        properties: Vec<PropertyMetadata>,
     }
-    let entries: Vec<Entry> =
-        serde_json::from_slice(&output[..size as usize]).map_err(|e| e.to_string())?;
+    let entries: Vec<Entry> = serde_json::from_slice(&output[..size]).map_err(|e| e.to_string())?;
     Ok(entries
         .into_iter()
-        .map(|entry| crate::plugins::PluginConfig {
-            path: path.clone(),
-            kind: crate::plugins::PluginKind::Dotnet,
-            enabled: false,
-            type_name: entry.type_name,
-            settings_json: entry.settings.to_string(),
+        .map(|entry| InspectedFilter {
+            config: crate::plugins::PluginConfig {
+                path: path.clone(),
+                kind: crate::plugins::PluginKind::Dotnet,
+                enabled: false,
+                type_name: entry.type_name.clone(),
+                settings_json: entry.settings.to_string(),
+            },
+            metadata: FilterMetadata {
+                type_name: entry.type_name,
+                display_name: entry.display_name,
+                properties: entry.properties,
+            },
         })
         .collect())
+}
+
+pub fn inspect(path: &Path) -> Result<Vec<crate::plugins::PluginConfig>, String> {
+    inspect_details(path).map(|entries| entries.into_iter().map(|entry| entry.config).collect())
 }
 
 #[cfg(test)]
@@ -206,11 +248,43 @@ mod tests {
         let path: PathBuf = std::env::var_os("OTD_TEST_DOTNET_PLUGIN")
             .expect("set OTD_TEST_DOTNET_PLUGIN")
             .into();
-        let entries = inspect(&path).unwrap();
+        let entries = inspect_details(&path).unwrap();
         assert!(
             entries
                 .iter()
-                .any(|e| e.type_name == "RadialFollow.RadialFollowSmoothingTabletSpace")
+                .any(|e| e.config.type_name == "RadialFollow.RadialFollowSmoothingTabletSpace")
+        );
+        let screen = &entries
+            .iter()
+            .find(|entry| entry.config.type_name == "RadialFollow.RadialFollowSmoothingScreenSpace")
+            .unwrap()
+            .metadata;
+        assert_eq!(
+            screen.display_name.as_deref(),
+            Some("AbstractQbit's Radial Follow Smoothing (Screen coordinates)")
+        );
+        let outer = screen
+            .properties
+            .iter()
+            .find(|property| property.name == "OuterRadius")
+            .unwrap();
+        assert_eq!(outer.display_name.as_deref(), Some("Outer Radius"));
+        assert_eq!(outer.unit.as_deref(), Some("px"));
+        assert!(outer.tooltip.as_deref().unwrap().contains("pixels"));
+        let tablet = &entries
+            .iter()
+            .find(|entry| entry.config.type_name == "RadialFollow.RadialFollowSmoothingTabletSpace")
+            .unwrap()
+            .metadata;
+        assert_eq!(
+            tablet
+                .properties
+                .iter()
+                .find(|property| property.name == "OuterRadius")
+                .unwrap()
+                .unit
+                .as_deref(),
+            Some("mm")
         );
         let mut config = PluginConfig {
             path,

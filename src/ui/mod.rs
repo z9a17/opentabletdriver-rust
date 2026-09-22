@@ -79,6 +79,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use crate::config::Profile;
 use crate::display::DisplaySnapshot;
+use crate::dotnet::FilterMetadata;
 use crate::hid::{Event, OwnedHandle};
 use crate::mapping::{OtdArea, OtdMapping};
 use crate::plugins::{PluginConfig, PluginKind};
@@ -602,7 +603,7 @@ struct PropertyRow {
     /// Static text before the field, which also names it for screen readers.
     label_control: Option<HWND>,
     label: String,
-    unit: &'static str,
+    unit: String,
     target: PropertyTarget,
 }
 
@@ -692,6 +693,8 @@ struct App {
     dirty: bool,
     selected_filter: usize,
     properties: Vec<PropertyRow>,
+    /// Discovery results are UI-only; they are never written into profiles.
+    plugin_metadata: HashMap<PathBuf, Result<Vec<FilterMetadata>, String>>,
     /// Label controls keyed by the control they name.
     labels: HashMap<isize, HWND>,
     json_visible: bool,

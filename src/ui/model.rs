@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use crate::config::{Profile, activation_raw};
 use crate::display::DisplaySnapshot;
+use crate::dotnet::FilterMetadata;
 use crate::mapping::{Crop, OtdArea, OtdMapping, Rect};
 use crate::plugins::{PluginConfig, PluginKind};
 use crate::protocol::{MAX_PRESSURE, MAX_X, MAX_Y};
@@ -91,6 +92,15 @@ pub enum PropertyValue {
     Number(serde_json::Number),
     Bool(bool),
     Text(String),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginField {
+    pub key: String,
+    pub label: String,
+    pub unit: String,
+    pub tooltip: Option<String>,
+    pub value: PropertyValue,
 }
 
 /// The profile being edited plus settings the user switched away from, so
@@ -434,6 +444,45 @@ pub fn plugin_properties(json: &str) -> Option<Vec<(String, PropertyValue)>> {
             Some((key.clone(), value))
         })
         .collect()
+}
+
+/// Keeps the DLL's property order and labels for settings already present in
+/// the profile. Unknown settings retain the generic editor as a fallback.
+pub fn plugin_editor_fields(
+    json: &str,
+    metadata: Option<&FilterMetadata>,
+) -> Option<Vec<PluginField>> {
+    let mut properties = plugin_properties(json)?;
+    let mut fields = Vec::with_capacity(properties.len());
+    if let Some(metadata) = metadata {
+        for descriptor in &metadata.properties {
+            if let Some(index) = properties
+                .iter()
+                .position(|(key, _)| *key == descriptor.name)
+            {
+                let (key, value) = properties.remove(index);
+                fields.push(PluginField {
+                    label: descriptor
+                        .display_name
+                        .as_deref()
+                        .filter(|name| !name.trim().is_empty())
+                        .map_or_else(|| display_name(&key), str::to_owned),
+                    unit: descriptor.unit.clone().unwrap_or_default(),
+                    tooltip: descriptor.tooltip.clone(),
+                    key,
+                    value,
+                });
+            }
+        }
+    }
+    fields.extend(properties.into_iter().map(|(key, value)| PluginField {
+        label: display_name(&key),
+        unit: String::new(),
+        tooltip: None,
+        key,
+        value,
+    }));
+    Some(fields)
 }
 
 /// Parses text typed for a setting, keeping integers integral.
@@ -784,6 +833,48 @@ mod tests {
         let updated =
             set_plugin_property(r#"{"Radius":1.5}"#, "Radius", serde_json::json!(2)).unwrap();
         assert_eq!(updated, r#"{"Radius":2}"#);
+    }
+
+    #[test]
+    fn plugin_editor_uses_dll_labels_units_and_order_without_losing_unknown_settings() {
+        let metadata = FilterMetadata {
+            type_name: "RadialFollow.Screen".into(),
+            display_name: Some("Screen smoothing".into()),
+            properties: vec![
+                crate::dotnet::PropertyMetadata {
+                    name: "OuterRadius".into(),
+                    display_name: Some("Outer Radius".into()),
+                    unit: Some("px".into()),
+                    tooltip: Some("Maximum lag".into()),
+                },
+                crate::dotnet::PropertyMetadata {
+                    name: "InnerRadius".into(),
+                    display_name: Some("Inner Radius".into()),
+                    unit: Some("px".into()),
+                    tooltip: None,
+                },
+            ],
+        };
+        let settings = r#"{"InnerRadius":5,"OuterRadius":10,"CustomFlag":true}"#;
+        let fields = plugin_editor_fields(settings, Some(&metadata)).unwrap();
+        assert_eq!(
+            fields
+                .iter()
+                .map(|field| field.key.as_str())
+                .collect::<Vec<_>>(),
+            ["OuterRadius", "InnerRadius", "CustomFlag"]
+        );
+        assert_eq!(
+            (fields[0].label.as_str(), fields[0].unit.as_str()),
+            ("Outer Radius", "px")
+        );
+        assert_eq!(fields[0].tooltip.as_deref(), Some("Maximum lag"));
+        assert_eq!(fields[2].label, "Custom Flag");
+        assert_eq!(fields[2].value, PropertyValue::Bool(true));
+        assert_eq!(
+            plugin_editor_fields(settings, None).unwrap().len(),
+            fields.len()
+        );
     }
 
     #[test]

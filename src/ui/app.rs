@@ -195,6 +195,7 @@ impl App {
             dirty: false,
             selected_filter: 0,
             properties: Vec::new(),
+            plugin_metadata: HashMap::new(),
             labels: HashMap::new(),
             json_visible: false,
             json_error: None,
@@ -635,8 +636,57 @@ impl App {
         }
     }
 
+    fn ensure_plugin_metadata(&mut self) {
+        let paths: HashSet<PathBuf> = self
+            .editor
+            .profile
+            .plugins
+            .iter()
+            .filter(|plugin| plugin.kind == PluginKind::Dotnet)
+            .map(|plugin| plugin.path.clone())
+            .collect();
+        for path in paths {
+            if self.plugin_metadata.contains_key(&path) {
+                continue;
+            }
+            let result = crate::dotnet::inspect_details(&path)
+                .map(|entries| entries.into_iter().map(|entry| entry.metadata).collect());
+            if let Err(error) = &result {
+                self.log(
+                    Level::Warning,
+                    "Plugins",
+                    format!("Could not read metadata from {}: {error}", path.display()),
+                );
+            }
+            self.plugin_metadata.insert(path, result);
+        }
+    }
+
+    fn metadata_for(&self, plugin: &PluginConfig) -> Option<&FilterMetadata> {
+        self.plugin_metadata
+            .get(&plugin.path)?
+            .as_ref()
+            .ok()?
+            .iter()
+            .find(|metadata| metadata.type_name == plugin.type_name)
+    }
+
     pub(super) fn refresh_filters(&mut self) {
-        let items = self.editor.filters();
+        if self.tab == Tab::Filters {
+            self.ensure_plugin_metadata();
+        }
+        let mut items = self.editor.filters();
+        for item in &mut items {
+            if let FilterRef::Plugin(index) = item.target
+                && let Some(metadata) = self.metadata_for(&self.editor.profile.plugins[index])
+                && let Some(name) = metadata
+                    .display_name
+                    .as_deref()
+                    .filter(|name| !name.trim().is_empty())
+            {
+                item.name = name.to_owned();
+            }
+        }
         let count = items.len();
         let texts: Vec<Vec<u16>> = items
             .iter()
@@ -704,31 +754,32 @@ impl App {
                 for (field, label, unit, tip) in RADIAL_FIELDS {
                     rows.push((
                         label.to_owned(),
-                        unit,
+                        unit.to_owned(),
                         PropertyTarget::Radial(field),
-                        Some(tip),
+                        Some(tip.to_owned()),
                         model::format_number(field.get(&settings), 6),
                     ));
                 }
             }
             FilterRef::Plugin(index) => {
                 let plugin = &self.editor.profile.plugins[index];
+                let metadata = self.metadata_for(plugin).cloned();
                 let properties = (plugin.kind == PluginKind::Dotnet)
-                    .then(|| model::plugin_properties(&plugin.settings_json))
+                    .then(|| model::plugin_editor_fields(&plugin.settings_json, metadata.as_ref()))
                     .flatten();
                 match properties {
                     Some(properties) => {
-                        for (key, value) in properties {
-                            let shown = match &value {
+                        for field in properties {
+                            let shown = match &field.value {
                                 PropertyValue::Number(number) => number.to_string(),
                                 PropertyValue::Text(text) => text.clone(),
                                 PropertyValue::Bool(_) => String::new(),
                             };
                             rows.push((
-                                model::display_name(&key),
-                                "",
-                                PropertyTarget::Plugin(key, value),
-                                None,
+                                field.label,
+                                field.unit,
+                                PropertyTarget::Plugin(field.key, field.value),
+                                field.tooltip,
                                 shown,
                             ));
                         }
@@ -791,7 +842,7 @@ impl App {
                 None => set_text(hwnd, &value),
             }
             if let Some(tip) = tip {
-                self.add_tool(hwnd, 0, tip);
+                self.add_tool(hwnd, 0, &tip);
             }
             self.properties.push(PropertyRow {
                 hwnd,
@@ -1200,8 +1251,8 @@ impl App {
     }
 
     pub(super) fn add_plugin(&mut self, path: PathBuf, dotnet: bool) {
-        let entries = if dotnet {
-            match crate::dotnet::inspect(&path) {
+        let (entries, metadata) = if dotnet {
+            match crate::dotnet::inspect_details(&path) {
                 Ok(entries) if entries.is_empty() => {
                     self.log(
                         Level::Error,
@@ -1212,13 +1263,17 @@ impl App {
                 }
                 // Keep the path as chosen rather than the \\?\ form inspection
                 // resolves; loading canonicalizes it again.
-                Ok(entries) => entries
-                    .into_iter()
-                    .map(|entry| PluginConfig {
-                        path: path.clone(),
-                        ..entry
-                    })
-                    .collect(),
+                Ok(entries) => {
+                    let metadata = entries.iter().map(|entry| entry.metadata.clone()).collect();
+                    let configs = entries
+                        .into_iter()
+                        .map(|entry| PluginConfig {
+                            path: path.clone(),
+                            ..entry.config
+                        })
+                        .collect();
+                    (configs, Some(metadata))
+                }
                 Err(error) => {
                     self.log(
                         Level::Error,
@@ -1229,13 +1284,16 @@ impl App {
                 }
             }
         } else {
-            vec![PluginConfig {
-                path,
-                kind: PluginKind::Native,
-                enabled: false,
-                type_name: String::new(),
-                settings_json: "{}".into(),
-            }]
+            (
+                vec![PluginConfig {
+                    path: path.clone(),
+                    kind: PluginKind::Native,
+                    enabled: false,
+                    type_name: String::new(),
+                    settings_json: "{}".into(),
+                }],
+                None,
+            )
         };
         if self.editor.profile.plugins.len() + entries.len() > 32 {
             self.log(
@@ -1244,6 +1302,9 @@ impl App {
                 "At most 32 plugin entries are supported.",
             );
             return;
+        }
+        if let Some(metadata) = metadata {
+            self.plugin_metadata.insert(path, Ok(metadata));
         }
         let first = self.editor.filters().len();
         let count = entries.len();
@@ -1537,6 +1598,9 @@ impl App {
         self.tab = tab;
         self.drag = None;
         update_look(|look| look.tab = tab);
+        if tab == Tab::Filters {
+            self.refresh_filters();
+        }
         for hwnd in &self.c.tabs {
             unsafe { InvalidateRect(*hwnd, ptr::null(), 0) };
         }
@@ -1667,6 +1731,7 @@ impl App {
 
     pub(super) fn replace_profile(&mut self, profile: Profile, path: Option<PathBuf>, dirty: bool) {
         self.editor = Editor::new(profile);
+        self.plugin_metadata.clear();
         if let Some(path) = path {
             self.profile_path = path;
         }
