@@ -18,3 +18,5 @@ settings_json = '{"alpha":0.35,"reset_ms":50}'
 # enabled = true
 # type_name = 'RadialFollow.RadialFollowSmoothingTabletSpace'
 # settings_json = '{"OuterRadius":0.7039,"InnerRadius":0.302,"SmoothingCoefficient":0.302,"SoftKneeScale":0.603,"SmoothingLeakCoefficient":0.201}'
+# For Absolute Mode, type_name can instead be 'RadialFollow.RadialFollowSmoothingScreenSpace'.
+# Its OuterRadius and InnerRadius are in desktop pixels (for example, 10 and 5).

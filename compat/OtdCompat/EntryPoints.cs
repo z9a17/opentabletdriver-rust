@@ -71,6 +71,7 @@ sealed class Instance : IDisposable
     int emissionCount;
     int consuming;
     int asyncEmission;
+    public PipelinePosition Position { get; }
 
     public Instance(JObject config)
     {
@@ -87,8 +88,9 @@ sealed class Instance : IDisposable
             filter = (IPositionedPipelineElement<IDeviceReport>)created;
             ApplySettings(type, created, config["settings"] as JObject ?? new JObject());
             InjectTablet(type, created);
-            if (filter.Position != PipelinePosition.PreTransform)
-                throw new NotSupportedException("This release supports PreTransform/tablet-coordinate filters only; pixel-space filters are not supported.");
+            Position = filter.Position;
+            if (Position is not (PipelinePosition.PreTransform or PipelinePosition.PostTransform))
+                throw new NotSupportedException($"Unsupported plugin pipeline position: {Position}.");
             filter.Emit += OnEmit;
         }
         catch
@@ -205,6 +207,13 @@ public static unsafe class EntryPoints
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static FilterApi* GetApi() => (FilterApi*)Api;
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static int GetPosition(nint context)
+    {
+        try { return (int)((Instance)GCHandle.FromIntPtr(context).Target!).Position; }
+        catch (Exception e) { lastError = e.GetBaseException().Message; return -1; }
+    }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     static nint Create(byte* json, nuint length)

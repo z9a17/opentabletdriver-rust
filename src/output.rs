@@ -83,7 +83,16 @@ impl MouseOutput {
         } else {
             None
         };
-        let result = self.emit_motion_with(Motion::Absolute(position), frame.contact, send);
+        self.emit_mapped(position, frame.contact, send)
+    }
+
+    pub fn emit_mapped(
+        &mut self,
+        position: Option<(i32, i32)>,
+        contact: bool,
+        send: impl FnOnce(MousePacket) -> Result<(), std::io::Error>,
+    ) -> Result<bool, std::io::Error> {
+        let result = self.emit_motion_with(Motion::Absolute(position), contact, send);
         if position.is_none() {
             self.last_position = None;
         }

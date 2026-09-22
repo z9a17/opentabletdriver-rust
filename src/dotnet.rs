@@ -9,10 +9,12 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 type GetApi = unsafe extern "C" fn() -> *const FilterApi;
+type GetPosition = unsafe extern "C" fn(*mut c_void) -> i32;
 type Inspect = unsafe extern "C" fn(*const u8, i32, *mut u8, i32) -> i32;
 type GetError = unsafe extern "C" fn(*mut u8, i32) -> i32;
 struct Bridge {
     get_api: GetApi,
+    get_position: GetPosition,
     inspect: Inspect,
     get_error: GetError,
 }
@@ -105,6 +107,9 @@ fn load_bridge() -> Result<Bridge, String> {
     };
     let bridge = Bridge {
         get_api: unsafe { std::mem::transmute::<*mut c_void, GetApi>(entry("GetApi")?) },
+        get_position: unsafe {
+            std::mem::transmute::<*mut c_void, GetPosition>(entry("GetPosition")?)
+        },
         inspect: unsafe { std::mem::transmute::<*mut c_void, Inspect>(entry("Inspect")?) },
         get_error: unsafe { std::mem::transmute::<*mut c_void, GetError>(entry("GetError")?) },
     };
@@ -127,6 +132,15 @@ pub fn filter_api() -> Result<FilterApi, String> {
         return Err(".NET bridge returned a null API".into());
     }
     Ok(unsafe { ptr.read() })
+}
+
+pub fn position(context: *mut c_void) -> Result<crate::plugins::PipelineStage, String> {
+    match unsafe { (bridge()?.get_position)(context) } {
+        1 => Ok(crate::plugins::PipelineStage::PreTransform),
+        2 => Ok(crate::plugins::PipelineStage::Pixels),
+        -1 => Err(last_error()),
+        other => Err(format!("unsupported .NET pipeline position {other}")),
+    }
 }
 
 pub fn last_error() -> String {
@@ -178,8 +192,13 @@ pub fn inspect(path: &Path) -> Result<Vec<crate::plugins::PluginConfig>, String>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugins::{Plugin, PluginConfig, PluginKind};
+    use crate::config::Profile;
+    use crate::mapping::{Crop, Mapper, Rect};
+    use crate::pipeline::ReportPipeline;
+    use crate::plugins::{PipelineStage, Plugin, PluginChain, PluginConfig, PluginKind};
+    use crate::protocol::PenReport;
     use otd_plugin_api::Sample;
+    use std::time::{Duration, Instant};
 
     #[test]
     #[ignore = "requires bridge and unchanged RadialFollow DLL; set OTD_COMPAT_DIR and OTD_TEST_DOTNET_PLUGIN"]
@@ -201,6 +220,7 @@ mod tests {
             settings_json: r#"{"InnerRadius":0.5,"OuterRadius":1.0}"#.into(),
         };
         let mut plugin = Plugin::load(&config).unwrap();
+        assert_eq!(plugin.stage, PipelineStage::PreTransform);
         let mut sample = Sample {
             x: 20_000.0,
             y: 10_000.0,
@@ -208,7 +228,7 @@ mod tests {
             ..Sample::default()
         };
         // Let the original plugin's real 50 ms stopwatch reset to the baseline.
-        std::thread::sleep(std::time::Duration::from_millis(55));
+        std::thread::sleep(Duration::from_millis(55));
         assert!(plugin.process(&mut sample));
         assert_eq!((sample.x, sample.y), (20_000.0, 10_000.0));
         sample.x += 20.0; // 0.1 mm is inside its configured 0.5 mm dead zone.
@@ -217,12 +237,140 @@ mod tests {
         plugin.reset();
         drop(plugin);
         config.type_name = "RadialFollow.RadialFollowSmoothingScreenSpace".into();
+        config.settings_json = r#"{"InnerRadius":5.0,"OuterRadius":10.0}"#.into();
+        let mut screen_plugin = Plugin::load(&config).unwrap();
+        assert_eq!(screen_plugin.stage, PipelineStage::Pixels);
+        let mut pixels = Sample {
+            x: 100.0,
+            y: 200.0,
+            ..Sample::default()
+        };
+        std::thread::sleep(Duration::from_millis(55));
+        assert!(screen_plugin.process(&mut pixels));
+        assert_eq!((pixels.x, pixels.y), (100.0, 200.0));
+        pixels.x += 2.0;
+        assert!(screen_plugin.process(&mut pixels));
+        assert_eq!(pixels.x, 100.0, "the screen-space dead zone is in pixels");
+        screen_plugin.reset();
+        drop(screen_plugin);
+
+        let mut chain = PluginChain::load(&[config.clone()]).unwrap();
+        assert!(chain.validate_output_mode(false).is_ok());
+        assert!(chain.validate_output_mode(true).is_err());
+        let desktop = Rect {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        let mapper = Mapper::new(Crop::default(), 0, desktop, desktop).unwrap();
+        let mut pipeline = ReportPipeline::new(&Profile::default()).unwrap();
+        let mut pen = PenReport {
+            id: 0x10,
+            x: 20_000,
+            y: 10_000,
+            pressure: 0,
+            in_range: true,
+            sense: true,
+            tip_switch: false,
+            eraser: false,
+            tilt: [0; 2],
+            rotation: Some(0),
+            hover_distance: Some(0),
+        };
+        std::thread::sleep(Duration::from_millis(55));
+        let mut first = None;
         assert!(
-            Plugin::load(&config).is_err(),
-            "pixel-space type must be rejected"
+            pipeline
+                .process(pen, Instant::now(), Some(mapper), &mut chain, |packet| {
+                    first = Some(packet);
+                    Ok(())
+                })
+                .unwrap()
         );
+        assert!(first.is_some());
+        pen.x += 20; // Under one screen pixel, inside the configured 5 px dead zone.
+        let mut second = None;
+        assert!(
+            !pipeline
+                .process(pen, Instant::now(), Some(mapper), &mut chain, |packet| {
+                    second = Some(packet);
+                    Ok(())
+                })
+                .unwrap()
+        );
+        assert!(
+            second.is_none(),
+            "screen-space smoothing suppresses the move"
+        );
+
         config.type_name = "RadialFollow.RadialFollowSmoothingTabletSpace".into();
         config.settings_json = r#"{"Typo":0.5}"#.into();
         assert!(Plugin::load(&config).is_err());
+    }
+
+    #[test]
+    #[ignore = "manual release-mode benchmark; requires bridge and unchanged RadialFollow DLL; no HID or SendInput"]
+    fn benchmark_dotnet_post_transform_pipeline() {
+        use std::hint::black_box;
+
+        let path: PathBuf = std::env::var_os("OTD_TEST_DOTNET_PLUGIN")
+            .expect("set OTD_TEST_DOTNET_PLUGIN")
+            .into();
+        let config = PluginConfig {
+            path,
+            kind: PluginKind::Dotnet,
+            enabled: true,
+            type_name: "RadialFollow.RadialFollowSmoothingScreenSpace".into(),
+            settings_json: r#"{"InnerRadius":5.0,"OuterRadius":10.0}"#.into(),
+        };
+        let desktop = Rect {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        let mapper = Mapper::new(Crop::default(), 0, desktop, desktop).unwrap();
+        let mut pen = PenReport {
+            id: 0x10,
+            x: 20_000,
+            y: 10_000,
+            pressure: 0,
+            in_range: true,
+            sense: true,
+            tip_switch: false,
+            eraser: false,
+            tilt: [0; 2],
+            rotation: Some(0),
+            hover_distance: Some(0),
+        };
+        const REPORTS: u32 = 100_000;
+        for with_plugin in [false, true] {
+            let mut chain = PluginChain::load(if with_plugin {
+                std::slice::from_ref(&config)
+            } else {
+                &[]
+            })
+            .unwrap();
+            let mut pipeline = ReportPipeline::new(&Profile::default()).unwrap();
+            let mut run = |reports: u32| {
+                for index in 0..reports {
+                    pen.x = 20_000 + index % 1_000;
+                    pipeline
+                        .process(pen, Instant::now(), Some(mapper), &mut chain, |packet| {
+                            black_box(packet);
+                            Ok(())
+                        })
+                        .unwrap();
+                }
+            };
+            run(1_000);
+            let start = Instant::now();
+            run(REPORTS);
+            println!(
+                "absolute replay: pixel_plugin={with_plugin}, reports={REPORTS}, {:.1} ns/report; simulated output, no HID or SendInput",
+                start.elapsed().as_nanos() as f64 / f64::from(REPORTS)
+            );
+        }
     }
 }

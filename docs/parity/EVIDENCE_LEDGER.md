@@ -2,7 +2,7 @@
 
 The [source inventory](upstream-inventory.json) lists what the pinned OpenTabletDriver 0.6.7 baseline contains. The [evidence ledger](evidence-ledger.json) records what this port has actually implemented and checked. They are separate files: regenerating the inventory never changes evidence.
 
-The first ledger has one row for each of the 52 capability IDs, 339 device configurations, 52 referenced parser types and 98 catalog records. Of those catalog records, metadata marks 57 eligible for the baseline. Eligible rows start `open`; the other 41 start `not_applicable` because their catalog metadata excludes this baseline. Neither state proves that a DLL runs. Plugin class records remain empty until P01 enumerates the classes in real packages.
+The first ledger has one row for each of the 52 capability IDs, 339 device configurations, 52 referenced parser types and 98 catalog records. Of those catalog records, metadata marks 57 eligible for the baseline. Eligible rows start `open`; the other 41 start `not_applicable` because their catalog metadata excludes this baseline. Neither state proves that a DLL runs. Plugin class rows are added when a real package is inspected; an incomplete package inventory keeps the package itself open while individual classes can record bounded results.
 
 ## Record evidence
 

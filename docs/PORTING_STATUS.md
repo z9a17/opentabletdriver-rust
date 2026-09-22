@@ -2,7 +2,9 @@
 
 The long-term goal is broader OpenTabletDriver functionality with efficient native Rust report processing. The [original implementation plan](IMPLEMENTATION_PLAN.md) describes the first PTH-660 milestone; its exclusions are historical milestone boundaries, not the final project scope.
 
-The [full parity roadmap](FULL_PARITY_PLAN.md) defines the target against OpenTabletDriver v0.6.7, with [65 scoped tasks](parity/WORK_ITEMS.md), a [capability/source matrix](parity/CAPABILITY_MATRIX.md), a reproducible upstream inventory, an [evidence ledger](parity/EVIDENCE_LEDGER.md) and [GitHub tracking](parity/GITHUB_TRACKING.md). Release 0.5.0 redesigned the control panel, 0.6.0 added tray behavior, and 0.7.0 improved report-thread scheduling and hover/tip handling; see [input latency](INPUT_LATENCY.md). Release 0.7.1 added behavior contracts and nine golden traces without changing pen handling, mapping, clicks or filtering. The evidence ledger adds validation bookkeeping and CI checks; it does not change driver behavior or extend plugin compatibility. The table below records implemented behavior, not roadmap completion.
+The [full parity roadmap](FULL_PARITY_PLAN.md) defines the target against OpenTabletDriver v0.6.7, with [65 scoped tasks](parity/WORK_ITEMS.md), a [capability/source matrix](parity/CAPABILITY_MATRIX.md), a reproducible upstream inventory, an [evidence ledger](parity/EVIDENCE_LEDGER.md) and [GitHub tracking](parity/GITHUB_TRACKING.md).
+
+Release 0.5.0 redesigned the control panel, 0.6.0 added tray behavior, and 0.7.0 improved report-thread scheduling and hover/tip handling; see [input latency](INPUT_LATENCY.md). Release 0.7.1 added behavior contracts and nine golden traces without changing pen handling, mapping, clicks or filtering. Release 0.7.2 added validation bookkeeping and CI checks without changing driver behavior. Release 0.7.3 runs unchanged synchronous .NET Pixels/PostTransform position filters after absolute mapping; the original RadialFollow screen-space class passes an integration replay. The table below records implemented behavior, not roadmap completion.
 
 | Capability | Current Rust status | Remaining work |
 | --- | --- | --- |
@@ -11,7 +13,7 @@ The [full parity roadmap](FULL_PARITY_PLAN.md) defines the target against OpenTa
 | Absolute mouse output | Areas, rotation, clipping, limiting, display selection and refresh | Broader display/hardware validation |
 | Relative mouse output | Per-axis sensitivity, rotation, fractional carry, reset delay, OTD/TOML import | Live hardware validation |
 | Bindings | Tip/eraser mapped to left mouse with pressure thresholds | Pen side buttons, express keys, keyboard/mouse actions, wheel/scroll, shared-action ownership |
-| Filters | Native tablet-space Radial Follow, native DLL API/sample, unchanged synchronous .NET PreTransform position filters | Async/pixel-space filters and additional report properties |
+| Filters | Native tablet-space Radial Follow, native DLL API/sample, unchanged synchronous .NET PreTransform filters and Pixels/PostTransform position filters on absolute mouse output | Async filters, zero/multiple outputs, additional report properties and wider stage coverage |
 | Pen output | Mouse injection only; pressure/tilt/eraser are decoded | Native Windows pen/Ink output and application compatibility |
 | Device configuration | One fixed USB PTH-660 model | Upstream configuration database, parser selection, documented initialization reports, multi-device support |
 | Configuration and UI | Native Windows control panel in OpenTabletDriver's layout: graphical display/tablet area editors, relative settings, filter and plugin property editors, pen thresholds, console, light/dark/high-contrast themes, tray icon; driver start with the panel, OTD mapping import, TOML save/load, start/stop/apply, diagnostics | Automatic reload, presets, tablet debugger, plugin display names and units from .NET metadata |

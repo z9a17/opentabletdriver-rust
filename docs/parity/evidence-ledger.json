@@ -3848,12 +3848,15 @@
     },
     "Repository/0.6.0.0/AbstractQbit/AbstractOTDPlugins/RadialFollow.json": {
       "state": "open",
-      "owner": null,
-      "pull_request": null,
-      "release": null,
+      "owner": "P04",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/20",
+      "release": "v0.7.3",
       "evidence": [],
       "blockers": [],
-      "classes": [],
+      "classes": [
+        "RadialFollow.RadialFollowSmoothingScreenSpace",
+        "RadialFollow.RadialFollowSmoothingTabletSpace"
+      ],
       "class_inventory_complete": false
     },
     "Repository/0.6.0.0/AbstractQbit/AbstractOTDPlugins/SinCursor.json": {
@@ -4538,5 +4541,58 @@
     }
   },
   "manual_plugins": {},
-  "plugin_classes": {}
+  "plugin_classes": {
+    "catalog:Repository/0.6.0.0/AbstractQbit/AbstractOTDPlugins/RadialFollow.json::RadialFollow.RadialFollowSmoothingScreenSpace": {
+      "plugin_key": "catalog:Repository/0.6.0.0/AbstractQbit/AbstractOTDPlugins/RadialFollow.json",
+      "type_name": "RadialFollow.RadialFollowSmoothingScreenSpace",
+      "state": "implemented",
+      "owner": "P04",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/20",
+      "release": "v0.7.3",
+      "evidence": [
+        {
+          "kind": "integration-tested",
+          "task": "P04",
+          "source_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+          "rust_commit": "3f07fdd4f01437dbb69539358946da11277a8422",
+          "platform": "Windows (GitHub Actions windows-latest)",
+          "architecture": "x86_64",
+          "date": "2026-09-22T23:44:32+02:00",
+          "tester": "GitHub Actions Windows job",
+          "reference": "https://github.com/AbstractQbit/AbstractOTDPlugins/blob/58846450e9a5f6f3cfada9dd1b4d4909a5ca25bb/RadialFollow/RadialFollowSmoothingScreenSpace.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/actions/runs/35788111650",
+          "result": "pass",
+          "command": "cargo test --locked dotnet_plugin_round_trip -- --ignored",
+          "dll_sha256": "830d61f29c07b109398f1e001df3c7fbd359b1ad2491a6d12ccc243dacf16383"
+        }
+      ],
+      "blockers": []
+    },
+    "catalog:Repository/0.6.0.0/AbstractQbit/AbstractOTDPlugins/RadialFollow.json::RadialFollow.RadialFollowSmoothingTabletSpace": {
+      "plugin_key": "catalog:Repository/0.6.0.0/AbstractQbit/AbstractOTDPlugins/RadialFollow.json",
+      "type_name": "RadialFollow.RadialFollowSmoothingTabletSpace",
+      "state": "implemented",
+      "owner": "P04",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/20",
+      "release": "v0.7.3",
+      "evidence": [
+        {
+          "kind": "integration-tested",
+          "task": "P04",
+          "source_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+          "rust_commit": "3f07fdd4f01437dbb69539358946da11277a8422",
+          "platform": "Windows (GitHub Actions windows-latest)",
+          "architecture": "x86_64",
+          "date": "2026-09-22T23:44:32+02:00",
+          "tester": "GitHub Actions Windows job",
+          "reference": "https://github.com/AbstractQbit/AbstractOTDPlugins/blob/58846450e9a5f6f3cfada9dd1b4d4909a5ca25bb/RadialFollow/RadialFollowSmoothingTabletSpace.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/actions/runs/35788111650",
+          "result": "pass",
+          "command": "cargo test --locked dotnet_plugin_round_trip -- --ignored",
+          "dll_sha256": "830d61f29c07b109398f1e001df3c7fbd359b1ad2491a6d12ccc243dacf16383"
+        }
+      ],
+      "blockers": []
+    }
+  }
 }

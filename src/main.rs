@@ -295,6 +295,7 @@ fn drive(
     } else {
         &[]
     })?;
+    plugins.validate_output_mode(profile.relative.is_some())?;
     // Register before enumerating so an arrival between the two is not missed.
     let notification =
         Notification::register().map_err(|e| format!("PnP notification failed: {e}"))?;
@@ -379,7 +380,8 @@ fn main() {
             Ok(())
         }),
         Ok(Command::CheckPlugins(path)) => Profile::load(Some(&path)).and_then(|profile| {
-            let _chain = plugins::PluginChain::load(&profile.plugins)?;
+            let chain = plugins::PluginChain::load(&profile.plugins)?;
+            chain.validate_output_mode(profile.relative.is_some())?;
             println!(
                 "Loaded {} enabled plugin(s); no HID opened or input injected.",
                 profile.plugins.iter().filter(|p| p.enabled).count()
