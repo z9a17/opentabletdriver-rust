@@ -46,7 +46,7 @@ The release also includes `otd_ema_filter.dll`, a small exponential-smoothing ex
 
 The versioned C ABI is defined in [otd-plugin-api](../crates/otd-plugin-api/src/lib.rs); the buildable example is in [plugins/ema](../plugins/ema). Plugins export `otd_filter_v1`, returning a version/size-checked table with a fixed-size name and create/process/reset/destroy callbacks. JSON is decoded only on creation. A context is owned and freed by its DLL; Rust-owned allocations never cross the boundary. Callbacks run in report order on one driver thread. They must not unwind, block, retain sample pointers, or allocate per report.
 
-The pipeline runs built-in Radial Follow first, then enabled DLL entries in profile order, then absolute/relative mapping. A failing callback or nonfinite output disables that plugin for the current run and preserves the prior valid position. Proximity loss/reconnect resets healthy plugin instances; restart the driver to retry a disabled plugin. Native ABI version 1 filters position only.
+The pipeline runs built-in Radial Follow first, then enabled DLL entries in profile order, then absolute/relative mapping. A failing callback or nonfinite output disables that plugin for the current run and preserves the prior valid position. Losing the pen (neither hover bit set) or reconnecting resets healthy plugin instances; restart the driver to retry a disabled plugin. Native ABI version 1 filters position only.
 
 ## Efficiency and verification
 

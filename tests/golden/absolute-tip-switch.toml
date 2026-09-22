@@ -1,0 +1,38 @@
+description = "Built-in profile without thresholds: the full tablet maps to the whole virtual screen and the tip switch bit, not pressure, decides contact."
+origin = "synthetic, derived from captured report layouts"
+virtual_screen = [0, 0, 1920, 1080]
+end = "none"
+
+profile = '''
+
+'''
+
+[[step]]
+at_ms = 100
+report = "10 60 00 00 00 00 00 00 00 00 00 00 00 00 00 00 28"
+expect = "move 0 0"
+note = "top-left corner"
+
+[[step]]
+at_ms = 105
+report = "10 60 00 af 00 a0 73 00 00 00 00 00 00 00 00 00 28"
+expect = "move 65535 65535"
+note = "bottom-right corner (44800, 29600)"
+
+[[step]]
+at_ms = 110
+report = "10 61 00 af 00 a0 73 00 00 00 00 00 00 00 00 00 28"
+expect = "down"
+note = "tip switch with pressure 0"
+
+[[step]]
+at_ms = 115
+report = "10 60 00 af 00 a0 73 00 32 00 00 00 00 00 00 00 28"
+expect = "up"
+note = "no tip switch, pressure 50"
+
+[[step]]
+at_ms = 120
+report = "10 60 14 56 00 a3 16 00 00 00 07 04 00 00 00 00 28"
+expect = "move 32238 12815"
+note = "captured hover position"

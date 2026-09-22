@@ -245,14 +245,22 @@ impl PluginChain {
         })
     }
 
-    pub fn process(&mut self, position: (f32, f32), pen: crate::protocol::PenReport) -> (f32, f32) {
+    pub fn process(
+        &mut self,
+        position: (f32, f32),
+        pen: crate::protocol::PenReport,
+        now: Instant,
+    ) -> (f32, f32) {
         if self.plugins.is_empty() {
             return position;
         }
         let mut sample = Sample {
             x: position.0,
             y: position.1,
-            time_ns: self.epoch.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
+            time_ns: now
+                .saturating_duration_since(self.epoch)
+                .as_nanos()
+                .min(u128::from(u64::MAX)) as u64,
             pressure: u32::from(pen.pressure),
             flags: otd_plugin_api::PROXIMITY
                 | if pen.eraser {

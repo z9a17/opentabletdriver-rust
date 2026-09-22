@@ -34,9 +34,12 @@ Manual benchmarks print their results rather than pass or fail. The first keeps 
 
 ```powershell
 cargo test --release --locked benchmark_reader_wake_latency_under_load -- --ignored --nocapture --test-threads 1
+cargo test --release --locked benchmark_reader_effect_on_game_threads -- --ignored --nocapture
 cargo test --release --locked benchmark_display_checks -- --ignored --nocapture
 cargo test --release --locked benchmark_relative_pipeline -- --ignored --nocapture
 ```
+
+`cargo test` also replays the golden traces in `tests/golden`, which freeze the driver's current output; see [behavior contracts](BEHAVIOR_CONTRACTS.md).
 
 For the current managed integration test, download the [original RadialFollow 0.3.0 archive](https://github.com/AbstractQbit/AbstractOTDPlugins/releases/download/0.3.0/RadialFollow.zip), verify SHA-256 `d3f5b0200015e6e90948ee5d7870742ac28d82922cc745e9f1f78527e59f8160`, and extract it into an ignored test directory. The archive's `RadialFollow.dll` must remain unchanged:
 

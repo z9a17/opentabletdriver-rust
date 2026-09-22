@@ -12,12 +12,10 @@ use crate::config::Profile;
 use crate::display::{DisplayFingerprint, DisplaySnapshot};
 use crate::hid::{self, Candidate, Event, Notification};
 use crate::mapping::Mapper;
-use crate::output::MouseOutput;
+use crate::output::send_input;
+use crate::pipeline::ReportPipeline;
 use crate::priority::ReaderPriority;
 use crate::protocol;
-use crate::radial_follow::RadialFollowSmoothingTabletSpace;
-use crate::relative::RelativeMapper;
-use crate::state;
 
 #[derive(Clone, Copy)]
 pub enum Mode {
@@ -176,7 +174,7 @@ fn refresh_display(
     fingerprint: &mut DisplayFingerprint,
     mapper: &mut Option<Mapper>,
     profile: &Profile,
-    output: &mut MouseOutput,
+    pipeline: &mut ReportPipeline,
 ) {
     let Some(snapshot) = snapshot else {
         // Relative mouse motion is independent of the monitor topology.
@@ -196,7 +194,7 @@ fn refresh_display(
         }
         Err(error) => {
             *mapper = None;
-            if let Err(release_error) = output.release_all() {
+            if let Err(release_error) = pipeline.release_all(send_input) {
                 eprintln!("could not release buttons after display change: {release_error}");
             }
             eprintln!("display mapping paused: {error}");
@@ -223,12 +221,8 @@ pub fn run(
         hEvent: read_event.raw(),
         ..Default::default()
     };
-    let mut relative_mapper = profile
-        .relative
-        .map(RelativeMapper::new)
-        .transpose()
-        .map_err(io::Error::other)?;
-    let mut snapshot = if relative_mapper.is_none() {
+    let mut pipeline = ReportPipeline::new(profile).map_err(io::Error::other)?;
+    let mut snapshot = if !pipeline.is_relative() {
         Some(DisplaySnapshot::read().map_err(io::Error::other)?)
     } else {
         None
@@ -239,17 +233,6 @@ pub fn run(
         .transpose()
         .map_err(io::Error::other)?;
     let mut fingerprint = DisplayFingerprint::read();
-    let mut output = MouseOutput::new();
-    let mut filters: Vec<_> = if matches!(mode, Mode::Driver) {
-        profile
-            .radial_follow
-            .iter()
-            .copied()
-            .map(RadialFollowSmoothingTabletSpace::new)
-            .collect()
-    } else {
-        Vec::new()
-    };
     let mut next_refresh = Instant::now() + Duration::from_secs(1);
     let mut last_output_warning = Instant::now() - Duration::from_secs(10);
     let mut counters = Counters::default();
@@ -339,7 +322,7 @@ pub fn run(
                                     &mut fingerprint,
                                     &mut mapper,
                                     profile,
-                                    &mut output,
+                                    &mut pipeline,
                                 );
                                 next_refresh = Instant::now() + Duration::from_secs(1);
                             }
@@ -376,42 +359,15 @@ pub fn run(
                     counters.accepted += 1;
                     if let Mode::Capture { .. } = mode {
                         capture_trace.pen(bytes, pen);
-                    } else if relative_mapper.is_some() || mapper.is_some() {
-                        let frame = state::frame(pen, profile.contact);
-                        let mut filtered_position = frame.position.and_then(|(x, y)| {
-                            let (first, remaining) = filters.split_first_mut()?;
-                            let mut position = first.filter_raw(x, y);
-                            for filter in remaining {
-                                position = filter.filter_raw_f32(position.0, position.1);
-                            }
-                            Some(position)
-                        });
-                        if let Some((x, y)) = frame.position {
-                            if !plugins.is_empty() {
-                                filtered_position = Some(plugins.process(
-                                    filtered_position.unwrap_or((x as f32, y as f32)),
-                                    pen,
-                                ));
-                            }
-                        } else {
-                            plugins.reset();
-                        }
+                    } else if pipeline.is_relative() || mapper.is_some() {
+                        // While an absolute mapping is paused, reports do not
+                        // reach the filters either.
+                        let emitted = pipeline.process(pen, ready, mapper, plugins, send_input);
                         if let Some(name) = plugins.take_failure() {
                             status(&format!(
                                 "Disabled failing plugin: {name}. Restart to retry."
                             ));
                         }
-                        let emitted = if let Some(relative) = &mut relative_mapper {
-                            let delta =
-                                relative.map_at(frame.position, filtered_position, Instant::now());
-                            // Consume failed movement rather than accumulating a
-                            // cursor jump. MouseOutput retries button transitions.
-                            output.emit_relative(delta, frame.contact)
-                        } else if let Some(active_mapper) = mapper {
-                            output.emit_filtered(frame, active_mapper, filtered_position)
-                        } else {
-                            unreachable!()
-                        };
                         match emitted {
                             Ok(true) => counters.injected += 1,
                             Ok(false) => {}
@@ -449,7 +405,7 @@ pub fn run(
                         &mut fingerprint,
                         &mut mapper,
                         profile,
-                        &mut output,
+                        &mut pipeline,
                     );
                 }
                 next_refresh = Instant::now() + Duration::from_secs(1);
@@ -457,7 +413,7 @@ pub fn run(
         }
         Ok(())
     })();
-    if let Err(error) = output.release_all() {
+    if let Err(error) = pipeline.release_all(send_input) {
         eprintln!("could not release mouse buttons: {error}");
     }
     eprintln!(

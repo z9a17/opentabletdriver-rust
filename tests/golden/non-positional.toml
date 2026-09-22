@@ -1,0 +1,62 @@
+description = "Reports that are not pen positions, and malformed pen reports, produce no output and leave the state alone."
+origin = "captured status report; the rest synthetic"
+virtual_screen = [0, 0, 1920, 1080]
+end = "none"
+
+profile = '''
+
+'''
+
+[[step]]
+at_ms = 100
+report = "10 60 14 56 00 a3 16 00 00 00 07 04 00 00 00 00 28"
+expect = "move 32238 12815"
+note = "captured hover"
+
+[[step]]
+at_ms = 105
+report = "13 64 00 00 00 00 00 00 00 00 00 00 00 00 00 00 3f"
+expect = "ignored"
+note = "captured 0x13 status report"
+
+[[step]]
+at_ms = 110
+report = "11 00 00 00 00 00 00 00 00 00"
+expect = "ignored"
+note = "auxiliary report ID 0x11"
+
+[[step]]
+at_ms = 115
+report = "21 00 00 00 00 00 00 00 00 00"
+expect = "ignored"
+note = "touch report ID 0x21"
+
+[[step]]
+at_ms = 120
+report = "10 60 14 56"
+expect = "malformed"
+note = "0x10 shorter than 17 bytes"
+
+[[step]]
+at_ms = 125
+report = "10 60 01 af 00 a3 16 00 00 00 07 04 00 00 00 00 28"
+expect = "malformed"
+note = "x = 44801, beyond the digitizer"
+
+[[step]]
+at_ms = 130
+report = "10 61 14 56 00 a3 16 00 00 20 07 04 00 00 00 00 28"
+expect = "malformed"
+note = "pressure 8192, beyond the maximum"
+
+[[step]]
+at_ms = 135
+report = ""
+expect = "malformed"
+note = "empty read"
+
+[[step]]
+at_ms = 140
+report = "10 60 14 56 00 a3 16 00 00 00 07 04 00 00 00 00 28"
+expect = "none"
+note = "captured hover again: unchanged position"

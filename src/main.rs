@@ -1,10 +1,13 @@
 mod config;
 mod display;
 mod dotnet;
+#[cfg(test)]
+mod golden;
 mod hid;
 mod mapping;
 mod original_driver;
 mod output;
+mod pipeline;
 mod plugins;
 mod priority;
 mod protocol;

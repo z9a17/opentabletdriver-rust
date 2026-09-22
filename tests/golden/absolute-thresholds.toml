@@ -1,0 +1,73 @@
+description = "Tip threshold at raw 82 (1 %) in both directions, full pressure, release on loss of detection, and an eraser with its binding disabled."
+origin = "synthetic, derived from the captured hover report"
+virtual_screen = [0, 0, 4480, 1440]
+monitors = [[0, 0, 2560, 1440], [2560, 0, 4480, 1080]]
+end = "none"
+
+profile = '''
+[absolute]
+clipping = true
+limiting = false
+
+[absolute.display]
+Width = 2560.0
+Height = 1440.0
+X = 1280.0
+Y = 720.0
+Rotation = 0.0
+
+[absolute.tablet]
+Width = 85.0
+Height = 47.8125
+X = 110.0
+Y = 23.90625
+Rotation = 0.0
+
+[bindings]
+tip_enabled = true
+eraser_enabled = false
+tip_threshold_raw = 82
+eraser_threshold_raw = 82
+'''
+
+[[step]]
+at_ms = 100
+report = "10 60 14 56 00 a3 16 00 00 00 07 04 00 00 00 00 28"
+expect = "move 18808 39743"
+note = "hover, pressure 0"
+
+[[step]]
+at_ms = 105
+report = "10 61 14 56 00 a3 16 00 51 00 07 04 00 00 00 00 28"
+expect = "none"
+note = "tip switch set but pressure 81 is below 82"
+
+[[step]]
+at_ms = 110
+report = "10 61 14 56 00 a3 16 00 52 00 07 04 00 00 00 00 28"
+expect = "down"
+note = "pressure 82 presses"
+
+[[step]]
+at_ms = 115
+report = "10 61 14 56 00 a3 16 00 51 00 07 04 00 00 00 00 28"
+expect = "up"
+note = "pressure 81 releases"
+
+[[step]]
+at_ms = 120
+report = "10 61 14 56 00 a3 16 00 ff 1f 07 04 00 00 00 00 28"
+expect = "down"
+note = "full pressure presses"
+
+[[step]]
+at_ms = 125
+report = "10 00 14 56 00 a3 16 00 ff 1f 07 04 00 00 00 00 28"
+expect = "up"
+note = "not detected: releases"
+
+[[step]]
+at_ms = 130
+report = "10 71 14 56 00 a3 16 00 a0 0f 07 04 00 00 00 00 28"
+expect = "move 18808 39743"
+note = "eraser end (Invert), eraser binding disabled"

@@ -16,7 +16,7 @@ Relative input is subject to [Windows pointer speed and acceleration](https://le
 
 - The first positional report establishes an origin without moving the pointer. Contact changes on that report still work.
 - An input gap strictly greater than the reset delay clears the origin. Repeated stale raw positions are ignored for movement until the position changes; that changed position becomes the new origin. The delay should exceed the normal report interval; zero can reset on every report.
-- Explicit proximity loss clears the origin and fractional carry immediately and releases a held button. Reconnection constructs fresh mapping and output state.
+- When the pen is no longer detected (neither In Range nor Sense is set), the origin and fractional carry clear immediately and a held button is released. Reconnection constructs fresh mapping and output state.
 - Fractional motion is also cleared on timeout, preventing leftover movement across separate pen interactions.
 - Failed mouse injection consumes that report's relative movement instead of replaying it later as a burst. Button state is only committed after successful injection, so a subsequent report or session cleanup retries a failed transition.
 
@@ -34,7 +34,7 @@ Intentional differences: Rust immediately rebases on explicit proximity loss, cl
 
 ## Verification
 
-`cargo test --locked` covers import and invalid settings, TimeSpan boundaries, independent axes, rotation, signed fractional carry, filtering, strict timeout boundaries, stale reports, loss/reentry, and injection failure recovery. A recorded USB trace is replayed through parsing, contact state, relative mapping, and a simulated output sink. A thread-local test allocator verifies zero allocations in 10,000 report iterations, both with and without Radial Follow. Tests do not call `SendInput`.
+`cargo test --locked` covers import and invalid settings, TimeSpan boundaries, independent axes, rotation, signed fractional carry, filtering, strict timeout boundaries, stale reports, loss/reentry, and injection failure recovery. The golden trace `tests/golden/relative.toml` replays recorded USB reports through the driver's report pipeline into a simulated output sink; see [behavior contracts](parity/BEHAVIOR_CONTRACTS.md#golden-traces). A thread-local test allocator verifies zero allocations in 10,000 report iterations, both with and without Radial Follow. Tests do not call `SendInput`.
 
 Run the optional CPU microbenchmark with:
 
@@ -42,6 +42,6 @@ Run the optional CPU microbenchmark with:
 cargo test --locked --release benchmark_relative_pipeline -- --ignored --nocapture
 ```
 
-It replays one million reports per filter setting, including clock reads and output packet preparation, while checking allocations. It excludes HID I/O and the Windows injection call; its timing is not end-to-end pen latency or a comparison against the C# driver. Relative cursor feel, Windows pointer acceleration, and lift/reconnect behavior still require the [hardware checks](HARDWARE_VALIDATION.md).
+It replays one million reports through the report pipeline for each of absolute and relative mode, with and without Radial Follow, including clock reads and output packet preparation, while checking allocations. It excludes HID I/O and the Windows injection call; its timing is not end-to-end pen latency or a comparison against the C# driver. Relative cursor feel, Windows pointer acceleration, and lift/reconnect behavior still require the [hardware checks](HARDWARE_VALIDATION.md).
 
 A local Windows release run measured 34.7 ns/report without filtering and 62.8 ns/report with Radial Follow (one million reports each, zero measured allocations). These are a single development-machine CPU sample, not a portable performance guarantee. The release executable was 634,880 bytes.

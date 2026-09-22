@@ -1,0 +1,67 @@
+description = "Area limiting drops reports outside the area entirely, including their contact change."
+origin = "synthetic, derived from the captured hover report"
+virtual_screen = [0, 0, 4480, 1440]
+monitors = [[0, 0, 2560, 1440], [2560, 0, 4480, 1080]]
+end = "none"
+
+profile = '''
+[absolute]
+clipping = true
+limiting = true
+
+[absolute.display]
+Width = 2560.0
+Height = 1440.0
+X = 1280.0
+Y = 720.0
+Rotation = 0.0
+
+[absolute.tablet]
+Width = 85.0
+Height = 47.8125
+X = 110.0
+Y = 23.90625
+Rotation = 0.0
+
+[bindings]
+tip_enabled = true
+eraser_enabled = true
+tip_threshold_raw = 82
+eraser_threshold_raw = 82
+'''
+
+[[step]]
+at_ms = 100
+report = "10 60 14 56 00 a3 16 00 00 00 07 04 00 00 00 00 28"
+expect = "move 18808 39743"
+note = "captured hover inside the area"
+
+[[step]]
+at_ms = 105
+report = "10 60 88 13 00 a3 16 00 00 00 07 04 00 00 00 00 28"
+expect = "none"
+note = "outside: dropped"
+
+[[step]]
+at_ms = 110
+report = "10 61 88 13 00 a3 16 00 0e 11 07 04 00 00 00 00 28"
+expect = "none"
+note = "contact outside: dropped, no press"
+
+[[step]]
+at_ms = 115
+report = "10 61 11 55 00 8c 12 00 0e 11 00 07 00 00 00 00 19"
+expect = "move 18237 32562 down"
+note = "captured contact inside: press"
+
+[[step]]
+at_ms = 120
+report = "10 60 88 13 00 a3 16 00 00 00 07 04 00 00 00 00 28"
+expect = "none"
+note = "outside while pressed: dropped, button stays down"
+
+[[step]]
+at_ms = 125
+report = "10 60 14 56 00 a3 16 00 00 00 07 04 00 00 00 00 28"
+expect = "move 18808 39743 up"
+note = "inside, pressure 0: release"

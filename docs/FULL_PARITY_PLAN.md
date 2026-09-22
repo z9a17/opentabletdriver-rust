@@ -12,6 +12,7 @@ The objective is a Rust implementation of the observable functionality of stable
 | [Work items](parity/WORK_ITEMS.md) | 65 scoped tasks with dependencies, ownership boundaries, and acceptance criteria |
 | [Capability matrix and sources](parity/CAPABILITY_MATRIX.md) | What exists, what is missing, and the pinned upstream references |
 | [Validation and performance](parity/VALIDATION.md) | Evidence levels, test scenarios, budgets, and release gates |
+| [Behavior contracts](parity/BEHAVIOR_CONTRACTS.md) | Current behavior of each stage, golden traces, and every known difference from upstream (F01) |
 | [Source inventory](parity/upstream-inventory.json) | Every baseline configuration, referenced parser, plugin contract source, and catalog record |
 | [GitHub tracking](parity/GITHUB_TRACKING.md) | Parent issue and workstream issue links |
 

@@ -1,0 +1,85 @@
+description = "Relative mode at 10 counts/mm with a 100 ms reset: origin, contact, the Sense band, loss of detection, fractional carry, and a timeout with a stale first report."
+origin = "captured report prefixes plus synthetic positions"
+virtual_screen = [0, 0, 4480, 1440]
+monitors = [[0, 0, 2560, 1440], [2560, 0, 4480, 1080]]
+end = "none"
+
+profile = '''
+[relative]
+x_sensitivity = 10.0
+y_sensitivity = 10.0
+rotation = 0.0
+reset_delay_ms = 100
+
+[bindings]
+tip_enabled = true
+eraser_enabled = true
+tip_threshold_raw = 82
+eraser_threshold_raw = 82
+'''
+
+[[step]]
+at_ms = 100
+report = "10 60 14 56 00 a3 16 00 00 00 07 04 00 00 00 00 28"
+expect = "none"
+note = "captured hover: origin"
+
+[[step]]
+at_ms = 105
+report = "10 61 11 55 00 8c 12 00 0e 11 00 07 00 00 00 00 19"
+expect = "delta -12 -52 down"
+note = "captured contact: (-259, -1047) units"
+
+[[step]]
+at_ms = 110
+report = "10 40 b8 51 00 7e 12 00 00 00 00 04 00 00 00 00 3f"
+expect = "delta -43 -1 up"
+note = "captured Sense-only hover keeps moving"
+
+[[step]]
+at_ms = 115
+report = "10 00 b8 51 00 7e 12 00 00 00 00 04 00 00 00 00 3f"
+expect = "none"
+note = "synthetic: not detected, origin cleared"
+
+[[step]]
+at_ms = 120
+report = "10 60 14 56 00 a3 16 00 00 00 07 04 00 00 00 00 28"
+expect = "none"
+note = "detected again: new origin"
+
+[[step]]
+at_ms = 125
+report = "10 60 dc 56 00 a3 16 00 00 00 07 04 00 00 00 00 28"
+expect = "delta 10 0"
+note = "+200 units = 10 counts"
+
+[[step]]
+at_ms = 130
+report = "10 60 e6 56 00 a3 16 00 00 00 07 04 00 00 00 00 28"
+expect = "none"
+note = "+10 units = 0.5 counts, carried"
+
+[[step]]
+at_ms = 135
+report = "10 60 f0 56 00 a3 16 00 00 00 07 04 00 00 00 00 28"
+expect = "delta 1 0"
+note = "+10 units: carry reaches 1 count"
+
+[[step]]
+at_ms = 300
+report = "10 60 f0 56 00 a3 16 00 00 00 07 04 00 00 00 00 28"
+expect = "none"
+note = "165 ms gap: reset; stale position ignored"
+
+[[step]]
+at_ms = 305
+report = "10 60 1c 57 00 a3 16 00 00 00 07 04 00 00 00 00 28"
+expect = "none"
+note = "changed position: new origin"
+
+[[step]]
+at_ms = 310
+report = "10 60 e4 57 00 a3 16 00 00 00 07 04 00 00 00 00 28"
+expect = "delta 10 0"
+note = "+200 units"
