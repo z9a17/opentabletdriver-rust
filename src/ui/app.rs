@@ -774,12 +774,22 @@ impl App {
                                 PropertyValue::Number(number) => number.to_string(),
                                 PropertyValue::Text(text) => text.clone(),
                                 PropertyValue::Bool(_) => String::new(),
+                                PropertyValue::JsonScalar => "null".to_owned(),
+                            };
+                            let tooltip = if matches!(&field.value, PropertyValue::JsonScalar) {
+                                let guidance = "Enter a JSON scalar: null, true or false, a number, or a quoted string.";
+                                Some(match field.tooltip {
+                                    Some(tip) if !tip.is_empty() => format!("{tip}\n{guidance}"),
+                                    _ => guidance.to_owned(),
+                                })
+                            } else {
+                                field.tooltip
                             };
                             rows.push((
                                 field.label,
                                 field.unit,
                                 PropertyTarget::Plugin(field.key, field.value),
-                                field.tooltip,
+                                tooltip,
                                 shown,
                             ));
                         }

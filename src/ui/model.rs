@@ -92,6 +92,9 @@ pub enum PropertyValue {
     Number(serde_json::Number),
     Bool(bool),
     Text(String),
+    /// The DLL metadata does not identify the expected type of a null value,
+    /// so keep it editable as an explicitly typed JSON scalar.
+    JsonScalar,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -439,6 +442,7 @@ pub fn plugin_properties(json: &str) -> Option<Vec<(String, PropertyValue)>> {
                 serde_json::Value::Number(number) => PropertyValue::Number(number.clone()),
                 serde_json::Value::Bool(value) => PropertyValue::Bool(*value),
                 serde_json::Value::String(text) => PropertyValue::Text(text.clone()),
+                serde_json::Value::Null => PropertyValue::JsonScalar,
                 _ => return None,
             };
             Some((key.clone(), value))
@@ -500,6 +504,16 @@ pub fn parse_property(text: &str, previous: &PropertyValue) -> Result<serde_json
         }
         PropertyValue::Bool(value) => Ok((*value).into()),
         PropertyValue::Text(_) => Ok(text.into()),
+        PropertyValue::JsonScalar => {
+            let value: serde_json::Value = serde_json::from_str(text.trim()).map_err(|_| {
+                "Enter a JSON scalar: null, a boolean, a number, or a quoted string.".to_owned()
+            })?;
+            if value.is_null() || value.is_boolean() || value.is_number() || value.is_string() {
+                Ok(value)
+            } else {
+                Err("Enter a JSON scalar: null, a boolean, a number, or a quoted string.".into())
+            }
+        }
     }
 }
 
@@ -833,6 +847,51 @@ mod tests {
         let updated =
             set_plugin_property(r#"{"Radius":1.5}"#, "Radius", serde_json::json!(2)).unwrap();
         assert_eq!(updated, r#"{"Radius":2}"#);
+    }
+
+    #[test]
+    fn null_plugin_property_stays_in_editor_and_survives_profile_round_trip() {
+        let mut profile = Profile::default();
+        profile.plugins.push(PluginConfig {
+            path: "C:/plugins/Example.dll".into(),
+            kind: PluginKind::Dotnet,
+            enabled: true,
+            type_name: "Example.Filter".into(),
+            settings_json: r#"{"OptionalValue":null}"#.into(),
+        });
+
+        let fields = plugin_editor_fields(&profile.plugins[0].settings_json, None).unwrap();
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].key, "OptionalValue");
+        assert_eq!(fields[0].value, PropertyValue::JsonScalar);
+
+        let saved = profile.to_toml().unwrap();
+        let loaded = Profile::from_toml_text(&saved, Path::new("profile.toml")).unwrap();
+        let settings = &loaded.plugins[0].settings_json;
+        assert_eq!(
+            plugin_editor_fields(settings, None).unwrap()[0].value,
+            PropertyValue::JsonScalar
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(settings).unwrap()["OptionalValue"],
+            serde_json::Value::Null
+        );
+    }
+
+    #[test]
+    fn null_plugin_property_accepts_only_json_scalars() {
+        let previous = PropertyValue::JsonScalar;
+        for (text, expected) in [
+            ("null", serde_json::Value::Null),
+            ("true", serde_json::json!(true)),
+            ("-2.5", serde_json::json!(-2.5)),
+            (r#""text""#, serde_json::json!("text")),
+        ] {
+            assert_eq!(parse_property(text, &previous).unwrap(), expected);
+        }
+        for text in ["[1]", "{}", "not json"] {
+            assert!(parse_property(text, &previous).is_err(), "accepted {text}");
+        }
     }
 
     #[test]
