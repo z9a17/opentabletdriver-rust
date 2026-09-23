@@ -9,7 +9,7 @@ Baseline: [OTD v0.6.7](https://github.com/OpenTabletDriver/OpenTabletDriver/tree
 | ID | Upstream capability | Current Rust status | Work items |
 | --- | --- | --- | --- |
 | CAP-01 | Configuration database, specifications, parser selection, custom configuration files | Partial: the pinned database and override files load, validate and index, and each parser type resolves to partly decoded or missing (D01); device selection is still the fixed PTH-660 path, with one parser family | D01-D02, D06-D08 |
-| CAP-02 | VID/PID plus input/output/feature lengths, device strings, attributes and match precedence | Partial: identifiers are read and validated (D01); a pure matcher applies their predicates in fake-device tests (D02), but live selection still uses the fixed Windows HID rule; one pinned .NET regex uses unsupported lookahead | D01-D02 |
+| CAP-02 | VID/PID plus input/output/feature lengths, device strings, attributes and match precedence | Partial: identifiers are read and validated (D01); a pure matcher applies their predicates in fake-device tests, including the pinned XP-Pen negative-lookahead predicate (D02); live selection still uses the fixed Windows HID rule | D01-D02 |
 | CAP-03 | Feature/output initialization reports and initialization strings | Missing: PTH-660 USB currently needs none in its selected configuration | D02, D09 |
 | CAP-04 | Physical endpoint grouping, digitizer plus auxiliary collections | Partial: a pure matcher pairs fake collections by physical identity (D02); the live driver still opens only the pen endpoint | D02, D04-D05 |
 | CAP-05 | Multiple tablet models with independent settings and pipelines | Missing | D05, C02 |

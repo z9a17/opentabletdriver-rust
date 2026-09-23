@@ -36,7 +36,7 @@
         }
       ],
       "blockers": [
-        "The pure matcher is not connected to live HID discovery or initialization; one pinned XP-Pen device-string pattern uses .NET lookahead unsupported by Rust regex."
+        "The pure matcher is not connected to live HID discovery or initialization."
       ]
     },
     "CAP-03": {
