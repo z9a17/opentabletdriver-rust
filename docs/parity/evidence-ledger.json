@@ -426,11 +426,29 @@
     },
     "CAP-51": {
       "state": "open",
-      "owner": null,
-      "pull_request": null,
-      "release": null,
-      "evidence": [],
-      "blockers": []
+      "owner": "F04",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/23",
+      "release": "v0.7.6",
+      "evidence": [
+        {
+          "kind": "integration-tested",
+          "task": "F04",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "6d470b280be4fd1d56ecd36f7d818e5ca0fbc6af",
+          "platform": "Windows 11 Pro 10.0.26200, Ryzen 7 5800X3D, Ultimate Performance power plan",
+          "architecture": "x86_64",
+          "date": "2026-09-23T05:33:57+02:00",
+          "tester": "Claude Code, unattended run on the development machine",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver/Devices/DeviceReader.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/blob/6d470b280be4fd1d56ecd36f7d818e5ca0fbc6af/docs/perf/2026-09-23/summary.md",
+          "result": "pass",
+          "command": "pwsh -File scripts/bench.ps1 -Runs 3 -SendInput -ReplaySeconds 30"
+        }
+      ],
+      "blockers": [
+        "Synthetic trace and software timing only: pen-to-display latency needs a timestamped hardware measurement.",
+        "Multi-device mode waits for D02; parser, device and managed-plugin coverage beyond this profile belongs to F05, F06 and the V tasks."
+      ]
     },
     "CAP-52": {
       "state": "open",
