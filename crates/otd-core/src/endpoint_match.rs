@@ -212,9 +212,10 @@ pub fn select<'a>(database: &'a Database, endpoints: &'a [Endpoint]) -> Option<S
 }
 
 impl Selection<'_> {
-    /// An unsupported parser is never silently replaced by the PTH-660 one.
-    pub fn parser_supported(&self) -> bool {
-        matches!(self.digitizer.parser, ParserSupport::Partial(_))
+    /// Return the parser's actual capability; partial decoding is not full
+    /// device support, and a missing parser is never replaced implicitly.
+    pub fn parser_support(&self) -> ParserSupport {
+        self.digitizer.parser
     }
 }
 
@@ -253,7 +254,10 @@ mod tests {
         assert_eq!(selected.digitizer_endpoint.path, "pen-a");
         assert_eq!(selected.auxiliary.unwrap().1.path, "aux-a");
         assert!(selected.ambiguous_digitizer);
-        assert!(selected.parser_supported());
+        assert!(matches!(
+            selected.parser_support(),
+            ParserSupport::Partial(_)
+        ));
     }
 
     #[test]
@@ -349,6 +353,6 @@ mod tests {
         let db = Database::with_overrides(&[("Wacom/PTH-660.json".into(), json)]);
         let endpoints = [endpoint("pen", "a", 192)];
         let selected = select(&db, &endpoints).unwrap();
-        assert!(!selected.parser_supported());
+        assert_eq!(selected.parser_support(), ParserSupport::Missing);
     }
 }
