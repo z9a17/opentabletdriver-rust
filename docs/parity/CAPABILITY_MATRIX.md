@@ -55,7 +55,7 @@ Baseline: [OTD v0.6.7](https://github.com/OpenTabletDriver/OpenTabletDriver/tree
 | ID | Upstream capability | Current Rust status | Work items |
 | --- | --- | --- | --- |
 | CAP-37 | Existing .NET assembly discovery, dependencies, supported-platform/ignore metadata | Partial: explicit DLL/type loading with narrow discovery | P01-P02 |
-| CAP-38 | Settings defaults/conversion/validation, property and field injection, dependency callbacks | Partial: omitted/null saved properties follow upstream defaults; direct and inherited TabletReference fields/properties are injected before load callbacks in a managed fixture (P02). The tablet specification remains fixed to PTH-660 | P02, P07 |
+| CAP-38 | Settings defaults/conversion/validation, property and field injection, dependency callbacks | Partial: omitted/null saved properties follow upstream defaults; direct and inherited TabletReference fields/properties are injected before load callbacks in a managed fixture (P02). The bridge receives the chosen pinned database configuration at plugin load; the live driver still chooses the built-in PTH-660 record | P02, P07 |
 | CAP-39 | Full report interfaces, concrete types where needed, raw bytes and report mutations | Partial: reusable position/pressure/eraser adapter; only X/Y returned | P03 |
 | CAP-40 | PreTransform and PostTransform ordering, suppression and multiple emissions | Partial: exactly one synchronous PreTransform output | P04 |
 | CAP-41 | Async filters, timers, resampling, plugin-owned threads | Missing | P05 |

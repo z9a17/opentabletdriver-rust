@@ -109,7 +109,8 @@ sealed class Instance : IDisposable
             created = Activator.CreateInstance(type) ?? throw new InvalidOperationException("Cannot construct filter");
             filter = (IPositionedPipelineElement<IDeviceReport>)created;
             ApplySettings(type, created, config["settings"] as JObject ?? new JObject());
-            InjectTablet(type, created);
+            InjectTablet(type, created, config["tablet"]?.ToObject<TabletConfiguration>()
+                ?? throw new ArgumentException("tablet configuration missing"));
             Position = filter.Position;
             if (Position is not (PipelinePosition.PreTransform or PipelinePosition.PostTransform))
                 throw new NotSupportedException($"Unsupported plugin pipeline position: {Position}.");
@@ -146,20 +147,9 @@ sealed class Instance : IDisposable
         }
     }
 
-    static void InjectTablet(Type type, object value)
+    static void InjectTablet(Type type, object value, TabletConfiguration configuration)
     {
-        var tablet = new TabletReference
-        {
-            Properties = new TabletConfiguration
-            {
-                Name = "Wacom PTH-660", DigitizerIdentifiers = [],
-                Specifications = new TabletSpecifications
-                {
-                    Digitizer = new DigitizerSpecifications { Width = 224, Height = 148, MaxX = 44800, MaxY = 29600 },
-                    Pen = new PenSpecifications { MaxPressure = 8191, ButtonCount = 2 }
-                }
-            }
-        };
+        var tablet = new TabletReference(configuration, configuration.DigitizerIdentifiers.Take(1));
         // Walk each declaration so protected/private fields on base classes
         // are visible. All dependencies are assigned before any load callback.
         for (Type? owner = type; owner != null; owner = owner.BaseType)
