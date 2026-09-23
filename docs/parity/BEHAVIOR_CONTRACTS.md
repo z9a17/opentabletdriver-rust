@@ -126,6 +126,15 @@ Replacing the tip threshold's `>=` with `>` makes `absolute-thresholds` fail, wh
 
 The cases cover the development machine's osu! profile with and without Radial Follow, a 30° rotated area, area limiting, relative mode at 10 counts/mm, and at 12 × 8 counts/mm rotated 15°. They run over 2,000 synthetic osu!-style reports and 35 handwritten edge cases. The suite found no difference beyond BC-10, BC-11, BC-13 and BC-18. A self-test moves one press by a report and one position by 0.1 px and checks that the comparison reports both. [The fixtures' README](../../tests/differential/README.md) covers their origin, format and regeneration.
 
+## Tablet configurations
+
+The executables embed OpenTabletDriver's 339 tablet configuration files unchanged (`crates/otd-core/tablets`). When the driver starts, it loads them together with the files in `%LOCALAPPDATA%\OpenTabletDriver\Configurations`, as upstream's [configuration provider][DesktopDeviceConfigurationProvider] does:
+- the first file with a configuration's `Name` replaces that configuration;
+- a file with a new name is added;
+- a later file with the same name is ignored.
+
+`opentabletdriver-rust.exe tablets` shows the result. Device selection and report parsing still use the fixed USB PTH-660 path. The startup check therefore only reports which configuration declares the PTH-660 and whether an override changes it.
+
 ## Differences
 
 "Record" means the difference is intended; its reason is given. A task ID means the difference is a gap that task closes.
@@ -156,6 +165,10 @@ The cases cover the development machine's osu! profile with and without Radial F
 | BC-22 | Pressure and tilt output | pressure-capable pointers receive remapped pressure | mouse only | O03 |
 | BC-23 | `0x1E` hover distance | read from byte 11, which is also tilt X | not reported | Record: upstream defect with no effect on mouse output |
 | BC-24 | Reader priority | High class, AboveNormal thread (14) | time-critical thread (15), rest of the process normal | Record: see [input latency](../INPUT_LATENCY.md#scheduling) |
+| BC-25 | Configuration file that does not parse | the exception stops detection, so no tablet is found | reported and skipped; the other files still apply | Record: one bad file should not disable every tablet |
+| BC-26 | Configuration file syntax | Newtonsoft.Json also accepts comments, single-quoted strings, unquoted property names, property names in any case and numbers written as strings | strict JSON with OpenTabletDriver's property names; anything else is an error or an unknown-field warning | Open: matters once override files select devices (D02) |
+| BC-27 | Configuration order | built-ins in the assembly's resource order, then files in the file system's order | built-ins by path, then files breadth first in NTFS name order | Record: built-in names are unique, so order only decides between tablets that declare the same interface (D02) |
+| BC-28 | Override of the PTH-660 configuration | used for detection and parsing | reported at startup; the report path keeps the built-in values | D02, D03 |
 
 [otd]: https://github.com/OpenTabletDriver/OpenTabletDriver/tree/736003ed72c8bbb28033b039d5a0bb76c344145c
 [DeviceReader]: https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver/Devices/DeviceReader.cs#L102-L113
@@ -171,4 +184,5 @@ The cases cover the development machine's osu! profile with and without Radial F
 [ThresholdBindingState]: https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Desktop/Binding/ThresholdBindingState.cs#L13-L21
 [RelativeOutputMode-reset]: https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Plugin/Output/RelativeOutputMode.cs#L97
 [RelativeOutputMode-stale]: https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Plugin/Output/RelativeOutputMode.cs#L114
+[DesktopDeviceConfigurationProvider]: https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Desktop/DesktopDeviceConfigurationProvider.cs#L20-L56
 [RadialFollowCore]: https://github.com/AbstractQbit/AbstractOTDPlugins/blob/0.3.0/RadialFollow/RadialFollowCore.cs#L52-L63

@@ -9,6 +9,10 @@
 pub const MAX_X: u32 = 44_800;
 pub const MAX_Y: u32 = 29_600;
 pub const MAX_PRESSURE: u16 = 8_191;
+/// Active area in millimetres. A tablet database test checks these values
+/// against OpenTabletDriver's PTH-660 configuration.
+pub const WIDTH_MM: f64 = 224.0;
+pub const HEIGHT_MM: f64 = 148.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PenReport {

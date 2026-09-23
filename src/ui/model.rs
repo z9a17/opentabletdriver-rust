@@ -11,13 +11,13 @@ use crate::display::DisplaySnapshot;
 use crate::dotnet::FilterMetadata;
 use crate::mapping::{Crop, OtdArea, OtdMapping, Rect};
 use crate::plugins::{PluginConfig, PluginKind};
-use crate::protocol::{MAX_PRESSURE, MAX_X, MAX_Y};
+use crate::protocol::{HEIGHT_MM, MAX_PRESSURE, MAX_X, MAX_Y, WIDTH_MM};
 use crate::radial_follow::{FILTER_NAME, RadialFollowSettings};
 use crate::relative::RelativeSettings;
 
 /// PTH-660 active area. The absolute and relative mappers use the same size.
-pub const TABLET_WIDTH_MM: f64 = 224.0;
-pub const TABLET_HEIGHT_MM: f64 = 148.0;
+pub const TABLET_WIDTH_MM: f64 = WIDTH_MM;
+pub const TABLET_HEIGHT_MM: f64 = HEIGHT_MM;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Bounds {
