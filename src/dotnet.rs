@@ -236,9 +236,9 @@ mod tests {
     use super::*;
     use crate::config::Profile;
     use crate::mapping::{Crop, Mapper, Rect};
-    use crate::pipeline::ReportPipeline;
     use crate::plugins::{PipelineStage, Plugin, PluginChain, PluginConfig, PluginKind};
     use crate::protocol::PenReport;
+    use otd_core::pipeline::ReportPipeline;
     use otd_plugin_api::Sample;
     use std::time::{Duration, Instant};
 

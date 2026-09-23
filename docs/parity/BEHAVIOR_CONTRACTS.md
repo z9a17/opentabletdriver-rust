@@ -6,11 +6,11 @@ Change this document and the golden traces together, and only for an intended be
 
 ## Report path and stage order
 
-The Rust driver handles one device session on one thread, with no queue and no lock:
+The Rust driver handles one device session on one thread, with no queue and no lock. The session loop (`crates/otd-core/src/session.rs`) is portable; the Windows adapter (`src/session.rs`) supplies the reads, the display layout and `SendInput`:
 
 1. An overlapped `ReadFile` returns one report from the 192-byte pen collection. The Windows HID class driver buffers reports that arrive while the thread works.
 2. `protocol::parse` decodes report `0x10` and `0x1E` into a `PenReport`. Other report IDs are ignored; a short report, or a position or pressure outside the digitizer's range, is malformed. Neither produces output nor changes any state.
-3. `ReportPipeline` (`src/pipeline.rs`) runs the rest for each decoded report:
+3. `ReportPipeline` (`crates/otd-core/src/pipeline.rs`) runs the rest for each decoded report:
    1. Contact state, from the raw report ([Pen state](#pen-state-hover-and-contact)).
    2. The built-in Radial Follow filters, then enabled PreTransform DLL filters in profile order.
    3. Absolute or relative mapping, then enabled Pixels/PostTransform DLL filters in profile order when using absolute output.

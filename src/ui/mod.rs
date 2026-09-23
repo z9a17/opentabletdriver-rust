@@ -739,7 +739,7 @@ impl Drop for App {
 fn displays_for_driver(process_dpi: isize) -> Result<DisplaySnapshot, String> {
     unsafe {
         let previous = SetThreadDpiAwarenessContext(process_dpi as DPI_AWARENESS_CONTEXT);
-        let snapshot = DisplaySnapshot::read();
+        let snapshot = crate::display::read_snapshot();
         if !previous.is_null() {
             SetThreadDpiAwarenessContext(previous);
         }

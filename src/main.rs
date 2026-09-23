@@ -1,23 +1,17 @@
-mod config;
 mod display;
 mod dotnet;
-#[cfg(test)]
-mod golden;
 mod hid;
-mod mapping;
 mod original_driver;
 mod output;
-mod pipeline;
 mod plugins;
 mod priority;
-mod protocol;
-mod radial_follow;
-mod relative;
 mod session;
-mod state;
-#[cfg(test)]
-mod test_alloc;
 mod ui;
+
+// The portable core, at the crate paths the Windows modules use.
+#[cfg(test)]
+use otd_core::test_alloc;
+use otd_core::{config, mapping, protocol, radial_follow, relative};
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -190,7 +184,7 @@ fn list(paths: bool) -> Result<(), String> {
 }
 
 fn displays() -> Result<(), String> {
-    let snapshot = display::DisplaySnapshot::read()?;
+    let snapshot = display::read_snapshot()?;
     let v = snapshot.virtual_screen;
     println!(
         "virtual desktop: ({}, {}) to ({}, {})",
@@ -249,7 +243,7 @@ fn load_profile(
 fn show_settings(config: Option<PathBuf>, otd_settings: Option<PathBuf>) -> Result<(), String> {
     let profile = load_profile(config.as_ref(), otd_settings.as_ref())?;
     if profile.relative.is_none() {
-        display::DisplaySnapshot::read()?.mapper(&profile)?;
+        display::read_snapshot()?.mapper(&profile)?;
     }
     profile.print_summary();
     Ok(())
@@ -277,7 +271,7 @@ fn drive(
     status: impl Fn(&str),
 ) -> Result<(), String> {
     if profile.relative.is_none() {
-        display::DisplaySnapshot::read()?.mapper(&profile)?;
+        display::read_snapshot()?.mapper(&profile)?;
     }
     println!(
         "opentabletdriver-rust {} — Windows 11 USB PTH-660 daemon",

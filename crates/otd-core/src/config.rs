@@ -289,7 +289,7 @@ fn radial_settings(store: &OtdStore) -> Result<RadialFollowSettings, String> {
 /// presses. Its `ThresholdBindingState` compares
 /// `pressure / MaxPressure * 100 > threshold` in single precision and treats
 /// a 100 % threshold as met at full pressure.
-pub(crate) fn activation_raw(percent: f64) -> Result<u16, String> {
+pub fn activation_raw(percent: f64) -> Result<u16, String> {
     if !percent.is_finite() || !(0.0..=100.0).contains(&percent) {
         return Err("tip/eraser activation threshold must be 0..100 percent".into());
     }

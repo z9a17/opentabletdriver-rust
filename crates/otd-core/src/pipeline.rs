@@ -14,7 +14,7 @@ use std::time::Instant;
 use crate::config::{ContactPolicy, Profile};
 use crate::mapping::Mapper;
 use crate::output::{MouseOutput, MousePacket};
-use crate::plugins::PluginChain;
+use crate::plugins::Filters;
 use crate::protocol::PenReport;
 use crate::radial_follow::RadialFollowSmoothingTabletSpace;
 use crate::relative::RelativeMapper;
@@ -54,7 +54,7 @@ impl ReportPipeline {
         pen: PenReport,
         now: Instant,
         mapper: Option<Mapper>,
-        plugins: &mut PluginChain,
+        plugins: &mut impl Filters,
         send: impl FnOnce(MousePacket) -> io::Result<()>,
     ) -> io::Result<bool> {
         let frame = state::frame(pen, self.contact);
@@ -171,7 +171,7 @@ mod tests {
         }
         .mapper(&profile)
         .unwrap();
-        let mut plugins = PluginChain::load(&[]).unwrap();
+        let mut plugins = crate::plugins::NoFilters;
         let mut emitted = 0;
         crate::test_alloc::assert_no_allocations(|| {
             for index in 0..iterations {
