@@ -392,11 +392,28 @@
     },
     "CAP-37": {
       "state": "open",
-      "owner": null,
-      "pull_request": null,
-      "release": null,
-      "evidence": [],
-      "blockers": []
+      "owner": "P02",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/26",
+      "release": "v0.7.9",
+      "evidence": [
+        {
+          "kind": "integration-tested",
+          "task": "P02",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "08147c60b9753451b63d0c8cc4a92be40b6fedcc",
+          "platform": "Windows (GitHub Actions windows-latest)",
+          "architecture": "x86_64",
+          "date": "2026-09-23T16:54:42+02:00",
+          "tester": "GitHub Actions Windows job",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Desktop/Reflection/DesktopPluginManager.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/actions/runs/35877262727",
+          "result": "pass",
+          "command": "cargo test --locked dotnet_discovery_respects_platform_and_ignore_attributes -- --ignored"
+        }
+      ],
+      "blockers": [
+        "Broader assembly dependencies, supported plugin categories, catalog-wide unchanged binaries, and cross-platform discovery remain open."
+      ]
     },
     "CAP-38": {
       "state": "open",
