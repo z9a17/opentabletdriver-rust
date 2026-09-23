@@ -1,0 +1,2474 @@
+{
+  "schema_version": 1,
+  "scope": "Initial metadata-only catalog corpus for baseline-eligible releases. Eligibility is the pinned upstream metadata rule and does not establish binary validity or compatibility.",
+  "baseline": {
+    "repository": "https://github.com/OpenTabletDriver/OpenTabletDriver",
+    "revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+    "version": "0.6.7.0"
+  },
+  "catalog": {
+    "repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+    "revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+    "metadata_source_inventory": "docs/parity/upstream-inventory.json",
+    "eligibility_rule_source": "scripts/parity-inventory.ps1"
+  },
+  "counts": {
+    "eligible_records_expected": 57,
+    "eligible_identities_expected": 50,
+    "records": 57,
+    "identities": 50
+  },
+  "records": [
+    {
+      "identity": {
+        "name": "BezierInterpolator",
+        "owner": "AbstractQbit",
+        "repository_url": "https://github.com/AbstractQbit/AbstractOTDPlugins"
+      },
+      "plugin_version": "0.3.1.0",
+      "catalog_path": "Repository/0.6.0.0/AbstractQbit/AbstractOTDPlugins/BezierInterpolator.json",
+      "supported_driver": {
+        "minimum": "0.6.0.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Bezier Interpolation Filter",
+        "download_url": "https://github.com/AbstractQbit/AbstractOTDPlugins/releases/download/v0.3.1/BezierInterpolator.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "9e0e57bb1aad3ba4c17318e6f3bb7095bf20b17c5c711821a2e105d61bee4c44",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "d3b969e2570ebaad265608fd0a3529cd6779be3db6a3f414e8a48a7efe53361f",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "AbstractQbit's Radial Follow Smoothing",
+        "owner": "AbstractQbit",
+        "repository_url": "https://github.com/AbstractQbit/AbstractOTDPlugins"
+      },
+      "plugin_version": "0.3.0.0",
+      "catalog_path": "Repository/0.6.0.0/AbstractQbit/AbstractOTDPlugins/RadialFollow.json",
+      "supported_driver": {
+        "minimum": "0.6.0.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "The Ultimate Smoothing Plugin, providing cursor stability \nwhile retaining responsiveness for large movements",
+        "download_url": "https://github.com/AbstractQbit/AbstractOTDPlugins/releases/download/0.3.0/RadialFollow.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "d3f5b0200015e6e90948ee5d7870742ac28d82922cc745e9f1f78527e59f8160",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "63cd3270e6f9416c0d695898b7000402dcba2c7fbeda797d127856c7559ff2a8",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "sin(cursor)",
+        "owner": "AbstractQbit",
+        "repository_url": "https://github.com/AbstractQbit/AbstractOTDPlugins"
+      },
+      "plugin_version": "0.1.0.0",
+      "catalog_path": "Repository/0.6.0.0/AbstractQbit/AbstractOTDPlugins/SinCursor.json",
+      "supported_driver": {
+        "minimum": "0.6.0.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "A meme filter idea proposed by @jamesbt365 that turns the cursor path into a sine wave",
+        "download_url": "https://github.com/AbstractQbit/AbstractOTDPlugins/releases/download/SinCursor-0.1.0/SinCursor.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "802a770c7d3def5b34500c67dcf53267988eb381e6e64bf7aece3a93fbb1697d",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "7a0c44e27a5ac16cd5f334f64818da8bf5b2a8a89250b76e4e0befc227fba24c",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "SpringInterpolator",
+        "owner": "imkunet",
+        "repository_url": "https://github.com/imkunet/SpringInterpolator"
+      },
+      "plugin_version": "0.2.0",
+      "catalog_path": "Repository/0.6.0.0/imkunet/SpringInterpolator/SpringInterpolator.json",
+      "supported_driver": {
+        "minimum": "0.6.0.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Interpolates your pointer based on a spring physics system",
+        "download_url": "https://github.com/imkunet/SpringInterpolator/releases/download/0.2.0/SpringInterpolator.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "563451dfcf0158fd866f464b8661e323af40fdc3e0edd64bb2c90c111bd57bcb",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "57ee6cdc6e02221f35547ad87153b3777766d0c12b0f06774d3b124a3c0cfc12",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Chatter Generator",
+        "owner": "Kuuuube",
+        "repository_url": "https://github.com/Kuuuube/Chatter_Generator"
+      },
+      "plugin_version": "0.2.2.0",
+      "catalog_path": "Repository/0.6.0.0/Kuuuube/Chatter_Generator/Chatter_Generator.json",
+      "supported_driver": {
+        "minimum": "0.6.0.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Add chatter, shake, noise, etc to your tablet input.",
+        "download_url": "https://github.com/Kuuuube/Chatter_Generator/releases/download/0.2.2/0.2.2_release_Chatter_Generator.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "4532ef1e114b8e56b64aec6bf8175bf6f48637043e968eeec9a5b787df1c911b",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "d774c132afb0cdd73cdb6a6d7d5172df054dc2a40616a3983659a1cdfcd0e147",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Kuuube's CHATTER EXTERMINATOR",
+        "owner": "Kuuuube",
+        "repository_url": "https://github.com/Kuuuube/Kuuube-s-CHATTER-EXTERMINATOR"
+      },
+      "plugin_version": "1.1.1.0",
+      "catalog_path": "Repository/0.6.0.0/Kuuuube/Kuuube-s-CHATTER-EXTERMINATOR/Kuuube-s-CHATTER-EXTERMINATOR.json",
+      "supported_driver": {
+        "minimum": "0.6.0.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Extremely simple to use anti-chatter with perfect low latency CHATTER EXTERMINATION.",
+        "download_url": "https://github.com/Kuuuube/Kuuube-s-CHATTER-EXTERMINATOR/releases/download/1.1.1/1.1.1_release_Kuuube-s-CHATTER-EXTERMINATOR.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "0ea7be05183858e1e504bf0153dc8dd695321cd8a4708612fc98c23006129139",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "5c8f658ad136f72cad35f2ec8d2ceaefd61943e43009dff452ec2cac21e07338",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Tablet Debounce",
+        "owner": "Kuuuube",
+        "repository_url": "https://github.com/Kuuuube/Tablet_Debounce"
+      },
+      "plugin_version": "0.1.1.0",
+      "catalog_path": "Repository/0.6.0.0/Kuuuube/Tablet_Debounce/Tablet_Debounce.json",
+      "supported_driver": {
+        "minimum": "0.6.0.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Prevents unintended repitition of pen tip inputs.",
+        "download_url": "https://github.com/Kuuuube/Tablet_Debounce/releases/download/0.1.1/0.1.1_release_Tablet_Debounce.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "f7ef96f70cad980d2cb444fb0294b7adec2f9b3c4e546753170c35405d774195",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "22785cd2af1c893ae15fe1211c070dbec501a57ae34802ae07828481c4b7affa",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "DevocubFilters",
+        "owner": "OpenTabletDriver",
+        "repository_url": "https://github.com/OpenTabletDriver/TabletDriverFilters"
+      },
+      "plugin_version": "0.3.1.0",
+      "catalog_path": "Repository/0.6.0.0/OpenTabletDriver/TabletDriverFilters/DevocubFilters.json",
+      "supported_driver": {
+        "minimum": "0.6.0.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Ported Devocub/TabletDriver interpolators",
+        "download_url": "https://github.com/OpenTabletDriver/TabletDriverFilters/releases/download/v0.3.1/DevocubFilters.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "d38c1c340f918dbcd85f213168a5083ebe6be989ebbaa6b09a525ded5967dca0",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "def9a99f1e61091e89b6133d7a66e20f2fd79ab9a5ac050f1248a05970f7a1e4",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "HawkuFilters",
+        "owner": "OpenTabletDriver",
+        "repository_url": "https://github.com/OpenTabletDriver/TabletDriverFilters"
+      },
+      "plugin_version": "0.3.1.0",
+      "catalog_path": "Repository/0.6.0.0/OpenTabletDriver/TabletDriverFilters/HawkuFilters.json",
+      "supported_driver": {
+        "minimum": "0.6.0.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Ported hawku/TabletDriver interpolators",
+        "download_url": "https://github.com/OpenTabletDriver/TabletDriverFilters/releases/download/v0.3.1/HawkuFilters.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "6fd61f84a0857fe9d835cf21c328193c06a392c934db9f9758fc86697dce3190",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "93e1ba8d8e50e9f59cf2b1c95c4e3a902e7be56c7c360024da1e5e5c54cde272",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Additional Keys",
+        "owner": "Gess1t",
+        "repository_url": "https://github.com/Mrcubix/Additional-Keys"
+      },
+      "plugin_version": "1.0.0",
+      "catalog_path": "Repository/0.6.0.3/Gess1t/Additional-Keys/Additional-Keys.json",
+      "supported_driver": {
+        "minimum": "0.6.0.3",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Allow for the use of additional Fxx AND Media keys",
+        "download_url": "https://github.com/Mrcubix/Additional-Keys/releases/download/1.0.0/Additional-Keys-0.6.x-1.0.0.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "74b6ea33910d789d43da279cb336fb7834830148f88b710d02635090de466dd3",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "de8e372b822039e7b280c7e8e0b23b81eb92f8c7db99f3294ad6aeb75a334992",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "nzbasic's Hand Speed Viewer",
+        "owner": "nzbasic",
+        "repository_url": "https://github.com/nzbasic/Hand-Speed"
+      },
+      "plugin_version": "1.4.0",
+      "catalog_path": "Repository/0.6.0.4/nzbasic/Hand-Speed/HandSpeed.json",
+      "supported_driver": {
+        "minimum": "0.6.0.4",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Shows your current hand speed and total distance traveled.",
+        "download_url": "https://github.com/nzbasic/Hand-Speed/releases/download/1.4.0/Hand-Speed-1.4.0.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "f022b927ccafe6d9b82e21e2b63a538a4efddbfdeb4c2d3808ca27c15c0dedfd",
+        "license_identifier_declared": "MIT"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "31c90e1a7b4746a59880538a88e4da3fc669b4f6e66c36ac32f54a7e38bfcb32",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "OpenKneeboard OTD-IPC",
+        "owner": "Fred Emmott",
+        "repository_url": "https://github.com/OpenKneeboard/OTD-IPC"
+      },
+      "plugin_version": "2.0.0.97",
+      "catalog_path": "Repository/0.6.0.4/OpenKneeboard/OTD-IPC/OTD-IPC.json",
+      "supported_driver": {
+        "minimum": "0.6.0.4",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "A filter adding an exclusive background mode for integrated apps",
+        "download_url": "https://github.com/OpenKneeboard/OTD-IPC/releases/download/v2.0.0/OpenKneeboard-OTD-IPC.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "ac4841fed6483b3ea0aba6e6d76bf135215f780ab4068b077f00dbbc3bfc7629",
+        "license_identifier_declared": "MIT"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "7a4de477891b2f35470096a3ee9bdad2d03218f6e8d7fba3c55c5f861d55b8fa",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "MeL",
+        "owner": "X9VoiD",
+        "repository_url": "https://github.com/X9VoiD/VoiDPlugins"
+      },
+      "plugin_version": "0.3.2.2",
+      "catalog_path": "Repository/0.6.0.4/X9VoiD/VoiDPlugins/MeL.json",
+      "supported_driver": {
+        "minimum": "0.6.0.4",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Polynomial Regression Filter",
+        "download_url": "https://github.com/X9VoiD/VoiDPlugins/releases/download/0.3.2.2/MeL.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "b79e18c8660f57a3c688cbeca0c8ebf530426d74cca82554b4e0c53318be397b",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "ec9a2105a166dd6082a18636c791d24cc5a06a51d9e45f0be894491b454e13ef",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Precision Control",
+        "owner": "X9VoiD",
+        "repository_url": "https://github.com/X9VoiD/VoiDPlugins"
+      },
+      "plugin_version": "0.3.2.2",
+      "catalog_path": "Repository/0.6.0.4/X9VoiD/VoiDPlugins/PrecisionControl.json",
+      "supported_driver": {
+        "minimum": "0.6.0.4",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Dynamic Sensitivity Switch",
+        "download_url": "https://github.com/X9VoiD/VoiDPlugins/releases/download/0.3.2.2/PrecisionControl.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "e0a5c9fd18b55716fd08af73d708ac75695a7dc48194c2303470a8d9548bbb82",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "035193858e45521c959f049a3c39b9a68e9e4f8b845df517f2372e6655b02146",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Reconstructor",
+        "owner": "X9VoiD",
+        "repository_url": "https://github.com/X9VoiD/VoiDPlugins"
+      },
+      "plugin_version": "0.3.2.2",
+      "catalog_path": "Repository/0.6.0.4/X9VoiD/VoiDPlugins/Reconstructor.json",
+      "supported_driver": {
+        "minimum": "0.6.0.4",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Mathematically Perfect Anti-Hardware-Smoothing",
+        "download_url": "https://github.com/X9VoiD/VoiDPlugins/releases/download/0.3.2.2/Reconstructor.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "5f564e7f0c1aa461fdc2c9b6867f26792bfcf3e40803fab5ed200089a9a625d0",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "44b5a73d72b6dc609d196214724d9946d657f1952d2e44836799d99ce7d62c2f",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "TouchEmu",
+        "owner": "X9VoiD",
+        "repository_url": "https://github.com/X9VoiD/VoiDPlugins"
+      },
+      "plugin_version": "0.3.2.2",
+      "catalog_path": "Repository/0.6.0.4/X9VoiD/VoiDPlugins/TouchEmu.json",
+      "supported_driver": {
+        "minimum": "0.6.0.4",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Windows 10 Touch Output Mode",
+        "download_url": "https://github.com/X9VoiD/VoiDPlugins/releases/download/0.3.2.2/TouchEmu.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "7012b5a2523d20462c605728c02b22f916d01db6c7342507ab323b41222c4791",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "6524446c4efd41d345dcc3170e5f682fb142af00d9bc7392491fbabb703a90cd",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "PSSA",
+        "owner": "jamesbt365",
+        "repository_url": "https://github.com/jamesbt365/PSSA"
+      },
+      "plugin_version": "0.2",
+      "catalog_path": "Repository/0.6.1.0/jamesbt365/PSSA/PSSA.json",
+      "supported_driver": {
+        "minimum": "0.6.1.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "A plugin for changing the smoothing based on how hard you drag!",
+        "download_url": "https://github.com/jamesbt365/PSSA/releases/download/0.2/PSSA.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "47d285fe495808272888c9a9f3bf429a8ce06c684bd3da3c06dd52cbbe972122",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "1e6e216bd482f713bd983f323b7f5efe5bc4a7cf56a9b85e9b7c13986606067e",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Circular Area",
+        "owner": "Kuuuube",
+        "repository_url": "https://github.com/Kuuuube/Circular_Area"
+      },
+      "plugin_version": "3.2.1.0",
+      "catalog_path": "Repository/0.6.1.0/Kuuuube/Circular_Area/Circular_Area.json",
+      "supported_driver": {
+        "minimum": "0.6.1.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Circular mapping for tablet areas.",
+        "download_url": "https://github.com/Kuuuube/Circular_Area/releases/download/3.2.1/3.2.1_release_Circular_Area.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "4f4bf2949aac244625676ed1f74be3effba6dc6b3c99d79cb371dcbe2b144cdb",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "250f6360fe0adcab30e22eb61e94bbd5c91de56129a274c8d32c063c6e46380f",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Flip Axes",
+        "owner": "Kuuuube",
+        "repository_url": "https://github.com/Kuuuube/Flip_Axes"
+      },
+      "plugin_version": "0.0.4.0",
+      "catalog_path": "Repository/0.6.1.0/Kuuuube/Flip_Axes/Flip_Axes.json",
+      "supported_driver": {
+        "minimum": "0.6.1.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Flips the X or Y axes of the tablet area.",
+        "download_url": "https://github.com/Kuuuube/Flip_Axes/releases/download/0.0.4/0.0.4_release_Flip_Axes.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "de6232bb592a59f1120d3d83ea64184bcf080b5fe0ad7d3b8d7900ca810f4ef8",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "579d8d3b56811713915d187c06da24dda5a41071bf3a63eab20b08009a6c8f9c",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Slimy Scylla",
+        "owner": "Kuuuube",
+        "repository_url": "https://github.com/Kuuuube/Slimy_Scylla"
+      },
+      "plugin_version": "0.1.6.0",
+      "catalog_path": "Repository/0.6.1.0/Kuuuube/Slimy_Scylla/Slimy_Scylla.json",
+      "supported_driver": {
+        "minimum": "0.6.1.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Provides popular input processing methods for drawing.",
+        "download_url": "https://github.com/Kuuuube/Slimy_Scylla/releases/download/0.1.6/0.1.6_release_slimy_scylla.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "ee5a6fbd39885dd5826811fb609a97b49f35227624cc52a2dab2e09a7681e5d5",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "eda96eda3a3cdf00bb3a9920706340f62ef97692acb4d67e0d93dc20e636a69b",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Tablet Area Randomizer",
+        "owner": "Kuuuube",
+        "repository_url": "https://github.com/Kuuuube/Tablet_Area_Randomizer"
+      },
+      "plugin_version": "0.3.2.0",
+      "catalog_path": "Repository/0.6.1.0/Kuuuube/Tablet_Area_Randomizer/Tablet_Area_Randomizer.json",
+      "supported_driver": {
+        "minimum": "0.6.1.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Randomizes tablet area within given parameters.",
+        "download_url": "https://github.com/Kuuuube/Tablet_Area_Randomizer/releases/download/0.3.2/0.3.2_release_Tablet_Area_Randomizer.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "411b1e39ce84b0539a93fc120b278c89060a7f69069955e7295cc651c77d0952",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "2af0903d3c9ff47085d887b4285118c1a240a6f8ba8d26ac637b8ea7387b578e",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Tablet Calibration",
+        "owner": "Kuuuube",
+        "repository_url": "https://github.com/Kuuuube/Tablet_Calibration"
+      },
+      "plugin_version": "0.0.4.0",
+      "catalog_path": "Repository/0.6.1.0/Kuuuube/Tablet_Calibration/Tablet_Calibration.json",
+      "supported_driver": {
+        "minimum": "0.6.1.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Filters to make perfect display tablet calibration possible.",
+        "download_url": "https://github.com/Kuuuube/Tablet_Calibration/releases/download/0.0.4/0.0.4_release_Tablet_Calibration.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "fd443e68e6dd01cec6dd04b260185dad88c0ad72462ca599b0838926608466c5",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "ed091cc0ff6bb73ddd671f1be7997e1c92398ea9486ed16a4eabbf3e38e9f88c",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "nzbasic's Hand Speed Viewer",
+        "owner": "nzbasic",
+        "repository_url": "https://github.com/nzbasic/Hand-Speed"
+      },
+      "plugin_version": "1.4.1",
+      "catalog_path": "Repository/0.6.1.0/nzbasic/Hand-Speed/HandSpeed.json",
+      "supported_driver": {
+        "minimum": "0.6.1.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Shows your current hand speed and total distance traveled.",
+        "download_url": "https://github.com/nzbasic/Hand-Speed/releases/download/1.4.1/Hand-Speed-1.4.1.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "6c27bc397776d4a8cbbdb77ae010e5fd722a87da8001f4229713c6dd084243f9",
+        "license_identifier_declared": "MIT"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "a2a8a4304bd195c6c8b6cb178571e3c3e033b8baecac37670acda593119a4cc8",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "MeL",
+        "owner": "X9VoiD",
+        "repository_url": "https://github.com/X9VoiD/VoiDPlugins"
+      },
+      "plugin_version": "0.4.1",
+      "catalog_path": "Repository/0.6.1.0/X9VoiD/VoiDPlugins/MeL.json",
+      "supported_driver": {
+        "minimum": "0.6.1.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Polynomial Regression Filter",
+        "download_url": "https://github.com/X9VoiD/VoiDPlugins/releases/download/0.4.1/MeL.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "2accea68a6f8e16f02431acde303548160de0d9b05a24849431303c702ad7044",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "dc982784c6f71897f8815cac8dbe5be01f7542537f7a081db7b1c98e04d7ec99",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Precision Control",
+        "owner": "X9VoiD",
+        "repository_url": "https://github.com/X9VoiD/VoiDPlugins"
+      },
+      "plugin_version": "0.4.1",
+      "catalog_path": "Repository/0.6.1.0/X9VoiD/VoiDPlugins/PrecisionControl.json",
+      "supported_driver": {
+        "minimum": "0.6.1.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Dynamic Sensitivity Switch",
+        "download_url": "https://github.com/X9VoiD/VoiDPlugins/releases/download/0.4.1/PrecisionControl.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "b1b0d59b896e017e10f517a241d0f2c26131fcdbb87630c50913a5dadfbbcf01",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "87549395827900333dc7f5ca280d325a6eafdb8b4fdaabf2913b18be9b2a3f8b",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Reconstructor",
+        "owner": "X9VoiD",
+        "repository_url": "https://github.com/X9VoiD/VoiDPlugins"
+      },
+      "plugin_version": "0.4.1",
+      "catalog_path": "Repository/0.6.1.0/X9VoiD/VoiDPlugins/Reconstructor.json",
+      "supported_driver": {
+        "minimum": "0.6.1.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Mathematically Perfect Anti-Hardware-Smoothing",
+        "download_url": "https://github.com/X9VoiD/VoiDPlugins/releases/download/0.4.1/Reconstructor.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "7e06b98c6aa1b9d2e8bc897a12a7ce01f07438c63e322abf411c425257a1eec9",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "5d22b0642e787957afde4985e5995e462f350dfc8d352c25d73b3d2df31ad14d",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "TouchEmu",
+        "owner": "X9VoiD",
+        "repository_url": "https://github.com/X9VoiD/VoiDPlugins"
+      },
+      "plugin_version": "0.4.1",
+      "catalog_path": "Repository/0.6.1.0/X9VoiD/VoiDPlugins/TouchEmu.json",
+      "supported_driver": {
+        "minimum": "0.6.1.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Windows 10 Touch Output Mode",
+        "download_url": "https://github.com/X9VoiD/VoiDPlugins/releases/download/0.4.1/TouchEmu.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "1d7ef69c0f976afd9b1c66a2c9caa9c04e3e2019e8df2cfe793ac1342e38e56f",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "5f77ef150d24aa92408b42501e1c00172a887b4e32652cfcb5aae0c227bfb2fc",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "MouseUtils",
+        "owner": "SelenainRanger",
+        "repository_url": "https://github.com/SelenianRanger/MouseUtils"
+      },
+      "plugin_version": "1.0.1.0",
+      "catalog_path": "Repository/0.6.2.0/SelenianRanger/MouseUtils/MouseUtils.json",
+      "supported_driver": {
+        "minimum": "0.6.2.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Adds Abs2Rel and Windows Mouse Acceleration filters, with fully customizable bindings",
+        "download_url": "https://github.com/SelenianRanger/MouseUtils/releases/download/v1.0.1/MouseUtils.v1.0.1.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "3b72e7ec7d343d3d58062711f11e5a102ee7564cd4e3cd1df8addbab266eea65",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "b5b91cf4bd3abc5c19f219fe32d6e59efc310966def199781dac3c69c9500ffd",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Cycle Keybind",
+        "owner": "Ashesh3",
+        "repository_url": "https://github.com/Ashesh3/OTDCycleBind"
+      },
+      "plugin_version": "0.1.0.0",
+      "catalog_path": "Repository/0.6.3.0/Ashesh3/CycleBind/CycleBind.json",
+      "supported_driver": {
+        "minimum": "0.6.3.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Cycle multiple keyboard bindings on each press.",
+        "download_url": "https://github.com/Ashesh3/OTDCycleBind/releases/download/1.0.0/CycleBind.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "7ddfb5dd4080c0b23629047639f8c398f4fe1b38897b369a680be68a8a97eabc",
+        "license_identifier_declared": "MIT"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "36c618647f8f9df483778f1cb4b296aa4df980c01bbc998862bc4149f93be417",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "jaaakb's ScuffedInter-Extrapolator",
+        "owner": "asrfggafgsdf",
+        "repository_url": "https://github.com/asrfggafgsdf/scuffed-interp-extrap"
+      },
+      "plugin_version": "1.1.1",
+      "catalog_path": "Repository/0.6.3.0/jaaakb/ScuffedInterp/ScuffedInterp.json",
+      "supported_driver": {
+        "minimum": "0.6.3.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Fast interpolation with partial/full accelation based prediction option",
+        "download_url": "https://github.com/asrfggafgsdf/scuffed-interp-extrap/releases/download/v1.1.1/ScuffedInterp.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "36e4ca838589e3a46ec0f3bfd2def9d501e2109e0fc52769bbd138209c9d3652",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "f00a47f37ef401413de07fd72dabbe4095ecb8734405476b170b15b9c0dfe8b1",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Adryzz's Custom Filter",
+        "owner": "Kuuuube",
+        "repository_url": "https://github.com/Kuuuube/CustomFilter"
+      },
+      "plugin_version": "2.3.0.0",
+      "catalog_path": "Repository/0.6.3.0/Kuuuube/CustomFilter/CustomFilter.json",
+      "supported_driver": {
+        "minimum": "0.6.3.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "The Ultimate filter, allowing you to use any polynomial as a filter without having to write any code!",
+        "download_url": "https://github.com/Kuuuube/CustomFilter/releases/download/v2.3.0/CustomFilter.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "a7f683bea81ad4fa050172bbccef91e1ee981d852956823d7dc0734e97f8eb87",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "c6538dfb31a263a4baa1a0f908ae682439072273ca6f0f1c28a24e0f603a54bf",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Monitor Toggle",
+        "owner": "Kuuuube",
+        "repository_url": "https://github.com/Kuuuube/Monitor_Toggle"
+      },
+      "plugin_version": "0.0.4.0",
+      "catalog_path": "Repository/0.6.3.0/Kuuuube/Monitor_Toggle/Monitor_Toggle.json",
+      "supported_driver": {
+        "minimum": "0.6.3.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Bindings for switching between monitors.",
+        "download_url": "https://github.com/Kuuuube/Monitor_Toggle/releases/download/0.0.4/0.0.4_release_monitor_toggle.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "dd88e055e56dd8f938b90820e5277dbb8c0698d2656e9450bb9a811b33134bba",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "e01aa03a8c4c4cf2d93c2044bdeeb99edeb449e5d5525d2d21e1a8c9a0712c7f",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Temporal Resampler",
+        "owner": "shmkle",
+        "repository_url": "https://github.com/shmkle/TemporalResampler"
+      },
+      "plugin_version": "1.0.1",
+      "catalog_path": "Repository/0.6.3.0/shmkle/TemporalResampler/TemporalResampler.json",
+      "supported_driver": {
+        "minimum": "0.6.3.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Input resampler for higher hz monitors.",
+        "download_url": "https://github.com/shmkle/TemporalResampler/releases/download/v1.0.1/TemporalResampler.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "591625526a58fe1c1427f4d0d788dd4e61f0222ff9158a04cb3ce9851e6c813d",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "b3dda14be6e49d728d8beb577bd94c9bc2c24ee5d6a38152ba8c6bf05d5f679d",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Enhanced Output Modes",
+        "owner": "Gess1t",
+        "repository_url": "https://github.com/Mrcubix/OTD.EnhancedOutputMode"
+      },
+      "plugin_version": "1.2.1",
+      "catalog_path": "Repository/0.6.4.0/Gess1t/OTD.EnhancedOutputMode/OTD.EnhancedOutputMode.json",
+      "supported_driver": {
+        "minimum": "0.6.4.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Enhanced Output Modes for OpenTabletDriver (Adds support for Touch Inputs)",
+        "download_url": "https://github.com/Mrcubix/OTD.EnhancedOutputMode/releases/download/1.2.1-0.6.x/OTD.EnhancedOutputMode-0.6.x.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "5979584a490575f2c3a2c88741044b1ba717e61678aae8b6db30bd96c8354bfc",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "4f8ed5ccd39ab3b75cb05e57dbb540bf5bc5e3f0f39039df498711ce8897a15e",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "LED Sandbox",
+        "owner": "Gess1t",
+        "repository_url": "https://github.com/Mrcubix/OTD.LEDSandbox"
+      },
+      "plugin_version": "1.0.5",
+      "catalog_path": "Repository/0.6.4.0/Gess1t/OTD.LEDSanbox/OTD.LEDSanbox.json",
+      "supported_driver": {
+        "minimum": "0.6.4.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Allow users to use images of 64x128 resolution and show them on any of the 2 LED display contained within Wacom PTK-x40 tablets.",
+        "download_url": "https://github.com/Mrcubix/OTD.LEDSandbox/releases/download/1.0.5/OTD.LEDSandbox-x86-0.6.x.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "db32dbf42912729ae863e092d27a3d57553b59cc62250014338c7771e192e2b1",
+        "license_identifier_declared": "MIT"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "c629b36488595dcc57b3d6dc9547e13e46305eb46f228fabc00888ab0f22e186",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "UX Remote",
+        "owner": "Gess1t",
+        "repository_url": "https://github.com/Mrcubix/OTD.UX.Remote"
+      },
+      "plugin_version": "1.0.2",
+      "catalog_path": "Repository/0.6.4.0/Gess1t/OTD.UX.Remote/OTD.UX.Remote.json",
+      "supported_driver": {
+        "minimum": "0.6.4.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "UX Plugin that allows developers to perform some actions on the UX.",
+        "download_url": "https://github.com/Mrcubix/OTD.UX.Remote/releases/download/1.0.2/OTD.UX.Remote-0.6.x.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "3e3b5ec38287450556e6f2683101d39323c9d05cfa895ce0ecd6c8ece461e9f7",
+        "license_identifier_declared": "MIT"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "234aeecd01c46c9364801d8192689d63917ad1b4fab852258eced27757997c93",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Relative Mode Area",
+        "owner": "Gess1t",
+        "repository_url": "https://github.com/Mrcubix/RelativeModeArea/"
+      },
+      "plugin_version": "1.0.3",
+      "catalog_path": "Repository/0.6.4.0/Gess1t/RelativeModeArea/RelativeModeArea.json",
+      "supported_driver": {
+        "minimum": "0.6.4.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "A plugin to limit the user area.",
+        "download_url": "https://github.com/Mrcubix/RelativeModeArea/releases/download/1.0.3/RelativeModeArea.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "baf23d882bb2d6e788ee3ab77bbc7fe080dcf1262702eca27ca697218c68c9f1",
+        "license_identifier_declared": "MIT"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "b078f7298d80d60eaf4cb7421ee78d0b83c89f6f18c35eb6de05e95bcaaf0a5e",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Scroll Bindings",
+        "owner": "Gess1t",
+        "repository_url": "https://github.com/Mrcubix/Scroll-Bindings/"
+      },
+      "plugin_version": "1.1.0",
+      "catalog_path": "Repository/0.6.4.0/Gess1t/ScrollBindings/ScrollBindings.json",
+      "supported_driver": {
+        "minimum": "0.6.4.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Adds support for scrolling using the pen or aux keys on Windows, Linux & MacOS.",
+        "download_url": "https://github.com/Mrcubix/Scroll-Bindings/releases/download/1.1.0/ScrollBindings-0.6.x.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "ebd201db3526bee3c9c7c980769360dafb2c55bf796a9ccdef7bd217d114def3",
+        "license_identifier_declared": "MIT"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "ba43e3d7b8a55d4806aba658109745915bc4c20a7ea9e31abdb8fa7240a1b117",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Touch Gestures Installer",
+        "owner": "Gess1t",
+        "repository_url": "https://github.com/Mrcubix/Touch-Gestures/"
+      },
+      "plugin_version": "1.0.2",
+      "catalog_path": "Repository/0.6.4.0/Gess1t/Touch-Gestures/Touch-Gestures.json",
+      "supported_driver": {
+        "minimum": "0.6.4.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Adds support for Touch Gestures to OpenTabletDriver",
+        "download_url": "https://github.com/Mrcubix/Touch-Gestures/releases/download/1.0.2/Touch-Gestures.Installer-0.6.x.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "e1878c90f19d05a7050a6ae1a4f46f10baf848aae77b0f0ac0b755ea2a2e1590",
+        "license_identifier_declared": "MIT"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "7f89e33ea85cfe305310eff01be4b97eca5f4e47e2c09dad1f4d4277d92b5912",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Wireless Kit Addon",
+        "owner": "Gess1t",
+        "repository_url": "https://github.com/Mrcubix/WirelessKitAddon"
+      },
+      "plugin_version": "1.0.5",
+      "catalog_path": "Repository/0.6.4.0/Gess1t/WirelessKitAddon/WirelessKitAddon.json",
+      "supported_driver": {
+        "minimum": "0.6.4.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Adds support for the Wireless Kit available for Wacom CTH tablets",
+        "download_url": "https://github.com/Mrcubix/WirelessKitAddon/releases/download/1.0.5/WirelessKitAddon-0.6.x.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "885ad990cbdcd69e810449d91e33cacc74e1c02c1cc8fed832959aa73822ab26",
+        "license_identifier_declared": "MIT"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "ac282747c28ecb7b63eecb9354d87188f230067b5809b2b4c87ee2b678b7dbd5",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "DualActionBinds",
+        "owner": "Kuuuube",
+        "repository_url": "https://github.com/Kuuuube/DualActionBinds"
+      },
+      "plugin_version": "1.1.2",
+      "catalog_path": "Repository/0.6.4.0/Kuuuube/DualActionBinds/DualActionBinds.json",
+      "supported_driver": {
+        "minimum": "0.6.4.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Bindings that have different actions on press and release.",
+        "download_url": "https://github.com/Kuuuube/DualActionBinds/releases/download/v1.1.2/DualActionBinds.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "1635c130338adc189ce833290eeb4dc8970547dfb92660828821144d15c4a281",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "86a69abea31e710efdf4a43ede64fb12ff73d2be55741beb13b8392d3d09840f",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Hover Distance Limiter",
+        "owner": "Kuuuube",
+        "repository_url": "https://github.com/Kuuuube/Hover_Distance_Limiter"
+      },
+      "plugin_version": "0.1.3.0",
+      "catalog_path": "Repository/0.6.4.0/Kuuuube/Hover_Distance_Limiter/Hover_Distance_Limiter.json",
+      "supported_driver": {
+        "minimum": "0.6.4.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Limits minimum and maximum hover distance.",
+        "download_url": "https://github.com/Kuuuube/Hover_Distance_Limiter/releases/download/0.1.3/0.1.3_release_Hover_Distance_Limiter.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "44ec905e6c94da4171c3f5d0f2ce5d002849af4108aaebf1a76c7631dc1f3f64",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "4949301ec23be6c5065e5b7aa380baa080be7bdb03f7906a6c6f434dfab567ca",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "MabletMapping",
+        "owner": "shmkle",
+        "repository_url": "https://github.com/shmkle/MabletMapping"
+      },
+      "plugin_version": "1.2.1",
+      "catalog_path": "Repository/0.6.4.0/shmkle/MabletMapping/MabletMapping.json",
+      "supported_driver": {
+        "minimum": "0.6.4.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "A mapping tool for mablet players.",
+        "download_url": "https://github.com/shmkle/MabletMapping/releases/download/v1.2.1/MabletMapping.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "4bf40c2dbe4edfe7956b9d04cdec636f2d5a26585d0e452fc0440fd5de8bec0d",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "f8c816cef6e34f14f5c98bd6ffceb98197a66e414b2b1f49e3e499fcbcc56942",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Temporal Resampler",
+        "owner": "shmkle",
+        "repository_url": "https://github.com/shmkle/TemporalResampler"
+      },
+      "plugin_version": "1.5.1",
+      "catalog_path": "Repository/0.6.4.0/shmkle/TemporalResampler/TemporalResampler.json",
+      "supported_driver": {
+        "minimum": "0.6.4.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Input resampler for higher hz monitors.",
+        "download_url": "https://github.com/shmkle/TemporalResampler/releases/download/v1.5.1/TemporalResampler.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "b9214ab071166fbeb93ab067f7fadea929fe43c600ebe52d7cde50ff43b29f6b",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "53d9113350c101c64447a00e48eb3c6c3114d04b3804fa012fdf786cd9ad1f46",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Tilt Calibration",
+        "owner": "Vineyo",
+        "repository_url": "https://github.com/Vineyo/Tilt-Calibration"
+      },
+      "plugin_version": "1.0.0",
+      "catalog_path": "Repository/0.6.4.0/Vineyo/TiltCalibration/TiltCalibration.json",
+      "supported_driver": {
+        "minimum": "0.6.4.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Calibrates the offset by tilt",
+        "download_url": "https://github.com/Vineyo/Tilt-Calibration/releases/download/v1.0.0/tilt_calibrate.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "4998120d1e53b83d7df0e8ecb0d4440bd2f09a545d711c2049a4ecb2b54ef0f1",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "519717ff46937bc566491570c2188fb8a8b7ef0fa821936ad05021ed7f6aef3f",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "ScriptRunner",
+        "owner": "Kuuuube",
+        "repository_url": "https://github.com/Kuuuube/VoiDPlugins"
+      },
+      "plugin_version": "0.5.0",
+      "catalog_path": "Repository/0.6.6.0/Kuuuube/VoiDPlugins/ScriptRunner.json",
+      "supported_driver": {
+        "minimum": "0.6.6.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Bindable Script Launcher",
+        "download_url": "https://github.com/Kuuuube/VoiDPlugins/releases/download/0.5.0/ScriptRunner.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "fb11be1d56cba11d5532b43c7bd8dee75032b3ad68cc9d7b9876d02b69e06524",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "317f5859785c455289eb0065c55e166113ae3743f7f3fac68fd7c3ab5c107312",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "VMultiMode",
+        "owner": "Kuuuube",
+        "repository_url": "https://github.com/Kuuuube/VoiDPlugins"
+      },
+      "plugin_version": "0.5.2",
+      "catalog_path": "Repository/0.6.6.0/Kuuuube/VoiDPlugins/VMultiMode.json",
+      "supported_driver": {
+        "minimum": "0.6.6.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Classic VMulti Output Mode",
+        "download_url": "https://github.com/Kuuuube/VoiDPlugins/releases/download/0.5.2/VMultiMode.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "1efeba0cade9ccb67c9e11dc4c2d38da8304db03ba947a2bc57ea8c2c7470242",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "bbca536a507c854fd7e5e05e6537c7c17627c39da81b784af09da89e5e686543",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Windows Ink",
+        "owner": "Kuuuube",
+        "repository_url": "https://github.com/Kuuuube/VoiDPlugins"
+      },
+      "plugin_version": "0.5.2",
+      "catalog_path": "Repository/0.6.6.0/Kuuuube/VoiDPlugins/WindowsInk.json",
+      "supported_driver": {
+        "minimum": "0.6.6.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Windows Ink Output Mode",
+        "download_url": "https://github.com/Kuuuube/VoiDPlugins/releases/download/0.5.2/WindowsInk.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "4aa9dc41bcb6e15a388718ef7d46b7518cd0a8b0cc73e89013471c9542b0802f",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "4f527b4961bf1a7987f0a46350d99e1cbe54458c4b2357887d5be34e5c252c11",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Windows Pen Pointer",
+        "owner": "Kuuuube",
+        "repository_url": "https://github.com/Kuuuube/VoiDPlugins"
+      },
+      "plugin_version": "0.5.2",
+      "catalog_path": "Repository/0.6.6.0/Kuuuube/VoiDPlugins/WindowsPenPointer.json",
+      "supported_driver": {
+        "minimum": "0.6.6.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Basic Windows Ink Output Mode",
+        "download_url": "https://github.com/Kuuuube/VoiDPlugins/releases/download/0.5.2/WindowsPenPointer.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "ca511f453405364fb7a07634c8f4de7e0bed81ed9c176ecd5a26dc5fb892be14",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "c57784047a879e12d846581dc1652c4a302c8f7f3ccb908b85d5daa30a32e515",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Stroke Snapping",
+        "owner": "nahkd123",
+        "repository_url": "https://github.com/nahkd123/StrokeSnapping"
+      },
+      "plugin_version": "1.1.0.0",
+      "catalog_path": "Repository/0.6.6.0/nahkd123/StrokeSnapping/StrokeSnapping.json",
+      "supported_driver": {
+        "minimum": "0.6.6.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Snaps pointer to the ends of previous stroke",
+        "download_url": "https://github.com/nahkd123/StrokeSnapping/releases/download/v1.1.0/StrokeSnapping.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "0c63aac7296f3c11eced857841811c21fe15bf47c6969de5bcbb2a198ee43ca1",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "fbd613dad1a91701b12bf71af9f177f69a24fcdcec96fa247f49e0c63e6f4e5b",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "BetterCalibrator",
+        "owner": "TheBlueOompaLoompa",
+        "repository_url": "https://github.com/TheBlueOompaLoompa/BetterCalibrator"
+      },
+      "plugin_version": "0.3.0",
+      "catalog_path": "Repository/0.6.6.0/TheBlueOompaLoompa/BetterCalibrator/BetterCalibrator.json",
+      "supported_driver": {
+        "minimum": "0.6.6.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Calibrate your tablet faster and easier",
+        "download_url": "https://github.com/TheBlueOompaLoompa/BetterCalibrator/releases/download/0.3.0/BetterCalibrator.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "e787fdff62ef38ffab7bd89c2e0f841ee23fc161b5ca65fcc7ffa80b17d05e1a",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "7da96a5c535b436e6477249c11070376aed1044d7ea76c57115d4aa37c9e9fd1",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "moonlight suite",
+        "owner": "cfm-miku-en",
+        "repository_url": "https://github.com/cfm-miku-en/moonlight-suite/tree/main"
+      },
+      "plugin_version": "2.0.0.0",
+      "catalog_path": "Repository/0.6.6.2/cfm-miku-en/moonlight-suite/moonlight.json",
+      "supported_driver": {
+        "minimum": "0.6.6.2",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "moonlight suite is a suite of many cool filters (Smoothing, spring, etc)",
+        "download_url": "https://github.com/cfm-miku-en/moonlight-suite/releases/download/v2.0.0/MoonlightSuite.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "7c86d62a9fd4a8b9d763511fb80abfb29bc1c6441ccdcc2eda1e22624893aa05",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "38189721ce690a97295cb731edc6da33e8aa01a51dd61fd80f5fd0cfd3b5a93a",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "Erase Button",
+        "owner": "clarence112",
+        "repository_url": "https://github.com/clarence112/OTD-Eraser-Button-Plugin"
+      },
+      "plugin_version": "1.0.0",
+      "catalog_path": "Repository/0.6.6.2/clarence112/OTD-Eraser-Button-Plugin/erase-button.json",
+      "supported_driver": {
+        "minimum": "0.6.6.2",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Bind a button to erase, for pens that are single-ended.",
+        "download_url": "https://github.com/clarence112/OTD-Eraser-Button-Plugin/releases/download/1.0.0/erase-button-0.6.6.2-1.0.0.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "4edf29da1e067e57dd9b7381f64bb92da5873189ab7931b40bc0f2d74ce5fef6",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "e5cb605390d2cf971d6f3ba1a26eeb78473828daba74ecb061f4a4084c1ef0fa",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "DragThreshold",
+        "owner": "rinormaloku",
+        "repository_url": "https://github.com/rinormaloku/DragThreshold"
+      },
+      "plugin_version": "1.6.0",
+      "catalog_path": "Repository/0.6.6.2/rinormaloku/DragThreshold/DragThreshold.json",
+      "supported_driver": {
+        "minimum": "0.6.6.2",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Prevents Pen clicks to be registered as Pen drags due to tiny movements by setting a threshold that must be exceeded before it counts as a drag",
+        "download_url": "https://github.com/rinormaloku/DragThreshold/releases/download/v1.6.0/DragThreshold.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "44b19fbede2130205eebf5c1f528391861d2b534124edb9d515e5a314df8acd1",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "65a13d9033370fafe6bb835742f190b15eb8b53cee00082318ca5a3e7be60ba9",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "The Saturn Collection",
+        "owner": "shreddism",
+        "repository_url": "https://github.com/shreddism/TheSaturnCollection"
+      },
+      "plugin_version": "0.9.1",
+      "catalog_path": "Repository/0.6.6.2/shreddism/TheSaturnCollection/TheSaturnCollection.json",
+      "supported_driver": {
+        "minimum": "0.6.6.2",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "The Enhanced Plugin Experience.\n - Configurable antichatter with virtually 0 extra latency and aspect ratio compensation\n - Multiple available optional minimal-latency interpolation methods\n - Behavioral tweaks to reduce interpolation press/lift bugging on Wacom PTK-x70 tablets\n - Output mode with realtime area changing and bindable actions\n ...and more!",
+        "download_url": "https://github.com/shreddism/TheSaturnCollection/releases/download/0.9.1/Saturn.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "2d3ef8195829b1d1a0b16ae222c263e2ea9a924c82d46d02835b31416209e266",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "eb8ced24d7685df477fc80804b71ecbc2313a6f59e52c15885e2ef84aaa5206e",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "OnTake's Frenet-Serret Frame Predictor",
+        "owner": "make-42",
+        "repository_url": "https://github.com/make-42/otd-frenet-serret-frame-predictor"
+      },
+      "plugin_version": "1.1.0",
+      "catalog_path": "Repository/0.6.7.0/make-42/otd-frenet-serret-frame-predictor/otd-frenet-serret-frame-predictor.json",
+      "supported_driver": {
+        "minimum": "0.6.7.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "Predicts future pen position using Frenet-Serret frame mathematics, reducing perceived input latency by extrapolating cursor movement along the natural curve of the stroke.",
+        "download_url": "https://github.com/make-42/otd-frenet-serret-frame-predictor/releases/download/v1.1/FrenetSerretFramePredictor.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "47e06b638616e7705e35acd8f0bd0a1e81cdc4e47868841bd8f310826dffba5c",
+        "license_identifier_declared": "MIT"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "f7cc5f53d79bbbf5dcc04dfb0c9020a0c1265efbd812ba5bbbe2b52905444aea",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    },
+    {
+      "identity": {
+        "name": "The Saturn Collection",
+        "owner": "shreddism",
+        "repository_url": "https://github.com/shreddism/TheSaturnCollection"
+      },
+      "plugin_version": "1.0.0",
+      "catalog_path": "Repository/0.6.7.0/shreddism/TheSaturnCollection/TheSaturnCollection.json",
+      "supported_driver": {
+        "minimum": "0.6.7.0",
+        "maximum": null
+      },
+      "metadata": {
+        "description": "The Enhanced Plugin Experience.\n - Configurable antichatter with virtually 0 extra latency\n - Prediction improvements and bugfixing on certain tablets\n - Massive improvements in the above as well as interpolation timing for Wacom PTK-x70 tablets\n - Output mode with realtime area changing and bindable actions\n ...and more!",
+        "download_url": "https://github.com/shreddism/TheSaturnCollection/releases/download/1.0.0/Saturn.zip",
+        "compression_format": "zip",
+        "archive_sha256_declared": "97cd17a87563d53f5ee9ce41a197b2664daaf1a0768ac91006c259832ecf7e8c",
+        "license_identifier_declared": "GPL-3.0-only"
+      },
+      "provenance": {
+        "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+        "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+        "metadata_blob_sha256": "8084e9da69b6e7a5127ecb48e8db347025171896ce076cb80ac34dafa47ef7f6",
+        "source": "pinned catalog JSON metadata; archive not downloaded"
+      },
+      "classification": {
+        "runtime_category": "unknown",
+        "exported_classes": "unknown",
+        "referenced_assemblies": "unknown",
+        "platform_requirements": "unknown",
+        "external_prerequisites": "unknown",
+        "api_dependencies": "unknown"
+      },
+      "verification": {
+        "archive_hash": "unverified",
+        "binary_inspection": "not_performed",
+        "execution": "not_performed",
+        "compatibility": "unverified"
+      },
+      "blockers": [
+        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+      ]
+    }
+  ]
+}
