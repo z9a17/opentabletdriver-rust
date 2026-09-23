@@ -396,6 +396,3073 @@
           "The host-level visibility and exact public/private API compatibility of MemberRef targets remain unverified."
         ]
       }
+    },
+    {
+      "identity": {
+        "name": "Windows Ink",
+        "owner": "Kuuuube",
+        "repository_url": "https://github.com/Kuuuube/VoiDPlugins"
+      },
+      "plugin_version": "0.5.2",
+      "catalog_path": "Repository/0.6.6.0/Kuuuube/VoiDPlugins/WindowsInk.json",
+      "audit": {
+        "catalog_download_url": "https://github.com/Kuuuube/VoiDPlugins/releases/download/0.5.2/WindowsInk.zip",
+        "archive_sha256_declared": "4aa9dc41bcb6e15a388718ef7d46b7518cd0a8b0cc73e89013471c9542b0802f",
+        "archive_sha256_observed": "4aa9dc41bcb6e15a388718ef7d46b7518cd0a8b0cc73e89013471c9542b0802f",
+        "archive_sha256_verified": true,
+        "retrieved_utc_date": "2026-09-23",
+        "zip_entries": [
+          {
+            "path": "Newtonsoft.Json.dll",
+            "uncompressed_bytes": 695336,
+            "compressed_bytes": 261122
+          },
+          {
+            "path": "VMulti.dll",
+            "uncompressed_bytes": 15360,
+            "compressed_bytes": 11656
+          },
+          {
+            "path": "VoiD.dll",
+            "uncompressed_bytes": 18432,
+            "compressed_bytes": 13290
+          },
+          {
+            "path": "WindowsInk.dll",
+            "uncompressed_bytes": 25600,
+            "compressed_bytes": 17562
+          }
+        ],
+        "managed_assemblies": [
+          {
+            "path": "Newtonsoft.Json.dll",
+            "length": 695336,
+            "sha256": "72cf291d4bab0edd08a9b07c6173e1e7ad1abb7ab727fd7044bf6305d7515661",
+            "assembly": {
+              "name": "Newtonsoft.Json",
+              "version": "13.0.0.0",
+              "culture": null,
+              "flags": "PublicKey",
+              "module_version_id": "7ca8898b-690a-4181-a32a-9cf767cedb1e",
+              "target_framework": ".NETStandard,Version=v2.0",
+              "machine": "I386",
+              "cor_flags": "ILOnly, StrongNameSigned"
+            },
+            "references": [
+              {
+                "name": "netstandard",
+                "version": "2.0.0.0",
+                "culture": null,
+                "flags": "0"
+              }
+            ],
+            "api_member_references": [],
+            "types": [
+              {
+                "name": "Newtonsoft.Json.ConstructorHandling",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.DateFormatHandling",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.DateParseHandling",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.DateTimeZoneHandling",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.DefaultJsonNameTable",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonNameTable",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.DefaultValueHandling",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.FlagsAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.FloatFormatHandling",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.FloatParseHandling",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.Formatting",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.IArrayPool`1",
+                "visibility": "Public",
+                "base_type": null,
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.IJsonLineInfo",
+                "visibility": "Public",
+                "base_type": null,
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.JsonArrayAttribute",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonContainerAttribute",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.AttributeUsageAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.JsonConstructorAttribute",
+                "visibility": "Public",
+                "base_type": "System.Attribute",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.AttributeUsageAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.JsonContainerAttribute",
+                "visibility": "Public",
+                "base_type": "System.Attribute",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute",
+                  "System.AttributeUsageAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.JsonConvert",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.JsonConverter",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.JsonConverter`1",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonConverter",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.JsonConverterAttribute",
+                "visibility": "Public",
+                "base_type": "System.Attribute",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute",
+                  "System.AttributeUsageAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.JsonConverterCollection",
+                "visibility": "Public",
+                "base_type": "System.Collections.ObjectModel.Collection`1<Newtonsoft.Json.JsonConverter>",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.JsonDictionaryAttribute",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonContainerAttribute",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.AttributeUsageAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.JsonException",
+                "visibility": "Public",
+                "base_type": "System.Exception",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.JsonExtensionDataAttribute",
+                "visibility": "Public",
+                "base_type": "System.Attribute",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.AttributeUsageAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.JsonIgnoreAttribute",
+                "visibility": "Public",
+                "base_type": "System.Attribute",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.AttributeUsageAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.JsonNameTable",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.JsonObjectAttribute",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonContainerAttribute",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.AttributeUsageAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.JsonPropertyAttribute",
+                "visibility": "Public",
+                "base_type": "System.Attribute",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute",
+                  "System.AttributeUsageAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.JsonReader",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [
+                  "System.IDisposable"
+                ],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.JsonReaderException",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonException",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.JsonRequiredAttribute",
+                "visibility": "Public",
+                "base_type": "System.Attribute",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.AttributeUsageAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.JsonSerializationException",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonException",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.JsonSerializer",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.JsonSerializerSettings",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.JsonTextReader",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonReader",
+                "interfaces": [
+                  "Newtonsoft.Json.IJsonLineInfo"
+                ],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.JsonTextWriter",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonWriter",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.JsonToken",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.JsonValidatingReader",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonReader",
+                "interfaces": [
+                  "Newtonsoft.Json.IJsonLineInfo"
+                ],
+                "custom_attributes": [
+                  "System.ObsoleteAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.JsonWriter",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [
+                  "System.IDisposable"
+                ],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.JsonWriterException",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonException",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.MemberSerialization",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.MetadataPropertyHandling",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.MissingMemberHandling",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.NullValueHandling",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.ObjectCreationHandling",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.PreserveReferencesHandling",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.FlagsAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.ReferenceLoopHandling",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.Required",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.StringEscapeHandling",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.TypeNameAssemblyFormatHandling",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.TypeNameHandling",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.FlagsAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.WriteState",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.CamelCaseNamingStrategy",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.Serialization.NamingStrategy",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.CamelCasePropertyNamesContractResolver",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.Serialization.DefaultContractResolver",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.DefaultContractResolver",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [
+                  "Newtonsoft.Json.Serialization.IContractResolver"
+                ],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.DefaultNamingStrategy",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.Serialization.NamingStrategy",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.DefaultSerializationBinder",
+                "visibility": "Public",
+                "base_type": "System.Runtime.Serialization.SerializationBinder",
+                "interfaces": [
+                  "Newtonsoft.Json.Serialization.ISerializationBinder"
+                ],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.DiagnosticsTraceWriter",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [
+                  "Newtonsoft.Json.Serialization.ITraceWriter"
+                ],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.ErrorContext",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.ErrorEventArgs",
+                "visibility": "Public",
+                "base_type": "System.EventArgs",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.ExpressionValueProvider",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [
+                  "Newtonsoft.Json.Serialization.IValueProvider"
+                ],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.IAttributeProvider",
+                "visibility": "Public",
+                "base_type": null,
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.IContractResolver",
+                "visibility": "Public",
+                "base_type": null,
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.IReferenceResolver",
+                "visibility": "Public",
+                "base_type": null,
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.ISerializationBinder",
+                "visibility": "Public",
+                "base_type": null,
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.ITraceWriter",
+                "visibility": "Public",
+                "base_type": null,
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.IValueProvider",
+                "visibility": "Public",
+                "base_type": null,
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.JsonArrayContract",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.Serialization.JsonContainerContract",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.JsonContainerContract",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.Serialization.JsonContract",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.SerializationCallback",
+                "visibility": "Public",
+                "base_type": "System.MulticastDelegate",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.SerializationErrorCallback",
+                "visibility": "Public",
+                "base_type": "System.MulticastDelegate",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.ExtensionDataSetter",
+                "visibility": "Public",
+                "base_type": "System.MulticastDelegate",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.ExtensionDataGetter",
+                "visibility": "Public",
+                "base_type": "System.MulticastDelegate",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.JsonContract",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.JsonDictionaryContract",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.Serialization.JsonContainerContract",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.JsonDynamicContract",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.Serialization.JsonContainerContract",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.JsonISerializableContract",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.Serialization.JsonContainerContract",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.JsonLinqContract",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.Serialization.JsonContract",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.JsonObjectContract",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.Serialization.JsonContainerContract",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.JsonPrimitiveContract",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.Serialization.JsonContract",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.JsonProperty",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.JsonPropertyCollection",
+                "visibility": "Public",
+                "base_type": "System.Collections.ObjectModel.KeyedCollection`2<String,Newtonsoft.Json.Serialization.JsonProperty>",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.JsonStringContract",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.Serialization.JsonPrimitiveContract",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.KebabCaseNamingStrategy",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.Serialization.NamingStrategy",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.MemoryTraceWriter",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [
+                  "Newtonsoft.Json.Serialization.ITraceWriter"
+                ],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.NamingStrategy",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.ObjectConstructor`1",
+                "visibility": "Public",
+                "base_type": "System.MulticastDelegate",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.OnErrorAttribute",
+                "visibility": "Public",
+                "base_type": "System.Attribute",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.AttributeUsageAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.ReflectionAttributeProvider",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [
+                  "Newtonsoft.Json.Serialization.IAttributeProvider"
+                ],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.ReflectionValueProvider",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [
+                  "Newtonsoft.Json.Serialization.IValueProvider"
+                ],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Serialization.SnakeCaseNamingStrategy",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.Serialization.NamingStrategy",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.Schema.Extensions",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.ExtensionAttribute",
+                  "System.ObsoleteAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Schema.JsonSchema",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.ObsoleteAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Schema.JsonSchemaException",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonException",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.ObsoleteAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Schema.JsonSchemaGenerator",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.ObsoleteAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Schema.JsonSchemaResolver",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.ObsoleteAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Schema.JsonSchemaType",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.FlagsAttribute",
+                  "System.ObsoleteAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Schema.UndefinedSchemaIdHandling",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.ObsoleteAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Schema.ValidationEventArgs",
+                "visibility": "Public",
+                "base_type": "System.EventArgs",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.ObsoleteAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Schema.ValidationEventHandler",
+                "visibility": "Public",
+                "base_type": "System.MulticastDelegate",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.ObsoleteAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Linq.CommentHandling",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.Linq.DuplicatePropertyNameHandling",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.Linq.Extensions",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute",
+                  "System.Runtime.CompilerServices.ExtensionAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Linq.IJEnumerable`1",
+                "visibility": "Public",
+                "base_type": null,
+                "interfaces": [
+                  "System.Collections.Generic.IEnumerable`1<!0>",
+                  "System.Collections.IEnumerable"
+                ],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Reflection.DefaultMemberAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Linq.JArray",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.Linq.JContainer",
+                "interfaces": [
+                  "System.Collections.Generic.IList`1<Newtonsoft.Json.Linq.JToken>",
+                  "System.Collections.Generic.ICollection`1<Newtonsoft.Json.Linq.JToken>",
+                  "System.Collections.Generic.IEnumerable`1<Newtonsoft.Json.Linq.JToken>",
+                  "System.Collections.IEnumerable"
+                ],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute",
+                  "System.Reflection.DefaultMemberAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Linq.JConstructor",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.Linq.JContainer",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute",
+                  "System.Reflection.DefaultMemberAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Linq.JContainer",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.Linq.JToken",
+                "interfaces": [
+                  "System.Collections.Generic.IList`1<Newtonsoft.Json.Linq.JToken>",
+                  "System.Collections.Generic.ICollection`1<Newtonsoft.Json.Linq.JToken>",
+                  "System.Collections.Generic.IEnumerable`1<Newtonsoft.Json.Linq.JToken>",
+                  "System.Collections.IEnumerable",
+                  "System.ComponentModel.ITypedList",
+                  "System.ComponentModel.IBindingList",
+                  "System.Collections.ICollection",
+                  "System.Collections.IList",
+                  "System.Collections.Specialized.INotifyCollectionChanged"
+                ],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Linq.JEnumerable`1",
+                "visibility": "Public",
+                "base_type": "System.ValueType",
+                "interfaces": [
+                  "Newtonsoft.Json.Linq.IJEnumerable`1<!0>",
+                  "System.Collections.Generic.IEnumerable`1<!0>",
+                  "System.Collections.IEnumerable",
+                  "System.IEquatable`1<Newtonsoft.Json.Linq.JEnumerable`1<!0>>"
+                ],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute",
+                  "System.Runtime.CompilerServices.IsReadOnlyAttribute",
+                  "System.Reflection.DefaultMemberAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Linq.JObject",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.Linq.JContainer",
+                "interfaces": [
+                  "System.Collections.Generic.IDictionary`2<String,Newtonsoft.Json.Linq.JToken>",
+                  "System.Collections.Generic.ICollection`1<System.Collections.Generic.KeyValuePair`2<String,Newtonsoft.Json.Linq.JToken>>",
+                  "System.Collections.Generic.IEnumerable`1<System.Collections.Generic.KeyValuePair`2<String,Newtonsoft.Json.Linq.JToken>>",
+                  "System.Collections.IEnumerable",
+                  "System.ComponentModel.INotifyPropertyChanged",
+                  "System.ComponentModel.ICustomTypeDescriptor",
+                  "System.ComponentModel.INotifyPropertyChanging"
+                ],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute",
+                  "System.Reflection.DefaultMemberAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Linq.JProperty",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.Linq.JContainer",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Linq.JPropertyDescriptor",
+                "visibility": "Public",
+                "base_type": "System.ComponentModel.PropertyDescriptor",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Linq.JRaw",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.Linq.JValue",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Linq.JsonLoadSettings",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.Linq.JsonMergeSettings",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.Linq.JsonSelectSettings",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.Linq.JToken",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [
+                  "Newtonsoft.Json.Linq.IJEnumerable`1<Newtonsoft.Json.Linq.JToken>",
+                  "System.Collections.Generic.IEnumerable`1<Newtonsoft.Json.Linq.JToken>",
+                  "System.Collections.IEnumerable",
+                  "Newtonsoft.Json.IJsonLineInfo",
+                  "System.ICloneable",
+                  "System.Dynamic.IDynamicMetaObjectProvider"
+                ],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute",
+                  "System.Reflection.DefaultMemberAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Linq.JTokenEqualityComparer",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [
+                  "System.Collections.Generic.IEqualityComparer`1<Newtonsoft.Json.Linq.JToken>"
+                ],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Linq.JTokenReader",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonReader",
+                "interfaces": [
+                  "Newtonsoft.Json.IJsonLineInfo"
+                ],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Linq.JTokenType",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.Linq.JTokenWriter",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonWriter",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Linq.JValue",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.Linq.JToken",
+                "interfaces": [
+                  "System.IEquatable`1<Newtonsoft.Json.Linq.JValue>",
+                  "System.IFormattable",
+                  "System.IComparable",
+                  "System.IComparable`1<Newtonsoft.Json.Linq.JValue>",
+                  "System.IConvertible"
+                ],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Linq.LineInfoHandling",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.Linq.MergeArrayHandling",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.Linq.MergeNullValueHandling",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.FlagsAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Converters.BinaryConverter",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonConverter",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Converters.BsonObjectIdConverter",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonConverter",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.ObsoleteAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Converters.CustomCreationConverter`1",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonConverter",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Converters.DataSetConverter",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonConverter",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Converters.DataTableConverter",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonConverter",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Converters.DateTimeConverterBase",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonConverter",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "Newtonsoft.Json.Converters.DiscriminatedUnionConverter",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonConverter",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Converters.EntityKeyMemberConverter",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonConverter",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Converters.ExpandoObjectConverter",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonConverter",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Converters.IsoDateTimeConverter",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.Converters.DateTimeConverterBase",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Converters.JavaScriptDateTimeConverter",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.Converters.DateTimeConverterBase",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Converters.KeyValuePairConverter",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonConverter",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Converters.RegexConverter",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonConverter",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Converters.StringEnumConverter",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonConverter",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Converters.UnixDateTimeConverter",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.Converters.DateTimeConverterBase",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Converters.VersionConverter",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonConverter",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Converters.XmlNodeConverter",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonConverter",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Bson.BsonObjectId",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.ObsoleteAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Bson.BsonReader",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonReader",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.ObsoleteAttribute"
+                ]
+              },
+              {
+                "name": "Newtonsoft.Json.Bson.BsonWriter",
+                "visibility": "Public",
+                "base_type": "Newtonsoft.Json.JsonWriter",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.ObsoleteAttribute"
+                ]
+              }
+            ],
+            "metadata_path": "Newtonsoft.Json.dll",
+            "file_sha256": "72cf291d4bab0edd08a9b07c6173e1e7ad1abb7ab727fd7044bf6305d7515661",
+            "plugin_candidate_types": []
+          },
+          {
+            "path": "VMulti.dll",
+            "length": 15360,
+            "sha256": "dfa5bd0c35773932d74d6ec3c531152a8195fcafa266a3ea5b2fb7bd828ef375",
+            "assembly": {
+              "name": "VMulti",
+              "version": "0.4.2.0",
+              "culture": null,
+              "flags": "0",
+              "module_version_id": "fe320caa-c926-4dc2-be61-96b16bd1272c",
+              "target_framework": ".NETCoreApp,Version=v8.0",
+              "machine": "I386",
+              "cor_flags": "ILOnly"
+            },
+            "references": [
+              {
+                "name": "HidSharpCore",
+                "version": "2.1.0.0",
+                "culture": null,
+                "flags": "0"
+              },
+              {
+                "name": "OpenTabletDriver.Plugin",
+                "version": "0.6.6.0",
+                "culture": null,
+                "flags": "0"
+              },
+              {
+                "name": "System.Linq",
+                "version": "8.0.0.0",
+                "culture": null,
+                "flags": "0"
+              },
+              {
+                "name": "System.Runtime",
+                "version": "8.0.0.0",
+                "culture": null,
+                "flags": "0"
+              }
+            ],
+            "api_member_references": [
+              {
+                "parent": "OpenTabletDriver.Plugin.Log",
+                "name": "WriteNotify"
+              }
+            ],
+            "types": [
+              {
+                "name": "VoiDPlugins.Library.VMulti.VMultiInstance",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "VoiDPlugins.Library.VMulti.VMultiInstance`1",
+                "visibility": "Public",
+                "base_type": "VoiDPlugins.Library.VMulti.VMultiInstance",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "VoiDPlugins.Library.VMulti.Device.AbsoluteInputReport",
+                "visibility": "Public",
+                "base_type": "System.ValueType",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "VoiDPlugins.Library.VMulti.Device.DigitizerInputReport",
+                "visibility": "Public",
+                "base_type": "System.ValueType",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "VoiDPlugins.Library.VMulti.Device.RelativeInputReport",
+                "visibility": "Public",
+                "base_type": "System.ValueType",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "VoiDPlugins.Library.VMulti.Device.VMultiReportHeader",
+                "visibility": "Public",
+                "base_type": "System.ValueType",
+                "interfaces": [],
+                "custom_attributes": []
+              }
+            ],
+            "metadata_path": "VMulti.dll",
+            "file_sha256": "dfa5bd0c35773932d74d6ec3c531152a8195fcafa266a3ea5b2fb7bd828ef375",
+            "plugin_candidate_types": []
+          },
+          {
+            "path": "VoiD.dll",
+            "length": 18432,
+            "sha256": "91d5960b954e9e31a6f5be99f4da36b743efe10d44fc196be32d97f21af7348a",
+            "assembly": {
+              "name": "VoiD",
+              "version": "0.4.2.0",
+              "culture": null,
+              "flags": "0",
+              "module_version_id": "8f1f7abf-434f-4351-815b-88b78b470003",
+              "target_framework": ".NETCoreApp,Version=v8.0",
+              "machine": "I386",
+              "cor_flags": "ILOnly"
+            },
+            "references": [
+              {
+                "name": "OpenTabletDriver.Plugin",
+                "version": "0.6.6.0",
+                "culture": null,
+                "flags": "0"
+              },
+              {
+                "name": "System.Collections",
+                "version": "8.0.0.0",
+                "culture": null,
+                "flags": "0"
+              },
+              {
+                "name": "System.Linq",
+                "version": "8.0.0.0",
+                "culture": null,
+                "flags": "0"
+              },
+              {
+                "name": "System.Numerics.Vectors",
+                "version": "8.0.0.0",
+                "culture": null,
+                "flags": "0"
+              },
+              {
+                "name": "System.Runtime",
+                "version": "8.0.0.0",
+                "culture": null,
+                "flags": "0"
+              },
+              {
+                "name": "System.Runtime.InteropServices",
+                "version": "8.0.0.0",
+                "culture": null,
+                "flags": "0"
+              },
+              {
+                "name": "System.Threading",
+                "version": "8.0.0.0",
+                "culture": null,
+                "flags": "0"
+              }
+            ],
+            "api_member_references": [
+              {
+                "parent": "OpenTabletDriver.Plugin.Tablet.TabletConfiguration",
+                "name": "get_Name"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Tablet.TabletReference",
+                "name": "get_Properties"
+              }
+            ],
+            "types": [
+              {
+                "name": "VoiDPlugins.Library.RingBuffer`1",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [
+                  "System.Collections.Generic.IEnumerable`1<!0>",
+                  "System.Collections.IEnumerable"
+                ],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute",
+                  "System.Reflection.DefaultMemberAttribute"
+                ]
+              },
+              {
+                "name": "VoiDPlugins.Library.TimeSeriesPoint",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "VoiDPlugins.Library.VoiD.SharedStore",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "VoiDPlugins.OutputMode.DummyAbsolutePointer",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [
+                  "OpenTabletDriver.Plugin.Platform.Pointer.IAbsolutePointer"
+                ],
+                "custom_attributes": []
+              },
+              {
+                "name": "VoiDPlugins.OutputMode.DummyRelativePointer",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [
+                  "OpenTabletDriver.Plugin.Platform.Pointer.IRelativePointer"
+                ],
+                "custom_attributes": []
+              }
+            ],
+            "metadata_path": "VoiD.dll",
+            "file_sha256": "91d5960b954e9e31a6f5be99f4da36b743efe10d44fc196be32d97f21af7348a",
+            "plugin_candidate_types": []
+          },
+          {
+            "path": "WindowsInk.dll",
+            "length": 25600,
+            "sha256": "d9002afce5237492e2935c0d01300189b90d60b04658e9c8a3f446563f03db73",
+            "assembly": {
+              "name": "WindowsInk",
+              "version": "0.4.2.0",
+              "culture": null,
+              "flags": "0",
+              "module_version_id": "b8a79732-c8d2-4541-bcde-82543ec56b30",
+              "target_framework": ".NETCoreApp,Version=v8.0",
+              "machine": "I386",
+              "cor_flags": "ILOnly"
+            },
+            "references": [
+              {
+                "name": "OpenTabletDriver.Plugin",
+                "version": "0.6.6.0",
+                "culture": null,
+                "flags": "0"
+              },
+              {
+                "name": "System.ComponentModel",
+                "version": "8.0.0.0",
+                "culture": null,
+                "flags": "0"
+              },
+              {
+                "name": "System.Numerics.Vectors",
+                "version": "8.0.0.0",
+                "culture": null,
+                "flags": "0"
+              },
+              {
+                "name": "System.Runtime",
+                "version": "8.0.0.0",
+                "culture": null,
+                "flags": "0"
+              },
+              {
+                "name": "System.Runtime.InteropServices",
+                "version": "8.0.0.0",
+                "culture": null,
+                "flags": "0"
+              },
+              {
+                "name": "VMulti",
+                "version": "0.4.2.0",
+                "culture": null,
+                "flags": "0"
+              },
+              {
+                "name": "VoiD",
+                "version": "0.4.2.0",
+                "culture": null,
+                "flags": "0"
+              }
+            ],
+            "api_member_references": [
+              {
+                "parent": "OpenTabletDriver.Plugin.Attributes.BooleanPropertyAttribute",
+                "name": ".ctor"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Attributes.DefaultPropertyValueAttribute",
+                "name": ".ctor"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Attributes.PluginNameAttribute",
+                "name": ".ctor"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Attributes.PropertyAttribute",
+                "name": ".ctor"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Attributes.PropertyValidatedAttribute",
+                "name": ".ctor"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Attributes.TabletReferenceAttribute",
+                "name": ".ctor"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Attributes.ToolTipAttribute",
+                "name": ".ctor"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.DependencyInjection.ResolvedAttribute",
+                "name": ".ctor"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Log",
+                "name": "Write"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Log",
+                "name": "WriteNotify"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Output.AbsoluteOutputMode",
+                "name": ".ctor"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Output.OutputMode",
+                "name": "get_Tablet"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Output.OutputMode",
+                "name": "set_Tablet"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Output.RelativeOutputMode",
+                "name": ".ctor"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Platform.Display.IDisplay",
+                "name": "get_Height"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Platform.Display.IDisplay",
+                "name": "get_Width"
+              }
+            ],
+            "types": [
+              {
+                "name": "VoiDPlugins.OutputMode.WinInkAbsoluteMode",
+                "visibility": "Public",
+                "base_type": "OpenTabletDriver.Plugin.Output.AbsoluteOutputMode",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute",
+                  "OpenTabletDriver.Plugin.Attributes.PluginNameAttribute"
+                ]
+              },
+              {
+                "name": "VoiDPlugins.OutputMode.WinInkRelativeMode",
+                "visibility": "Public",
+                "base_type": "OpenTabletDriver.Plugin.Output.RelativeOutputMode",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute",
+                  "OpenTabletDriver.Plugin.Attributes.PluginNameAttribute"
+                ]
+              },
+              {
+                "name": "VoiDPlugins.OutputMode.INPUT",
+                "visibility": "Public",
+                "base_type": "System.ValueType",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "VoiDPlugins.OutputMode.MOUSEINPUT",
+                "visibility": "Public",
+                "base_type": "System.ValueType",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "VoiDPlugins.OutputMode.MOUSEEVENTF",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "VoiDPlugins.OutputMode.INPUT_TYPE",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "VoiDPlugins.OutputMode.ThinOSPointer",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "VoiDPlugins.OutputMode.WinInkAbsolutePointer",
+                "visibility": "Public",
+                "base_type": "VoiDPlugins.OutputMode.WinInkBasePointer",
+                "interfaces": [
+                  "OpenTabletDriver.Plugin.Platform.Pointer.IAbsolutePointer"
+                ],
+                "custom_attributes": []
+              },
+              {
+                "name": "VoiDPlugins.OutputMode.WinInkBasePointer",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [
+                  "OpenTabletDriver.Plugin.Platform.Pointer.IPressureHandler",
+                  "OpenTabletDriver.Plugin.Platform.Pointer.ITiltHandler",
+                  "OpenTabletDriver.Plugin.Platform.Pointer.IEraserHandler",
+                  "OpenTabletDriver.Plugin.Platform.Pointer.ISynchronousPointer",
+                  "OpenTabletDriver.Plugin.Platform.Pointer.IPenActionHandler",
+                  "OpenTabletDriver.Plugin.Platform.Pointer.IMouseButtonHandler"
+                ],
+                "custom_attributes": []
+              },
+              {
+                "name": "VoiDPlugins.OutputMode.WinInkRelativePointer",
+                "visibility": "Public",
+                "base_type": "VoiDPlugins.OutputMode.WinInkBasePointer",
+                "interfaces": [
+                  "OpenTabletDriver.Plugin.Platform.Pointer.IRelativePointer"
+                ],
+                "custom_attributes": []
+              },
+              {
+                "name": "VoiDPlugins.OutputMode.WindowsInkButtonFlags",
+                "visibility": "Public",
+                "base_type": "System.Enum",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.FlagsAttribute"
+                ]
+              },
+              {
+                "name": "VoiDPlugins.OutputMode.WindowsInkConstants",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": []
+              },
+              {
+                "name": "VoiDPlugins.OutputMode.WindowsInkButtonHandler",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [
+                  "OpenTabletDriver.Plugin.IStateBinding",
+                  "OpenTabletDriver.Plugin.IBinding"
+                ],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute",
+                  "OpenTabletDriver.Plugin.Attributes.PluginNameAttribute"
+                ]
+              }
+            ],
+            "metadata_path": "WindowsInk.dll",
+            "file_sha256": "d9002afce5237492e2935c0d01300189b90d60b04658e9c8a3f446563f03db73",
+            "plugin_candidate_types": [
+              {
+                "name": "VoiDPlugins.OutputMode.WinInkAbsoluteMode",
+                "visibility": "Public",
+                "base_type": "OpenTabletDriver.Plugin.Output.AbsoluteOutputMode",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute",
+                  "OpenTabletDriver.Plugin.Attributes.PluginNameAttribute"
+                ]
+              },
+              {
+                "name": "VoiDPlugins.OutputMode.WinInkRelativeMode",
+                "visibility": "Public",
+                "base_type": "OpenTabletDriver.Plugin.Output.RelativeOutputMode",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute",
+                  "OpenTabletDriver.Plugin.Attributes.PluginNameAttribute"
+                ]
+              },
+              {
+                "name": "VoiDPlugins.OutputMode.WindowsInkButtonHandler",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [
+                  "OpenTabletDriver.Plugin.IStateBinding",
+                  "OpenTabletDriver.Plugin.IBinding"
+                ],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute",
+                  "OpenTabletDriver.Plugin.Attributes.PluginNameAttribute"
+                ]
+              }
+            ]
+          }
+        ],
+        "metadata_inspection": {
+          "tool": "System.Reflection.Metadata PEReader",
+          "dotnet_sdk": "10.0.401",
+          "plugin_code_loaded_or_executed": false,
+          "plugin_candidate_types": [
+            "VoiDPlugins.OutputMode.WinInkAbsoluteMode",
+            "VoiDPlugins.OutputMode.WinInkRelativeMode",
+            "VoiDPlugins.OutputMode.WindowsInkButtonHandler"
+          ],
+          "assembly_references": [
+            {
+              "assembly": "Newtonsoft.Json",
+              "name": "netstandard",
+              "version": "2.0.0.0"
+            },
+            {
+              "assembly": "VMulti",
+              "name": "HidSharpCore",
+              "version": "2.1.0.0"
+            },
+            {
+              "assembly": "VMulti",
+              "name": "OpenTabletDriver.Plugin",
+              "version": "0.6.6.0"
+            },
+            {
+              "assembly": "VMulti",
+              "name": "System.Linq",
+              "version": "8.0.0.0"
+            },
+            {
+              "assembly": "VMulti",
+              "name": "System.Runtime",
+              "version": "8.0.0.0"
+            },
+            {
+              "assembly": "VoiD",
+              "name": "OpenTabletDriver.Plugin",
+              "version": "0.6.6.0"
+            },
+            {
+              "assembly": "VoiD",
+              "name": "System.Collections",
+              "version": "8.0.0.0"
+            },
+            {
+              "assembly": "VoiD",
+              "name": "System.Linq",
+              "version": "8.0.0.0"
+            },
+            {
+              "assembly": "VoiD",
+              "name": "System.Numerics.Vectors",
+              "version": "8.0.0.0"
+            },
+            {
+              "assembly": "VoiD",
+              "name": "System.Runtime",
+              "version": "8.0.0.0"
+            },
+            {
+              "assembly": "VoiD",
+              "name": "System.Runtime.InteropServices",
+              "version": "8.0.0.0"
+            },
+            {
+              "assembly": "VoiD",
+              "name": "System.Threading",
+              "version": "8.0.0.0"
+            },
+            {
+              "assembly": "WindowsInk",
+              "name": "OpenTabletDriver.Plugin",
+              "version": "0.6.6.0"
+            },
+            {
+              "assembly": "WindowsInk",
+              "name": "System.ComponentModel",
+              "version": "8.0.0.0"
+            },
+            {
+              "assembly": "WindowsInk",
+              "name": "System.Numerics.Vectors",
+              "version": "8.0.0.0"
+            },
+            {
+              "assembly": "WindowsInk",
+              "name": "System.Runtime",
+              "version": "8.0.0.0"
+            },
+            {
+              "assembly": "WindowsInk",
+              "name": "System.Runtime.InteropServices",
+              "version": "8.0.0.0"
+            },
+            {
+              "assembly": "WindowsInk",
+              "name": "VMulti",
+              "version": "0.4.2.0"
+            },
+            {
+              "assembly": "WindowsInk",
+              "name": "VoiD",
+              "version": "0.4.2.0"
+            }
+          ],
+          "open_tablet_driver_member_references": [
+            {
+              "assembly": "VMulti",
+              "parent_type": "OpenTabletDriver.Plugin.Log",
+              "member_name": "WriteNotify"
+            },
+            {
+              "assembly": "VoiD",
+              "parent_type": "OpenTabletDriver.Plugin.Tablet.TabletConfiguration",
+              "member_name": "get_Name"
+            },
+            {
+              "assembly": "VoiD",
+              "parent_type": "OpenTabletDriver.Plugin.Tablet.TabletReference",
+              "member_name": "get_Properties"
+            },
+            {
+              "assembly": "WindowsInk",
+              "parent_type": "OpenTabletDriver.Plugin.Attributes.BooleanPropertyAttribute",
+              "member_name": ".ctor"
+            },
+            {
+              "assembly": "WindowsInk",
+              "parent_type": "OpenTabletDriver.Plugin.Attributes.DefaultPropertyValueAttribute",
+              "member_name": ".ctor"
+            },
+            {
+              "assembly": "WindowsInk",
+              "parent_type": "OpenTabletDriver.Plugin.Attributes.PluginNameAttribute",
+              "member_name": ".ctor"
+            },
+            {
+              "assembly": "WindowsInk",
+              "parent_type": "OpenTabletDriver.Plugin.Attributes.PropertyAttribute",
+              "member_name": ".ctor"
+            },
+            {
+              "assembly": "WindowsInk",
+              "parent_type": "OpenTabletDriver.Plugin.Attributes.PropertyValidatedAttribute",
+              "member_name": ".ctor"
+            },
+            {
+              "assembly": "WindowsInk",
+              "parent_type": "OpenTabletDriver.Plugin.Attributes.TabletReferenceAttribute",
+              "member_name": ".ctor"
+            },
+            {
+              "assembly": "WindowsInk",
+              "parent_type": "OpenTabletDriver.Plugin.Attributes.ToolTipAttribute",
+              "member_name": ".ctor"
+            },
+            {
+              "assembly": "WindowsInk",
+              "parent_type": "OpenTabletDriver.Plugin.DependencyInjection.ResolvedAttribute",
+              "member_name": ".ctor"
+            },
+            {
+              "assembly": "WindowsInk",
+              "parent_type": "OpenTabletDriver.Plugin.Log",
+              "member_name": "Write"
+            },
+            {
+              "assembly": "WindowsInk",
+              "parent_type": "OpenTabletDriver.Plugin.Log",
+              "member_name": "WriteNotify"
+            },
+            {
+              "assembly": "WindowsInk",
+              "parent_type": "OpenTabletDriver.Plugin.Output.AbsoluteOutputMode",
+              "member_name": ".ctor"
+            },
+            {
+              "assembly": "WindowsInk",
+              "parent_type": "OpenTabletDriver.Plugin.Output.OutputMode",
+              "member_name": "get_Tablet"
+            },
+            {
+              "assembly": "WindowsInk",
+              "parent_type": "OpenTabletDriver.Plugin.Output.OutputMode",
+              "member_name": "set_Tablet"
+            },
+            {
+              "assembly": "WindowsInk",
+              "parent_type": "OpenTabletDriver.Plugin.Output.RelativeOutputMode",
+              "member_name": ".ctor"
+            },
+            {
+              "assembly": "WindowsInk",
+              "parent_type": "OpenTabletDriver.Plugin.Platform.Display.IDisplay",
+              "member_name": "get_Height"
+            },
+            {
+              "assembly": "WindowsInk",
+              "parent_type": "OpenTabletDriver.Plugin.Platform.Display.IDisplay",
+              "member_name": "get_Width"
+            }
+          ],
+          "candidate_runtime_shape": "Metadata candidates include two classes deriving from AbsoluteOutputMode and RelativeOutputMode, plus one class implementing IBinding/IStateBinding. This describes declared shapes only, not runtime category/discovery or Windows support.",
+          "managed_assemblies": [
+            {
+              "metadata_path": "Newtonsoft.Json.dll",
+              "file_sha256": "72cf291d4bab0edd08a9b07c6173e1e7ad1abb7ab727fd7044bf6305d7515661",
+              "length": 695336,
+              "assembly": {
+                "name": "Newtonsoft.Json",
+                "version": "13.0.0.0",
+                "culture": null,
+                "flags": "PublicKey",
+                "module_version_id": "7ca8898b-690a-4181-a32a-9cf767cedb1e",
+                "target_framework": ".NETStandard,Version=v2.0",
+                "machine": "I386",
+                "cor_flags": "ILOnly, StrongNameSigned"
+              },
+              "references": [
+                {
+                  "name": "netstandard",
+                  "version": "2.0.0.0",
+                  "culture": null,
+                  "flags": "0"
+                }
+              ],
+              "plugin_candidate_types": [],
+              "api_member_references": []
+            },
+            {
+              "metadata_path": "VMulti.dll",
+              "file_sha256": "dfa5bd0c35773932d74d6ec3c531152a8195fcafa266a3ea5b2fb7bd828ef375",
+              "length": 15360,
+              "assembly": {
+                "name": "VMulti",
+                "version": "0.4.2.0",
+                "culture": null,
+                "flags": "0",
+                "module_version_id": "fe320caa-c926-4dc2-be61-96b16bd1272c",
+                "target_framework": ".NETCoreApp,Version=v8.0",
+                "machine": "I386",
+                "cor_flags": "ILOnly"
+              },
+              "references": [
+                {
+                  "name": "HidSharpCore",
+                  "version": "2.1.0.0",
+                  "culture": null,
+                  "flags": "0"
+                },
+                {
+                  "name": "OpenTabletDriver.Plugin",
+                  "version": "0.6.6.0",
+                  "culture": null,
+                  "flags": "0"
+                },
+                {
+                  "name": "System.Linq",
+                  "version": "8.0.0.0",
+                  "culture": null,
+                  "flags": "0"
+                },
+                {
+                  "name": "System.Runtime",
+                  "version": "8.0.0.0",
+                  "culture": null,
+                  "flags": "0"
+                }
+              ],
+              "plugin_candidate_types": [],
+              "api_member_references": [
+                {
+                  "parent": "OpenTabletDriver.Plugin.Log",
+                  "name": "WriteNotify"
+                }
+              ],
+              "other_relevant_public_types": [
+                "VoiDPlugins.Library.VMulti.VMultiInstance",
+                "VoiDPlugins.Library.VMulti.VMultiInstance`1",
+                "VoiDPlugins.Library.VMulti.Device.AbsoluteInputReport",
+                "VoiDPlugins.Library.VMulti.Device.DigitizerInputReport",
+                "VoiDPlugins.Library.VMulti.Device.RelativeInputReport",
+                "VoiDPlugins.Library.VMulti.Device.VMultiReportHeader"
+              ]
+            },
+            {
+              "metadata_path": "VoiD.dll",
+              "file_sha256": "91d5960b954e9e31a6f5be99f4da36b743efe10d44fc196be32d97f21af7348a",
+              "length": 18432,
+              "assembly": {
+                "name": "VoiD",
+                "version": "0.4.2.0",
+                "culture": null,
+                "flags": "0",
+                "module_version_id": "8f1f7abf-434f-4351-815b-88b78b470003",
+                "target_framework": ".NETCoreApp,Version=v8.0",
+                "machine": "I386",
+                "cor_flags": "ILOnly"
+              },
+              "references": [
+                {
+                  "name": "OpenTabletDriver.Plugin",
+                  "version": "0.6.6.0",
+                  "culture": null,
+                  "flags": "0"
+                },
+                {
+                  "name": "System.Collections",
+                  "version": "8.0.0.0",
+                  "culture": null,
+                  "flags": "0"
+                },
+                {
+                  "name": "System.Linq",
+                  "version": "8.0.0.0",
+                  "culture": null,
+                  "flags": "0"
+                },
+                {
+                  "name": "System.Numerics.Vectors",
+                  "version": "8.0.0.0",
+                  "culture": null,
+                  "flags": "0"
+                },
+                {
+                  "name": "System.Runtime",
+                  "version": "8.0.0.0",
+                  "culture": null,
+                  "flags": "0"
+                },
+                {
+                  "name": "System.Runtime.InteropServices",
+                  "version": "8.0.0.0",
+                  "culture": null,
+                  "flags": "0"
+                },
+                {
+                  "name": "System.Threading",
+                  "version": "8.0.0.0",
+                  "culture": null,
+                  "flags": "0"
+                }
+              ],
+              "plugin_candidate_types": [],
+              "api_member_references": [
+                {
+                  "parent": "OpenTabletDriver.Plugin.Tablet.TabletConfiguration",
+                  "name": "get_Name"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Tablet.TabletReference",
+                  "name": "get_Properties"
+                }
+              ],
+              "other_relevant_public_types": [
+                "VoiDPlugins.OutputMode.DummyAbsolutePointer",
+                "VoiDPlugins.OutputMode.DummyRelativePointer"
+              ]
+            },
+            {
+              "metadata_path": "WindowsInk.dll",
+              "file_sha256": "d9002afce5237492e2935c0d01300189b90d60b04658e9c8a3f446563f03db73",
+              "length": 25600,
+              "assembly": {
+                "name": "WindowsInk",
+                "version": "0.4.2.0",
+                "culture": null,
+                "flags": "0",
+                "module_version_id": "b8a79732-c8d2-4541-bcde-82543ec56b30",
+                "target_framework": ".NETCoreApp,Version=v8.0",
+                "machine": "I386",
+                "cor_flags": "ILOnly"
+              },
+              "references": [
+                {
+                  "name": "OpenTabletDriver.Plugin",
+                  "version": "0.6.6.0",
+                  "culture": null,
+                  "flags": "0"
+                },
+                {
+                  "name": "System.ComponentModel",
+                  "version": "8.0.0.0",
+                  "culture": null,
+                  "flags": "0"
+                },
+                {
+                  "name": "System.Numerics.Vectors",
+                  "version": "8.0.0.0",
+                  "culture": null,
+                  "flags": "0"
+                },
+                {
+                  "name": "System.Runtime",
+                  "version": "8.0.0.0",
+                  "culture": null,
+                  "flags": "0"
+                },
+                {
+                  "name": "System.Runtime.InteropServices",
+                  "version": "8.0.0.0",
+                  "culture": null,
+                  "flags": "0"
+                },
+                {
+                  "name": "VMulti",
+                  "version": "0.4.2.0",
+                  "culture": null,
+                  "flags": "0"
+                },
+                {
+                  "name": "VoiD",
+                  "version": "0.4.2.0",
+                  "culture": null,
+                  "flags": "0"
+                }
+              ],
+              "plugin_candidate_types": [
+                {
+                  "name": "VoiDPlugins.OutputMode.WinInkAbsoluteMode",
+                  "visibility": "Public",
+                  "base_type": "OpenTabletDriver.Plugin.Output.AbsoluteOutputMode",
+                  "interfaces": [],
+                  "custom_attributes": [
+                    "System.Runtime.CompilerServices.NullableContextAttribute",
+                    "System.Runtime.CompilerServices.NullableAttribute",
+                    "OpenTabletDriver.Plugin.Attributes.PluginNameAttribute"
+                  ]
+                },
+                {
+                  "name": "VoiDPlugins.OutputMode.WinInkRelativeMode",
+                  "visibility": "Public",
+                  "base_type": "OpenTabletDriver.Plugin.Output.RelativeOutputMode",
+                  "interfaces": [],
+                  "custom_attributes": [
+                    "System.Runtime.CompilerServices.NullableContextAttribute",
+                    "System.Runtime.CompilerServices.NullableAttribute",
+                    "OpenTabletDriver.Plugin.Attributes.PluginNameAttribute"
+                  ]
+                },
+                {
+                  "name": "VoiDPlugins.OutputMode.WindowsInkButtonHandler",
+                  "visibility": "Public",
+                  "base_type": "System.Object",
+                  "interfaces": [
+                    "OpenTabletDriver.Plugin.IStateBinding",
+                    "OpenTabletDriver.Plugin.IBinding"
+                  ],
+                  "custom_attributes": [
+                    "System.Runtime.CompilerServices.NullableContextAttribute",
+                    "System.Runtime.CompilerServices.NullableAttribute",
+                    "OpenTabletDriver.Plugin.Attributes.PluginNameAttribute"
+                  ]
+                }
+              ],
+              "api_member_references": [
+                {
+                  "parent": "OpenTabletDriver.Plugin.Attributes.BooleanPropertyAttribute",
+                  "name": ".ctor"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Attributes.DefaultPropertyValueAttribute",
+                  "name": ".ctor"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Attributes.PluginNameAttribute",
+                  "name": ".ctor"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Attributes.PropertyAttribute",
+                  "name": ".ctor"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Attributes.PropertyValidatedAttribute",
+                  "name": ".ctor"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Attributes.TabletReferenceAttribute",
+                  "name": ".ctor"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Attributes.ToolTipAttribute",
+                  "name": ".ctor"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.DependencyInjection.ResolvedAttribute",
+                  "name": ".ctor"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Log",
+                  "name": "Write"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Log",
+                  "name": "WriteNotify"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Output.AbsoluteOutputMode",
+                  "name": ".ctor"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Output.OutputMode",
+                  "name": "get_Tablet"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Output.OutputMode",
+                  "name": "set_Tablet"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Output.RelativeOutputMode",
+                  "name": ".ctor"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Platform.Display.IDisplay",
+                  "name": "get_Height"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Platform.Display.IDisplay",
+                  "name": "get_Width"
+                }
+              ]
+            }
+          ]
+        },
+        "remaining_unknowns": [
+          "The output-mode and binding classes were not runtime-discovered, initialized or exercised on baseline 0.6.7.0.",
+          "WindowsInk and its VoiD/VMulti helper assemblies target .NET 8; the ZIP hash is verified, but host runtime suitability was not tested.",
+          "VMulti.dll and VoiD.dll are bundled managed helpers; their presence does not establish that a VMulti device driver is installed or usable.",
+          "VMulti.dll references HidSharpCore 2.1.0.0, which is not in this archive; whether it is loaded for Windows Ink and where it is provided are unknown.",
+          "Operating-system and external/native prerequisites, including any VMulti driver requirement, remain unknown.",
+          "Newtonsoft.Json.dll is present in the ZIP; these DLLs metadata list no static Newtonsoft.Json assembly reference, and dynamic use was not investigated.",
+          "Member references are metadata names only; target API visibility and host compatibility were not resolved.",
+          "PluginName attribute values, method bodies/behavior, service initialization and redistribution-license terms were not inspected."
+        ]
+      }
+    },
+    {
+      "identity": {
+        "name": "Temporal Resampler",
+        "owner": "shmkle",
+        "repository_url": "https://github.com/shmkle/TemporalResampler"
+      },
+      "plugin_version": "1.5.1",
+      "catalog_path": "Repository/0.6.4.0/shmkle/TemporalResampler/TemporalResampler.json",
+      "audit": {
+        "catalog_download_url": "https://github.com/shmkle/TemporalResampler/releases/download/v1.5.1/TemporalResampler.zip",
+        "archive_sha256_declared": "b9214ab071166fbeb93ab067f7fadea929fe43c600ebe52d7cde50ff43b29f6b",
+        "archive_sha256_observed": "b9214ab071166fbeb93ab067f7fadea929fe43c600ebe52d7cde50ff43b29f6b",
+        "archive_sha256_verified": true,
+        "retrieved_utc_date": "2026-09-23",
+        "zip_entries": [
+          {
+            "path": "TemporalResampler.dll",
+            "uncompressed_bytes": 17408,
+            "compressed_bytes": 8329
+          }
+        ],
+        "managed_assemblies": [
+          {
+            "path": "TemporalResampler.dll",
+            "length": 17408,
+            "sha256": "f16a1b05702bdb942dae9fce38b6b610404c86da06f27cbec530b8bd865aa9c5",
+            "assembly": {
+              "name": "TemporalResampler",
+              "version": "1.0.0.0",
+              "culture": null,
+              "flags": "0",
+              "module_version_id": "53a53a6a-a6d6-4b3a-a000-d92a2c91568c",
+              "target_framework": ".NETCoreApp,Version=v6.0",
+              "machine": "I386",
+              "cor_flags": "ILOnly"
+            },
+            "references": [
+              {
+                "name": "OpenTabletDriver.Plugin",
+                "version": "0.6.3.0",
+                "culture": null,
+                "flags": "0"
+              },
+              {
+                "name": "System.Linq",
+                "version": "6.0.0.0",
+                "culture": null,
+                "flags": "0"
+              },
+              {
+                "name": "System.Numerics.Vectors",
+                "version": "6.0.0.0",
+                "culture": null,
+                "flags": "0"
+              },
+              {
+                "name": "System.Runtime",
+                "version": "6.0.0.0",
+                "culture": null,
+                "flags": "0"
+              }
+            ],
+            "api_member_references": [
+              {
+                "parent": "OpenTabletDriver.Plugin.Attributes.DefaultPropertyValueAttribute",
+                "name": ".ctor"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Attributes.DeviceHubAttribute",
+                "name": ".ctor"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Attributes.PluginNameAttribute",
+                "name": ".ctor"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Attributes.PropertyAttribute",
+                "name": ".ctor"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Attributes.TabletReferenceAttribute",
+                "name": ".ctor"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Attributes.ToolTipAttribute",
+                "name": ".ctor"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Attributes.UnitAttribute",
+                "name": ".ctor"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Log",
+                "name": "Write"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+                "name": ".ctor"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+                "name": "get_Frequency"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+                "name": "get_State"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+                "name": "OnEmit"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+                "name": "PenIsInRange"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+                "name": "set_State"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+                "name": "UpdateState"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Tablet.DigitizerSpecifications",
+                "name": "get_MaxX"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Tablet.DigitizerSpecifications",
+                "name": "get_Width"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Tablet.IAbsolutePositionReport",
+                "name": "get_Position"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Tablet.IAbsolutePositionReport",
+                "name": "set_Position"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Tablet.ITabletReport",
+                "name": "get_Pressure"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Tablet.ITabletReport",
+                "name": "set_Pressure"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Tablet.TabletConfiguration",
+                "name": "get_Specifications"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Tablet.TabletReference",
+                "name": "get_Properties"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Tablet.TabletSpecifications",
+                "name": "get_Digitizer"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Timing.HPETDeltaStopwatch",
+                "name": ".ctor"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Timing.HPETDeltaStopwatch",
+                "name": "get_Elapsed"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Timing.HPETDeltaStopwatch",
+                "name": "Reset"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Timing.HPETDeltaStopwatch",
+                "name": "Restart"
+              },
+              {
+                "parent": "OpenTabletDriver.Plugin.Timing.HPETDeltaStopwatch",
+                "name": "Stop"
+              }
+            ],
+            "types": [
+              {
+                "name": "TemporalResampler",
+                "visibility": "Public",
+                "base_type": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute",
+                  "OpenTabletDriver.Plugin.Attributes.PluginNameAttribute",
+                  "OpenTabletDriver.Plugin.Attributes.DeviceHubAttribute"
+                ]
+              },
+              {
+                "name": "KalmanFilter",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "KalmanVector2",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              },
+              {
+                "name": "Matrix",
+                "visibility": "Public",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute",
+                  "System.Reflection.DefaultMemberAttribute"
+                ]
+              },
+              {
+                "name": "Build",
+                "visibility": "NestedPublic",
+                "base_type": "System.Object",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableAttribute"
+                ]
+              }
+            ],
+            "metadata_path": "TemporalResampler.dll",
+            "file_sha256": "f16a1b05702bdb942dae9fce38b6b610404c86da06f27cbec530b8bd865aa9c5",
+            "plugin_candidate_types": [
+              {
+                "name": "TemporalResampler",
+                "visibility": "Public",
+                "base_type": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+                "interfaces": [],
+                "custom_attributes": [
+                  "System.Runtime.CompilerServices.NullableContextAttribute",
+                  "System.Runtime.CompilerServices.NullableAttribute",
+                  "OpenTabletDriver.Plugin.Attributes.PluginNameAttribute",
+                  "OpenTabletDriver.Plugin.Attributes.DeviceHubAttribute"
+                ]
+              }
+            ]
+          }
+        ],
+        "metadata_inspection": {
+          "tool": "System.Reflection.Metadata PEReader",
+          "dotnet_sdk": "10.0.401",
+          "plugin_code_loaded_or_executed": false,
+          "plugin_candidate_types": [
+            "TemporalResampler"
+          ],
+          "assembly_references": [
+            {
+              "assembly": "TemporalResampler",
+              "name": "OpenTabletDriver.Plugin",
+              "version": "0.6.3.0"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "name": "System.Linq",
+              "version": "6.0.0.0"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "name": "System.Numerics.Vectors",
+              "version": "6.0.0.0"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "name": "System.Runtime",
+              "version": "6.0.0.0"
+            }
+          ],
+          "open_tablet_driver_member_references": [
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Attributes.DefaultPropertyValueAttribute",
+              "member_name": ".ctor"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Attributes.DeviceHubAttribute",
+              "member_name": ".ctor"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Attributes.PluginNameAttribute",
+              "member_name": ".ctor"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Attributes.PropertyAttribute",
+              "member_name": ".ctor"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Attributes.TabletReferenceAttribute",
+              "member_name": ".ctor"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Attributes.ToolTipAttribute",
+              "member_name": ".ctor"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Attributes.UnitAttribute",
+              "member_name": ".ctor"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Log",
+              "member_name": "Write"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+              "member_name": ".ctor"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+              "member_name": "get_Frequency"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+              "member_name": "get_State"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+              "member_name": "OnEmit"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+              "member_name": "PenIsInRange"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+              "member_name": "set_State"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+              "member_name": "UpdateState"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Tablet.DigitizerSpecifications",
+              "member_name": "get_MaxX"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Tablet.DigitizerSpecifications",
+              "member_name": "get_Width"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Tablet.IAbsolutePositionReport",
+              "member_name": "get_Position"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Tablet.IAbsolutePositionReport",
+              "member_name": "set_Position"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Tablet.ITabletReport",
+              "member_name": "get_Pressure"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Tablet.ITabletReport",
+              "member_name": "set_Pressure"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Tablet.TabletConfiguration",
+              "member_name": "get_Specifications"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Tablet.TabletReference",
+              "member_name": "get_Properties"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Tablet.TabletSpecifications",
+              "member_name": "get_Digitizer"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Timing.HPETDeltaStopwatch",
+              "member_name": ".ctor"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Timing.HPETDeltaStopwatch",
+              "member_name": "get_Elapsed"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Timing.HPETDeltaStopwatch",
+              "member_name": "Reset"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Timing.HPETDeltaStopwatch",
+              "member_name": "Restart"
+            },
+            {
+              "assembly": "TemporalResampler",
+              "parent_type": "OpenTabletDriver.Plugin.Timing.HPETDeltaStopwatch",
+              "member_name": "Stop"
+            }
+          ],
+          "candidate_runtime_shape": "The public TemporalResampler type is decorated with PluginNameAttribute and DeviceHubAttribute and derives from AsyncPositionedPipelineElement<IDeviceReport>. This is a metadata candidate shape for an asynchronous positional resampler with a device-hub dependency; it is not runtime discovery or category proof.",
+          "managed_assemblies": [
+            {
+              "metadata_path": "TemporalResampler.dll",
+              "file_sha256": "f16a1b05702bdb942dae9fce38b6b610404c86da06f27cbec530b8bd865aa9c5",
+              "length": 17408,
+              "assembly": {
+                "name": "TemporalResampler",
+                "version": "1.0.0.0",
+                "culture": null,
+                "flags": "0",
+                "module_version_id": "53a53a6a-a6d6-4b3a-a000-d92a2c91568c",
+                "target_framework": ".NETCoreApp,Version=v6.0",
+                "machine": "I386",
+                "cor_flags": "ILOnly"
+              },
+              "references": [
+                {
+                  "name": "OpenTabletDriver.Plugin",
+                  "version": "0.6.3.0",
+                  "culture": null,
+                  "flags": "0"
+                },
+                {
+                  "name": "System.Linq",
+                  "version": "6.0.0.0",
+                  "culture": null,
+                  "flags": "0"
+                },
+                {
+                  "name": "System.Numerics.Vectors",
+                  "version": "6.0.0.0",
+                  "culture": null,
+                  "flags": "0"
+                },
+                {
+                  "name": "System.Runtime",
+                  "version": "6.0.0.0",
+                  "culture": null,
+                  "flags": "0"
+                }
+              ],
+              "plugin_candidate_types": [
+                {
+                  "name": "TemporalResampler",
+                  "visibility": "Public",
+                  "base_type": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+                  "interfaces": [],
+                  "custom_attributes": [
+                    "System.Runtime.CompilerServices.NullableContextAttribute",
+                    "System.Runtime.CompilerServices.NullableAttribute",
+                    "OpenTabletDriver.Plugin.Attributes.PluginNameAttribute",
+                    "OpenTabletDriver.Plugin.Attributes.DeviceHubAttribute"
+                  ]
+                }
+              ],
+              "api_member_references": [
+                {
+                  "parent": "OpenTabletDriver.Plugin.Attributes.DefaultPropertyValueAttribute",
+                  "name": ".ctor"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Attributes.DeviceHubAttribute",
+                  "name": ".ctor"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Attributes.PluginNameAttribute",
+                  "name": ".ctor"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Attributes.PropertyAttribute",
+                  "name": ".ctor"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Attributes.TabletReferenceAttribute",
+                  "name": ".ctor"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Attributes.ToolTipAttribute",
+                  "name": ".ctor"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Attributes.UnitAttribute",
+                  "name": ".ctor"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Log",
+                  "name": "Write"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+                  "name": ".ctor"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+                  "name": "get_Frequency"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+                  "name": "get_State"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+                  "name": "OnEmit"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+                  "name": "PenIsInRange"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+                  "name": "set_State"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+                  "name": "UpdateState"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Tablet.DigitizerSpecifications",
+                  "name": "get_MaxX"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Tablet.DigitizerSpecifications",
+                  "name": "get_Width"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Tablet.IAbsolutePositionReport",
+                  "name": "get_Position"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Tablet.IAbsolutePositionReport",
+                  "name": "set_Position"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Tablet.ITabletReport",
+                  "name": "get_Pressure"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Tablet.ITabletReport",
+                  "name": "set_Pressure"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Tablet.TabletConfiguration",
+                  "name": "get_Specifications"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Tablet.TabletReference",
+                  "name": "get_Properties"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Tablet.TabletSpecifications",
+                  "name": "get_Digitizer"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Timing.HPETDeltaStopwatch",
+                  "name": ".ctor"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Timing.HPETDeltaStopwatch",
+                  "name": "get_Elapsed"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Timing.HPETDeltaStopwatch",
+                  "name": "Reset"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Timing.HPETDeltaStopwatch",
+                  "name": "Restart"
+                },
+                {
+                  "parent": "OpenTabletDriver.Plugin.Timing.HPETDeltaStopwatch",
+                  "name": "Stop"
+                }
+              ]
+            }
+          ]
+        },
+        "remaining_unknowns": [
+          "Runtime discovery, initialization, scheduling and output behavior on baseline 0.6.7.0 are untested.",
+          "The assembly references OpenTabletDriver.Plugin 0.6.3.0 while catalog metadata allows this release from driver 0.6.4.0; host binding behavior was not tested.",
+          "DeviceHubAttribute and TabletReferenceAttribute usage is recorded but service resolution and required device/hardware are unknown.",
+          "Operating-system support and external prerequisites are unknown.",
+          "Member-reference names do not establish target API visibility or public/private contract compatibility.",
+          "PluginName attribute value, method behavior and redistribution-license terms were not inspected."
+        ]
+      }
     }
   ]
 }
