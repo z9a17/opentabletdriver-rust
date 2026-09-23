@@ -1,6 +1,7 @@
 //! Golden traces: recorded report sequences replayed through the decoder and
 //! `ReportPipeline`, compared with the output they produced when frozen.
-//! Fixtures live in `tests/golden/*.toml`; `docs/parity/BEHAVIOR_CONTRACTS.md`
+//! Fixtures live in the repository's `tests/golden/*.toml`, shared by the
+//! workspace; `docs/parity/BEHAVIOR_CONTRACTS.md`
 //! describes the format, the behavior each trace pins down and how it differs
 //! from upstream. A mismatch prints the whole actual trace in fixture syntax.
 //! Update a fixture only for an intentional, documented behavior change.
@@ -11,17 +12,17 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE,
-    MOUSEEVENTF_VIRTUALDESK,
-};
 
 use crate::config::Profile;
 use crate::display::DisplaySnapshot;
 use crate::mapping::Rect;
 use crate::output::MousePacket;
+use crate::output::flags::{
+    ABSOLUTE as MOUSEEVENTF_ABSOLUTE, LEFTDOWN as MOUSEEVENTF_LEFTDOWN,
+    LEFTUP as MOUSEEVENTF_LEFTUP, MOVE as MOUSEEVENTF_MOVE, VIRTUALDESK as MOUSEEVENTF_VIRTUALDESK,
+};
 use crate::pipeline::ReportPipeline;
-use crate::plugins::PluginChain;
+use crate::plugins::NoFilters;
 use crate::protocol;
 
 #[derive(Deserialize)]
@@ -139,7 +140,7 @@ fn replay(path: &Path) -> Result<(), String> {
         None => Some(snapshot.mapper(&profile)?),
     };
     let mut pipeline = ReportPipeline::new(&profile)?;
-    let mut plugins = PluginChain::load(&[])?;
+    let mut plugins = NoFilters;
     let start = Instant::now();
     let mut actual = Vec::new();
     for step in &fixture.step {
@@ -196,7 +197,7 @@ fn replay(path: &Path) -> Result<(), String> {
 
 #[test]
 fn golden_traces_match() {
-    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/golden");
     let mut paths: Vec<_> = fs::read_dir(&directory)
         .unwrap()
         .map(|entry| entry.unwrap().path())

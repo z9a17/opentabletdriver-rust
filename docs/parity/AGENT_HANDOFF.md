@@ -5,7 +5,7 @@ Read the root [AGENTS.md](../../AGENTS.md), [full parity plan](../FULL_PARITY_PL
 ## Choose and claim a task
 
 1. Check `git status`, applicable local instructions, current branch and remote history. Preserve unrelated work. Fetch before choosing a base.
-2. Read the task's dependencies and [GitHub workstream issue](GITHUB_TRACKING.md), including recent claims/PRs. Initial independent tasks are F01, F03, P01 and U01. F06 is ready for a hardware tester. F02 follows F01.
+2. Read the task's dependencies and [GitHub workstream issue](GITHUB_TRACKING.md), including recent claims/PRs. Initial independent tasks are F01, F03, P01 and U01. F06 is ready for a hardware tester. F02 follows F01; F04 and F05 follow F02.
 3. Claim one stable task ID in the workstream issue, identifying your branch, expected files, deliverable and dependency assumptions. Check for conflicting claims first. A workstream issue is shared; claiming F01 does not reserve every F task.
 4. Use `parity/<task-id>-<short-description>` as a branch convention. Use an isolated worktree when another agent is editing the same checkout. Shared core/configuration/ABI changes need a named integration owner and a reviewed contract before parallel consumers change them.
 5. If the task is too large for one PR, create bounded child tasks with the original acceptance criteria and explicit prerequisites. Do not silently omit difficult categories. Put blockers in the issue, then select independent useful work when possible.

@@ -1,4 +1,5 @@
-//! Per-thread allocation checks, compiled only into the test executable.
+//! Per-thread allocation checks. Compiled only into test executables: this
+//! crate's own, and dependents' through the `test-alloc` feature.
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
@@ -43,20 +44,30 @@ unsafe impl GlobalAlloc for CountingAllocator {
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
-pub fn assert_no_allocations<T>(operation: impl FnOnce() -> T) -> T {
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            ALLOCATIONS.set(None);
-        }
+/// Counts this thread's allocations from `start` until `finish` or drop.
+pub struct Count(());
+
+impl Count {
+    pub fn start() -> Self {
+        assert_eq!(ALLOCATIONS.get(), None, "nested allocation check");
+        ALLOCATIONS.set(Some(0));
+        Self(())
     }
 
-    assert_eq!(ALLOCATIONS.get(), None, "nested allocation check");
-    ALLOCATIONS.set(Some(0));
-    let reset = Reset;
+    pub fn finish(self) -> usize {
+        ALLOCATIONS.get().unwrap()
+    }
+}
+
+impl Drop for Count {
+    fn drop(&mut self) {
+        ALLOCATIONS.set(None);
+    }
+}
+
+pub fn assert_no_allocations<T>(operation: impl FnOnce() -> T) -> T {
+    let count = Count::start();
     let result = operation();
-    let allocations = ALLOCATIONS.get().unwrap();
-    drop(reset);
-    assert_eq!(allocations, 0, "report processing allocated");
+    assert_eq!(count.finish(), 0, "report processing allocated");
     result
 }

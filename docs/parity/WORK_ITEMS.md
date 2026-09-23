@@ -2,7 +2,7 @@
 
 This is the canonical implementation backlog for the [full parity plan](../FULL_PARITY_PLAN.md). All 65 tasks start **open and unclaimed**; consult the linked [GitHub workstream issues](GITHUB_TRACKING.md) for current ownership and progress. Existing code is a starting point, not completion evidence for these broader tasks.
 
-Dependencies are hard prerequisites for merging the described behavior; investigation and fixture collection may start earlier. `None` denotes a task ready to claim. Source groups refer to [CAPABILITY_MATRIX.md](CAPABILITY_MATRIX.md). Every task also inherits the [definition of done](AGENT_HANDOFF.md) and [validation rules](VALIDATION.md). File names under `Start` exist in 0.4.0 unless explicitly described as new; adjust them after F02 without changing task scope.
+Dependencies are hard prerequisites for merging the described behavior; investigation and fixture collection may start earlier. `None` denotes a task ready to claim. Source groups refer to [CAPABILITY_MATRIX.md](CAPABILITY_MATRIX.md). Every task also inherits the [definition of done](AGENT_HANDOFF.md) and [validation rules](VALIDATION.md). File names under `Start` exist unless explicitly described as new. F02 moved the portable modules into `crates/otd-core`; `src/` keeps the Windows adapters, plugin loading and UI.
 
 ## F: Foundations and existing behavior
 
@@ -11,7 +11,7 @@ Sources: UP-DEVICE, UP-REPORT, UP-PIPELINE, UP-DAEMON. Shared edits: core module
 <a id="f01"></a>
 ### F01 - Freeze observable behavior and compatibility contracts
 
-**Depends on:** None. **Start:** `src/protocol.rs`, `src/state.rs`, `src/mapping.rs`, `src/relative.rs`, `src/output.rs`, `src/config.rs`.
+**Depends on:** None. **Start:** `crates/otd-core/src/protocol.rs`, `crates/otd-core/src/state.rs`, `crates/otd-core/src/mapping.rs`, `crates/otd-core/src/relative.rs`, `crates/otd-core/src/output.rs`, `crates/otd-core/src/config.rs`.
 
 Record input/output units, float tolerances, event order, pressure threshold boundaries, timestamps, proximity/reset behavior, duplicate suppression and failures. Compare baseline upstream methods to current Rust behavior. Create small golden traces for existing absolute/relative/filter/contact paths and list intentional deviations separately. Specify report ownership, stage ordering and cancellation before changing architecture.
 
@@ -38,7 +38,7 @@ Add a separate machine-readable ledger keyed by CAP ID, configuration path/parse
 <a id="f04"></a>
 ### F04 - Build repeatable performance measurements
 
-**Depends on:** F02. **Start:** `src/test_alloc.rs`, existing replay/benchmark tests, new benchmark harness.
+**Depends on:** F02. **Start:** `crates/otd-core/src/test_alloc.rs`, existing replay/benchmark tests, new benchmark harness.
 
 Benchmark parsing, mapping, bindings, filter chains, native ABI calls, managed boundary calls, and OS output separately. Record sample rates, CPU/wall time, p50/p95/p99/max, allocation counts, memory, wakeups and environment. Add idle, one-device, multi-device, UI-open and managed-plugin modes. Reproduce current 0.4.0 and upstream results under the same workload before choosing a regression threshold.
 
@@ -69,7 +69,7 @@ Sources: UP-DEVICE, UP-CONFIG, UP-REPORT. Split parser work by exact type names 
 <a id="d01"></a>
 ### D01 - Load the complete upstream device configuration schema
 
-**Depends on:** F02, F03. **Start:** `src/config.rs`, `src/protocol.rs`; new device-specification module distinct from user profiles.
+**Depends on:** F02, F03. **Start:** `crates/otd-core/src/config.rs`, `crates/otd-core/src/protocol.rs`; new device-specification module distinct from user profiles.
 
 Represent digitizer/pen/button/wheel/analog specifications, all identifiers, attributes, device-string predicates, optional lengths and initialization declarations. Preserve documented legacy field aliases and custom overrides. Load/index the pinned database at startup, retain provenance, validate unsupported or contradictory declarations and keep regex work out of report processing.
 
@@ -87,7 +87,7 @@ Match VID/PID plus optional report lengths, strings and attributes using upstrea
 <a id="d03"></a>
 ### D03 - Introduce the full report and capability model
 
-**Depends on:** F02, D01. **Start:** `src/protocol.rs`, `src/state.rs`, managed report adapter contract.
+**Depends on:** F02, D01. **Start:** `crates/otd-core/src/protocol.rs`, `crates/otd-core/src/state.rs`, managed report adapter contract.
 
 Represent pen, absolute position, proximity/distance, pressure, tilt, eraser, tool identity, auxiliary buttons, mouse/puck, absolute/relative analog, wheels and touch where upstream provides them. Preserve raw report length/data and distinguish absent fields from zero. Define device/session identity, monotonic receipt time and sequence metadata separately from plugin-visible values. Allocate capacities at device setup.
 
@@ -96,7 +96,7 @@ Represent pen, absolute position, proximity/distance, pressure, tilt, eraser, to
 <a id="d04"></a>
 ### D04 - Process PTH-660 auxiliary input
 
-**Depends on:** D02, D03, B01. **Start:** `src/hid.rs`, `src/protocol.rs`, `src/session.rs`.
+**Depends on:** D02, D03, B01. **Start:** `src/hid.rs`, `crates/otd-core/src/protocol.rs`, `crates/otd-core/src/session.rs`, `src/session.rs`.
 
 Open the 44-byte auxiliary collection and implement the IntuosV2 auxiliary reports used by the device, including express keys and ring/mode data supported by upstream. Merge pen and auxiliary activity into the tablet's state without blocking pen reads. Define ordering and cleanup if only one endpoint disconnects.
 
@@ -154,7 +154,7 @@ Sources: UP-BINDING, UP-SETTINGS, UP-DAEMON. New binding state belongs in the co
 <a id="b01"></a>
 ### B01 - Implement shared key/button ownership and cleanup
 
-**Depends on:** F02. **Start:** `src/state.rs`, `src/output.rs`; new action state module.
+**Depends on:** F02. **Start:** `crates/otd-core/src/state.rs`, `crates/otd-core/src/output.rs`; new action state module.
 
 Track desired and successfully emitted actions by device/binding owner. A release removes only that owner's hold; output failures do not falsely advance emitted state. Handle contact, eraser changes, proximity loss, reload, endpoint failure and normal shutdown. Define recovery after an injection API partially succeeds.
 
@@ -163,7 +163,7 @@ Track desired and successfully emitted actions by device/binding owner. A releas
 <a id="b02"></a>
 ### B02 - Implement pen, auxiliary, mouse and keyboard actions
 
-**Depends on:** B01, D03. **Start:** binding engine, `src/output.rs`, `src/config.rs`.
+**Depends on:** B01, D03. **Start:** binding engine, `crates/otd-core/src/output.rs`, `src/output.rs`, `crates/otd-core/src/config.rs`.
 
 Port adaptive pen actions, mouse buttons, key bindings and multi-key chords. Support pen side buttons, auxiliary buttons and tablet mouse buttons. Preserve tip/eraser thresholds, press/release order, disabled settings and per-device button counts. Expose descriptors to configuration/UI without coupling them to Windows key codes.
 
@@ -194,7 +194,7 @@ Sources: UP-PIPELINE, UP-OUTPUT, UP-PLATFORM. OS-specific prerequisites must be 
 <a id="o01"></a>
 ### O01 - Match absolute and relative transform semantics
 
-**Depends on:** F05, D01. **Start:** `src/mapping.rs`, `src/relative.rs`, `src/radial_follow.rs`.
+**Depends on:** F05, D01. **Start:** `crates/otd-core/src/mapping.rs`, `crates/otd-core/src/relative.rs`, `crates/otd-core/src/radial_follow.rs`.
 
 Generalize device dimensions and ranges; match upstream transform order, clipping versus limiting, rotation, area coordinates, sensitivity and reset behavior. Include reports suppressed by limiting and duplicate reports around range loss. Record the current extra relative resets/fractional accumulation as compatibility decisions where they differ.
 
@@ -243,7 +243,7 @@ Sources: UP-SETTINGS, UP-PLUGIN, UP-DAEMON. Treat device specification data and 
 <a id="c01"></a>
 ### C01 - Version the Rust profile schema and preserve semantics
 
-**Depends on:** F01, F02. **Start:** `src/config.rs`, example profiles.
+**Depends on:** F01, F02. **Start:** `crates/otd-core/src/config.rs`, example profiles.
 
 Represent full profile collections, settings revision, tools, binding stores and enabled/disabled ordered plugin settings. Preserve unknown data for future migration and detect unsupported active features. Make the legacy forced-Radial-Follow behavior explicit and opt-in in migrated profiles; new OTD imports must honor Enable. Prevent duplicate native/managed execution of the same migrated filter.
 

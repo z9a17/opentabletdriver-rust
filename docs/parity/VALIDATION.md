@@ -43,6 +43,15 @@ cargo test --release --locked benchmark_relative_pipeline -- --ignored --nocaptu
 
 `cargo test` also replays the golden traces in `tests/golden`, which freeze the driver's current output; see [behavior contracts](BEHAVIOR_CONTRACTS.md).
 
+Report decoding, mapping, filtering, the report pipeline and the device-session loop live in the portable `crates/otd-core` crate, which has no Windows dependency. In the repository root, `cargo test` and `cargo clippy` cover the driver and this crate; the plugin crates need `--workspace`. CI also runs these on Ubuntu:
+
+```sh
+cargo clippy --locked -p otd-core --all-targets -- -D warnings
+cargo test --locked -p otd-core
+```
+
+The session tests drive the loop with a fake device, clock, displays, filters and output sink, and check that 2,000 reports at 1 kHz, including the once-a-second display check, allocate nothing. They do not exercise HID reads or `SendInput`.
+
 For the current managed integration test, download the [original RadialFollow 0.3.0 archive](https://github.com/AbstractQbit/AbstractOTDPlugins/releases/download/0.3.0/RadialFollow.zip), verify SHA-256 `d3f5b0200015e6e90948ee5d7870742ac28d82922cc745e9f1f78527e59f8160`, and extract it into an ignored test directory. The archive's `RadialFollow.dll` must remain unchanged:
 
 ```powershell

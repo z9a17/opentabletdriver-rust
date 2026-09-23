@@ -1,0 +1,812 @@
+//! One device session: waits for reports, decodes them, runs them through the
+//! pipeline and sends the packets, and follows display changes. The platform
+//! supplies the device and its clock (`ReportSource`), the desktop layout
+//! (`Displays`), the DLL filters and the output sink, so the loop runs the
+//! same on a real tablet and in tests.
+
+use std::io;
+use std::time::{Duration, Instant};
+
+use crate::config::Profile;
+use crate::display::{DisplayFingerprint, DisplaySnapshot};
+use crate::mapping::Mapper;
+use crate::output::MousePacket;
+use crate::pipeline::ReportPipeline;
+use crate::plugins::Filters;
+use crate::protocol;
+
+#[derive(Clone, Copy)]
+pub enum Mode {
+    Driver,
+    Capture { deadline: Instant, limit: u32 },
+}
+
+/// What a device produced.
+pub enum Read<'a> {
+    /// A report. `ready` is when its read completed; `queued` means it was
+    /// already waiting when the read started, so the loop was behind.
+    Report {
+        bytes: &'a [u8],
+        ready: Instant,
+        queued: bool,
+    },
+    /// Nothing arrived within the timeout; a pending read stays pending.
+    Idle,
+    /// The device went away or a stop was requested.
+    Ended,
+}
+
+/// A device endpoint that delivers input reports.
+pub trait ReportSource {
+    /// Describes the endpoint for the log.
+    fn label(&self) -> &str;
+    /// The clock `Read::Report::ready` is measured on.
+    fn now(&self) -> Instant;
+    /// Waits up to `timeout` for the next report.
+    fn next(&mut self, timeout: Duration) -> io::Result<Read<'_>>;
+}
+
+/// The desktop layout, read from the report thread.
+pub trait Displays {
+    /// Called once a second while reports flow, so it must be cheap.
+    fn fingerprint(&mut self) -> DisplayFingerprint;
+    fn snapshot(&mut self) -> Result<DisplaySnapshot, String>;
+}
+
+#[derive(Default)]
+struct Counters {
+    read: u64,
+    accepted: u64,
+    ignored: u64,
+    malformed: u64,
+    injected: u64,
+    output_failures: u64,
+}
+
+/// Time from a completed read to the end of its output, in whole
+/// microseconds, and how often a read found its report already queued, which
+/// means the loop fell behind the tablet. Fixed-size; recording does not
+/// allocate. The last bucket holds everything from 1 ms up.
+struct Timing {
+    micros: Box<[u32; Timing::BUCKETS]>,
+    reports: u64,
+    max: Duration,
+    queued: u64,
+}
+
+impl Timing {
+    const BUCKETS: usize = 1001;
+
+    fn new() -> Self {
+        Self {
+            micros: Box::new([0; Self::BUCKETS]),
+            reports: 0,
+            max: Duration::ZERO,
+            queued: 0,
+        }
+    }
+
+    fn record(&mut self, elapsed: Duration) {
+        let micros = usize::try_from(elapsed.as_micros()).unwrap_or(usize::MAX);
+        self.micros[micros.min(Self::BUCKETS - 1)] += 1;
+        self.reports += 1;
+        self.max = self.max.max(elapsed);
+    }
+
+    /// The whole microseconds below which the given fraction of reports fell.
+    fn percentile(&self, fraction: f64) -> String {
+        let target = ((self.reports as f64 * fraction).ceil() as u64).max(1);
+        let mut seen = 0;
+        for (micros, count) in self.micros.iter().enumerate() {
+            seen += u64::from(*count);
+            if seen >= target {
+                return if micros == Self::BUCKETS - 1 {
+                    "1 ms or more".to_owned()
+                } else {
+                    format!("{micros} us")
+                };
+            }
+        }
+        unreachable!("the buckets hold every report")
+    }
+
+    fn summary(&self) -> Option<String> {
+        (self.reports > 0).then(|| {
+            format!(
+                "Processed {} reports; read to output p50 {}, p99 {}, max {} us; {} reads found a report already waiting",
+                self.reports,
+                self.percentile(0.5),
+                self.percentile(0.99),
+                self.max.as_micros(),
+                self.queued
+            )
+        })
+    }
+}
+
+#[derive(Default)]
+struct CaptureTrace {
+    initial: u8,
+    ignored: u8,
+    last_state: Option<(bool, bool, bool, bool)>,
+}
+
+impl CaptureTrace {
+    fn pen(&mut self, bytes: &[u8], pen: protocol::PenReport) {
+        let state = (pen.in_range, pen.sense, pen.tip_switch, pen.eraser);
+        if self.initial < 5 || self.last_state != Some(state) {
+            trace_report(bytes, Some(pen));
+            self.initial = self.initial.saturating_add(1);
+        }
+        self.last_state = Some(state);
+    }
+
+    fn ignored(&mut self, bytes: &[u8]) {
+        if self.ignored < 5 {
+            trace_report(bytes, None);
+            self.ignored += 1;
+        }
+    }
+}
+
+fn trace_report(bytes: &[u8], pen: Option<protocol::PenReport>) {
+    let prefix = &bytes[..bytes.len().min(24)];
+    let mut hex = String::with_capacity(prefix.len() * 2);
+    for byte in prefix {
+        use std::fmt::Write;
+        let _ = write!(hex, "{byte:02x}");
+    }
+    if let Some(pen) = pen {
+        println!(
+            "id={:02x} x={} y={} pressure={} in_range={} sense={} tip={} eraser={} tilt={:?} bytes={}",
+            pen.id,
+            pen.x,
+            pen.y,
+            pen.pressure,
+            pen.in_range,
+            pen.sense,
+            pen.tip_switch,
+            pen.eraser,
+            pen.tilt,
+            hex
+        );
+    } else {
+        println!(
+            "id={:02x} ignored len={} bytes={}",
+            bytes.first().copied().unwrap_or(0),
+            bytes.len(),
+            hex
+        );
+    }
+}
+
+/// The absolute mapping and the display state it was built from. Relative
+/// sessions have no layout.
+struct Layout {
+    snapshot: Option<DisplaySnapshot>,
+    fingerprint: DisplayFingerprint,
+    mapper: Option<Mapper>,
+}
+
+impl Layout {
+    /// Rebuilds the mapping if the monitor layout changed. An invalid layout
+    /// pauses absolute output and releases a held button.
+    fn refresh(
+        &mut self,
+        displays: &mut impl Displays,
+        profile: &Profile,
+        pipeline: &mut ReportPipeline,
+        send: impl FnOnce(MousePacket) -> io::Result<()>,
+    ) {
+        let Some(snapshot) = &mut self.snapshot else {
+            // Relative mouse motion is independent of the monitor topology.
+            return;
+        };
+        self.fingerprint = displays.fingerprint();
+        let Ok(current) = displays.snapshot() else {
+            return;
+        };
+        if current == *snapshot {
+            return;
+        }
+        match current.mapper(profile) {
+            Ok(mapper) => {
+                self.mapper = Some(mapper);
+                eprintln!("display mapping refreshed");
+            }
+            Err(error) => {
+                self.mapper = None;
+                if let Err(release_error) = pipeline.release_all(send) {
+                    eprintln!("could not release buttons after display change: {release_error}");
+                }
+                eprintln!("display mapping paused: {error}");
+            }
+        }
+        *snapshot = current;
+    }
+}
+
+/// Runs one session until the source ends, the capture deadline or report
+/// limit is reached, or an error occurs. A held button is released before it
+/// returns.
+pub fn run(
+    source: &mut impl ReportSource,
+    displays: &mut impl Displays,
+    profile: &Profile,
+    mode: Mode,
+    filters: &mut impl Filters,
+    mut send: impl FnMut(MousePacket) -> io::Result<()>,
+    status: &impl Fn(&str),
+) -> io::Result<()> {
+    let mut pipeline = ReportPipeline::new(profile).map_err(io::Error::other)?;
+    let snapshot = if pipeline.is_relative() {
+        None
+    } else {
+        Some(displays.snapshot().map_err(io::Error::other)?)
+    };
+    let mapper = snapshot
+        .as_ref()
+        .map(|s| s.mapper(profile))
+        .transpose()
+        .map_err(io::Error::other)?;
+    let mut layout = Layout {
+        snapshot,
+        fingerprint: displays.fingerprint(),
+        mapper,
+    };
+    let start = source.now();
+    let mut next_refresh = start + Duration::from_secs(1);
+    let mut last_output_warning: Option<Instant> = None;
+    let mut counters = Counters::default();
+    let mut timing = Timing::new();
+    let mut capture_trace = CaptureTrace::default();
+
+    eprintln!("PTH-660 connected: {}", source.label());
+    status("PTH-660 connected; receiving pen input");
+    let outcome = (|| -> io::Result<()> {
+        loop {
+            let timeout = match mode {
+                Mode::Capture { deadline, limit } => {
+                    let now = source.now();
+                    if now >= deadline || counters.read >= u64::from(limit) {
+                        break;
+                    }
+                    deadline
+                        .saturating_duration_since(now)
+                        .min(Duration::from_secs(1))
+                }
+                Mode::Driver => Duration::from_secs(1),
+            };
+            let (bytes, ready, queued) = match source.next(timeout)? {
+                Read::Ended => break,
+                Read::Idle => {
+                    let now = source.now();
+                    if matches!(mode, Mode::Capture { deadline, .. } if now >= deadline) {
+                        break;
+                    }
+                    // Idle: compare the full monitor layout.
+                    if now >= next_refresh {
+                        layout.refresh(displays, profile, &mut pipeline, &mut send);
+                        next_refresh = source.now() + Duration::from_secs(1);
+                    }
+                    continue;
+                }
+                Read::Report {
+                    bytes,
+                    ready,
+                    queued,
+                } => (bytes, ready, queued),
+            };
+            if queued {
+                timing.queued += 1;
+            }
+            counters.read += 1;
+            match protocol::parse(bytes) {
+                Ok(Some(pen)) => {
+                    counters.accepted += 1;
+                    if let Mode::Capture { .. } = mode {
+                        capture_trace.pen(bytes, pen);
+                    } else if pipeline.is_relative() || layout.mapper.is_some() {
+                        // While an absolute mapping is paused, reports do not
+                        // reach the filters either.
+                        let emitted =
+                            pipeline.process(pen, ready, layout.mapper, filters, &mut send);
+                        if let Some(name) = filters.take_failure() {
+                            status(&format!(
+                                "Disabled failing plugin: {name}. Restart to retry."
+                            ));
+                        }
+                        match emitted {
+                            Ok(true) => counters.injected += 1,
+                            Ok(false) => {}
+                            Err(error) => {
+                                counters.output_failures += 1;
+                                let now = source.now();
+                                if last_output_warning
+                                    .is_none_or(|last| now - last >= Duration::from_secs(5))
+                                {
+                                    eprintln!("SendInput failed: {error}");
+                                    last_output_warning = Some(now);
+                                }
+                            }
+                        }
+                        timing.record(source.now().saturating_duration_since(ready));
+                    }
+                }
+                Ok(None) => {
+                    counters.ignored += 1;
+                    if let Mode::Capture { .. } = mode {
+                        capture_trace.ignored(bytes);
+                    }
+                }
+                Err(error) => {
+                    counters.malformed += 1;
+                    if let Mode::Capture { .. } = mode {
+                        eprintln!("malformed report: {error:?}");
+                        capture_trace.ignored(bytes);
+                    }
+                }
+            }
+            // While reports flow, re-read the monitors only when the cheap
+            // fingerprint changed; the idle wait compares the full layout.
+            let now = source.now();
+            if now >= next_refresh {
+                if layout.snapshot.is_some() && displays.fingerprint() != layout.fingerprint {
+                    layout.refresh(displays, profile, &mut pipeline, &mut send);
+                }
+                next_refresh = source.now() + Duration::from_secs(1);
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = pipeline.release_all(&mut send) {
+        eprintln!("could not release mouse buttons: {error}");
+    }
+    eprintln!(
+        "session ended: read={} accepted={} ignored={} malformed={} injected={} output_failures={}",
+        counters.read,
+        counters.accepted,
+        counters.ignored,
+        counters.malformed,
+        counters.injected,
+        counters.output_failures
+    );
+    if let Some(summary) = timing.summary() {
+        eprintln!("{summary}");
+        status(&summary);
+    }
+    outcome
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mapping::Rect;
+    use crate::output::flags;
+    use crate::plugins::NoFilters;
+    use crate::test_alloc;
+    use std::cell::{Cell, RefCell};
+    use std::collections::VecDeque;
+    use std::rc::Rc;
+
+    #[test]
+    fn timing_summary_reports_percentiles_and_late_reads() {
+        let mut timing = Timing::new();
+        assert!(timing.summary().is_none());
+        for _ in 0..98 {
+            timing.record(Duration::from_nanos(5_600));
+        }
+        timing.record(Duration::from_micros(40));
+        timing.record(Duration::from_millis(3));
+        timing.queued = 2;
+        assert_eq!(
+            timing.summary().unwrap(),
+            concat!(
+                "Processed 100 reports; read to output p50 5 us, p99 40 us, max 3000 us; ",
+                "2 reads found a report already waiting"
+            )
+        );
+        let mut slow = Timing::new();
+        slow.record(Duration::from_millis(2));
+        assert_eq!(slow.percentile(0.5), "1 ms or more");
+    }
+
+    // Captured report prefixes: hover and contact at nearly the same place.
+    const HOVER: [u8; 17] = [
+        0x10, 0x60, 0x14, 0x56, 0x00, 0xa3, 0x16, 0x00, 0x00, 0x00, 0x07, 0x04, 0, 0, 0, 0, 0x28,
+    ];
+    const CONTACT: [u8; 17] = [
+        0x10, 0x61, 0x11, 0x55, 0x00, 0x8c, 0x12, 0x00, 0x0e, 0x11, 0x00, 0x07, 0, 0, 0, 0, 0x19,
+    ];
+
+    enum Event {
+        Report(&'static [u8], bool),
+        Idle,
+    }
+
+    /// Replays scripted events; each one advances a fake clock shared with
+    /// the test. Ends when the script runs out.
+    struct FakeSource {
+        clock: Rc<Cell<Instant>>,
+        events: VecDeque<(u64, Event)>,
+        start: Instant,
+    }
+
+    impl FakeSource {
+        fn new(clock: Rc<Cell<Instant>>, events: Vec<(u64, Event)>) -> Self {
+            let start = clock.get();
+            Self {
+                clock,
+                events: events.into(),
+                start,
+            }
+        }
+    }
+
+    impl ReportSource for FakeSource {
+        fn label(&self) -> &str {
+            "fake pen endpoint"
+        }
+
+        fn now(&self) -> Instant {
+            self.clock.get()
+        }
+
+        fn next(&mut self, _timeout: Duration) -> io::Result<Read<'_>> {
+            let Some((at_ms, event)) = self.events.pop_front() else {
+                return Ok(Read::Ended);
+            };
+            let at = self.start + Duration::from_millis(at_ms);
+            self.clock.set(at);
+            Ok(match event {
+                Event::Report(bytes, queued) => Read::Report {
+                    bytes,
+                    ready: at,
+                    queued,
+                },
+                Event::Idle => Read::Idle,
+            })
+        }
+    }
+
+    /// Desktop layouts that take effect at scripted times on the shared clock.
+    struct FakeDisplays {
+        clock: Rc<Cell<Instant>>,
+        start: Instant,
+        schedule: Vec<(u64, DisplaySnapshot)>,
+    }
+
+    impl FakeDisplays {
+        fn current(&self) -> &DisplaySnapshot {
+            let now = self.clock.get();
+            self.schedule
+                .iter()
+                .rev()
+                .find(|(at_ms, _)| self.start + Duration::from_millis(*at_ms) <= now)
+                .map(|(_, snapshot)| snapshot)
+                .expect("the schedule starts at 0 ms")
+        }
+    }
+
+    impl Displays for FakeDisplays {
+        // Like the Windows fingerprint, this does not allocate.
+        fn fingerprint(&mut self) -> DisplayFingerprint {
+            self.current().fingerprint()
+        }
+
+        fn snapshot(&mut self) -> Result<DisplaySnapshot, String> {
+            Ok(self.current().clone())
+        }
+    }
+
+    /// Monitors of the given widths side by side, 1080 px high.
+    fn monitors(widths: &[i32]) -> DisplaySnapshot {
+        let mut left = 0;
+        let monitors: Vec<Rect> = widths
+            .iter()
+            .map(|width| {
+                let rect = Rect {
+                    left,
+                    top: 0,
+                    right: left + width,
+                    bottom: 1080,
+                };
+                left += width;
+                rect
+            })
+            .collect();
+        DisplaySnapshot {
+            virtual_screen: Rect {
+                left: 0,
+                top: 0,
+                right: left.max(1920),
+                bottom: 1080,
+            },
+            monitors,
+        }
+    }
+
+    /// Runs a session over the events and returns the packets and statuses.
+    fn session(
+        profile: &Profile,
+        mode: impl FnOnce(Instant) -> Mode,
+        events: Vec<(u64, Event)>,
+        schedule: Vec<(u64, DisplaySnapshot)>,
+        filters: &mut impl Filters,
+    ) -> (Vec<MousePacket>, Vec<String>) {
+        let clock = Rc::new(Cell::new(Instant::now()));
+        let start = clock.get();
+        let mode = mode(start);
+        let mut displays = FakeDisplays {
+            clock: clock.clone(),
+            start,
+            schedule,
+        };
+        let mut source = FakeSource::new(clock, events);
+        let packets = RefCell::new(Vec::new());
+        let statuses = RefCell::new(Vec::new());
+        run(
+            &mut source,
+            &mut displays,
+            profile,
+            mode,
+            filters,
+            |packet| {
+                packets.borrow_mut().push(packet);
+                Ok(())
+            },
+            &|message: &str| statuses.borrow_mut().push(message.to_owned()),
+        )
+        .unwrap();
+        (packets.into_inner(), statuses.into_inner())
+    }
+
+    /// Monitor 0 selected, 1 % tip threshold.
+    fn profile() -> Profile {
+        let mut profile = Profile {
+            monitor: Some(0),
+            ..Profile::default()
+        };
+        profile.contact.tip_threshold_raw = Some(82);
+        profile
+    }
+
+    const ABSOLUTE: u32 = flags::MOVE | flags::ABSOLUTE | flags::VIRTUALDESK;
+
+    #[test]
+    fn session_sends_reports_and_releases_when_the_device_ends() {
+        let (packets, statuses) = session(
+            &profile(),
+            |_| Mode::Driver,
+            vec![
+                (100, Event::Report(&HOVER, false)),
+                (105, Event::Report(&CONTACT, true)),
+                (110, Event::Report(&[0x13, 0x64], false)),
+            ],
+            vec![(0, monitors(&[1920]))],
+            &mut NoFilters,
+        );
+        let flags: Vec<u32> = packets.iter().map(|p| p.flags).collect();
+        assert_eq!(flags, [ABSOLUTE, ABSOLUTE | flags::LEFTDOWN, flags::LEFTUP]);
+        assert_eq!(statuses[0], "PTH-660 connected; receiving pen input");
+        assert!(
+            statuses[1].starts_with("Processed 2 reports")
+                && statuses[1].ends_with("1 reads found a report already waiting"),
+            "{}",
+            statuses[1]
+        );
+    }
+
+    #[test]
+    fn idle_refresh_follows_a_new_layout_and_pauses_when_the_monitor_goes() {
+        let (packets, _) = session(
+            &profile(),
+            |_| Mode::Driver,
+            vec![
+                (100, Event::Report(&CONTACT, false)),
+                (1_200, Event::Idle),
+                (1_300, Event::Report(&CONTACT, false)),
+                (2_500, Event::Idle),
+                (2_600, Event::Report(&CONTACT, false)),
+            ],
+            vec![
+                (0, monitors(&[1920])),
+                (1_000, monitors(&[1920, 1920])),
+                (2_000, monitors(&[])),
+            ],
+            &mut NoFilters,
+        );
+        // Pressed on one monitor, moved once a second monitor doubled the
+        // desktop, released when monitor 0 disappeared; nothing after that.
+        assert_eq!(packets.len(), 3, "{packets:?}");
+        assert_eq!(packets[0].flags, ABSOLUTE | flags::LEFTDOWN);
+        assert_eq!(packets[1].flags, ABSOLUTE);
+        assert!(
+            (packets[1].dx - packets[0].dx / 2).abs() <= 20,
+            "{packets:?}"
+        );
+        assert_eq!(packets[2].flags, flags::LEFTUP);
+    }
+
+    #[test]
+    fn a_fingerprint_change_while_reports_flow_rebuilds_the_mapping() {
+        let (packets, _) = session(
+            &profile(),
+            |_| Mode::Driver,
+            vec![
+                (100, Event::Report(&HOVER, false)),
+                (1_200, Event::Report(&CONTACT, false)),
+                (1_205, Event::Report(&HOVER, false)),
+            ],
+            vec![(0, monitors(&[1920])), (1_000, monitors(&[1920, 1920]))],
+            &mut NoFilters,
+        );
+        // The report at 1.2 s still uses the old mapping; the fingerprint
+        // check after it switches to the doubled desktop for the next one.
+        assert_eq!(packets.len(), 3, "{packets:?}");
+        assert!(
+            (packets[2].dx - packets[0].dx / 2).abs() <= 20,
+            "{packets:?}"
+        );
+    }
+
+    #[test]
+    fn steady_state_reports_do_not_allocate() {
+        /// Counts the loop's allocations between two report reads.
+        struct Measured {
+            inner: FakeSource,
+            reads: usize,
+            window: (usize, usize),
+            count: Option<test_alloc::Count>,
+            allocations: Option<usize>,
+        }
+
+        impl ReportSource for Measured {
+            fn label(&self) -> &str {
+                self.inner.label()
+            }
+
+            fn now(&self) -> Instant {
+                self.inner.now()
+            }
+
+            fn next(&mut self, timeout: Duration) -> io::Result<Read<'_>> {
+                self.reads += 1;
+                if self.reads == self.window.0 {
+                    self.count = Some(test_alloc::Count::start());
+                } else if self.reads == self.window.1 {
+                    self.allocations = self.count.take().map(test_alloc::Count::finish);
+                }
+                self.inner.next(timeout)
+            }
+        }
+
+        // Two seconds of 1 kHz reports that press and release on every other
+        // one; the window spans the once-a-second fingerprint check.
+        let events = (0..2_000)
+            .map(|i| {
+                let report: &'static [u8] = if i % 2 == 0 { &HOVER } else { &CONTACT };
+                (100 + i, Event::Report(report, false))
+            })
+            .collect();
+        let clock = Rc::new(Cell::new(Instant::now()));
+        let start = clock.get();
+        let mut displays = FakeDisplays {
+            clock: clock.clone(),
+            start,
+            schedule: vec![(0, monitors(&[1920]))],
+        };
+        let mut source = Measured {
+            inner: FakeSource::new(clock, events),
+            reads: 0,
+            window: (10, 2_000),
+            count: None,
+            allocations: None,
+        };
+        let packets = Cell::new(0);
+        run(
+            &mut source,
+            &mut displays,
+            &profile(),
+            Mode::Driver,
+            &mut NoFilters,
+            |_| {
+                packets.set(packets.get() + 1);
+                Ok(())
+            },
+            &|_: &str| {},
+        )
+        .unwrap();
+        // Every report changes the contact; the last press is released.
+        assert_eq!(packets.get(), 2_001);
+        assert_eq!(source.allocations, Some(0));
+    }
+
+    #[test]
+    fn capture_reads_without_sending_and_stops_at_its_limit() {
+        let (packets, statuses) = session(
+            &profile(),
+            |start| Mode::Capture {
+                deadline: start + Duration::from_secs(10),
+                limit: 2,
+            },
+            vec![
+                (100, Event::Report(&HOVER, false)),
+                (105, Event::Report(&CONTACT, false)),
+                (110, Event::Report(&CONTACT, false)),
+            ],
+            vec![(0, monitors(&[1920]))],
+            &mut NoFilters,
+        );
+        assert!(packets.is_empty());
+        // No report reached output, so there is no timing summary.
+        assert_eq!(statuses, ["PTH-660 connected; receiving pen input"]);
+    }
+
+    #[test]
+    fn capture_stops_at_its_deadline_while_idle() {
+        let (packets, _) = session(
+            &profile(),
+            |start| Mode::Capture {
+                deadline: start + Duration::from_millis(500),
+                limit: 100,
+            },
+            vec![
+                (100, Event::Idle),
+                (600, Event::Idle),
+                (700, Event::Report(&HOVER, false)),
+            ],
+            vec![(0, monitors(&[1920]))],
+            &mut NoFilters,
+        );
+        assert!(packets.is_empty());
+    }
+
+    #[test]
+    fn a_filter_failure_is_reported_once() {
+        struct Failing(bool);
+        impl Filters for Failing {
+            fn has_pre(&self) -> bool {
+                true
+            }
+            fn process_pre(
+                &mut self,
+                position: (f32, f32),
+                _: protocol::PenReport,
+                _: Instant,
+            ) -> (f32, f32) {
+                position
+            }
+            fn has_pixels(&self) -> bool {
+                false
+            }
+            fn process_pixels(
+                &mut self,
+                position: (f32, f32),
+                _: protocol::PenReport,
+                _: Instant,
+            ) -> (f32, f32) {
+                position
+            }
+            fn reset(&mut self) {}
+            fn take_failure(&mut self) -> Option<&str> {
+                std::mem::take(&mut self.0).then_some("Example filter")
+            }
+        }
+        let (_, statuses) = session(
+            &profile(),
+            |_| Mode::Driver,
+            vec![
+                (100, Event::Report(&HOVER, false)),
+                (105, Event::Report(&HOVER, false)),
+            ],
+            vec![(0, monitors(&[1920]))],
+            &mut Failing(true),
+        );
+        let failures = statuses
+            .iter()
+            .filter(|s| s.starts_with("Disabled failing plugin: Example filter"))
+            .count();
+        assert_eq!(failures, 1);
+    }
+}

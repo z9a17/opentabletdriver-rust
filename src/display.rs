@@ -1,3 +1,5 @@
+//! Reads the Windows desktop layout into the core's display types.
+
 use std::mem::size_of;
 
 use windows_sys::Win32::Foundation::{LPARAM, RECT};
@@ -9,24 +11,15 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SM_YVIRTUALSCREEN,
 };
 
-use crate::config::Profile;
-use crate::mapping::{Mapper, Rect};
+pub use otd_core::display::{DisplayFingerprint, DisplaySnapshot};
 
-/// The virtual screen and the monitor count: enough to notice a resolution or
-/// monitor change from the report thread without enumerating monitors or
-/// allocating.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DisplayFingerprint {
-    virtual_screen: Rect,
-    monitors: i32,
-}
+use crate::mapping::Rect;
 
-impl DisplayFingerprint {
-    pub fn read() -> Self {
-        Self {
-            virtual_screen: virtual_screen(),
-            monitors: unsafe { GetSystemMetrics(SM_CMONITORS) },
-        }
+/// Reads the virtual screen and monitor count; no enumeration or allocation.
+pub fn read_fingerprint() -> DisplayFingerprint {
+    DisplayFingerprint {
+        virtual_screen: virtual_screen(),
+        monitors: unsafe { GetSystemMetrics(SM_CMONITORS) },
     }
 }
 
@@ -39,12 +32,6 @@ fn virtual_screen() -> Rect {
         right: left + unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) },
         bottom: top + unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) },
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DisplaySnapshot {
-    pub virtual_screen: Rect,
-    pub monitors: Vec<Rect>,
 }
 
 unsafe extern "system" fn enumerate_monitor(
@@ -72,49 +59,44 @@ unsafe extern "system" fn enumerate_monitor(
     1
 }
 
-impl DisplaySnapshot {
-    pub fn read() -> Result<Self, String> {
-        let virtual_screen = virtual_screen();
-        if !virtual_screen.valid() {
-            return Err("Windows did not report a valid desktop rectangle".into());
-        }
-        let mut monitors: Vec<Rect> = Vec::new();
-        if unsafe {
-            EnumDisplayMonitors(
-                std::ptr::null_mut(),
-                std::ptr::null(),
-                Some(enumerate_monitor),
-                (&mut monitors as *mut Vec<Rect>) as LPARAM,
-            )
-        } == 0
-        {
-            return Err(format!(
-                "EnumDisplayMonitors failed: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        monitors.sort_by_key(|r| (r.left, r.top, r.right, r.bottom));
-        Ok(Self {
-            virtual_screen,
-            monitors,
-        })
+/// Enumerates every monitor, in the calling thread's DPI context.
+pub fn read_snapshot() -> Result<DisplaySnapshot, String> {
+    let virtual_screen = virtual_screen();
+    if !virtual_screen.valid() {
+        return Err("Windows did not report a valid desktop rectangle".into());
+    }
+    let mut monitors: Vec<Rect> = Vec::new();
+    if unsafe {
+        EnumDisplayMonitors(
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            Some(enumerate_monitor),
+            (&mut monitors as *mut Vec<Rect>) as LPARAM,
+        )
+    } == 0
+    {
+        return Err(format!(
+            "EnumDisplayMonitors failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    monitors.sort_by_key(|r| (r.left, r.top, r.right, r.bottom));
+    Ok(DisplaySnapshot {
+        virtual_screen,
+        monitors,
+    })
+}
+
+/// The desktop as seen from the report thread, for the core session loop.
+pub struct WindowsDisplays;
+
+impl otd_core::session::Displays for WindowsDisplays {
+    fn fingerprint(&mut self) -> DisplayFingerprint {
+        read_fingerprint()
     }
 
-    pub fn mapper(&self, profile: &Profile) -> Result<Mapper, String> {
-        if let Some(settings) = profile.otd_mapping {
-            return Mapper::from_otd(settings, self.virtual_screen)
-                .ok_or_else(|| "invalid OpenTabletDriver absolute-area mapping".into());
-        }
-        let dest = if let Some(index) = profile.monitor {
-            *self
-                .monitors
-                .get(index)
-                .ok_or_else(|| format!("monitor {index} is not present"))?
-        } else {
-            self.virtual_screen
-        };
-        Mapper::new(profile.crop, profile.rotation, dest, self.virtual_screen)
-            .ok_or_else(|| "invalid tablet-to-display mapping".into())
+    fn snapshot(&mut self) -> Result<DisplaySnapshot, String> {
+        read_snapshot()
     }
 }
 
@@ -125,10 +107,8 @@ mod tests {
 
     #[test]
     fn fingerprint_matches_the_full_snapshot() {
-        let snapshot = DisplaySnapshot::read().unwrap();
-        let fingerprint = DisplayFingerprint::read();
-        assert_eq!(fingerprint.virtual_screen, snapshot.virtual_screen);
-        assert_eq!(fingerprint.monitors as usize, snapshot.monitors.len());
+        let snapshot = read_snapshot().unwrap();
+        assert_eq!(read_fingerprint(), snapshot.fingerprint());
     }
 
     #[test]
@@ -137,12 +117,12 @@ mod tests {
         const READS: u32 = 10_000;
         let start = Instant::now();
         for _ in 0..READS {
-            std::hint::black_box(DisplayFingerprint::read());
+            std::hint::black_box(read_fingerprint());
         }
         let fingerprint = start.elapsed();
         let start = Instant::now();
         for _ in 0..READS {
-            std::hint::black_box(DisplaySnapshot::read().unwrap());
+            std::hint::black_box(read_snapshot().unwrap());
         }
         let snapshot = start.elapsed();
         println!(

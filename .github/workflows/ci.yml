@@ -45,3 +45,14 @@ jobs:
           $env:OTD_TEST_DOTNET_PLUGIN = (Join-Path $pluginDirectory 'RadialFollow.dll')
           cargo test --locked dotnet_plugin_round_trip -- --ignored
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  portable-core:
+    # The report pipeline and session loop must build and pass without Windows.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --locked -p otd-core --all-targets -- -D warnings
+      - run: cargo test --locked -p otd-core

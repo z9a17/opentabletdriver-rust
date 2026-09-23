@@ -2,67 +2,16 @@
 //! by parsing or saving a profile. Loading occurs only for explicit inspection
 //! or when starting output; the successful per-report path never allocates.
 use otd_plugin_api::{ABI_VERSION, FilterApi, Header, Sample};
-use serde::{Deserialize, Serialize};
 use std::ffi::{OsStr, c_void};
 use std::os::windows::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 use windows_sys::Win32::Foundation::{FreeLibrary, HMODULE};
 use windows_sys::Win32::System::LibraryLoader::{
     GetProcAddress, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
 };
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum PluginKind {
-    #[default]
-    Native,
-    Dotnet,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PipelineStage {
-    PreTransform,
-    Pixels,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct PluginConfig {
-    pub path: PathBuf,
-    #[serde(default)]
-    pub kind: PluginKind,
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default)]
-    pub type_name: String,
-    #[serde(default = "empty_settings")]
-    pub settings_json: String,
-}
-
-fn empty_settings() -> String {
-    "{}".into()
-}
-
-impl PluginConfig {
-    pub fn validate(&self) -> Result<(), String> {
-        if self.path.as_os_str().is_empty() {
-            return Err("plugin DLL path is empty".into());
-        }
-        if self.settings_json.len() > 65_536 {
-            return Err("plugin settings exceed 64 KiB".into());
-        }
-        let value: serde_json::Value = serde_json::from_str(&self.settings_json)
-            .map_err(|e| format!("invalid plugin settings JSON: {e}"))?;
-        if !value.is_object() {
-            return Err("plugin settings must be a JSON object".into());
-        }
-        if self.kind == PluginKind::Dotnet && self.type_name.trim().is_empty() {
-            return Err(".NET plugin requires a type_name".into());
-        }
-        Ok(())
-    }
-}
+pub use otd_core::plugins::{PipelineStage, PluginConfig, PluginKind};
 
 pub struct Library(HMODULE);
 
@@ -335,14 +284,6 @@ impl PluginChain {
             plugin.reset();
         }
     }
-    pub fn has_pre(&self) -> bool {
-        self.has_pre
-    }
-
-    pub fn has_pixels(&self) -> bool {
-        self.has_pixels
-    }
-
     pub fn validate_output_mode(&self, relative: bool) -> Result<(), String> {
         if relative
             && let Some(plugin) = self
@@ -365,13 +306,49 @@ impl PluginChain {
     }
 }
 
+impl otd_core::plugins::Filters for PluginChain {
+    fn has_pre(&self) -> bool {
+        self.has_pre
+    }
+
+    fn process_pre(
+        &mut self,
+        position: (f32, f32),
+        pen: crate::protocol::PenReport,
+        now: Instant,
+    ) -> (f32, f32) {
+        PluginChain::process_pre(self, position, pen, now)
+    }
+
+    fn has_pixels(&self) -> bool {
+        self.has_pixels
+    }
+
+    fn process_pixels(
+        &mut self,
+        position: (f32, f32),
+        pen: crate::protocol::PenReport,
+        now: Instant,
+    ) -> (f32, f32) {
+        PluginChain::process_pixels(self, position, pen, now)
+    }
+
+    fn reset(&mut self) {
+        PluginChain::reset(self);
+    }
+
+    fn take_failure(&mut self) -> Option<&str> {
+        PluginChain::take_failure(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::Profile;
     use crate::mapping::{Crop, Mapper, Rect};
-    use crate::pipeline::ReportPipeline;
     use crate::protocol::PenReport;
+    use otd_core::pipeline::ReportPipeline;
 
     #[test]
     fn runs_raw_filters_before_mapping_and_pixel_filters_after_mapping() {

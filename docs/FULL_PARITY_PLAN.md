@@ -90,7 +90,7 @@ The UI talks to the daemon and may close without stopping input. Keep the curren
 
 ## 6. How agents should divide the work
 
-F01 established behavior contracts and golden traces; F03 establishes the evidence ledger. P01 and U01 can proceed independently. F06 is ready when a person with the tablet can perform the physical steps. F02 follows F01; F04/F05 follow F02. Then split between device/report/binding work, configuration/control work, and managed compatibility work once their shared contracts exist.
+F01 established behavior contracts and golden traces; F03 establishes the evidence ledger. P01 and U01 can proceed independently. F06 is ready when a person with the tablet can perform the physical steps. F02 extracted the portable `otd-core` crate; F04/F05 follow F02. Then split between device/report/binding work, configuration/control work, and managed compatibility work once their shared contracts exist.
 
 Use the stable task IDs as the unit of ownership. Workstream issues contain checklists, but claiming one task does not claim the whole issue. Follow the [handoff procedure](parity/AGENT_HANDOFF.md), announce the branch and file boundaries, and check existing claims before editing shared modules. Create a small child issue when a task needs multiple PRs; retain the parent task ID and acceptance criteria.
 

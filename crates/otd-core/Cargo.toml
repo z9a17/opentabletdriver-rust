@@ -1,0 +1,19 @@
+[package]
+name = "otd-core"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "Portable report decoding, mapping, filtering and session logic of the Rust OpenTabletDriver port"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# Installs the counting test allocator in dependents' test executables.
+test-alloc = []
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.145"
+toml = "1.1.6"
