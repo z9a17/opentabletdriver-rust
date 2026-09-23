@@ -45,6 +45,17 @@ jobs:
           $env:OTD_TEST_DOTNET_PLUGIN = (Join-Path $pluginDirectory 'RadialFollow.dll')
           cargo test --locked dotnet_plugin_round_trip -- --ignored
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Managed discovery attribute integration
+        shell: pwsh
+        run: |
+          dotnet restore compat/DiscoveryFixture/DiscoveryFixture.csproj --locked-mode --nologo
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet build compat/DiscoveryFixture/DiscoveryFixture.csproj -c Release --no-restore --nologo
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:OTD_COMPAT_DIR = (Resolve-Path target/release/compat).Path
+          $env:OTD_TEST_DISCOVERY_PLUGIN = (Resolve-Path compat/DiscoveryFixture/bin/Release/net8.0/DiscoveryFixture.dll).Path
+          cargo test --locked dotnet_discovery_respects_platform_and_ignore_attributes -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   portable-core:
     # The report pipeline and session loop must build and pass without Windows.
