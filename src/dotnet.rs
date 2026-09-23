@@ -243,6 +243,57 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
+    #[ignore = "requires bridge and SettingsFixture DLL; set OTD_COMPAT_DIR and OTD_TEST_SETTINGS_PLUGIN"]
+    fn dotnet_settings_match_upstream_null_and_default_rules() {
+        let path: PathBuf = std::env::var_os("OTD_TEST_SETTINGS_PLUGIN")
+            .expect("set OTD_TEST_SETTINGS_PLUGIN")
+            .into();
+        let entries = inspect_details(&path).unwrap();
+        let entry = entries
+            .iter()
+            .find(|entry| entry.config.type_name == "SettingsFixture.DefaultsFilter")
+            .unwrap();
+        let defaults: serde_json::Value =
+            serde_json::from_str(&entry.config.settings_json).unwrap();
+        assert_eq!(defaults, serde_json::json!({"AttributeOffset": 7.0}));
+        assert_eq!(entry.metadata.properties.len(), 3);
+        assert!(
+            entry
+                .metadata
+                .properties
+                .iter()
+                .any(|property| property.name == "InheritedOffset")
+        );
+
+        // The fixture's OnDependencyLoad snapshots the three properties. The
+        // emitted X therefore verifies settings were applied before that hook.
+        for (settings, expected_x) in [
+            ("{}", 19.5),
+            (r#"{"AttributeOffset":null}"#, 24.5),
+            (r#"{"ConstructorOffset":null}"#, 19.5),
+            (r#"{"InheritedOffset":10.0}"#, 26.5),
+            (r#"{"AttributeOffset":11.0}"#, 28.5),
+        ] {
+            let config = PluginConfig {
+                path: path.clone(),
+                kind: PluginKind::Dotnet,
+                enabled: true,
+                type_name: "SettingsFixture.DefaultsFilter".into(),
+                settings_json: settings.into(),
+            };
+            let mut plugin = Plugin::load(&config).unwrap();
+            let mut sample = Sample {
+                x: 10.0,
+                y: 20.0,
+                ..Sample::default()
+            };
+            assert!(plugin.process(&mut sample), "settings: {settings}");
+            assert_eq!(sample.x, expected_x, "settings: {settings}");
+            assert_eq!(sample.y, 20.0);
+        }
+    }
+
+    #[test]
     #[ignore = "requires bridge and DiscoveryFixture DLL; set OTD_COMPAT_DIR and OTD_TEST_DISCOVERY_PLUGIN"]
     fn dotnet_discovery_respects_platform_and_ignore_attributes() {
         let path: PathBuf = std::env::var_os("OTD_TEST_DISCOVERY_PLUGIN")

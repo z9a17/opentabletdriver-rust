@@ -132,10 +132,17 @@ sealed class Instance : IDisposable
         foreach (var property in properties)
         {
             if (!property.CanWrite) continue;
-            if (settings.TryGetValue(property.Name, out JToken? token))
+            // PluginSettingStore.ApplySettings visits saved entries only. Missing
+            // entries keep the constructor value; an explicit null selects the
+            // attribute default, if one exists.
+            if (!settings.TryGetValue(property.Name, out JToken? token)) continue;
+            if (token == null || token.Type == JTokenType.Null)
+            {
+                if (property.GetCustomAttribute<DefaultPropertyValueAttribute>() is { } defaults)
+                    property.SetValue(value, defaults.Value);
+            }
+            else
                 property.SetValue(value, token.ToObject(property.PropertyType));
-            else if (property.GetCustomAttribute<DefaultPropertyValueAttribute>() is { } defaults)
-                property.SetValue(value, defaults.Value);
         }
     }
 
