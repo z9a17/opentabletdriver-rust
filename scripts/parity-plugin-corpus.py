@@ -99,12 +99,12 @@ def validate(path: Path = DEFAULT_CORPUS, inventory_path: Path = DEFAULT_INVENTO
         errors.append(f"corpus is missing {len(missing_paths)} eligible inventory paths")
     if data.get("catalog", {}).get("revision") != inventory.get("catalog", {}).get("revision"):
         errors.append("catalog revision differs from pinned inventory")
+    audited_paths = set()
     if archive_audit_path.exists():
         archive_audit = json.loads(archive_audit_path.read_text(encoding="utf-8"))
         if archive_audit.get("catalog", {}).get("revision") != data.get("catalog", {}).get("revision"):
             errors.append("archive audit catalog revision differs from corpus")
         corpus_by_path = {record.get("catalog_path"): record for record in records}
-        audited_paths = set()
         for index, audited in enumerate(archive_audit.get("records", [])):
             prefix = f"archive_audit.records[{index}]"
             catalog_path = audited.get("catalog_path")
@@ -139,8 +139,16 @@ def validate(path: Path = DEFAULT_CORPUS, inventory_path: Path = DEFAULT_INVENTO
             if reference_names != source.get("classification", {}).get("referenced_assemblies"):
                 errors.append(f"{prefix} assembly references differ from corpus")
         for record in records:
-            if record.get("verification", {}).get("archive_hash") == "verified" and record.get("catalog_path") not in audited_paths:
-                errors.append(f"verified archive hash lacks audit evidence: {record.get('catalog_path')}")
+            verification = record.get("verification", {})
+            if (verification.get("archive_hash") == "verified"
+                    or verification.get("binary_inspection") == "managed_metadata_only") and record.get("catalog_path") not in audited_paths:
+                errors.append(f"verified archive or binary-inspection claim lacks audit evidence: {record.get('catalog_path')}")
+    else:
+        for record in records:
+            verification = record.get("verification", {})
+            if verification.get("archive_hash") == "verified" or verification.get("binary_inspection") == "managed_metadata_only":
+                errors.append(f"archive audit file is missing for verified claim: {archive_audit_path}")
+                break
     if len(records) != EXPECTED_RECORDS:
         errors.append(f"expected {EXPECTED_RECORDS} eligible records; found {len(records)}")
     if len(identities) != EXPECTED_IDENTITIES:

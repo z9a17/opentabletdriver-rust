@@ -76,6 +76,22 @@ class PluginCorpusTests(unittest.TestCase):
             errors = validate(archive_audit_path=path)
             self.assertTrue(any("plugin candidate types differ from corpus" in error for error in errors))
 
+    def test_missing_archive_audit_rejects_verified_hash(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "missing-audit.json"
+            errors = validate(archive_audit_path=missing)
+            self.assertTrue(any("archive audit file is missing for verified claim" in error for error in errors))
+
+    def test_metadata_inspection_claim_requires_matching_audit_record(self):
+        data = json.loads(CORPUS.read_text(encoding="utf-8"))
+        data["records"][2]["verification"]["binary_inspection"] = "managed_metadata_only"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "corpus.json"
+            path.write_text(json.dumps(data), encoding="utf-8")
+            errors = validate(path)
+            self.assertTrue(any("verified archive or binary-inspection claim lacks audit evidence" in error
+                                and data["records"][2]["catalog_path"] in error for error in errors))
+
 
 if __name__ == "__main__":
     unittest.main()
