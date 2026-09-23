@@ -28,7 +28,9 @@ pub struct Endpoint {
     pub output_length: u32,
     pub feature_length: u32,
     pub strings: BTreeMap<u8, String>,
-    pub attributes: BTreeMap<String, String>,
+    /// `None` means the backend supplied no attribute dictionary. Upstream
+    /// skips the Interface predicate in that case; an empty map fails it.
+    pub attributes: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,12 +105,48 @@ pub fn matches(endpoint: &Endpoint, candidate: &Match<'_>) -> Result<(), Rejecti
             return Err(Rejection::WrongCollection);
         }
     }
-    if let Some(interface) = attribute("Interface")
-        && endpoint.attributes.get("USB_INTERFACE_NUMBER") != Some(interface)
+    if let (Some(interface), Some(attributes)) = (attribute("Interface"), &endpoint.attributes)
+        && attributes.get("USB_INTERFACE_NUMBER") != Some(interface)
     {
         return Err(Rejection::WrongInterface);
     }
     Ok(())
+}
+
+/// Regex patterns in a loaded database which Rust cannot parse. Run at setup
+/// before selection so a .NET-only pattern cannot disappear as a mere miss.
+pub fn unsupported_patterns(database: &Database) -> Vec<(String, String)> {
+    let mut unsupported = Vec::new();
+    for entry in database.entries() {
+        let Some(config) = entry.usable() else {
+            continue;
+        };
+        for id in config
+            .digitizer_identifiers
+            .iter()
+            .chain(config.auxiliary_identifiers())
+        {
+            if let Some(strings) = &id.device_strings {
+                for pattern in strings.values() {
+                    if Regex::new(pattern).is_err() {
+                        unsupported.push((entry.path.clone(), pattern.clone()));
+                    }
+                }
+            }
+            let usage = id
+                .attributes
+                .as_ref()
+                .and_then(|a| a.get("WinUsage"))
+                .or_else(|| config.attributes.as_ref().and_then(|a| a.get("WinUsage")));
+            if let Some(usage) = usage {
+                let pattern = format!("&col{usage}");
+                if Regex::new(&pattern).is_err() {
+                    unsupported.push((entry.path.clone(), pattern));
+                }
+            }
+        }
+    }
+    unsupported
 }
 
 pub struct Selection<'a> {
@@ -196,7 +234,7 @@ mod tests {
             output_length: 0,
             feature_length: 0,
             strings: BTreeMap::new(),
-            attributes: BTreeMap::new(),
+            attributes: Some(BTreeMap::new()),
         }
     }
 
@@ -236,6 +274,8 @@ mod tests {
         let mut ep = endpoint("device&col01", "a", 192);
         ep.strings.insert(2, "Pen".into());
         ep.attributes
+            .as_mut()
+            .unwrap()
             .insert("USB_INTERFACE_NUMBER".into(), "2".into());
         // Built-in PTH-660 precedes an added override, so inspect the fixture's predicate directly.
         let candidate = db
@@ -246,12 +286,56 @@ mod tests {
         ep.path = "device&col02".into();
         assert_eq!(matches(&ep, &candidate), Err(Rejection::WrongCollection));
         ep.path = "device&col01".into();
-        ep.attributes.clear();
+        ep.attributes.as_mut().unwrap().clear();
         assert_eq!(matches(&ep, &candidate), Err(Rejection::WrongInterface));
+        ep.attributes = None;
+        assert_eq!(matches(&ep, &candidate), Ok(()));
+        ep.attributes = Some(BTreeMap::new());
         ep.attributes
+            .as_mut()
+            .unwrap()
             .insert("USB_INTERFACE_NUMBER".into(), "2".into());
         ep.strings.insert(2, "Other".into());
         assert_eq!(matches(&ep, &candidate), Err(Rejection::WrongString(2)));
+    }
+
+    #[test]
+    fn pinned_regex_catalog_has_one_known_dotnet_only_pattern() {
+        let (mut strings, mut usages) = (0, 0);
+        for entry in Database::builtin().entries() {
+            let Some(config) = entry.usable() else {
+                continue;
+            };
+            for id in config
+                .digitizer_identifiers
+                .iter()
+                .chain(config.auxiliary_identifiers())
+            {
+                strings += id.device_strings.as_ref().map_or(0, BTreeMap::len);
+                if id
+                    .attributes
+                    .as_ref()
+                    .and_then(|a| a.get("WinUsage"))
+                    .or_else(|| config.attributes.as_ref().and_then(|a| a.get("WinUsage")))
+                    .is_some()
+                {
+                    usages += 1;
+                }
+            }
+        }
+        assert_eq!(
+            (strings, usages),
+            (198, 0),
+            "review changed pinned regex inventory"
+        );
+        let unsupported = unsupported_patterns(Database::builtin());
+        assert_eq!(
+            unsupported.len(),
+            1,
+            "review new .NET-only regex patterns: {unsupported:?}"
+        );
+        assert!(unsupported[0].0.ends_with("XP-Pen/Deco 01 V2.json"));
+        assert_eq!(unsupported[0].1, r"^(?!202\d-\d{2}-\d{2})");
     }
 
     #[test]
