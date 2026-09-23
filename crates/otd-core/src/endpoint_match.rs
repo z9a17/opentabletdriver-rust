@@ -2,11 +2,37 @@
 //! See `OpenTabletDriver/Driver.cs` at revision 736003ed. No endpoint is opened
 //! or initialized here; transport adapters supply snapshots from discovery.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::LazyLock};
 
 use regex::Regex;
 
 use crate::tablets::{Database, Match, ParserSupport, Role};
+
+const DOTNET_DATE_PREFIX_EXCLUSION: &str = r"^(?!202\d-\d{2}-\d{2})";
+static DATE_PREFIX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\A202\d-\d{2}-\d{2}").expect("static date regex is valid"));
+
+enum DeviceStringPattern {
+    Rust(Regex),
+    ExcludeDatePrefix,
+}
+
+impl DeviceStringPattern {
+    fn compile(pattern: &str) -> Result<Self, regex::Error> {
+        if pattern == DOTNET_DATE_PREFIX_EXCLUSION {
+            Ok(Self::ExcludeDatePrefix)
+        } else {
+            Regex::new(pattern).map(Self::Rust)
+        }
+    }
+
+    fn is_match(&self, value: &str) -> bool {
+        match self {
+            Self::Rust(regex) => regex.is_match(value),
+            Self::ExcludeDatePrefix => !DATE_PREFIX.is_match(value),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Transport {
@@ -79,9 +105,9 @@ pub fn matches(endpoint: &Endpoint, candidate: &Match<'_>) -> Result<(), Rejecti
                 .strings
                 .get(&index)
                 .ok_or(Rejection::MissingString(index))?;
-            let regex =
-                Regex::new(pattern).map_err(|_| Rejection::InvalidPattern(pattern.clone()))?;
-            if !regex.is_match(value) {
+            let predicate = DeviceStringPattern::compile(pattern)
+                .map_err(|_| Rejection::InvalidPattern(pattern.clone()))?;
+            if !predicate.is_match(value) {
                 return Err(Rejection::WrongString(index));
             }
         }
@@ -128,7 +154,7 @@ pub fn unsupported_patterns(database: &Database) -> Vec<(String, String)> {
         {
             if let Some(strings) = &id.device_strings {
                 for pattern in strings.values() {
-                    if Regex::new(pattern).is_err() {
+                    if DeviceStringPattern::compile(pattern).is_err() {
                         unsupported.push((entry.path.clone(), pattern.clone()));
                     }
                 }
@@ -304,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn pinned_regex_catalog_has_one_known_dotnet_only_pattern() {
+    fn pinned_regex_catalog_pattern_support_is_audited() {
         let (mut strings, mut usages) = (0, 0);
         for entry in Database::builtin().entries() {
             let Some(config) = entry.usable() else {
@@ -333,13 +359,45 @@ mod tests {
             "review changed pinned regex inventory"
         );
         let unsupported = unsupported_patterns(Database::builtin());
-        assert_eq!(
-            unsupported.len(),
-            1,
-            "review new .NET-only regex patterns: {unsupported:?}"
+        assert!(
+            unsupported.is_empty(),
+            "review unsupported .NET patterns: {unsupported:?}"
         );
-        assert!(unsupported[0].0.ends_with("XP-Pen/Deco 01 V2.json"));
-        assert_eq!(unsupported[0].1, r"^(?!202\d-\d{2}-\d{2})");
+    }
+
+    #[test]
+    fn pinned_deco_01_v2_excludes_date_shaped_serial_prefixes() {
+        let database = Database::builtin();
+        let candidate = database
+            .find(10_429, 2_309)
+            .find(|candidate| {
+                candidate.configuration.name == "XP-Pen Deco 01 V2"
+                    && candidate
+                        .identifier
+                        .device_strings
+                        .as_ref()
+                        .is_some_and(|strings| {
+                            strings
+                                .get("5")
+                                .is_some_and(|pattern| pattern == DOTNET_DATE_PREFIX_EXCLUSION)
+                        })
+            })
+            .expect("pinned Deco 01 V2 identifier and pattern");
+        let mut ep = endpoint("deco-v2", "deco-v2", 12);
+        ep.vendor_id = 10_429;
+        ep.product_id = 2_309;
+        ep.output_length = 10;
+        ep.strings.insert(4, "UG901_BPU1002".into());
+
+        for serial in ["2024-01-31", "2024-01-31-extra"] {
+            ep.strings.insert(5, serial.into());
+            assert_eq!(matches(&ep, &candidate), Err(Rejection::WrongString(5)));
+        }
+
+        for serial in ["", "2024-1-31", "2024-01-3", "ABC-2024-01-31"] {
+            ep.strings.insert(5, serial.into());
+            assert_eq!(matches(&ep, &candidate), Ok(()), "serial {serial:?}");
+        }
     }
 
     #[test]
