@@ -1,0 +1,783 @@
+{
+  "cases": [
+    {
+      "allocations": 0,
+      "allocations_per_report": 0.0,
+      "description": "the harness alone: timing, one boxed call per report",
+      "first_report_us": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "name": "empty",
+      "per_report_ns": {
+        "max": {
+          "max": 1222.3,
+          "median": 50.1,
+          "min": 40.1,
+          "spread_pct": 2360.0
+        },
+        "mean": {
+          "max": 26.2,
+          "median": 24.1,
+          "min": 21.2,
+          "spread_pct": 20.9
+        },
+        "p50": {
+          "max": 30.1,
+          "median": 20.0,
+          "min": 20.0,
+          "spread_pct": 50.0
+        },
+        "p95": {
+          "max": 30.1,
+          "median": 30.1,
+          "min": 30.1,
+          "spread_pct": 0.0
+        },
+        "p99": {
+          "max": 30.1,
+          "median": 30.1,
+          "min": 30.1,
+          "spread_pct": 0.0
+        },
+        "p999": {
+          "max": 30.1,
+          "median": 30.1,
+          "min": 30.1,
+          "spread_pct": 0.0
+        }
+      },
+      "reports": 20000,
+      "rounds": 7,
+      "setup_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "thread_cpu_ns_per_report": 49.8,
+      "throughput_per_s": 20052136.0
+    },
+    {
+      "allocations": 0,
+      "allocations_per_report": 0.0,
+      "description": "protocol::parse on each 192-byte report",
+      "first_report_us": [
+        0.4,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1
+      ],
+      "name": "parse",
+      "per_report_ns": {
+        "max": {
+          "max": 8986.9,
+          "median": 70.1,
+          "min": 50.1,
+          "spread_pct": 12742.9
+        },
+        "mean": {
+          "max": 31.0,
+          "median": 30.3,
+          "min": 28.3,
+          "spread_pct": 8.7
+        },
+        "p50": {
+          "max": 30.1,
+          "median": 30.1,
+          "min": 30.1,
+          "spread_pct": 0.0
+        },
+        "p95": {
+          "max": 40.1,
+          "median": 30.1,
+          "min": 30.1,
+          "spread_pct": 33.3
+        },
+        "p99": {
+          "max": 40.1,
+          "median": 40.1,
+          "min": 40.1,
+          "spread_pct": 0.0
+        },
+        "p999": {
+          "max": 40.1,
+          "median": 40.1,
+          "min": 40.1,
+          "spread_pct": 0.0
+        }
+      },
+      "reports": 20000,
+      "rounds": 7,
+      "setup_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "thread_cpu_ns_per_report": 58.9,
+      "throughput_per_s": 16990910.0
+    },
+    {
+      "allocations": 0,
+      "allocations_per_report": 0.0,
+      "description": "decode, contact state, absolute mapping and the output decision; no filter; packets discarded",
+      "first_report_us": [
+        4.0,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1
+      ],
+      "name": "absolute",
+      "per_report_ns": {
+        "max": {
+          "max": 9606.9,
+          "median": 2364.4,
+          "min": 1462.7,
+          "spread_pct": 344.4
+        },
+        "mean": {
+          "max": 68.5,
+          "median": 64.9,
+          "min": 60.1,
+          "spread_pct": 12.8
+        },
+        "p50": {
+          "max": 70.1,
+          "median": 70.1,
+          "min": 60.1,
+          "spread_pct": 14.3
+        },
+        "p95": {
+          "max": 80.2,
+          "median": 80.2,
+          "min": 70.1,
+          "spread_pct": 12.5
+        },
+        "p99": {
+          "max": 80.2,
+          "median": 80.2,
+          "min": 80.2,
+          "spread_pct": 0.0
+        },
+        "p999": {
+          "max": 110.2,
+          "median": 100.2,
+          "min": 90.2,
+          "spread_pct": 20.0
+        }
+      },
+      "reports": 20000,
+      "rounds": 7,
+      "setup_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "thread_cpu_ns_per_report": 90.8,
+      "throughput_per_s": 11011397.0
+    },
+    {
+      "allocations": 0,
+      "allocations_per_report": 0.0,
+      "description": "as absolute, with the built-in Radial Follow port (the osu! profile)",
+      "first_report_us": [
+        0.6,
+        0.1,
+        0.1,
+        0.2,
+        0.2,
+        0.2,
+        0.1
+      ],
+      "name": "absolute+radial_follow",
+      "per_report_ns": {
+        "max": {
+          "max": 9357.6,
+          "median": 2103.9,
+          "min": 200.4,
+          "spread_pct": 435.2
+        },
+        "mean": {
+          "max": 128.5,
+          "median": 125.3,
+          "min": 120.7,
+          "spread_pct": 6.2
+        },
+        "p50": {
+          "max": 130.2,
+          "median": 130.2,
+          "min": 120.2,
+          "spread_pct": 7.7
+        },
+        "p95": {
+          "max": 160.3,
+          "median": 160.3,
+          "min": 140.3,
+          "spread_pct": 12.5
+        },
+        "p99": {
+          "max": 180.3,
+          "median": 170.3,
+          "min": 160.3,
+          "spread_pct": 11.8
+        },
+        "p999": {
+          "max": 200.4,
+          "median": 190.4,
+          "min": 180.3,
+          "spread_pct": 10.5
+        }
+      },
+      "reports": 20000,
+      "rounds": 7,
+      "setup_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "thread_cpu_ns_per_report": 149.8,
+      "throughput_per_s": 6677573.0
+    },
+    {
+      "allocations": 0,
+      "allocations_per_report": 0.0,
+      "description": "decode, contact state and relative mapping at 10 counts/mm; packets discarded",
+      "first_report_us": [
+        0.2,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1
+      ],
+      "name": "relative",
+      "per_report_ns": {
+        "max": {
+          "max": 9248.8,
+          "median": 7038.5,
+          "min": 160.3,
+          "spread_pct": 129.1
+        },
+        "mean": {
+          "max": 67.3,
+          "median": 63.2,
+          "min": 56.5,
+          "spread_pct": 17.0
+        },
+        "p50": {
+          "max": 70.1,
+          "median": 60.1,
+          "min": 60.1,
+          "spread_pct": 16.7
+        },
+        "p95": {
+          "max": 80.2,
+          "median": 70.1,
+          "min": 70.1,
+          "spread_pct": 14.3
+        },
+        "p99": {
+          "max": 90.2,
+          "median": 80.2,
+          "min": 70.1,
+          "spread_pct": 25.0
+        },
+        "p999": {
+          "max": 130.2,
+          "median": 110.2,
+          "min": 100.2,
+          "spread_pct": 27.3
+        }
+      },
+      "reports": 20000,
+      "rounds": 7,
+      "setup_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "thread_cpu_ns_per_report": 89.2,
+      "throughput_per_s": 11185057.0
+    },
+    {
+      "allocations": 0,
+      "allocations_per_report": 0.0,
+      "description": "as absolute, with the sample native EMA DLL as a PreTransform filter",
+      "first_report_us": [
+        0.6,
+        0.3,
+        0.4,
+        0.4,
+        0.4,
+        0.4,
+        0.4
+      ],
+      "name": "absolute+native_ema",
+      "per_report_ns": {
+        "max": {
+          "max": 9517.9,
+          "median": 2304.3,
+          "min": 170.3,
+          "spread_pct": 405.7
+        },
+        "mean": {
+          "max": 91.6,
+          "median": 88.0,
+          "min": 81.0,
+          "spread_pct": 12.1
+        },
+        "p50": {
+          "max": 90.2,
+          "median": 80.2,
+          "min": 80.2,
+          "spread_pct": 12.5
+        },
+        "p95": {
+          "max": 110.2,
+          "median": 100.2,
+          "min": 100.2,
+          "spread_pct": 10.0
+        },
+        "p99": {
+          "max": 110.2,
+          "median": 100.2,
+          "min": 100.2,
+          "spread_pct": 10.0
+        },
+        "p999": {
+          "max": 140.3,
+          "median": 130.2,
+          "min": 120.2,
+          "spread_pct": 15.4
+        }
+      },
+      "reports": 20000,
+      "rounds": 7,
+      "setup_ms": [
+        0.3,
+        0.2,
+        0.3,
+        0.2,
+        0.2,
+        0.3,
+        0.2
+      ],
+      "thread_cpu_ns_per_report": 113.7,
+      "throughput_per_s": 8792368.0
+    },
+    {
+      "allocations": 0,
+      "allocations_per_report": 0.0,
+      "description": "as absolute, with the unchanged RadialFollow 0.3.0 DLL through the .NET bridge instead of the built-in port",
+      "first_report_us": [
+        1830.4,
+        1109.8,
+        1097.4,
+        1102.0,
+        1114.9,
+        1102.8,
+        1189.0
+      ],
+      "name": "absolute+managed_radial_follow",
+      "per_report_ns": {
+        "max": {
+          "max": 9527.9,
+          "median": 2795.2,
+          "min": 1763.3,
+          "spread_pct": 277.8
+        },
+        "mean": {
+          "max": 198.0,
+          "median": 182.6,
+          "min": 179.8,
+          "spread_pct": 10.0
+        },
+        "p50": {
+          "max": 200.4,
+          "median": 180.3,
+          "min": 180.3,
+          "spread_pct": 11.1
+        },
+        "p95": {
+          "max": 250.5,
+          "median": 220.4,
+          "min": 210.4,
+          "spread_pct": 18.2
+        },
+        "p99": {
+          "max": 250.5,
+          "median": 240.5,
+          "min": 230.4,
+          "spread_pct": 8.3
+        },
+        "p999": {
+          "max": 270.5,
+          "median": 260.5,
+          "min": 250.5,
+          "spread_pct": 7.7
+        }
+      },
+      "reports": 20000,
+      "rounds": 7,
+      "setup_ms": [
+        69.9,
+        2.7,
+        2.5,
+        2.5,
+        2.6,
+        2.5,
+        2.7
+      ],
+      "thread_cpu_ns_per_report": 205.6,
+      "throughput_per_s": 4853191.0
+    },
+    {
+      "allocations": 0,
+      "allocations_note": "counted from the 100th report to the end of each session",
+      "allocations_per_report": 0.0,
+      "description": "session::run over the trace with the osu! profile: decoding, pipeline, counters, timing and display checks; no HID read or SendInput",
+      "first_report_us": [],
+      "name": "session/absolute+radial_follow",
+      "per_report_ns": {
+        "max": {
+          "max": 6231.7,
+          "median": 3145.9,
+          "min": 2414.5,
+          "spread_pct": 121.3
+        },
+        "mean": {
+          "max": 199.8,
+          "median": 193.7,
+          "min": 193.7,
+          "spread_pct": 3.2
+        },
+        "p50": {
+          "max": 200.4,
+          "median": 190.4,
+          "min": 190.4,
+          "spread_pct": 5.3
+        },
+        "p95": {
+          "max": 230.4,
+          "median": 210.4,
+          "min": 210.4,
+          "spread_pct": 9.5
+        },
+        "p99": {
+          "max": 250.5,
+          "median": 220.4,
+          "min": 220.4,
+          "spread_pct": 13.6
+        },
+        "p999": {
+          "max": 1102.1,
+          "median": 941.8,
+          "min": 891.7,
+          "spread_pct": 22.3
+        }
+      },
+      "reports": 20000,
+      "rounds": 7,
+      "setup_ms": [],
+      "thread_cpu_ns_per_report": 196.4,
+      "throughput_per_s": 5082721.0
+    },
+    {
+      "allocations": 0,
+      "allocations_per_report": 0.0,
+      "description": "one SendInput call per packet the osu! profile produces for the trace, buttons removed",
+      "first_report_us": [
+        101.8,
+        67.1,
+        71.4,
+        58.7,
+        68.6,
+        358.1,
+        67.2
+      ],
+      "name": "sendinput",
+      "per_report_ns": {
+        "max": {
+          "max": 1820286.4,
+          "median": 1612223.5,
+          "min": 1283803.9,
+          "spread_pct": 33.3
+        },
+        "mean": {
+          "max": 93254.9,
+          "median": 91427.1,
+          "min": 89384.2,
+          "spread_pct": 4.2
+        },
+        "p50": {
+          "max": 89117.3,
+          "median": 86487.6,
+          "min": 84137.9,
+          "spread_pct": 5.8
+        },
+        "p95": {
+          "max": 139662.4,
+          "median": 137618.0,
+          "min": 134512.5,
+          "spread_pct": 3.7
+        },
+        "p99": {
+          "max": 248412.4,
+          "median": 192202.5,
+          "min": 179967.2,
+          "spread_pct": 35.6
+        },
+        "p999": {
+          "max": 441414.6,
+          "median": 422613.2,
+          "min": 382678.2,
+          "spread_pct": 13.9
+        }
+      },
+      "reports": 20000,
+      "rounds": 7,
+      "setup_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "thread_cpu_ns_per_report": 31199.0,
+      "throughput_per_s": 10928.0
+    },
+    {
+      "allocations": 0,
+      "allocations_per_report": 0.0,
+      "description": "SendInput to the same position every time: the call without cursor motion",
+      "first_report_us": [
+        229.5,
+        13.2,
+        13.1,
+        13.8,
+        13.0,
+        13.3,
+        13.0
+      ],
+      "name": "sendinput_still",
+      "per_report_ns": {
+        "max": {
+          "max": 1160584.4,
+          "median": 191018.5,
+          "min": 62303.1,
+          "spread_pct": 575.0
+        },
+        "mean": {
+          "max": 12785.7,
+          "median": 12550.9,
+          "min": 12473.5,
+          "spread_pct": 2.5
+        },
+        "p50": {
+          "max": 12086.5,
+          "median": 11997.8,
+          "min": 11735.8,
+          "spread_pct": 2.9
+        },
+        "p95": {
+          "max": 14186.6,
+          "median": 13889.9,
+          "min": 13521.6,
+          "spread_pct": 4.8
+        },
+        "p99": {
+          "max": 20271.3,
+          "median": 20009.0,
+          "min": 19616.5,
+          "spread_pct": 3.3
+        },
+        "p999": {
+          "max": 36661.2,
+          "median": 32457.4,
+          "min": 30826.7,
+          "spread_pct": 18.0
+        }
+      },
+      "reports": 20000,
+      "rounds": 7,
+      "setup_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "thread_cpu_ns_per_report": 6607.6,
+      "throughput_per_s": 79379.0
+    },
+    {
+      "allocations": 0,
+      "allocations_per_report": 0.0,
+      "description": "the osu! profile's whole report path with SendInput, buttons removed",
+      "first_report_us": [
+        14.8,
+        71.9,
+        62.1,
+        71.8,
+        74.4,
+        66.9,
+        63.9
+      ],
+      "name": "absolute+radial_follow+sendinput",
+      "per_report_ns": {
+        "max": {
+          "max": 1816201.9,
+          "median": 1583396.2,
+          "min": 1521718.3,
+          "spread_pct": 18.6
+        },
+        "mean": {
+          "max": 88039.4,
+          "median": 86428.6,
+          "min": 85872.6,
+          "spread_pct": 2.5
+        },
+        "p50": {
+          "max": 86352.1,
+          "median": 83461.9,
+          "min": 81098.4,
+          "spread_pct": 6.3
+        },
+        "p95": {
+          "max": 138783.7,
+          "median": 136466.1,
+          "min": 135151.6,
+          "spread_pct": 2.7
+        },
+        "p99": {
+          "max": 244328.6,
+          "median": 207911.4,
+          "min": 173263.7,
+          "spread_pct": 34.2
+        },
+        "p999": {
+          "max": 430872.5,
+          "median": 395917.8,
+          "min": 379602.4,
+          "spread_pct": 12.9
+        }
+      },
+      "reports": 20000,
+      "rounds": 7,
+      "setup_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "thread_cpu_ns_per_report": 29943.4,
+      "throughput_per_s": 11560.0
+    }
+  ],
+  "driver": {
+    "commit": "36d584a9b0916e8ee0a5acba456ea519c3808175",
+    "name": "opentabletdriver-rust",
+    "version": "0.7.5"
+  },
+  "harness": "rust",
+  "machine": {
+    "cpu": "AMD Ryzen 7 5800X3D 8-Core Processor",
+    "invariant_tsc": true,
+    "logical_cpus": 16,
+    "thread_cycle_hz": 3392710260.0,
+    "tsc_hz": 3393618801.0
+  },
+  "method": {
+    "allocations": "Rust allocations on the measuring thread during the timed pass",
+    "rounds": 7,
+    "timer": "rdtsc/rdtscp with lfence around each report, converted with the measured counter frequency",
+    "warmup_ms": 1000
+  },
+  "replay": {
+    "allocations_after_warmup": 0,
+    "coalesced": 0,
+    "output_ns": {
+      "max": 1394699.1,
+      "mean": 73886.4,
+      "p50": 74492.2,
+      "p95": 95605.6,
+      "p99": 231340.4,
+      "p999": 811847.5
+    },
+    "pipeline_ns": {
+      "max": 26259.3,
+      "mean": 940.7,
+      "p50": 951.8,
+      "p95": 1112.1,
+      "p99": 1322.5,
+      "p999": 2474.6
+    },
+    "processed": 6000,
+    "rate_hz": 200.0,
+    "reports": 6000,
+    "send_input": true,
+    "signal_to_output_ns": {
+      "max": 1038272.5,
+      "mean": 6605.8,
+      "p50": 6217.0,
+      "p95": 7158.7,
+      "p99": 8426.1,
+      "p999": 95856.4
+    },
+    "wake_ns": {
+      "max": 1037420.9,
+      "mean": 5665.1,
+      "p50": 5265.2,
+      "p95": 6136.8,
+      "p99": 7230.0,
+      "p999": 94874.5
+    }
+  },
+  "schema": "otd-bench/1",
+  "trace": {
+    "fnv1a64": "719b88e0c722d0af",
+    "generator": "osu-synthetic-v1",
+    "rate_hz": 200.0,
+    "report_bytes": 192,
+    "reports": 20000,
+    "seed": 20260923
+  }
+}

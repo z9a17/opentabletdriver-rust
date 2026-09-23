@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Times OpenTabletDriver's own report path on the workload that the Rust
+    harness in examples/bench exports. OtdRoot is a clean checkout of
+    OpenTabletDriver at the pinned revision in
+    docs/parity/upstream-inventory.json. Settings mirror the upstream daemon:
+    net8.0, Release, TieredPGO, the default workstation garbage collector.
+    See docs/PERFORMANCE.md.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <TieredPGO>true</TieredPGO>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <License>LGPL-3.0-only</License>
+    <OtdRoot Condition="'$(OtdRoot)' == ''">$(MSBuildThisFileDirectory)..\..\target\upstream\OpenTabletDriver</OtdRoot>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="$(OtdRoot)\OpenTabletDriver.Desktop\OpenTabletDriver.Desktop.csproj" />
+  </ItemGroup>
+</Project>

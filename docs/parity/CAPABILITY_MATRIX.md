@@ -68,7 +68,7 @@ Baseline: [OTD v0.6.7](https://github.com/OpenTabletDriver/OpenTabletDriver/tree
 | CAP-48 | macOS device permissions, input/display/timer and desktop behavior | Missing | X01, X04-X05 |
 | CAP-49 | Platform installers/packages/autostart/updating/uninstall | Partial: portable Windows x64 ZIP, checksums | R01-R02, X05 |
 | CAP-50 | Provenance, license/source obligations, reproducible release checks | Partial: notices and Windows CI already exist | F03, R01, R03-R04 |
-| CAP-51 | Device/parser/plugin/report performance and validation evidence | Partial: unit/replay checks and limited older-build hardware evidence | F04-F06, V01-V06 |
+| CAP-51 | Device/parser/plugin/report performance and validation evidence | Partial: unit/replay checks, a same-machine software performance comparison with upstream (F04), and limited older-build hardware evidence | F04-F06, V01-V06 |
 | CAP-52 | Rust native plugin ABI (project extension) | Version 1 position-only API and EMA DLL available | P10; extension must not displace CAP-37 through CAP-46 |
 
 ## Pinned source map
