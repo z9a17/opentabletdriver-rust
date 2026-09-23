@@ -17,8 +17,8 @@
     "CAP-02": {
       "state": "open",
       "owner": "D02",
-      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/28",
-      "release": "v0.7.10",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/33",
+      "release": "v0.7.11",
       "evidence": [
         {
           "kind": "unit-tested",
@@ -31,6 +31,20 @@
           "tester": "GitHub Actions Windows and portable-core jobs",
           "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver/Driver.cs",
           "link": "https://github.com/z9a17/opentabletdriver-rust/actions/runs/35889428741",
+          "result": "pass",
+          "command": "cargo test --locked --workspace"
+        },
+        {
+          "kind": "unit-tested",
+          "task": "D02",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "30264360331417c19a7a646faeb9cd94ca348621",
+          "platform": "Windows and Ubuntu (GitHub Actions)",
+          "architecture": "x86_64",
+          "date": "2026-09-23T17:16:08+00:00",
+          "tester": "GitHub Actions Windows and portable-core jobs",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/tree/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Configurations/Configurations/XP-Pen",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/actions/runs/35893857202",
           "result": "pass",
           "command": "cargo test --locked --workspace"
         }
@@ -452,8 +466,8 @@
     "CAP-38": {
       "state": "open",
       "owner": "P02",
-      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/29",
-      "release": "v0.7.10",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/31",
+      "release": "v0.7.11",
       "evidence": [
         {
           "kind": "integration-tested",
@@ -469,10 +483,25 @@
           "result": "pass",
           "command": "cargo test --locked dotnet_settings_match_upstream_null_and_default_rules -- --ignored",
           "fixture_sha256": "7580a44834dc90433edd7dc0bc67c410e2ea760e6d166bd8ebb7a257ec32b6de"
+        },
+        {
+          "kind": "integration-tested",
+          "task": "P02",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "81057237fb9bc2580f0a80bfe8918ee5a72c6bfa",
+          "platform": "Windows (GitHub Actions windows-latest)",
+          "architecture": "x86_64",
+          "date": "2026-09-23T17:10:39+00:00",
+          "tester": "GitHub Actions Windows job",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Desktop/Reflection/PluginManager.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/actions/runs/35893278832",
+          "result": "pass",
+          "command": "cargo test --locked dotnet_tablet_reference_fields_and_properties_precede_load_callback -- --ignored",
+          "fixture_sha256": "96dcdfbecb795e05a780b416b262bb2107a8b96fbc364f115c3d3884d6dc8176"
         }
       ],
       "blockers": [
-        "Only omitted/null defaults and inherited property initialization were verified; type conversion, validation, service and field injection, actual tablet specifications and wider unchanged plugins remain open."
+        "Omitted/null defaults and direct/inherited TabletReference field and property injection were verified; other services, type conversion, validation, actual tablet specifications and wider unchanged plugins remain open."
       ]
     },
     "CAP-39": {
@@ -534,8 +563,8 @@
     "CAP-46": {
       "state": "open",
       "owner": "P01",
-      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/27",
-      "release": "v0.7.10",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/32",
+      "release": "v0.7.11",
       "evidence": [
         {
           "kind": "source-reviewed",
@@ -550,10 +579,23 @@
           "link": "https://github.com/z9a17/opentabletdriver-rust/pull/27#issuecomment-5798789306",
           "result": "pass",
           "command": "python scripts/parity-plugin-corpus.py --catalog-root <clean pinned catalog checkout>"
+        },
+        {
+          "kind": "source-reviewed",
+          "task": "P01",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "d971018abbe0de165842eaf056909b1287e96e6d",
+          "platform": "Windows (local archive and managed-metadata inspection)",
+          "architecture": "x86_64",
+          "date": "2026-09-23T17:12:55+00:00",
+          "tester": "P01 archive auditor",
+          "reference": "https://github.com/OpenTabletDriver/Plugin-Repository/tree/2dfdff1cd77d274eb19c4d359b240167537c4db2",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/pull/32",
+          "result": "pass"
         }
       ],
       "blockers": [
-        "The 57 metadata records and 50 identities are inventoried, but catalog-declared archive hashes, exported classes, dependencies, platform needs and unchanged-binary compatibility remain unverified; manually installed examples are not inventoried."
+        "The corpus inventories 57 eligible records and 50 identities. Two archive hashes and managed metadata were checked without executing DLLs during that audit; the other 55 archive hashes, most runtime behavior, platform needs and catalog-wide compatibility remain unverified. Manually installed examples are not inventoried."
       ]
     },
     "CAP-47": {

@@ -55,7 +55,7 @@ Baseline: [OTD v0.6.7](https://github.com/OpenTabletDriver/OpenTabletDriver/tree
 | ID | Upstream capability | Current Rust status | Work items |
 | --- | --- | --- | --- |
 | CAP-37 | Existing .NET assembly discovery, dependencies, supported-platform/ignore metadata | Partial: explicit DLL/type loading with narrow discovery | P01-P02 |
-| CAP-38 | Settings defaults/conversion/validation, property and field injection, dependency callbacks | Partial: omitted/null saved properties follow upstream defaults in a managed fixture (P02); only PTH-660 TabletReference injection is available | P02, P07 |
+| CAP-38 | Settings defaults/conversion/validation, property and field injection, dependency callbacks | Partial: omitted/null saved properties follow upstream defaults; direct and inherited TabletReference fields/properties are injected before load callbacks in a managed fixture (P02). The tablet specification remains fixed to PTH-660 | P02, P07 |
 | CAP-39 | Full report interfaces, concrete types where needed, raw bytes and report mutations | Partial: reusable position/pressure/eraser adapter; only X/Y returned | P03 |
 | CAP-40 | PreTransform and PostTransform ordering, suppression and multiple emissions | Partial: exactly one synchronous PreTransform output | P04 |
 | CAP-41 | Async filters, timers, resampling, plugin-owned threads | Missing | P05 |
@@ -63,7 +63,7 @@ Baseline: [OTD v0.6.7](https://github.com/OpenTabletDriver/OpenTabletDriver/tree
 | CAP-43 | Report-parser, configuration/provider, device-hub, driver and platform services | Missing | P07 |
 | CAP-44 | Install/update/uninstall from local archives and online catalog; metadata version checks | Missing: file selection does not install a package | P08 |
 | CAP-45 | Plugin disposal/reload, dependency isolation, failed initialization and missing runtime diagnostics | Partial: basic load/dispose; no general lifecycle compatibility | P02, P05, P08-P09 |
-| CAP-46 | Catalog-wide unchanged binaries and manually installed baseline-compatible plugins | Partial: unchanged RadialFollow tablet filter tested; a metadata-only corpus lists the 57 eligible catalog records, with archive hashes and binary behavior unverified (P01) | P01, P09, V03 |
+| CAP-46 | Catalog-wide unchanged binaries and manually installed baseline-compatible plugins | Partial: unchanged RadialFollow tablet filter tested; the corpus lists 57 eligible catalog records, and two archive hashes and managed metadata have been checked without executing DLLs during that audit (P01). Other archive hashes and catalog-wide binary behavior remain unverified | P01, P09, V03 |
 | CAP-47 | Linux HID permissions, input/display/timer and desktop behavior | Missing | X01-X03, X05 |
 | CAP-48 | macOS device permissions, input/display/timer and desktop behavior | Missing | X01, X04-X05 |
 | CAP-49 | Platform installers/packages/autostart/updating/uninstall | Partial: portable Windows x64 ZIP, checksums | R01-R02, X05 |
