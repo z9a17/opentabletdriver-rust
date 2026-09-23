@@ -318,6 +318,35 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires bridge and SettingsFixture DLL; set OTD_COMPAT_DIR and OTD_TEST_SETTINGS_PLUGIN"]
+    fn dotnet_tablet_reference_uses_selected_database_specification() {
+        let path: PathBuf = std::env::var_os("OTD_TEST_SETTINGS_PLUGIN")
+            .expect("set OTD_TEST_SETTINGS_PLUGIN")
+            .into();
+        let tablet = otd_core::tablets::Database::builtin()
+            .entries()
+            .iter()
+            .filter_map(|entry| entry.usable())
+            .find(|tablet| tablet.name == "Wacom PTH-860")
+            .unwrap();
+        let config = PluginConfig {
+            path,
+            kind: PluginKind::Dotnet,
+            enabled: true,
+            type_name: "SettingsFixture.SelectedSpecificationFilter".into(),
+            settings_json: "{}".into(),
+        };
+        let mut plugin = Plugin::load_with_tablet(&config, tablet).unwrap();
+        let mut sample = Sample {
+            x: 10.0,
+            y: 20.0,
+            ..Sample::default()
+        };
+        assert!(plugin.process(&mut sample));
+        assert_eq!((sample.x, sample.y), (321.0, 20.0));
+    }
+
+    #[test]
     #[ignore = "requires bridge and DiscoveryFixture DLL; set OTD_COMPAT_DIR and OTD_TEST_DISCOVERY_PLUGIN"]
     fn dotnet_discovery_respects_platform_and_ignore_attributes() {
         let path: PathBuf = std::env::var_os("OTD_TEST_DISCOVERY_PLUGIN")

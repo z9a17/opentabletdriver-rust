@@ -501,7 +501,7 @@
         }
       ],
       "blockers": [
-        "Omitted/null defaults and direct/inherited TabletReference field and property injection were verified; other services, type conversion, validation, actual tablet specifications and wider unchanged plugins remain open."
+        "Omitted/null defaults and direct/inherited TabletReference field and property injection were verified. The bridge now receives the chosen pinned configuration, but the live driver still selects only built-in PTH-660; other services, type conversion, validation and wider unchanged plugins remain open."
       ]
     },
     "CAP-39": {

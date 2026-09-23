@@ -1,6 +1,7 @@
 //! Trusted native and OpenTabletDriver .NET position filters. No DLL is loaded
 //! by parsing or saving a profile. Loading occurs only for explicit inspection
 //! or when starting output; the successful per-report path never allocates.
+use otd_core::tablets::{Database, Role, TabletConfiguration};
 use otd_plugin_api::{ABI_VERSION, FilterApi, Header, Sample};
 use std::ffi::{OsStr, c_void};
 use std::os::windows::ffi::OsStrExt;
@@ -86,7 +87,15 @@ pub struct Plugin {
 }
 
 impl Plugin {
+    #[cfg(test)]
     pub fn load(config: &PluginConfig) -> Result<Self, String> {
+        Self::load_with_tablet(config, current_tablet())
+    }
+
+    pub fn load_with_tablet(
+        config: &PluginConfig,
+        tablet: &TabletConfiguration,
+    ) -> Result<Self, String> {
         config.validate()?;
         let (api, library) = if config.kind == PluginKind::Dotnet {
             (crate::dotnet::filter_api()?, None)
@@ -126,7 +135,8 @@ impl Plugin {
             serde_json::json!({
                 "assembly_path": config.path.canonicalize().map_err(|e| e.to_string())?,
                 "type_name": config.type_name,
-                "settings": serde_json::from_str::<serde_json::Value>(&config.settings_json).map_err(|e| e.to_string())?
+                "settings": serde_json::from_str::<serde_json::Value>(&config.settings_json).map_err(|e| e.to_string())?,
+                "tablet": tablet
             }).to_string()
         } else {
             config.settings_json.clone()
@@ -187,6 +197,16 @@ impl Plugin {
     }
 }
 
+/// The current driver selects the built-in USB PTH-660 configuration. Keep
+/// this choice in Rust so future device selection can supply its own entry.
+fn current_tablet() -> &'static TabletConfiguration {
+    Database::builtin()
+        .find(crate::hid::WACOM_VENDOR, crate::hid::PTH660_USB)
+        .find(|entry| entry.role == Role::Digitizer && entry.configuration.name == "Wacom PTH-660")
+        .expect("the pinned database declares the PTH-660")
+        .configuration
+}
+
 impl Drop for Plugin {
     fn drop(&mut self) {
         unsafe { (self.api.destroy.unwrap())(self.context) };
@@ -203,10 +223,17 @@ pub struct PluginChain {
 
 impl PluginChain {
     pub fn load(configs: &[PluginConfig]) -> Result<Self, String> {
+        Self::load_with_tablet(configs, current_tablet())
+    }
+
+    pub fn load_with_tablet(
+        configs: &[PluginConfig],
+        tablet: &TabletConfiguration,
+    ) -> Result<Self, String> {
         let plugins = configs
             .iter()
             .filter(|p| p.enabled)
-            .map(Plugin::load)
+            .map(|config| Plugin::load_with_tablet(config, tablet))
             .collect::<Result<Vec<_>, _>>()?;
         let has_pre = plugins
             .iter()

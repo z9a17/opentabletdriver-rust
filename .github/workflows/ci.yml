@@ -69,6 +69,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked dotnet_tablet_reference_fields_and_properties_precede_load_callback -- --ignored
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked dotnet_tablet_reference_uses_selected_database_specification -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   portable-core:
     # The report pipeline and session loop must build and pass without Windows.
