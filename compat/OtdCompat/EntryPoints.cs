@@ -160,18 +160,30 @@ sealed class Instance : IDisposable
                 }
             }
         };
-        foreach (var property in type.GetProperties())
+        // Walk each declaration so protected/private fields on base classes
+        // are visible. All dependencies are assigned before any load callback.
+        for (Type? owner = type; owner != null; owner = owner.BaseType)
         {
-            bool resolved = property.GetCustomAttribute<ResolvedAttribute>() != null;
-            bool tabletRef = property.GetCustomAttribute<TabletReferenceAttribute>() != null;
-            if ((resolved || tabletRef) && property.PropertyType == typeof(TabletReference))
-                property.SetValue(value, tablet);
-            else if (resolved || tabletRef)
-                throw new NotSupportedException($"Unsupported plugin dependency: {property.Name} ({property.PropertyType.Name})");
+            const BindingFlags members = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+            foreach (var property in owner.GetProperties(members))
+            {
+                bool resolved = property.GetCustomAttribute<ResolvedAttribute>() != null;
+                bool tabletRef = property.GetCustomAttribute<TabletReferenceAttribute>() != null;
+                if ((resolved || tabletRef) && property.PropertyType == typeof(TabletReference))
+                    property.SetValue(value, tablet);
+                else if (resolved || tabletRef)
+                    throw new NotSupportedException($"Unsupported plugin dependency: {property.Name} ({property.PropertyType.Name})");
+            }
+            foreach (var field in owner.GetFields(members))
+            {
+                bool resolved = field.GetCustomAttribute<ResolvedAttribute>() != null;
+                bool tabletRef = field.GetCustomAttribute<TabletReferenceAttribute>() != null;
+                if ((resolved || tabletRef) && field.FieldType == typeof(TabletReference))
+                    field.SetValue(value, tablet);
+                else if (resolved || tabletRef)
+                    throw new NotSupportedException($"Unsupported plugin field dependency: {field.Name} ({field.FieldType.Name})");
+            }
         }
-        foreach (var field in type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
-            if (field.GetCustomAttribute<ResolvedAttribute>() != null)
-                throw new NotSupportedException($"Unsupported plugin field dependency: {field.Name}");
         foreach (var method in type.GetMethods())
             if (method.GetCustomAttribute<OnDependencyLoadAttribute>() != null)
                 method.Invoke(value, []);

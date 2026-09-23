@@ -294,6 +294,30 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires bridge and SettingsFixture DLL; set OTD_COMPAT_DIR and OTD_TEST_SETTINGS_PLUGIN"]
+    fn dotnet_tablet_reference_fields_and_properties_precede_load_callback() {
+        let path: PathBuf = std::env::var_os("OTD_TEST_SETTINGS_PLUGIN")
+            .expect("set OTD_TEST_SETTINGS_PLUGIN")
+            .into();
+        let config = PluginConfig {
+            path,
+            kind: PluginKind::Dotnet,
+            enabled: true,
+            type_name: "SettingsFixture.ReferenceFilter".into(),
+            settings_json: "{}".into(),
+        };
+        let mut plugin = Plugin::load(&config).unwrap();
+        let mut sample = Sample {
+            x: 10.0,
+            y: 20.0,
+            ..Sample::default()
+        };
+        assert!(plugin.process(&mut sample));
+        assert_eq!(sample.x, 17.0);
+        assert_eq!(sample.y, 20.0);
+    }
+
+    #[test]
     #[ignore = "requires bridge and DiscoveryFixture DLL; set OTD_COMPAT_DIR and OTD_TEST_DISCOVERY_PLUGIN"]
     fn dotnet_discovery_respects_platform_and_ignore_attributes() {
         let path: PathBuf = std::env::var_os("OTD_TEST_DISCOVERY_PLUGIN")

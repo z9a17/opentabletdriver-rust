@@ -39,3 +39,42 @@ public sealed class DefaultsFilter : BaseFilter
         Publish(report);
     }
 }
+
+public abstract class ReferenceBaseFilter : BaseFilter
+{
+    [Resolved]
+    protected TabletReference InheritedField;
+
+    [TabletReference]
+    public TabletReference InheritedProperty { get; set; }
+
+    protected bool BaseDependenciesReady => InheritedField?.Properties?.Name == "Wacom PTH-660"
+        && InheritedProperty?.Properties?.Name == "Wacom PTH-660";
+}
+
+public sealed class ReferenceFilter : ReferenceBaseFilter
+{
+    [Resolved]
+    public TabletReference DirectField;
+
+    [TabletReference]
+    public TabletReference DirectProperty { get; set; }
+
+    private float offset;
+
+    [OnDependencyLoad]
+    public void Initialize()
+    {
+        if (!BaseDependenciesReady || DirectField?.Properties?.Name != "Wacom PTH-660"
+            || DirectProperty?.Properties?.Name != "Wacom PTH-660")
+            throw new InvalidOperationException("TabletReference members were not injected before OnDependencyLoad");
+        offset = 7;
+    }
+
+    public override void Consume(IDeviceReport report)
+    {
+        if (report is IAbsolutePositionReport positioned)
+            positioned.Position += new Vector2(offset, 0);
+        Publish(report);
+    }
+}
