@@ -7,6 +7,7 @@
 
 pub mod config;
 pub mod display;
+pub mod endpoint_match;
 pub mod mapping;
 pub mod output;
 pub mod pipeline;
