@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "scope": "Read-only archive and managed metadata audit of two unchanged catalog releases. Hash checks establish byte identity with catalog-declared archive hashes; metadata findings do not establish execution or compatibility.",
+  "scope": "Read-only archive and managed metadata audit of four unchanged catalog releases. Hash checks establish byte identity with catalog-declared archive hashes; metadata findings do not establish execution or compatibility.",
   "catalog": {
     "repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
     "revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2"

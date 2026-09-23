@@ -76,6 +76,16 @@ class PluginCorpusTests(unittest.TestCase):
             errors = validate(archive_audit_path=path)
             self.assertTrue(any("plugin candidate types differ from corpus" in error for error in errors))
 
+    def test_multi_assembly_reference_aggregate_matches_dll_rows(self):
+        audit = json.loads((ROOT / "docs/parity/plugin-archive-audit.json").read_text(encoding="utf-8"))
+        audit["records"][2]["audit"]["metadata_inspection"]["assembly_references"][0]["assembly"] = "WrongAssembly"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "audit.json"
+            path.write_text(json.dumps(audit), encoding="utf-8")
+            errors = validate(archive_audit_path=path)
+            self.assertTrue(any("aggregate assembly references differ from per-DLL metadata" in error
+                                for error in errors))
+
     def test_missing_archive_audit_rejects_verified_hash(self):
         with tempfile.TemporaryDirectory() as directory:
             missing = Path(directory) / "missing-audit.json"
