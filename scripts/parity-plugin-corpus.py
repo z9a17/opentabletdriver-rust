@@ -132,11 +132,47 @@ def validate(path: Path = DEFAULT_CORPUS, inventory_path: Path = DEFAULT_INVENTO
                 errors.append(f"{prefix} must explicitly state plugin code was not loaded or executed")
             if not audit.get("remaining_unknowns"):
                 errors.append(f"{prefix} must list remaining unknowns")
-            candidate_names = [item.get("name") for item in metadata.get("plugin_candidate_types", [])]
+            managed_assemblies = metadata.get("managed_assemblies", [])
+            if managed_assemblies:
+                package_references = [
+                    {"assembly": assembly.get("assembly", {}).get("name"),
+                     "name": reference.get("name"), "version": reference.get("version")}
+                    for assembly in managed_assemblies
+                    for reference in assembly.get("references", [])
+                ]
+                if metadata.get("assembly_references") != package_references:
+                    errors.append(f"{prefix} aggregate assembly references differ from per-DLL metadata")
+                package_api_references = [
+                    {"assembly": assembly.get("assembly", {}).get("name"),
+                     "parent_type": reference.get("parent"), "member_name": reference.get("name")}
+                    for assembly in managed_assemblies
+                    for reference in assembly.get("api_member_references", [])
+                ]
+                if metadata.get("open_tablet_driver_member_references") != package_api_references:
+                    errors.append(f"{prefix} aggregate API member references differ from per-DLL metadata")
+                zip_dlls = sorted(
+                    (entry.get("path"), entry.get("uncompressed_bytes"))
+                    for entry in audit.get("zip_entries", [])
+                    if str(entry.get("path", "")).lower().endswith(".dll")
+                )
+                recorded_dlls = sorted(
+                    (assembly.get("metadata_path"), assembly.get("length"))
+                    for assembly in managed_assemblies
+                )
+                if zip_dlls != recorded_dlls:
+                    errors.append(f"{prefix} managed assembly list differs from ZIP DLL entries")
+            candidate_names = [item if isinstance(item, str) else item.get("name")
+                               for item in metadata.get("plugin_candidate_types", [])]
             if candidate_names != source.get("classification", {}).get("exported_classes"):
                 errors.append(f"{prefix} plugin candidate types differ from corpus")
-            reference_names = [f"{item.get('name')} {item.get('version')}" for item in metadata.get("references", [])]
-            if reference_names != source.get("classification", {}).get("referenced_assemblies"):
+            references = metadata.get("references")
+            if references is None:
+                references = metadata.get("assembly_references")
+            if references is None:
+                references = [reference for assembly in metadata.get("managed_assemblies", [])
+                              for reference in assembly.get("references", [])]
+            reference_names = sorted({f"{item.get('name')} {item.get('version')}" for item in references})
+            if reference_names != sorted(source.get("classification", {}).get("referenced_assemblies", [])):
                 errors.append(f"{prefix} assembly references differ from corpus")
         for record in records:
             verification = record.get("verification", {})

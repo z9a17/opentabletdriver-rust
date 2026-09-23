@@ -1917,24 +1917,37 @@
         "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
         "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
         "metadata_blob_sha256": "53d9113350c101c64447a00e48eb3c6c3114d04b3804fa012fdf786cd9ad1f46",
-        "source": "pinned catalog JSON metadata; archive not downloaded"
+        "source": "pinned catalog JSON metadata; archive SHA-256 and managed metadata recorded in docs/parity/plugin-archive-audit.json"
       },
       "classification": {
-        "runtime_category": "unknown",
-        "exported_classes": "unknown",
-        "referenced_assemblies": "unknown",
+        "runtime_category": "Candidate metadata shape: The public TemporalResampler type is decorated with PluginNameAttribute and DeviceHubAttribute and derives from AsyncPositionedPipelineElement<IDeviceReport>. This is a metadata candidate shape for an asynchronous positional resampler with a device-hub dependency; it is not runtime discovery or category proof.",
+        "exported_classes": [
+          "TemporalResampler"
+        ],
+        "referenced_assemblies": [
+          "OpenTabletDriver.Plugin 0.6.3.0",
+          "System.Linq 6.0.0.0",
+          "System.Numerics.Vectors 6.0.0.0",
+          "System.Runtime 6.0.0.0"
+        ],
         "platform_requirements": "unknown",
         "external_prerequisites": "unknown",
-        "api_dependencies": "unknown"
+        "api_dependencies": "See docs/parity/plugin-archive-audit.json for assembly/member references; compatibility and visibility unresolved.",
+        "exported_types_note": "See plugin-archive-audit.json for all public types and the subset decorated with PluginNameAttribute."
       },
       "verification": {
-        "archive_hash": "unverified",
-        "binary_inspection": "not_performed",
-        "execution": "not_performed",
+        "archive_hash": "verified",
+        "binary_inspection": "managed_metadata_only",
+        "execution": "not_run",
         "compatibility": "unverified"
       },
       "blockers": [
-        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+        "Runtime discovery, initialization, scheduling and output behavior on baseline 0.6.7.0 are untested.",
+        "The assembly references OpenTabletDriver.Plugin 0.6.3.0 while catalog metadata allows this release from driver 0.6.4.0; host binding behavior was not tested.",
+        "DeviceHubAttribute and TabletReferenceAttribute usage is recorded but service resolution and required device/hardware are unknown.",
+        "Operating-system support and external prerequisites are unknown.",
+        "Member-reference names do not establish target API visibility or public/private contract compatibility.",
+        "PluginName attribute value, method behavior and redistribution-license terms were not inspected."
       ]
     },
     {
@@ -2089,24 +2102,49 @@
         "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
         "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
         "metadata_blob_sha256": "4f527b4961bf1a7987f0a46350d99e1cbe54458c4b2357887d5be34e5c252c11",
-        "source": "pinned catalog JSON metadata; archive not downloaded"
+        "source": "pinned catalog JSON metadata; archive SHA-256 and managed metadata recorded in docs/parity/plugin-archive-audit.json"
       },
       "classification": {
-        "runtime_category": "unknown",
-        "exported_classes": "unknown",
-        "referenced_assemblies": "unknown",
+        "runtime_category": "Candidate metadata shape: Metadata candidates include two classes deriving from AbsoluteOutputMode and RelativeOutputMode, plus one class implementing IBinding/IStateBinding. This describes declared shapes only, not runtime category/discovery or Windows support.",
+        "exported_classes": [
+          "VoiDPlugins.OutputMode.WinInkAbsoluteMode",
+          "VoiDPlugins.OutputMode.WinInkRelativeMode",
+          "VoiDPlugins.OutputMode.WindowsInkButtonHandler"
+        ],
+        "referenced_assemblies": [
+          "HidSharpCore 2.1.0.0",
+          "OpenTabletDriver.Plugin 0.6.6.0",
+          "System.Collections 8.0.0.0",
+          "System.ComponentModel 8.0.0.0",
+          "System.Linq 8.0.0.0",
+          "System.Numerics.Vectors 8.0.0.0",
+          "System.Runtime 8.0.0.0",
+          "System.Runtime.InteropServices 8.0.0.0",
+          "System.Threading 8.0.0.0",
+          "VMulti 0.4.2.0",
+          "VoiD 0.4.2.0",
+          "netstandard 2.0.0.0"
+        ],
         "platform_requirements": "unknown",
         "external_prerequisites": "unknown",
-        "api_dependencies": "unknown"
+        "api_dependencies": "See docs/parity/plugin-archive-audit.json for assembly/member references; compatibility and visibility unresolved.",
+        "exported_types_note": "See plugin-archive-audit.json for all public types and the subset decorated with PluginNameAttribute."
       },
       "verification": {
-        "archive_hash": "unverified",
-        "binary_inspection": "not_performed",
-        "execution": "not_performed",
+        "archive_hash": "verified",
+        "binary_inspection": "managed_metadata_only",
+        "execution": "not_run",
         "compatibility": "unverified"
       },
       "blockers": [
-        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+        "The output-mode and binding classes were not runtime-discovered, initialized or exercised on baseline 0.6.7.0.",
+        "WindowsInk and its VoiD/VMulti helper assemblies target .NET 8; the ZIP hash is verified, but host runtime suitability was not tested.",
+        "VMulti.dll and VoiD.dll are bundled managed helpers; their presence does not establish that a VMulti device driver is installed or usable.",
+        "VMulti.dll references HidSharpCore 2.1.0.0, which is not in this archive; whether it is loaded for Windows Ink and where it is provided are unknown.",
+        "Operating-system and external/native prerequisites, including any VMulti driver requirement, remain unknown.",
+        "Newtonsoft.Json.dll is present in the ZIP; these DLLs metadata list no static Newtonsoft.Json assembly reference, and dynamic use was not investigated.",
+        "Member references are metadata names only; target API visibility and host compatibility were not resolved.",
+        "PluginName attribute values, method bodies/behavior, service initialization and redistribution-license terms were not inspected."
       ]
     },
     {
