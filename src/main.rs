@@ -9,11 +9,12 @@ mod session;
 mod ui;
 
 // The portable core, at the crate paths the Windows modules use.
+use otd_core::tablets::{self, Database, Origin, ParserSupport, Role, Severity};
 #[cfg(test)]
 use otd_core::test_alloc;
 use otd_core::{config, mapping, protocol, radial_follow, relative};
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError, WAIT_OBJECT_0};
@@ -34,6 +35,7 @@ fn usage() -> &'static str {
   opentabletdriver-rust.exe check-plugins driver.toml
   opentabletdriver-rust.exe list [--paths]
   opentabletdriver-rust.exe displays
+  opentabletdriver-rust.exe tablets [--list] [--configurations DIRECTORY]
   opentabletdriver-rust.exe capture [--config driver.toml | --otd-settings settings.json] [--seconds 1..60]
   opentabletdriver-rust.exe --version
 
@@ -50,6 +52,10 @@ enum Command {
         paths: bool,
     },
     Displays,
+    Tablets {
+        list: bool,
+        directory: Option<PathBuf>,
+    },
     Settings {
         config: Option<PathBuf>,
         otd_settings: Option<PathBuf>,
@@ -103,6 +109,26 @@ fn parse_args() -> Result<Command, String> {
                 }
             }
             Ok(Command::List { paths })
+        }
+        "tablets" => {
+            let (mut list, mut directory) = (false, None);
+            while let Some(arg) = args.next() {
+                match arg.as_str() {
+                    "--list" => list = true,
+                    "--configurations" => {
+                        let value = args.next().ok_or("--configurations needs a directory")?;
+                        directory = Some(PathBuf::from(value));
+                    }
+                    _ => {
+                        return Err(format!(
+                            "unknown tablets option: {arg}
+{}",
+                            usage()
+                        ));
+                    }
+                }
+            }
+            Ok(Command::Tablets { list, directory })
         }
         "displays" => {
             if args.next().is_some() {
@@ -181,6 +207,202 @@ fn list(paths: bool) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// OpenTabletDriver's configuration directory. Its files override built-in
+/// tablet configurations by name.
+fn otd_configurations() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(|directory| {
+        PathBuf::from(directory)
+            .join("OpenTabletDriver")
+            .join("Configurations")
+    })
+}
+
+/// The tablet configurations with the files in `directory` applied, or `None`
+/// when there are none, and the number of files.
+fn load_tablets(directory: Option<&Path>) -> Result<(Option<Database>, usize), String> {
+    let files = match directory {
+        Some(directory) => tablets::read_directory(directory).map_err(|e| e.to_string())?,
+        None => Vec::new(),
+    };
+    let database = (!files.is_empty()).then(|| Database::with_overrides(&files));
+    Ok((database, files.len()))
+}
+
+/// Says which configuration declares the USB PTH-660 pen interface. The
+/// report path implements the built-in configuration, so an override that
+/// changes it is reported, not applied (BC-28).
+fn report_pth_660(database: &Database) {
+    let builtin = Database::builtin()
+        .find(hid::WACOM_VENDOR, hid::PTH660_USB)
+        .find(|m| m.role == Role::Digitizer)
+        .expect("the pinned database declares the PTH-660");
+    let mut declaring: Vec<&tablets::Entry> = Vec::new();
+    for found in database.find(hid::WACOM_VENDOR, hid::PTH660_USB) {
+        if found.role == Role::Digitizer && !declaring.iter().any(|e| std::ptr::eq(*e, found.entry))
+        {
+            declaring.push(found.entry);
+        }
+    }
+    if declaring.is_empty() {
+        eprintln!(
+            "warning: no usable tablet configuration declares the USB PTH-660; this driver uses the built-in one"
+        );
+    }
+    for entry in &declaring {
+        let configuration = entry.configuration.as_ref().expect("usable entries parse");
+        if entry.origin == Origin::BuiltIn {
+            println!(
+                "Tablet configuration: {}, built in from OpenTabletDriver {}",
+                configuration.name,
+                &tablets::source_revision()[..7]
+            );
+            continue;
+        }
+        let changed = builtin.configuration.changed_fields(configuration);
+        if changed.is_empty() {
+            println!(
+                "Tablet configuration: {} from {}, the same as the built-in one",
+                configuration.name, entry.path
+            );
+        } else {
+            eprintln!(
+                "warning: {} changes {} of {}; this driver uses the built-in configuration",
+                entry.path,
+                changed.join(", "),
+                configuration.name
+            );
+        }
+    }
+    if declaring.len() > 1 {
+        eprintln!(
+            "warning: {} configurations declare the USB PTH-660 pen interface",
+            declaring.len()
+        );
+    }
+}
+
+/// Loads the tablet configurations as OpenTabletDriver's daemon does when it
+/// starts and reports what the USB PTH-660 resolves to. Nothing here runs per
+/// report.
+fn check_tablet_configurations() {
+    let directory = otd_configurations().filter(|directory| directory.is_dir());
+    let (custom, _) = load_tablets(directory.as_deref()).unwrap_or_else(|error| {
+        eprintln!("warning: tablet configuration files not read: {error}");
+        (None, 0)
+    });
+    let database = custom.as_ref().unwrap_or_else(|| Database::builtin());
+    let errors = database
+        .entries()
+        .iter()
+        .filter(|e| e.usable().is_none())
+        .count();
+    if errors > 0 {
+        eprintln!(
+            "warning: {errors} tablet configuration files have errors; `opentabletdriver-rust tablets` lists them"
+        );
+    }
+    report_pth_660(database);
+}
+
+/// Summarizes the tablet configuration database; with `list`, every tablet,
+/// its interfaces and every diagnostic. Reads files only.
+fn tablets(list: bool, directory: Option<PathBuf>) -> Result<(), String> {
+    let explicit = directory.is_some();
+    let directory = directory
+        .or_else(otd_configurations)
+        .filter(|directory| explicit || directory.is_dir());
+    let (custom, files) = load_tablets(directory.as_deref())?;
+    let database = custom.as_ref().unwrap_or_else(|| Database::builtin());
+    let entries = database.entries();
+    let built_in = Database::builtin().entries().len();
+    println!(
+        "{built_in} built-in tablet configurations from OpenTabletDriver {}",
+        &tablets::source_revision()[..7]
+    );
+    if let Some(directory) = &directory {
+        let kept = entries
+            .iter()
+            .filter(|e| e.origin == Origin::BuiltIn)
+            .count();
+        println!(
+            "Configuration files in {}: {files} (replacing built-in ones: {})",
+            directory.display(),
+            built_in - kept
+        );
+    }
+    let has = |severity| {
+        entries
+            .iter()
+            .filter(|e| e.diagnostics.iter().any(|d| d.severity == severity))
+            .count()
+    };
+    let errors = has(Severity::Error);
+    println!(
+        "{} usable, {errors} with errors, {} with warnings",
+        entries.iter().filter(|e| e.usable().is_some()).count(),
+        has(Severity::Warning)
+    );
+    let parsers = database.parsers();
+    let decoded: Vec<&str> = parsers
+        .keys()
+        .copied()
+        .filter(|parser| tablets::parser_support(parser) != ParserSupport::Missing)
+        .map(|parser| parser.rsplit('.').next().unwrap_or(parser))
+        .collect();
+    println!(
+        "{} report parsers referenced; partly decoded by this driver: {}; not decoded: {}",
+        parsers.len(),
+        decoded.join(", "),
+        parsers.len() - decoded.len()
+    );
+    report_pth_660(database);
+    for entry in entries {
+        if list {
+            match &entry.configuration {
+                Some(configuration) => {
+                    println!("{} [{}]", configuration.name, entry.path);
+                    print_identifiers(configuration);
+                }
+                None => println!("[{}]", entry.path),
+            }
+        }
+        for diagnostic in &entry.diagnostics {
+            if list || diagnostic.severity == Severity::Error {
+                println!("  {}: {diagnostic}", entry.path);
+            }
+        }
+    }
+    match errors {
+        0 => Ok(()),
+        1 => Err("1 configuration file has errors".into()),
+        _ => Err(format!("{errors} configuration files have errors")),
+    }
+}
+
+fn print_identifiers(configuration: &tablets::TabletConfiguration) {
+    for (role, identifiers) in [
+        ("digitizer", configuration.digitizer_identifiers.as_slice()),
+        ("auxiliary", configuration.auxiliary_identifiers()),
+    ] {
+        for identifier in identifiers {
+            let parser = identifier.parser();
+            let support = match tablets::parser_support(parser) {
+                ParserSupport::Partial(detail) => format!("partly decoded: {detail}"),
+                ParserSupport::Missing => "not decoded".to_owned(),
+            };
+            println!(
+                "  {role} {:04x}:{:04x}, {} report bytes, {}: {support}",
+                identifier.vendor_id().unwrap_or(0),
+                identifier.product_id().unwrap_or(0),
+                identifier
+                    .input_report_length
+                    .map_or("any".into(), |n| n.to_string()),
+                parser.rsplit('.').next().unwrap_or(parser),
+            );
+        }
+    }
 }
 
 fn displays() -> Result<(), String> {
@@ -278,6 +500,7 @@ fn drive(
         env!("CARGO_PKG_VERSION")
     );
     profile.print_summary();
+    check_tablet_configurations();
     if capture_seconds.is_none() {
         println!("Reading pen input and moving the cursor. Press Ctrl+C to stop.");
     } else {
@@ -384,6 +607,7 @@ fn main() {
         }),
         Ok(Command::List { paths }) => list(paths),
         Ok(Command::Displays) => displays(),
+        Ok(Command::Tablets { list, directory }) => tablets(list, directory),
         Ok(Command::Settings {
             config,
             otd_settings,

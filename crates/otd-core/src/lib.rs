@@ -16,6 +16,7 @@ pub mod radial_follow;
 pub mod relative;
 pub mod session;
 pub mod state;
+pub mod tablets;
 #[cfg(any(test, feature = "test-alloc"))]
 pub mod test_alloc;
 

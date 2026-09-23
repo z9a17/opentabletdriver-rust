@@ -391,3 +391,30 @@ impl Drop for Notification {
         unsafe { CM_Unregister_Notification(self.registration) };
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otd_core::tablets::{Database, Role};
+
+    /// The interfaces this driver opens are the ones OpenTabletDriver's
+    /// PTH-660 configuration declares.
+    #[test]
+    fn opened_interfaces_match_the_tablet_database() {
+        let lengths = |role| {
+            Database::builtin()
+                .find(WACOM_VENDOR, PTH660_USB)
+                .filter(|m| m.role == role)
+                .map(|m| m.identifier.input_report_length)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            lengths(Role::Digitizer),
+            [Some(u32::from(PEN_REPORT_LENGTH))]
+        );
+        assert_eq!(
+            lengths(Role::Auxiliary),
+            [Some(u32::from(AUX_REPORT_LENGTH))]
+        );
+    }
+}

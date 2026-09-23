@@ -4,7 +4,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::protocol::{MAX_X, MAX_Y};
+use crate::protocol::{HEIGHT_MM, MAX_X, MAX_Y, WIDTH_MM};
 
 pub const FILTER_PATH: &str = "RadialFollow.RadialFollowSmoothingTabletSpace";
 pub const FILTER_NAME: &str = "AbstractQbit's Radial Follow Smoothing (Tablet coordinates)";
@@ -141,7 +141,10 @@ impl RadialFollowSmoothingTabletSpace {
     pub fn new(settings: RadialFollowSettings) -> Self {
         Self {
             core: RadialFollowCore::new(settings),
-            mm_scale: (224.0 / MAX_X as f32, 148.0 / MAX_Y as f32),
+            mm_scale: (
+                WIDTH_MM as f32 / MAX_X as f32,
+                HEIGHT_MM as f32 / MAX_Y as f32,
+            ),
         }
     }
 

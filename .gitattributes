@@ -1,0 +1,2 @@
+# Upstream tablet configurations are embedded byte for byte.
+crates/otd-core/tablets/** -text

@@ -8,8 +8,8 @@ Baseline: [OTD v0.6.7](https://github.com/OpenTabletDriver/OpenTabletDriver/tree
 
 | ID | Upstream capability | Rust 0.4.0 assessment | Work items |
 | --- | --- | --- | --- |
-| CAP-01 | Configuration database, specifications, parser selection, custom configuration files | Partial: hard-coded PTH-660 and one parser family | D01, D06-D08 |
-| CAP-02 | VID/PID plus input/output/feature lengths, device strings, attributes and match precedence | Partial: fixed Windows HID selection | D01-D02 |
+| CAP-01 | Configuration database, specifications, parser selection, custom configuration files | Partial: the pinned database and override files load, validate and index, and each parser type resolves to partly decoded or missing (D01); device selection is still the fixed PTH-660 path, with one parser family | D01-D02, D06-D08 |
+| CAP-02 | VID/PID plus input/output/feature lengths, device strings, attributes and match precedence | Partial: every identifier field is read and validated (D01); selection is still the fixed Windows HID rule | D01-D02 |
 | CAP-03 | Feature/output initialization reports and initialization strings | Missing: PTH-660 USB currently needs none in its selected configuration | D02, D09 |
 | CAP-04 | Physical endpoint grouping, digitizer plus auxiliary collections | Partial: pen endpoint only | D02, D04-D05 |
 | CAP-05 | Multiple tablet models with independent settings and pipelines | Missing | D05, C02 |

@@ -4,7 +4,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::protocol::{MAX_X, MAX_Y};
+use crate::protocol::{HEIGHT_MM, MAX_X, MAX_Y, WIDTH_MM};
 
 #[derive(Clone, Copy, Debug)]
 pub struct RelativeSettings {
@@ -38,8 +38,8 @@ impl RelativeSettings {
 
     fn transform(self) -> [f64; 4] {
         let (sin, cos) = (-(self.rotation % 360.0)).to_radians().sin_cos();
-        let sx = self.sensitivity.0 * (224.0 / f64::from(MAX_X));
-        let sy = self.sensitivity.1 * (148.0 / f64::from(MAX_Y));
+        let sx = self.sensitivity.0 * (WIDTH_MM / f64::from(MAX_X));
+        let sy = self.sensitivity.1 * (HEIGHT_MM / f64::from(MAX_Y));
         [cos * sx, -sin * sx, sin * sy, cos * sy]
     }
 }

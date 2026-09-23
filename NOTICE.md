@@ -8,6 +8,10 @@ The pre-existing driver files were released under LGPL-3.0-only. Their license t
 
 `crates/otd-core/src/relative.rs` ports behavior from OpenTabletDriver contributors' LGPL-3.0-licensed `RelativeOutputMode.cs` and `WindowsRelativePointer.cs` at revision `fdeaa7b0c6d6f5260f511f19fb693ed33524af4e`. [Relative mode documentation](docs/RELATIVE_MODE.md) links the original sources and records the Rust implementation's changes. This module uses LGPL-3.0-only; the combined executable remains GPL-3.0-only.
 
+## Tablet configuration data
+
+`crates/otd-core/tablets` holds OpenTabletDriver's 339 tablet configuration files, copied unchanged from [`OpenTabletDriver.Configurations/Configurations`](https://github.com/OpenTabletDriver/OpenTabletDriver/tree/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Configurations/Configurations) at revision `736003e` (OpenTabletDriver contributors, LGPL-3.0-or-later). The executables embed them. `scripts/update-tablet-database.py` copies them, and `crates/otd-core/tablets/SOURCE` records their origin.
+
 ## Optional .NET compatibility bridge
 
 The release's `compat` directory includes OpenTabletDriver.Plugin 0.6.7 (OpenTabletDriver contributors, LGPL-3.0-or-later; [source](https://github.com/OpenTabletDriver/OpenTabletDriver/tree/736003ed72c8bbb28033b039d5a0bb76c344145c)), Newtonsoft.Json (James Newton-King, MIT; [license](https://github.com/JamesNK/Newtonsoft.Json/blob/master/LICENSE.md)), and Microsoft/JetBrains dependencies listed in `compat/OtdCompat/packages.lock.json`. The .NET hosting library `nethost.dll` is distributed under Microsoft's MIT license; its SDK license and third-party notices accompany the packaged bridge. The .NET runtime itself is not bundled. The compatibility bridge and sample native plugin source are in this repository. The original third-party RadialFollow DLL is used unchanged for tests and is not included in releases; users retain their original plugin and its licensing terms.
