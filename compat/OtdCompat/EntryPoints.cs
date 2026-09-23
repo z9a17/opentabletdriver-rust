@@ -51,6 +51,27 @@ sealed class PluginContext(string path) : AssemblyLoadContext(isCollectible: tru
     }
 }
 
+static class PluginEligibility
+{
+    // Match DesktopPluginManager.ImportTypes: platform and ignore attributes
+    // are checked on the concrete type, without inherited attributes.
+    public static bool IsSupported(Type type) =>
+        type.GetCustomAttribute<SupportedPlatformAttribute>(false)?.IsCurrentPlatform ?? true;
+
+    public static bool IsIgnored(Type type) =>
+        type.GetCustomAttributes(false).Any(attribute => attribute.GetType() == typeof(PluginIgnoreAttribute));
+
+    public static bool IsDiscoverable(Type type) => IsSupported(type) && !IsIgnored(type);
+
+    public static void RequireLoadable(Type type)
+    {
+        if (!IsSupported(type))
+            throw new NotSupportedException($"Plugin type '{type.FullName}' does not support this platform ([SupportedPlatform]).");
+        if (IsIgnored(type))
+            throw new NotSupportedException($"Plugin type '{type.FullName}' is marked [PluginIgnore].");
+    }
+}
+
 sealed class Report : ITabletReport, IEraserReport
 {
     public byte[] Raw { get; set; } = [];
@@ -81,6 +102,7 @@ sealed class Instance : IDisposable
         try
         {
             Type type = context.LoadFromAssemblyPath(path).GetType(config.Value<string>("type_name") ?? "", true)!;
+            PluginEligibility.RequireLoadable(type);
             if (!typeof(IPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(type)
                 || typeof(AsyncPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(type))
                 throw new NotSupportedException("Only synchronous OTD position filters are supported; async filters, output modes, tools and bindings are not supported.");
@@ -260,7 +282,8 @@ public static unsafe class EntryPoints
             try
             {
                 var types = context.LoadFromAssemblyPath(file).GetExportedTypes()
-                    .Where(t => !t.IsAbstract && typeof(IPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(t))
+                    .Where(t => !t.IsAbstract && typeof(IPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(t)
+                        && PluginEligibility.IsDiscoverable(t))
                     .Select(t =>
                     {
                         var properties = t.GetProperties()

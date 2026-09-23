@@ -151,6 +151,8 @@ Implement WinUSB where used by upstream, supported Bluetooth report variants and
 
 Sources: UP-BINDING, UP-SETTINGS, UP-DAEMON. New binding state belongs in the core; OS injection belongs in platform output adapters.
 
+Owner priority, 2026-09-23: Pen side-button support is deferred to a later phase. Keep B02's pen/auxiliary/mouse/keyboard actions and dependent B03/B04 in the full-parity backlog, but choose other ready work first. B01's shared ownership model may still proceed when another task needs it.
+
 <a id="b01"></a>
 ### B01 - Implement shared key/button ownership and cleanup
 

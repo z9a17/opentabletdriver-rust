@@ -243,6 +243,57 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
+    #[ignore = "requires bridge and DiscoveryFixture DLL; set OTD_COMPAT_DIR and OTD_TEST_DISCOVERY_PLUGIN"]
+    fn dotnet_discovery_respects_platform_and_ignore_attributes() {
+        let path: PathBuf = std::env::var_os("OTD_TEST_DISCOVERY_PLUGIN")
+            .expect("set OTD_TEST_DISCOVERY_PLUGIN")
+            .into();
+        let names: std::collections::BTreeSet<_> = inspect_details(&path)
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.config.type_name)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "DiscoveryFixture.UnrestrictedFilter",
+                "DiscoveryFixture.WindowsAndLinuxFilter",
+                "DiscoveryFixture.WindowsFilter",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+        );
+
+        let mut config = PluginConfig {
+            path,
+            kind: PluginKind::Dotnet,
+            enabled: true,
+            type_name: "DiscoveryFixture.UnrestrictedFilter".into(),
+            settings_json: "{}".into(),
+        };
+        let mut plugin = Plugin::load(&config).unwrap();
+        let mut sample = Sample {
+            x: 42.0,
+            y: 24.0,
+            ..Sample::default()
+        };
+        assert!(plugin.process(&mut sample));
+        assert_eq!((sample.x, sample.y), (42.0, 24.0));
+        drop(plugin);
+
+        for (name, diagnostic) in [
+            ("LinuxFilter", "[SupportedPlatform]"),
+            ("UnknownPlatformFilter", "[SupportedPlatform]"),
+            ("IgnoredFilter", "[PluginIgnore]"),
+        ] {
+            config.type_name = format!("DiscoveryFixture.{name}");
+            let error = Plugin::load(&config).err().expect("type must be rejected");
+            assert!(error.contains(diagnostic), "{name}: {error}");
+        }
+    }
+
+    #[test]
     #[ignore = "requires bridge and unchanged RadialFollow DLL; set OTD_COMPAT_DIR and OTD_TEST_DOTNET_PLUGIN"]
     fn dotnet_plugin_round_trip() {
         let path: PathBuf = std::env::var_os("OTD_TEST_DOTNET_PLUGIN")
