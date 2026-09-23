@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CORPUS = ROOT / "docs/parity/plugin-corpus.json"
 DEFAULT_INVENTORY = ROOT / "docs/parity/upstream-inventory.json"
+DEFAULT_ARCHIVE_AUDIT = ROOT / "docs/parity/plugin-archive-audit.json"
 EXPECTED_RECORDS = 57
 EXPECTED_IDENTITIES = 50
 IDENTITY_FIELDS = ("name", "owner", "repository_url")
@@ -29,7 +30,8 @@ def verify_catalog_metadata_hash(record: dict, catalog_root: Path) -> str | None
 
 
 def validate(path: Path = DEFAULT_CORPUS, inventory_path: Path = DEFAULT_INVENTORY,
-             catalog_root: Path | None = None) -> list[str]:
+             catalog_root: Path | None = None,
+             archive_audit_path: Path = DEFAULT_ARCHIVE_AUDIT) -> list[str]:
     data = json.loads(path.read_text(encoding="utf-8"))
     inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
     errors: list[str] = []
@@ -86,8 +88,8 @@ def validate(path: Path = DEFAULT_CORPUS, inventory_path: Path = DEFAULT_INVENTO
         if record_key in record_keys:
             errors.append(f"{prefix} duplicates identity/version {record_key}")
         record_keys.add(record_key)
-        if record.get("verification", {}).get("archive_hash") != "unverified":
-            errors.append(f"{prefix} must not overstate archive hash verification")
+        if record.get("verification", {}).get("archive_hash") not in ("unverified", "verified"):
+            errors.append(f"{prefix} must state whether the archive hash is verified")
         for field in ("runtime_category", "exported_classes", "referenced_assemblies",
                       "platform_requirements", "external_prerequisites", "api_dependencies"):
             if record.get("classification", {}).get(field) in (None, ""):
@@ -97,6 +99,56 @@ def validate(path: Path = DEFAULT_CORPUS, inventory_path: Path = DEFAULT_INVENTO
         errors.append(f"corpus is missing {len(missing_paths)} eligible inventory paths")
     if data.get("catalog", {}).get("revision") != inventory.get("catalog", {}).get("revision"):
         errors.append("catalog revision differs from pinned inventory")
+    audited_paths = set()
+    if archive_audit_path.exists():
+        archive_audit = json.loads(archive_audit_path.read_text(encoding="utf-8"))
+        if archive_audit.get("catalog", {}).get("revision") != data.get("catalog", {}).get("revision"):
+            errors.append("archive audit catalog revision differs from corpus")
+        corpus_by_path = {record.get("catalog_path"): record for record in records}
+        for index, audited in enumerate(archive_audit.get("records", [])):
+            prefix = f"archive_audit.records[{index}]"
+            catalog_path = audited.get("catalog_path")
+            if catalog_path in audited_paths:
+                errors.append(f"{prefix} duplicates catalog path {catalog_path}")
+            audited_paths.add(catalog_path)
+            source = corpus_by_path.get(catalog_path)
+            if source is None:
+                errors.append(f"{prefix} catalog path is absent from corpus: {catalog_path}")
+                continue
+            audit = audited.get("audit", {})
+            if audited.get("identity") != source.get("identity") or audited.get("plugin_version") != source.get("plugin_version"):
+                errors.append(f"{prefix} identity/version differs from corpus")
+            if audit.get("catalog_download_url") != source.get("metadata", {}).get("download_url"):
+                errors.append(f"{prefix} download URL differs from corpus")
+            if audit.get("archive_sha256_declared") != source.get("metadata", {}).get("archive_sha256_declared"):
+                errors.append(f"{prefix} declared archive hash differs from corpus")
+            observed = audit.get("archive_sha256_observed")
+            if audit.get("archive_sha256_verified") is not True or observed != audit.get("archive_sha256_declared"):
+                errors.append(f"{prefix} observed archive hash is not verified against catalog")
+            if source.get("verification", {}).get("archive_hash") != "verified":
+                errors.append(f"{prefix} archive verification is not reflected in corpus")
+            metadata = audit.get("metadata_inspection", {})
+            if metadata.get("plugin_code_loaded_or_executed") is not False:
+                errors.append(f"{prefix} must explicitly state plugin code was not loaded or executed")
+            if not audit.get("remaining_unknowns"):
+                errors.append(f"{prefix} must list remaining unknowns")
+            candidate_names = [item.get("name") for item in metadata.get("plugin_candidate_types", [])]
+            if candidate_names != source.get("classification", {}).get("exported_classes"):
+                errors.append(f"{prefix} plugin candidate types differ from corpus")
+            reference_names = [f"{item.get('name')} {item.get('version')}" for item in metadata.get("references", [])]
+            if reference_names != source.get("classification", {}).get("referenced_assemblies"):
+                errors.append(f"{prefix} assembly references differ from corpus")
+        for record in records:
+            verification = record.get("verification", {})
+            if (verification.get("archive_hash") == "verified"
+                    or verification.get("binary_inspection") == "managed_metadata_only") and record.get("catalog_path") not in audited_paths:
+                errors.append(f"verified archive or binary-inspection claim lacks audit evidence: {record.get('catalog_path')}")
+    else:
+        for record in records:
+            verification = record.get("verification", {})
+            if verification.get("archive_hash") == "verified" or verification.get("binary_inspection") == "managed_metadata_only":
+                errors.append(f"archive audit file is missing for verified claim: {archive_audit_path}")
+                break
     if len(records) != EXPECTED_RECORDS:
         errors.append(f"expected {EXPECTED_RECORDS} eligible records; found {len(records)}")
     if len(identities) != EXPECTED_IDENTITIES:

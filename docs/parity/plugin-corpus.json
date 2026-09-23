@@ -42,24 +42,36 @@
         "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
         "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
         "metadata_blob_sha256": "d3b969e2570ebaad265608fd0a3529cd6779be3db6a3f414e8a48a7efe53361f",
-        "source": "pinned catalog JSON metadata; archive not downloaded"
+        "source": "pinned catalog JSON metadata; archive SHA-256 and managed metadata recorded in docs/parity/plugin-archive-audit.json"
       },
       "classification": {
-        "runtime_category": "unknown",
-        "exported_classes": "unknown",
-        "referenced_assemblies": "unknown",
+        "runtime_category": "Candidate metadata shape: One public type derives from AsyncPositionedPipelineElement<IDeviceReport>, establishing an asynchronous positional interpolator shape from metadata. Member references include frequency/state/emission, in-range, absolute position, pressure, tilt, and HPET timing members. This is a shape inference from metadata and is not a runtime discovery result.",
+        "exported_classes": [
+          "BezierInterpolator.BezierInterp"
+        ],
+        "referenced_assemblies": [
+          "OpenTabletDriver.Plugin 0.6.0.4",
+          "System.Numerics.Vectors 6.0.0.0",
+          "System.Runtime 6.0.0.0"
+        ],
         "platform_requirements": "unknown",
         "external_prerequisites": "unknown",
-        "api_dependencies": "unknown"
+        "api_dependencies": "See docs/parity/plugin-archive-audit.json; member reference names recorded, host API visibility and compatibility unresolved.",
+        "exported_types_note": "public_types are visible in the metadata; plugin_candidate_types are the public types decorated with PluginNameAttribute."
       },
       "verification": {
-        "archive_hash": "unverified",
-        "binary_inspection": "not_performed",
-        "execution": "not_performed",
+        "archive_hash": "verified",
+        "binary_inspection": "managed_metadata_only",
+        "execution": "not_run",
         "compatibility": "unverified"
       },
       "blockers": [
-        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+        "Actual plugin execution and behavior on OpenTabletDriver 0.6.7.0 are untested.",
+        "Referenced OpenTabletDriver.Plugin assembly versions (0.6.0.0 / 0.6.0.4) were recorded but version binding compatibility with the host was not tested.",
+        "Member-reference rows identify metadata names only; required API visibility, call paths and full public/private contract compatibility were not resolved.",
+        "Operating-system support and external driver/service prerequisites are unknown.",
+        "Dependency availability and runtime behavior outside the single-DLL archives are unknown.",
+        "License text and redistribution permissions were not independently reviewed."
       ]
     },
     {
@@ -85,24 +97,38 @@
         "catalog_repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
         "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
         "metadata_blob_sha256": "63cd3270e6f9416c0d695898b7000402dcba2c7fbeda797d127856c7559ff2a8",
-        "source": "pinned catalog JSON metadata; archive not downloaded"
+        "source": "pinned catalog JSON metadata; archive SHA-256 and managed metadata recorded in docs/parity/plugin-archive-audit.json"
       },
       "classification": {
-        "runtime_category": "unknown",
-        "exported_classes": "unknown",
-        "referenced_assemblies": "unknown",
+        "runtime_category": "Candidate metadata shape: Two public synchronous positional pipeline element classes are declared. Their names distinguish ScreenSpace and TabletSpace. Metadata includes TabletReference, tablet specification, absolute position report, and HPETDeltaStopwatch members. This is a shape inference from metadata and is not a runtime discovery result.",
+        "exported_classes": [
+          "RadialFollow.RadialFollowSmoothingScreenSpace",
+          "RadialFollow.RadialFollowSmoothingTabletSpace"
+        ],
+        "referenced_assemblies": [
+          "OpenTabletDriver.Plugin 0.6.0.0",
+          "System.Numerics.Vectors 6.0.0.0",
+          "System.Runtime 6.0.0.0",
+          "System.Threading 6.0.0.0"
+        ],
         "platform_requirements": "unknown",
         "external_prerequisites": "unknown",
-        "api_dependencies": "unknown"
+        "api_dependencies": "See docs/parity/plugin-archive-audit.json; member reference names recorded, host API visibility and compatibility unresolved.",
+        "exported_types_note": "public_types are visible in the metadata; plugin_candidate_types are the public types decorated with PluginNameAttribute."
       },
       "verification": {
-        "archive_hash": "unverified",
-        "binary_inspection": "not_performed",
-        "execution": "not_performed",
+        "archive_hash": "verified",
+        "binary_inspection": "managed_metadata_only",
+        "execution": "not_run",
         "compatibility": "unverified"
       },
       "blockers": [
-        "No archive hash verification, binary inspection, license review, category classification, or runtime compatibility testing in this metadata-only slice."
+        "Actual plugin execution and behavior on OpenTabletDriver 0.6.7.0 are untested.",
+        "Referenced OpenTabletDriver.Plugin assembly versions (0.6.0.0 / 0.6.0.4) were recorded but version binding compatibility with the host was not tested.",
+        "Member-reference rows identify metadata names only; required API visibility, call paths and full public/private contract compatibility were not resolved.",
+        "Operating-system support and external driver/service prerequisites are unknown.",
+        "Dependency availability and runtime behavior outside the single-DLL archives are unknown.",
+        "License text and redistribution permissions were not independently reviewed."
       ]
     },
     {
