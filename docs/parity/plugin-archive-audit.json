@@ -1,0 +1,401 @@
+{
+  "schema_version": 1,
+  "scope": "Read-only archive and managed metadata audit of two unchanged catalog releases. Hash checks establish byte identity with catalog-declared archive hashes; metadata findings do not establish execution or compatibility.",
+  "catalog": {
+    "repository": "https://github.com/OpenTabletDriver/Plugin-Repository",
+    "revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2"
+  },
+  "inspection": {
+    "archive_download_directory": "outside Git in local temporary storage; absolute path intentionally not recorded",
+    "zip_listing_tool": "NanaZip 7.0, version 2609.2 (7z CLI)",
+    "managed_metadata_reader": "System.Reflection.Metadata PEReader on .NET SDK 10.0.401",
+    "plugin_code_loaded_or_executed": false
+  },
+  "records": [
+    {
+      "identity": {
+        "name": "BezierInterpolator",
+        "owner": "AbstractQbit",
+        "repository_url": "https://github.com/AbstractQbit/AbstractOTDPlugins"
+      },
+      "plugin_version": "0.3.1.0",
+      "catalog_path": "Repository/0.6.0.0/AbstractQbit/AbstractOTDPlugins/BezierInterpolator.json",
+      "audit": {
+        "catalog_download_url": "https://github.com/AbstractQbit/AbstractOTDPlugins/releases/download/v0.3.1/BezierInterpolator.zip",
+        "archive_sha256_declared": "9e0e57bb1aad3ba4c17318e6f3bb7095bf20b17c5c711821a2e105d61bee4c44",
+        "archive_sha256_observed": "9e0e57bb1aad3ba4c17318e6f3bb7095bf20b17c5c711821a2e105d61bee4c44",
+        "archive_sha256_verified": true,
+        "retrieved_utc_date": "2026-09-23",
+        "retrieval_status": "downloaded from catalog URL; redirect/content provenance beyond HTTPS URL was not separately recorded",
+        "zip_entries": [
+          {
+            "path": "BezierInterpolator.dll",
+            "uncompressed_bytes": 13312
+          }
+        ],
+        "assembly_file": {
+          "path": "BezierInterpolator.dll",
+          "size_bytes": 13312,
+          "sha256": "73859303b607dd41168379b53c1ada37a959b0c96b6541a08f61a332e131da83"
+        },
+        "metadata_inspection": {
+          "tool": "System.Reflection.Metadata PEReader",
+          "dotnet_sdk": "10.0.401",
+          "plugin_code_loaded_or_executed": false,
+          "assembly": {
+            "name": "BezierInterpolator",
+            "version": "1.0.0.0",
+            "culture": null,
+            "flags": "0",
+            "module_version_id": "4d05d8a9-af35-4042-a7e1-f6949011ba77",
+            "target_framework": ".NETCoreApp,Version=v6.0",
+            "machine": "I386",
+            "cor_flags": "ILOnly"
+          },
+          "references": [
+            {
+              "name": "OpenTabletDriver.Plugin",
+              "version": "0.6.0.4",
+              "culture": null,
+              "flags": "0"
+            },
+            {
+              "name": "System.Numerics.Vectors",
+              "version": "6.0.0.0",
+              "culture": null,
+              "flags": "0"
+            },
+            {
+              "name": "System.Runtime",
+              "version": "6.0.0.0",
+              "culture": null,
+              "flags": "0"
+            }
+          ],
+          "api_member_references": [
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Attributes.DefaultPropertyValueAttribute",
+              "member_name": ".ctor"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Attributes.PluginNameAttribute",
+              "member_name": ".ctor"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Attributes.PropertyAttribute",
+              "member_name": ".ctor"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Attributes.ToolTipAttribute",
+              "member_name": ".ctor"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+              "member_name": ".ctor"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+              "member_name": "get_Frequency"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+              "member_name": "get_State"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+              "member_name": "OnEmit"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+              "member_name": "PenIsInRange"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+              "member_name": "set_State"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Tablet.IAbsolutePositionReport",
+              "member_name": "get_Position"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Tablet.IAbsolutePositionReport",
+              "member_name": "set_Position"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Tablet.ITabletReport",
+              "member_name": "get_Pressure"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Tablet.ITabletReport",
+              "member_name": "set_Pressure"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Tablet.ITiltReport",
+              "member_name": "get_Tilt"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Tablet.ITiltReport",
+              "member_name": "set_Tilt"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Timing.HPETDeltaStopwatch",
+              "member_name": ".ctor"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Timing.HPETDeltaStopwatch",
+              "member_name": "get_Elapsed"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Timing.HPETDeltaStopwatch",
+              "member_name": "Restart"
+            }
+          ],
+          "public_types": [
+            {
+              "visibility": "public",
+              "name": "BezierInterpolator.BezierInterp",
+              "base_type": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+              "interfaces": [],
+              "custom_attributes": [
+                "OpenTabletDriver.Plugin.Attributes.PluginNameAttribute"
+              ]
+            }
+          ],
+          "plugin_candidate_types": [
+            {
+              "visibility": "public",
+              "name": "BezierInterpolator.BezierInterp",
+              "base_type": "OpenTabletDriver.Plugin.Output.AsyncPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+              "interfaces": [],
+              "custom_attributes": [
+                "OpenTabletDriver.Plugin.Attributes.PluginNameAttribute"
+              ]
+            }
+          ],
+          "candidate_runtime_shape": "One public type derives from AsyncPositionedPipelineElement<IDeviceReport>, establishing an asynchronous positional interpolator shape from metadata. Member references include frequency/state/emission, in-range, absolute position, pressure, tilt, and HPET timing members. This is a shape inference from metadata and is not a runtime discovery result."
+        },
+        "remaining_unknowns": [
+          "Actual plugin execution and behavior on OpenTabletDriver 0.6.7.0 are untested.",
+          "Referenced OpenTabletDriver.Plugin assembly versions (0.6.0.0 / 0.6.0.4) were recorded but version binding compatibility with the host was not tested.",
+          "Member-reference rows identify metadata names only; required API visibility, call paths and full public/private contract compatibility were not resolved.",
+          "Operating-system support and external driver/service prerequisites are unknown.",
+          "Dependency availability and runtime behavior outside the single-DLL archives are unknown.",
+          "License text and redistribution permissions were not independently reviewed.",
+          "Method bodies and algorithm behavior were not disassembled or validated; the observed pipeline inheritance is only a candidate shape.",
+          "PluginNameAttribute constructor values (display names) and all supported-plugin discovery rules were not decoded.",
+          "The host-level visibility and exact public/private API compatibility of MemberRef targets remain unverified."
+        ]
+      }
+    },
+    {
+      "identity": {
+        "name": "AbstractQbit's Radial Follow Smoothing",
+        "owner": "AbstractQbit",
+        "repository_url": "https://github.com/AbstractQbit/AbstractOTDPlugins"
+      },
+      "plugin_version": "0.3.0.0",
+      "catalog_path": "Repository/0.6.0.0/AbstractQbit/AbstractOTDPlugins/RadialFollow.json",
+      "audit": {
+        "catalog_download_url": "https://github.com/AbstractQbit/AbstractOTDPlugins/releases/download/0.3.0/RadialFollow.zip",
+        "archive_sha256_declared": "d3f5b0200015e6e90948ee5d7870742ac28d82922cc745e9f1f78527e59f8160",
+        "archive_sha256_observed": "d3f5b0200015e6e90948ee5d7870742ac28d82922cc745e9f1f78527e59f8160",
+        "archive_sha256_verified": true,
+        "retrieved_utc_date": "2026-09-23",
+        "retrieval_status": "downloaded from catalog URL; redirect/content provenance beyond HTTPS URL was not separately recorded",
+        "zip_entries": [
+          {
+            "path": "RadialFollow.dll",
+            "uncompressed_bytes": 19456
+          }
+        ],
+        "assembly_file": {
+          "path": "RadialFollow.dll",
+          "size_bytes": 19456,
+          "sha256": "830d61f29c07b109398f1e001df3c7fbd359b1ad2491a6d12ccc243dacf16383"
+        },
+        "metadata_inspection": {
+          "tool": "System.Reflection.Metadata PEReader",
+          "dotnet_sdk": "10.0.401",
+          "plugin_code_loaded_or_executed": false,
+          "assembly": {
+            "name": "RadialFollow",
+            "version": "1.0.0.0",
+            "culture": null,
+            "flags": "0",
+            "module_version_id": "724661e5-4423-4f79-b9aa-30491f9f1721",
+            "target_framework": ".NETCoreApp,Version=v6.0",
+            "machine": "I386",
+            "cor_flags": "ILOnly"
+          },
+          "references": [
+            {
+              "name": "OpenTabletDriver.Plugin",
+              "version": "0.6.0.0",
+              "culture": null,
+              "flags": "0"
+            },
+            {
+              "name": "System.Numerics.Vectors",
+              "version": "6.0.0.0",
+              "culture": null,
+              "flags": "0"
+            },
+            {
+              "name": "System.Runtime",
+              "version": "6.0.0.0",
+              "culture": null,
+              "flags": "0"
+            },
+            {
+              "name": "System.Threading",
+              "version": "6.0.0.0",
+              "culture": null,
+              "flags": "0"
+            }
+          ],
+          "api_member_references": [
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Attributes.DefaultPropertyValueAttribute",
+              "member_name": ".ctor"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Attributes.PluginNameAttribute",
+              "member_name": ".ctor"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Attributes.PropertyAttribute",
+              "member_name": ".ctor"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Attributes.TabletReferenceAttribute",
+              "member_name": ".ctor"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Attributes.ToolTipAttribute",
+              "member_name": ".ctor"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Attributes.UnitAttribute",
+              "member_name": ".ctor"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Tablet.DigitizerSpecifications",
+              "member_name": "get_Height"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Tablet.DigitizerSpecifications",
+              "member_name": "get_MaxX"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Tablet.DigitizerSpecifications",
+              "member_name": "get_MaxY"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Tablet.DigitizerSpecifications",
+              "member_name": "get_Width"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Tablet.IAbsolutePositionReport",
+              "member_name": "get_Position"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Tablet.IAbsolutePositionReport",
+              "member_name": "set_Position"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Tablet.TabletConfiguration",
+              "member_name": "get_Specifications"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Tablet.TabletReference",
+              "member_name": "get_Properties"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Tablet.TabletSpecifications",
+              "member_name": "get_Digitizer"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Timing.HPETDeltaStopwatch",
+              "member_name": ".ctor"
+            },
+            {
+              "parent_type": "OpenTabletDriver.Plugin.Timing.HPETDeltaStopwatch",
+              "member_name": "Restart"
+            }
+          ],
+          "public_types": [
+            {
+              "visibility": "public",
+              "name": "RadialFollow.RadialFollowCore",
+              "base_type": "System.Object",
+              "interfaces": [],
+              "custom_attributes": []
+            },
+            {
+              "visibility": "public",
+              "name": "RadialFollow.RadialFollowSmoothingScreenSpace",
+              "base_type": "System.Object",
+              "interfaces": [
+                "OpenTabletDriver.Plugin.Output.IPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+                "OpenTabletDriver.Plugin.Output.IPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>"
+              ],
+              "custom_attributes": [
+                "OpenTabletDriver.Plugin.Attributes.PluginNameAttribute"
+              ]
+            },
+            {
+              "visibility": "public",
+              "name": "RadialFollow.RadialFollowSmoothingTabletSpace",
+              "base_type": "System.Object",
+              "interfaces": [
+                "OpenTabletDriver.Plugin.Output.IPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+                "OpenTabletDriver.Plugin.Output.IPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>"
+              ],
+              "custom_attributes": [
+                "OpenTabletDriver.Plugin.Attributes.PluginNameAttribute"
+              ]
+            }
+          ],
+          "plugin_candidate_types": [
+            {
+              "visibility": "public",
+              "name": "RadialFollow.RadialFollowSmoothingScreenSpace",
+              "base_type": "System.Object",
+              "interfaces": [
+                "OpenTabletDriver.Plugin.Output.IPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+                "OpenTabletDriver.Plugin.Output.IPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>"
+              ],
+              "custom_attributes": [
+                "OpenTabletDriver.Plugin.Attributes.PluginNameAttribute"
+              ]
+            },
+            {
+              "visibility": "public",
+              "name": "RadialFollow.RadialFollowSmoothingTabletSpace",
+              "base_type": "System.Object",
+              "interfaces": [
+                "OpenTabletDriver.Plugin.Output.IPositionedPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>",
+                "OpenTabletDriver.Plugin.Output.IPipelineElement`1<OpenTabletDriver.Plugin.Tablet.IDeviceReport>"
+              ],
+              "custom_attributes": [
+                "OpenTabletDriver.Plugin.Attributes.PluginNameAttribute"
+              ]
+            }
+          ],
+          "candidate_runtime_shape": "Two public synchronous positional pipeline element classes are declared. Their names distinguish ScreenSpace and TabletSpace. Metadata includes TabletReference, tablet specification, absolute position report, and HPETDeltaStopwatch members. This is a shape inference from metadata and is not a runtime discovery result."
+        },
+        "remaining_unknowns": [
+          "Actual plugin execution and behavior on OpenTabletDriver 0.6.7.0 are untested.",
+          "Referenced OpenTabletDriver.Plugin assembly versions (0.6.0.0 / 0.6.0.4) were recorded but version binding compatibility with the host was not tested.",
+          "Member-reference rows identify metadata names only; required API visibility, call paths and full public/private contract compatibility were not resolved.",
+          "Operating-system support and external driver/service prerequisites are unknown.",
+          "Dependency availability and runtime behavior outside the single-DLL archives are unknown.",
+          "License text and redistribution permissions were not independently reviewed.",
+          "Method bodies and algorithm behavior were not disassembled or validated; the observed pipeline inheritance is only a candidate shape.",
+          "PluginNameAttribute constructor values (display names) and all supported-plugin discovery rules were not decoded.",
+          "The host-level visibility and exact public/private API compatibility of MemberRef targets remain unverified."
+        ]
+      }
+    }
+  ]
+}

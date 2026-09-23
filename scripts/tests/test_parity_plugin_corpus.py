@@ -58,6 +58,24 @@ class PluginCorpusTests(unittest.TestCase):
             record["provenance"]["metadata_blob_sha256"] = "0" * 64
             self.assertIn("SHA-256 differs", verify_catalog_metadata_hash(record, root))
 
+    def test_archive_audit_is_bound_to_corpus_and_verified_hash(self):
+        audit = json.loads((ROOT / "docs/parity/plugin-archive-audit.json").read_text(encoding="utf-8"))
+        audit["records"][0]["audit"]["archive_sha256_observed"] = "0" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "audit.json"
+            path.write_text(json.dumps(audit), encoding="utf-8")
+            errors = validate(archive_audit_path=path)
+            self.assertTrue(any("observed archive hash is not verified" in error for error in errors))
+
+    def test_archive_audit_candidate_types_match_corpus(self):
+        audit = json.loads((ROOT / "docs/parity/plugin-archive-audit.json").read_text(encoding="utf-8"))
+        audit["records"][0]["audit"]["metadata_inspection"]["plugin_candidate_types"][0]["name"] = "Changed.Type"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "audit.json"
+            path.write_text(json.dumps(audit), encoding="utf-8")
+            errors = validate(archive_audit_path=path)
+            self.assertTrue(any("plugin candidate types differ from corpus" in error for error in errors))
+
 
 if __name__ == "__main__":
     unittest.main()
