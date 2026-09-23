@@ -16,11 +16,28 @@
     },
     "CAP-02": {
       "state": "open",
-      "owner": null,
-      "pull_request": null,
-      "release": null,
-      "evidence": [],
-      "blockers": []
+      "owner": "D02",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/28",
+      "release": "v0.7.10",
+      "evidence": [
+        {
+          "kind": "unit-tested",
+          "task": "D02",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "6258374ea796f6b59ebd8603f62b983752337ba1",
+          "platform": "Windows and Ubuntu (GitHub Actions)",
+          "architecture": "x86_64",
+          "date": "2026-09-23T18:38:09+02:00",
+          "tester": "GitHub Actions Windows and portable-core jobs",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver/Driver.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/actions/runs/35889428741",
+          "result": "pass",
+          "command": "cargo test --locked --workspace"
+        }
+      ],
+      "blockers": [
+        "The pure matcher is not connected to live HID discovery or initialization; one pinned XP-Pen device-string pattern uses .NET lookahead unsupported by Rust regex."
+      ]
     },
     "CAP-03": {
       "state": "open",
@@ -32,11 +49,28 @@
     },
     "CAP-04": {
       "state": "open",
-      "owner": null,
-      "pull_request": null,
-      "release": null,
-      "evidence": [],
-      "blockers": []
+      "owner": "D02",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/28",
+      "release": "v0.7.10",
+      "evidence": [
+        {
+          "kind": "unit-tested",
+          "task": "D02",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "6258374ea796f6b59ebd8603f62b983752337ba1",
+          "platform": "Windows and Ubuntu (GitHub Actions)",
+          "architecture": "x86_64",
+          "date": "2026-09-23T18:38:09+02:00",
+          "tester": "GitHub Actions Windows and portable-core jobs",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver/Driver.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/actions/runs/35889428741",
+          "result": "pass",
+          "command": "cargo test --locked --workspace"
+        }
+      ],
+      "blockers": [
+        "Physical endpoint pairing is tested only with fake collections; the live driver still opens only its fixed PTH-660 pen collection."
+      ]
     },
     "CAP-05": {
       "state": "open",
@@ -417,11 +451,29 @@
     },
     "CAP-38": {
       "state": "open",
-      "owner": null,
-      "pull_request": null,
-      "release": null,
-      "evidence": [],
-      "blockers": []
+      "owner": "P02",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/29",
+      "release": "v0.7.10",
+      "evidence": [
+        {
+          "kind": "integration-tested",
+          "task": "P02",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "4b445d64a7737ee37dfdc3deec238a79155f06c0",
+          "platform": "Windows (GitHub Actions windows-latest)",
+          "architecture": "x86_64",
+          "date": "2026-09-23T18:38:09+02:00",
+          "tester": "GitHub Actions Windows job",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Desktop/Reflection/PluginSettingStore.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/actions/runs/35889109456",
+          "result": "pass",
+          "command": "cargo test --locked dotnet_settings_match_upstream_null_and_default_rules -- --ignored",
+          "fixture_sha256": "7580a44834dc90433edd7dc0bc67c410e2ea760e6d166bd8ebb7a257ec32b6de"
+        }
+      ],
+      "blockers": [
+        "Only omitted/null defaults and inherited property initialization were verified; type conversion, validation, service and field injection, actual tablet specifications and wider unchanged plugins remain open."
+      ]
     },
     "CAP-39": {
       "state": "open",
@@ -481,11 +533,28 @@
     },
     "CAP-46": {
       "state": "open",
-      "owner": null,
-      "pull_request": null,
-      "release": null,
-      "evidence": [],
-      "blockers": []
+      "owner": "P01",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/27",
+      "release": "v0.7.10",
+      "evidence": [
+        {
+          "kind": "source-reviewed",
+          "task": "P01",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "405e5a3206b70eba57e6cfa516fbe4192ff6187b",
+          "platform": "Windows (local metadata check)",
+          "architecture": "x86_64",
+          "date": "2026-09-23T18:38:09+02:00",
+          "tester": "Release integrator",
+          "reference": "https://github.com/OpenTabletDriver/Plugin-Repository/tree/2dfdff1cd77d274eb19c4d359b240167537c4db2",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/pull/27#issuecomment-5798789306",
+          "result": "pass",
+          "command": "python scripts/parity-plugin-corpus.py --catalog-root <clean pinned catalog checkout>"
+        }
+      ],
+      "blockers": [
+        "The 57 metadata records and 50 identities are inventoried, but catalog-declared archive hashes, exported classes, dependencies, platform needs and unchanged-binary compatibility remain unverified; manually installed examples are not inventoried."
+      ]
     },
     "CAP-47": {
       "state": "open",
