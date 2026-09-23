@@ -151,14 +151,17 @@ impl ReportSource for HidSource<'_> {
             }
             self.pending = true;
         }
-        let timeout = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
+        let until = Instant::now() + timeout;
         let handles = [
             self.read_event.raw(),
             self.notification.event(),
             self.stop.raw(),
         ];
         loop {
-            match wait(&handles, timeout) {
+            // Other devices' notifications do not extend the wait.
+            let remaining = until.saturating_duration_since(Instant::now());
+            let millis = u32::try_from(remaining.as_millis()).unwrap_or(u32::MAX);
+            match wait(&handles, millis) {
                 Ok(Some(0)) => {
                     self.pending = false;
                     return self.completed(false);
