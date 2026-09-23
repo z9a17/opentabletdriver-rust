@@ -1,0 +1,30 @@
+{
+  "date": "2026-09-23T05:33:57.1070957+02:00",
+  "commit": "36d584a9b0916e8ee0a5acba456ea519c3808175",
+  "dirty_worktree": true,
+  "upstream_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+  "os": "Microsoft Windows 11 Pro 10.0.26200 build 26200",
+  "cpu": "AMD Ryzen 7 5800X3D 8-Core Processor",
+  "logical_cpus": 16,
+  "memory_gb": 31.9,
+  "power_plan": "Power Scheme GUID: b7c1e4d9-3a52-4f88-9c60-2d5e8a1f6b34  (Ultimate Performance)",
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "dotnet_runtimes": [
+    "8.0.31",
+    "9.0.20",
+    "10.0.12"
+  ],
+  "displays": [
+    "virtual desktop: (0, 0) to (4160, 1440)",
+    "monitor 0: (0, 0) to (2560, 1440)",
+    "monitor 1: (2560, 0) to (4160, 900)"
+  ],
+  "options": {
+    "runs": 3,
+    "rounds": 7,
+    "reports": 20000,
+    "send_input": true,
+    "replay_seconds": 30.0,
+    "idle_seconds": null
+  }
+}

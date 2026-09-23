@@ -27,7 +27,7 @@ This measures Windows scheduling alone. It includes no USB transfer, no report p
 
 ### Effect on games
 
-The priority decides when the report thread's work runs, not how much there is. Decoding, Radial Follow and mapping take 40 to 80 ns per report (`benchmark_relative_pipeline`), plus one `SendInput` call. To check that time-critical priority takes nothing measurable from a game such as osu!, a second benchmark runs two busy threads standing in for a game's threads on an otherwise idle CPU. Next to them, a reader wakes about 1000 times a second from a high-resolution timer and works for 30 µs each time, more than the driver does per report. Three runs, 12 seconds per configuration each, on the machine above:
+The priority decides when the report thread's work runs, not how much there is. On the development machine, decoding, Radial Follow and mapping take about 0.1 µs per report in a tight loop and about 1 µs when reports arrive 5 ms apart with cold caches. The `SendInput` call that follows uses about 30 µs of CPU time and takes 75–85 µs in all ([performance](PERFORMANCE.md)). To check that time-critical priority takes nothing measurable from a game such as osu!, a second benchmark runs two busy threads standing in for a game's threads on an otherwise idle CPU. Next to them, a reader wakes about 1000 times a second from a high-resolution timer and works for 30 µs each time, about the CPU time the driver spends on one report, most of it inside `SendInput`. Three runs, 12 seconds per configuration each, on the machine above:
 
 | Reader | Game-thread pauses over 50 µs, per second | Over 1 ms, per second | Reader ran on a CPU a game thread was using |
 | --- | --- | --- | --- |
@@ -75,4 +75,4 @@ The times run from a completed read to the return of `SendInput`, in whole micro
 
 ## Not yet measured
 
-End-to-end pen-to-cursor latency, and a comparison with OpenTabletDriver on the same machine, need a timestamped hardware measurement ([validation plan](parity/VALIDATION.md)). Hover-height tracking still needs a side-by-side check on the tablet ([hardware validation](HARDWARE_VALIDATION.md)).
+[Performance](PERFORMANCE.md) compares the software path with OpenTabletDriver on the same machine. End-to-end pen-to-cursor latency still needs a timestamped hardware measurement ([validation plan](parity/VALIDATION.md)). Hover-height tracking still needs a side-by-side check on the tablet ([hardware validation](HARDWARE_VALIDATION.md)).

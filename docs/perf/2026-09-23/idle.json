@@ -1,0 +1,57 @@
+[
+  {
+    "scenario": "rust-daemon",
+    "process": "opentabletdriver-rust",
+    "seconds": 62.1,
+    "cpu_percent_of_one_core": 0.002,
+    "context_switches_per_s": 1.6,
+    "working_set_mb": 9.2,
+    "private_mb": 1.7,
+    "handles": 141,
+    "threads": 2
+  },
+  {
+    "scenario": "rust-panel",
+    "process": "opentabletdriver-rust-ui",
+    "seconds": 62.5,
+    "cpu_percent_of_one_core": 0.0035,
+    "context_switches_per_s": 2.6,
+    "working_set_mb": 17.3,
+    "private_mb": 2.6,
+    "handles": 220,
+    "threads": 4
+  },
+  {
+    "scenario": "upstream-daemon",
+    "process": "OpenTabletDriver.Daemon",
+    "seconds": 62.2,
+    "cpu_percent_of_one_core": 0.1066,
+    "context_switches_per_s": 8.3,
+    "working_set_mb": 58.6,
+    "private_mb": 21.2,
+    "handles": 396,
+    "threads": 16
+  },
+  {
+    "scenario": "upstream-daemon+ux",
+    "process": "OpenTabletDriver.Daemon",
+    "seconds": 64.6,
+    "cpu_percent_of_one_core": 0.0791,
+    "context_switches_per_s": 8.4,
+    "working_set_mb": 84.9,
+    "private_mb": 32.3,
+    "handles": 577,
+    "threads": 22
+  },
+  {
+    "scenario": "upstream-daemon+ux",
+    "process": "OpenTabletDriver.UX.Wpf",
+    "seconds": 64.5,
+    "cpu_percent_of_one_core": 0.0078,
+    "context_switches_per_s": 0.2,
+    "working_set_mb": 230.9,
+    "private_mb": 164.2,
+    "handles": 725,
+    "threads": 18
+  }
+]

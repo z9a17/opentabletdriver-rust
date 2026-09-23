@@ -41,6 +41,13 @@ cargo test --release --locked benchmark_display_checks -- --ignored --nocapture
 cargo test --release --locked benchmark_relative_pipeline -- --ignored --nocapture
 ```
 
+The F04 harnesses time the same synthetic trace through this driver and through OpenTabletDriver 0.6.7's own code, and write structured results; see [performance](../PERFORMANCE.md). They need a clean upstream checkout at the pinned revision in `target/upstream/OpenTabletDriver` and the unchanged RadialFollow DLL. `-SendInput` and `-ReplaySeconds` move the cursor without clicking; `-Idle` starts both drivers in turn and takes the tablet:
+
+```powershell
+pwsh -File scripts/bench.ps1 -Runs 3 -SendInput -ReplaySeconds 30
+pwsh -File scripts/bench.ps1 -Runs 0 -Idle -UpstreamInstall <folder with OpenTabletDriver.Daemon.exe>
+```
+
 `cargo test` also replays the golden traces in `tests/golden`, which freeze the driver's current output; see [behavior contracts](BEHAVIOR_CONTRACTS.md).
 
 Report decoding, mapping, filtering, the report pipeline and the device-session loop live in the portable `crates/otd-core` crate, which has no Windows dependency. In the repository root, `cargo test` and `cargo clippy` cover the driver and this crate; the plugin crates need `--workspace`. CI also runs these on Ubuntu:
@@ -123,6 +130,8 @@ Initial engineering targets below are **proposed budgets**, not measured achieve
 | Control impact | UI open, log streaming and profile inspection must not cause systematic report deadline overruns. Bound diagnostic buffers/subscribers. |
 | Memory/resources | No unbounded queue, log, report retention or continuing handle/thread/timer growth. Compare post-warmup/post-quiescence counters across repeated cycles; explain runtime caches. |
 | Startup/package | Record native and first-managed-load startup times, binary/package size and runtime requirements; optimize based on measured tradeoffs. |
+
+F04's first same-machine baseline, its noise and proposed thresholds are in [performance](../PERFORMANCE.md#regression-thresholds).
 
 Use at least a 30-minute automated reconnect/reload/input soak for major lifecycle changes and a 24-hour representative run for the final release candidate. Test realistic report rates plus faster synthetic stress; label synthetic rates honestly. Async overflow policies must preserve control/button/proximity transitions and expose overload rather than silently introducing an ever-growing latency queue.
 
