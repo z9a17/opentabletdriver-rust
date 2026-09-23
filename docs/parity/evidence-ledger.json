@@ -390,9 +390,9 @@
     },
     "CAP-33": {
       "state": "open",
-      "owner": "P02",
-      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/21",
-      "release": "v0.7.4",
+      "owner": "U04",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/35",
+      "release": "v0.7.12",
       "evidence": [
         {
           "kind": "integration-tested",
@@ -408,10 +408,24 @@
           "result": "pass",
           "command": "cargo test --locked dotnet_plugin_round_trip -- --ignored",
           "dll_sha256": "830d61f29c07b109398f1e001df3c7fbd359b1ad2491a6d12ccc243dacf16383"
+        },
+        {
+          "kind": "unit-tested",
+          "task": "U04",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "53c8ec938ca904db1b4893faafca24f8cb68f832",
+          "platform": "Windows (GitHub Actions windows-latest)",
+          "architecture": "x86_64",
+          "date": "2026-09-23T18:02:43+00:00",
+          "tester": "GitHub Actions Windows job",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Plugin/Attributes/PropertyAttribute.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/actions/runs/35899172450",
+          "result": "pass",
+          "command": "cargo test --locked --workspace"
         }
       ],
       "blockers": [
-        "Actions, validation, full typed controls, properties without defaults or saved values, and visual UI verification remain open."
+        "Labels, units, tooltips and saved null JSON-scalar editing have automated coverage; actions, properties without defaults or saved values, broader validation and interactive UI verification remain open."
       ]
     },
     "CAP-34": {
@@ -466,8 +480,8 @@
     "CAP-38": {
       "state": "open",
       "owner": "P02",
-      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/31",
-      "release": "v0.7.11",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/37",
+      "release": "v0.7.12",
       "evidence": [
         {
           "kind": "integration-tested",
@@ -498,10 +512,25 @@
           "result": "pass",
           "command": "cargo test --locked dotnet_tablet_reference_fields_and_properties_precede_load_callback -- --ignored",
           "fixture_sha256": "96dcdfbecb795e05a780b416b262bb2107a8b96fbc364f115c3d3884d6dc8176"
+        },
+        {
+          "kind": "integration-tested",
+          "task": "P02",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "18e95b3f395f5832a015c0512f78498924546742",
+          "platform": "Windows (GitHub Actions windows-latest)",
+          "architecture": "x86_64",
+          "date": "2026-09-23T18:03:51+00:00",
+          "tester": "GitHub Actions Windows job",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Plugin/Tablet/TabletReference.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/actions/runs/35899331892",
+          "result": "pass",
+          "command": "cargo test --locked dotnet_tablet_reference_uses_selected_database_specification -- --ignored",
+          "fixture_sha256": "f9e7e594a01fd45c38bd04a66db73f852ecfdec1b2ef175d2e6ca875eaf5f776"
         }
       ],
       "blockers": [
-        "Omitted/null defaults and direct/inherited TabletReference field and property injection were verified. The bridge now receives the chosen pinned configuration, but the live driver still selects only built-in PTH-660; other services, type conversion, validation and wider unchanged plugins remain open."
+        "The bridge receives a pinned database configuration at plugin load, but the live driver still chooses built-in PTH-660 and its first digitizer identifier. Other services, type conversion, validation and wider unchanged plugins remain open."
       ]
     },
     "CAP-39": {
@@ -563,8 +592,8 @@
     "CAP-46": {
       "state": "open",
       "owner": "P01",
-      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/32",
-      "release": "v0.7.11",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/36",
+      "release": "v0.7.12",
       "evidence": [
         {
           "kind": "source-reviewed",
@@ -592,10 +621,24 @@
           "reference": "https://github.com/OpenTabletDriver/Plugin-Repository/tree/2dfdff1cd77d274eb19c4d359b240167537c4db2",
           "link": "https://github.com/z9a17/opentabletdriver-rust/pull/32",
           "result": "pass"
+        },
+        {
+          "kind": "source-reviewed",
+          "task": "P01",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "5cc16d8753dabff4e7d6b44c208d928d8bde2974",
+          "platform": "Windows (local archive and managed-metadata inspection)",
+          "architecture": "x86_64",
+          "date": "2026-09-23T18:05:55+00:00",
+          "tester": "P01 archive auditor",
+          "reference": "https://github.com/OpenTabletDriver/Plugin-Repository/tree/2dfdff1cd77d274eb19c4d359b240167537c4db2",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/pull/36",
+          "result": "pass",
+          "command": "python scripts/parity-plugin-corpus.py --catalog-root <clean pinned catalog checkout>"
         }
       ],
       "blockers": [
-        "The corpus inventories 57 eligible records and 50 identities. Two archive hashes and managed metadata were checked without executing DLLs during that audit; the other 55 archive hashes, most runtime behavior, platform needs and catalog-wide compatibility remain unverified. Manually installed examples are not inventoried."
+        "The corpus inventories 57 eligible records and 50 identities. Four archive hashes and managed metadata were checked without executing DLLs during those audits; the other 53 archive hashes, most runtime behavior, platform needs and catalog-wide compatibility remain unverified. Manually installed examples are not inventoried."
       ]
     },
     "CAP-47": {
