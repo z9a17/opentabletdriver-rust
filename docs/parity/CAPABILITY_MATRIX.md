@@ -43,9 +43,9 @@ Baseline: [OTD v0.6.7](https://github.com/OpenTabletDriver/OpenTabletDriver/tree
 | CAP-28 | OTD daemon RPC methods, event subscriptions and client reconnect | Missing | S03 |
 | CAP-29 | Console load/save/set/get/list/preset/plugin/update/stdio/edit commands | Partial: run/settings/list/displays/capture/plugin diagnostics only | S04 |
 | CAP-30 | Logs, diagnostics export, tablet debugger, device-string requests | Partial: bounded panel log and console capture | S05, U06 |
-| CAP-31 | Graphical display/tablet area editor with position, size, rotation and monitor selection | Missing: TOML editor | U01-U02 |
-| CAP-32 | Output, pen, auxiliary, mouse, wheel, filters and tools editors | Partial: plugin list plus JSON settings | U03-U04 |
-| CAP-33 | Attribute-generated plugin properties/actions/tooltips/validation | Missing | P02, U04 |
+| CAP-31 | Graphical display/tablet area editor with position, size, rotation and monitor selection | Partial: Windows panel has graphical area editors and display selection; upstream conversion/lock behavior and current interactive UI evidence remain open | U01-U02 |
+| CAP-32 | Output, pen, auxiliary, mouse, wheel, filters and tools editors | Partial: Windows panel edits mapping, relative settings, pen thresholds, filters and plugin settings; broader auxiliary, mouse, wheel, binding and tool controls remain open | U03-U04 |
+| CAP-33 | Attribute-generated plugin properties/actions/tooltips/validation | Partial: unchanged .NET DLL metadata supplies names, labels, units and tooltips; saved null values remain editable as JSON scalars. Actions, full typed controls, broad validation and current interactive UI evidence remain open | P02, U04 |
 | CAP-34 | Tablet switcher and device-specific visibility | Missing | D05, U03 |
 | CAP-35 | Tray, startup greeter/help, daemon watchdog, update UI | Missing | U05-U06, S01, R02 |
 | CAP-36 | Platform-native UX, scaling, keyboard navigation and usable error handling | Partial: native Win32 controls; no cross-platform UX | U01, U06, X05 |
@@ -63,7 +63,7 @@ Baseline: [OTD v0.6.7](https://github.com/OpenTabletDriver/OpenTabletDriver/tree
 | CAP-43 | Report-parser, configuration/provider, device-hub, driver and platform services | Missing | P07 |
 | CAP-44 | Install/update/uninstall from local archives and online catalog; metadata version checks | Missing: file selection does not install a package | P08 |
 | CAP-45 | Plugin disposal/reload, dependency isolation, failed initialization and missing runtime diagnostics | Partial: basic load/dispose; no general lifecycle compatibility | P02, P05, P08-P09 |
-| CAP-46 | Catalog-wide unchanged binaries and manually installed baseline-compatible plugins | Partial: unchanged RadialFollow tablet filter tested; the corpus lists 57 eligible catalog records, and two archive hashes and managed metadata have been checked without executing DLLs during that audit (P01). Other archive hashes and catalog-wide binary behavior remain unverified | P01, P09, V03 |
+| CAP-46 | Catalog-wide unchanged binaries and manually installed baseline-compatible plugins | Partial: unchanged RadialFollow tablet filter tested; the corpus lists 57 eligible catalog records, and four archive hashes and managed metadata have been checked without executing DLLs during those audits (P01). Other archive hashes and catalog-wide binary behavior remain unverified | P01, P09, V03 |
 | CAP-47 | Linux HID permissions, input/display/timer and desktop behavior | Missing | X01-X03, X05 |
 | CAP-48 | macOS device permissions, input/display/timer and desktop behavior | Missing | X01, X04-X05 |
 | CAP-49 | Platform installers/packages/autostart/updating/uninstall | Partial: portable Windows x64 ZIP, checksums | R01-R02, X05 |
