@@ -1,17 +1,17 @@
 # Capability matrix and source map
 
-Baseline: [OTD v0.6.7](https://github.com/OpenTabletDriver/OpenTabletDriver/tree/736003ed72c8bbb28033b039d5a0bb76c344145c), audited against Rust 0.4.0 on 2026-09-21. This is a gap assessment, not a list of completed work. See the [roadmap](../FULL_PARITY_PLAN.md), [tasks](WORK_ITEMS.md), and [evidence rules](VALIDATION.md).
+Baseline: [OTD v0.6.7](https://github.com/OpenTabletDriver/OpenTabletDriver/tree/736003ed72c8bbb28033b039d5a0bb76c344145c). The initial Rust 0.4.0 audit was on 2026-09-21; the rows below are updated as bounded work ships. This is a gap assessment, not a list of completed work. See the [roadmap](../FULL_PARITY_PLAN.md), [tasks](WORK_ITEMS.md), and [evidence rules](VALIDATION.md).
 
 `Partial` means a subset is implemented. `Missing` means the inspected Rust implementation has no equivalent workflow. `Pending evidence` is independent of implementation status. None of these labels imply a physical test on every device.
 
 ## Core and device capabilities
 
-| ID | Upstream capability | Rust 0.4.0 assessment | Work items |
+| ID | Upstream capability | Current Rust status | Work items |
 | --- | --- | --- | --- |
 | CAP-01 | Configuration database, specifications, parser selection, custom configuration files | Partial: the pinned database and override files load, validate and index, and each parser type resolves to partly decoded or missing (D01); device selection is still the fixed PTH-660 path, with one parser family | D01-D02, D06-D08 |
-| CAP-02 | VID/PID plus input/output/feature lengths, device strings, attributes and match precedence | Partial: every identifier field is read and validated (D01); selection is still the fixed Windows HID rule | D01-D02 |
+| CAP-02 | VID/PID plus input/output/feature lengths, device strings, attributes and match precedence | Partial: identifiers are read and validated (D01); a pure matcher applies their predicates in fake-device tests (D02), but live selection still uses the fixed Windows HID rule; one pinned .NET regex uses unsupported lookahead | D01-D02 |
 | CAP-03 | Feature/output initialization reports and initialization strings | Missing: PTH-660 USB currently needs none in its selected configuration | D02, D09 |
-| CAP-04 | Physical endpoint grouping, digitizer plus auxiliary collections | Partial: pen endpoint only | D02, D04-D05 |
+| CAP-04 | Physical endpoint grouping, digitizer plus auxiliary collections | Partial: a pure matcher pairs fake collections by physical identity (D02); the live driver still opens only the pen endpoint | D02, D04-D05 |
 | CAP-05 | Multiple tablet models with independent settings and pipelines | Missing | D05, C02 |
 | CAP-06 | HID, supported WinUSB endpoints and wireless/Bluetooth variants | Partial: Windows USB HID only | D09, X02, X04 |
 | CAP-07 | Hotplug, cancellation, suspend/resume and orderly disposal | Partial; reconnect reopen observed, resumed pen input pending | F06, D05, V02, V04 |
@@ -32,7 +32,7 @@ Baseline: [OTD v0.6.7](https://github.com/OpenTabletDriver/OpenTabletDriver/tree
 
 ## Configuration, control, and user interface
 
-| ID | Upstream capability | Rust 0.4.0 assessment | Work items |
+| ID | Upstream capability | Current Rust status | Work items |
 | --- | --- | --- | --- |
 | CAP-22 | Settings revision, all tablet profiles, tools and serialized plugin stores | Partial: selected PTH-660 import, limited TOML schema | C01-C02 |
 | CAP-23 | Preserve disabled entries, order, defaults and unknown settings | Partial: Radial Follow override and skipped filters are explicit differences | C01-C02, P02 |
@@ -52,10 +52,10 @@ Baseline: [OTD v0.6.7](https://github.com/OpenTabletDriver/OpenTabletDriver/tree
 
 ## Plugin and platform capabilities
 
-| ID | Upstream capability | Rust 0.4.0 assessment | Work items |
+| ID | Upstream capability | Current Rust status | Work items |
 | --- | --- | --- | --- |
 | CAP-37 | Existing .NET assembly discovery, dependencies, supported-platform/ignore metadata | Partial: explicit DLL/type loading with narrow discovery | P01-P02 |
-| CAP-38 | Settings defaults/conversion/validation, property and field injection, dependency callbacks | Partial: property settings and PTH-660 TabletReference only | P02, P07 |
+| CAP-38 | Settings defaults/conversion/validation, property and field injection, dependency callbacks | Partial: omitted/null saved properties follow upstream defaults in a managed fixture (P02); only PTH-660 TabletReference injection is available | P02, P07 |
 | CAP-39 | Full report interfaces, concrete types where needed, raw bytes and report mutations | Partial: reusable position/pressure/eraser adapter; only X/Y returned | P03 |
 | CAP-40 | PreTransform and PostTransform ordering, suppression and multiple emissions | Partial: exactly one synchronous PreTransform output | P04 |
 | CAP-41 | Async filters, timers, resampling, plugin-owned threads | Missing | P05 |
@@ -63,7 +63,7 @@ Baseline: [OTD v0.6.7](https://github.com/OpenTabletDriver/OpenTabletDriver/tree
 | CAP-43 | Report-parser, configuration/provider, device-hub, driver and platform services | Missing | P07 |
 | CAP-44 | Install/update/uninstall from local archives and online catalog; metadata version checks | Missing: file selection does not install a package | P08 |
 | CAP-45 | Plugin disposal/reload, dependency isolation, failed initialization and missing runtime diagnostics | Partial: basic load/dispose; no general lifecycle compatibility | P02, P05, P08-P09 |
-| CAP-46 | Catalog-wide unchanged binaries and manually installed baseline-compatible plugins | Partial: unchanged RadialFollow tablet filter tested | P01, P09, V03 |
+| CAP-46 | Catalog-wide unchanged binaries and manually installed baseline-compatible plugins | Partial: unchanged RadialFollow tablet filter tested; a metadata-only corpus lists the 57 eligible catalog records, with archive hashes and binary behavior unverified (P01) | P01, P09, V03 |
 | CAP-47 | Linux HID permissions, input/display/timer and desktop behavior | Missing | X01-X03, X05 |
 | CAP-48 | macOS device permissions, input/display/timer and desktop behavior | Missing | X01, X04-X05 |
 | CAP-49 | Platform installers/packages/autostart/updating/uninstall | Partial: portable Windows x64 ZIP, checksums | R01-R02, X05 |
