@@ -111,6 +111,21 @@ A fixture has a `description`, the `origin` of its reports (`captured`, `synthet
 
 Replacing the tip threshold's `>=` with `>` makes `absolute-thresholds` fail, which shows the traces detect a changed transition.
 
+## Differential tests
+
+`tests/differential` holds report sequences with the outputs OpenTabletDriver 0.6.7 produced for them: its own parser, output modes and binding handler, and the unchanged RadialFollow DLL, assembled as its daemon does (`bench/upstream --reference`). `cargo test --locked differential` runs the same reports through this driver's pipeline and compares each report:
+
+| Output | Comparison |
+| --- | --- |
+| Absolute position | within 0.05 px, in desktop pixels: `SendInput`'s 0..65535 resolution is 0.032 px on the fixtures' desktop, and BC-13 adds under 0.001 px |
+| Position at the right or bottom edge | within 1.05 px (BC-11) |
+| Inside or outside under area limiting | may differ within 0.001 px of an edge (BC-13) |
+| Relative motion | running sums within one count plus 0.001 (BC-18: both drivers truncate each delta and carry the fraction) |
+| Presses and releases | exactly, report by report |
+| Tip threshold | the first pressing raw value for 16 activation thresholds, exactly |
+
+The cases cover the development machine's osu! profile with and without Radial Follow, a 30° rotated area, area limiting, relative mode at 10 counts/mm, and at 12 × 8 counts/mm rotated 15°. They run over 2,000 synthetic osu!-style reports and 35 handwritten edge cases. The suite found no difference beyond BC-10, BC-11, BC-13 and BC-18. A self-test moves one press by a report and one position by 0.1 px and checks that the comparison reports both. [The fixtures' README](../../tests/differential/README.md) covers their origin, format and regeneration.
+
 ## Differences
 
 "Record" means the difference is intended; its reason is given. A task ID means the difference is a gap that task closes.

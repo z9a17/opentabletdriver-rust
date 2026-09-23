@@ -17,14 +17,14 @@ Baseline: [OTD v0.6.7](https://github.com/OpenTabletDriver/OpenTabletDriver/tree
 | CAP-07 | Hotplug, cancellation, suspend/resume and orderly disposal | Partial; reconnect reopen observed, resumed pen input pending | F06, D05, V02, V04 |
 | CAP-08 | Position/pressure/eraser/tilt/proximity/tool/raw report contracts | Partial: PTH-660 values decoded, bridge exposes a subset | D03, P03 |
 | CAP-09 | Auxiliary, mouse/puck, analog, wheel and touch reports | Missing from runtime pipeline | D03-D04, B03, O05 |
-| CAP-10 | Vendor/parser variants, truncated/unknown reports and parser extensions | Partial: IntuosV2 pen 0x10/0x1e; 0x1e lacks live capture | D06-D08, F05, P07 |
-| CAP-11 | Absolute area/rotation/clipping/limiting | Partial: implemented and replay-tested for current model | O01, V04 |
-| CAP-12 | Relative sensitivity/rotation/reset behavior | Partial: implemented with fractional carry; live validation pending | O01, F06 |
+| CAP-10 | Vendor/parser variants, truncated/unknown reports and parser extensions | Partial: IntuosV2 pen 0x10/0x1e; 0x1e lacks live capture; truncated, oversized and unknown reports property-tested (F05) | D06-D08, F05, P07 |
+| CAP-11 | Absolute area/rotation/clipping/limiting | Partial: implemented for the current model; replay-tested and differential-tested against upstream, including rotation and limiting (F05) | O01, V04 |
+| CAP-12 | Relative sensitivity/rotation/reset behavior | Partial: implemented with fractional carry and differential-tested against upstream (F05); live validation pending | O01, F06 |
 | CAP-13 | Monitor selection, virtual desktop, DPI/topology changes | Partial: Windows implementation; broader validation pending | O02, X03-X04, V04 |
-| CAP-14 | Adaptive tip/eraser/pen bindings, thresholds, drag-only bindings | Partial: limited tip/eraser left-click behavior | B01-B02, B04 |
+| CAP-14 | Adaptive tip/eraser/pen bindings, thresholds, drag-only bindings | Partial: limited tip/eraser left-click behavior; thresholds and transitions differential-tested (F05) | B01-B02, B04 |
 | CAP-15 | Auxiliary/mouse buttons, keyboard chords, scroll and wheel bindings | Missing | B02-B04 |
 | CAP-16 | Preset actions and binding extension types | Missing | B04, C04, P06 |
-| CAP-17 | Shared action ownership and reliable release on failure | Partial: current single left-button state; broader ownership needed | B01, V02 |
+| CAP-17 | Shared action ownership and reliable release on failure | Partial: current single left-button state, with release after output failures property-tested (F05); broader ownership needed | B01, V02 |
 | CAP-18 | Platform mouse and keyboard output | Partial: Windows absolute/relative mouse only | O02, X03-X04 |
 | CAP-19 | Pressure/tilt disable settings, proximity/eraser output, synchronous pointer flush/reset | Missing beyond mouse contact output | O03-O05, P06 |
 | CAP-20 | Linux Artist Mode and virtual tablet/pad | Missing | O04, X03 |

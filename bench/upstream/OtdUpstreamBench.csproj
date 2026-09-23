@@ -5,7 +5,8 @@
     OpenTabletDriver at the pinned revision in
     docs/parity/upstream-inventory.json. Settings mirror the upstream daemon:
     net8.0, Release, TieredPGO, the default workstation garbage collector.
-    See docs/PERFORMANCE.md.
+    See docs/PERFORMANCE.md. The reference mode fills the differential
+    fixtures in tests/differential; see its README.
   -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>

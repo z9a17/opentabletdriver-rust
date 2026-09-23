@@ -83,7 +83,22 @@
       "owner": null,
       "pull_request": null,
       "release": null,
-      "evidence": [],
+      "evidence": [
+        {
+          "kind": "unit-tested",
+          "task": "F05",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "eb627e0a0f4cdab6c6e11265aca34f9d9786894f",
+          "platform": "Windows (GitHub Actions windows-latest) and Ubuntu (portable-core job)",
+          "architecture": "x86_64",
+          "date": "2026-09-23T14:46:21+02:00",
+          "tester": "GitHub Actions Windows and Ubuntu jobs",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Configurations/Parsers/Wacom/IntuosV2/IntuosV2ReportParser.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/actions/runs/35862717439",
+          "result": "pass",
+          "command": "cargo test --locked -p otd-core properties"
+        }
+      ],
       "blockers": []
     },
     "CAP-11": {
@@ -91,7 +106,23 @@
       "owner": null,
       "pull_request": null,
       "release": null,
-      "evidence": [],
+      "evidence": [
+        {
+          "kind": "differential-tested",
+          "task": "F05",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "eb627e0a0f4cdab6c6e11265aca34f9d9786894f",
+          "platform": "Windows (GitHub Actions windows-latest) and Ubuntu (portable-core job)",
+          "architecture": "x86_64",
+          "date": "2026-09-23T14:46:21+02:00",
+          "tester": "GitHub Actions Windows and Ubuntu jobs",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Plugin/Output/AbsoluteOutputMode.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/actions/runs/35862717439",
+          "result": "pass",
+          "command": "cargo test --locked -p otd-core differential",
+          "fixture_sha256": "bcf1eef659a1964e41883abf36c4f399df41f59c81ff9981c04eb395cbd0a19d"
+        }
+      ],
       "blockers": []
     },
     "CAP-12": {
@@ -99,7 +130,23 @@
       "owner": null,
       "pull_request": null,
       "release": null,
-      "evidence": [],
+      "evidence": [
+        {
+          "kind": "differential-tested",
+          "task": "F05",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "eb627e0a0f4cdab6c6e11265aca34f9d9786894f",
+          "platform": "Windows (GitHub Actions windows-latest) and Ubuntu (portable-core job)",
+          "architecture": "x86_64",
+          "date": "2026-09-23T14:46:21+02:00",
+          "tester": "GitHub Actions Windows and Ubuntu jobs",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Plugin/Output/RelativeOutputMode.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/actions/runs/35862717439",
+          "result": "pass",
+          "command": "cargo test --locked -p otd-core differential",
+          "fixture_sha256": "bcf1eef659a1964e41883abf36c4f399df41f59c81ff9981c04eb395cbd0a19d"
+        }
+      ],
       "blockers": []
     },
     "CAP-13": {
@@ -115,7 +162,23 @@
       "owner": null,
       "pull_request": null,
       "release": null,
-      "evidence": [],
+      "evidence": [
+        {
+          "kind": "differential-tested",
+          "task": "F05",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "eb627e0a0f4cdab6c6e11265aca34f9d9786894f",
+          "platform": "Windows (GitHub Actions windows-latest) and Ubuntu (portable-core job)",
+          "architecture": "x86_64",
+          "date": "2026-09-23T14:46:21+02:00",
+          "tester": "GitHub Actions Windows and Ubuntu jobs",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Desktop/Binding/ThresholdBindingState.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/actions/runs/35862717439",
+          "result": "pass",
+          "command": "cargo test --locked -p otd-core differential",
+          "fixture_sha256": "b22e0fd1b6c800bc61b82992199061bdf3de66d81e9451498c17991c40700c03"
+        }
+      ],
       "blockers": []
     },
     "CAP-15": {
@@ -139,7 +202,22 @@
       "owner": null,
       "pull_request": null,
       "release": null,
-      "evidence": [],
+      "evidence": [
+        {
+          "kind": "unit-tested",
+          "task": "F05",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "eb627e0a0f4cdab6c6e11265aca34f9d9786894f",
+          "platform": "Windows (GitHub Actions windows-latest) and Ubuntu (portable-core job)",
+          "architecture": "x86_64",
+          "date": "2026-09-23T14:46:21+02:00",
+          "tester": "GitHub Actions Windows and Ubuntu jobs",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Desktop/Interop/Input/WindowsVirtualMouse.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/actions/runs/35862717439",
+          "result": "pass",
+          "command": "cargo test --locked -p otd-core properties"
+        }
+      ],
       "blockers": []
     },
     "CAP-18": {
@@ -3467,7 +3545,23 @@
       "owner": null,
       "pull_request": null,
       "release": null,
-      "evidence": [],
+      "evidence": [
+        {
+          "kind": "differential-tested",
+          "task": "F05",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "eb627e0a0f4cdab6c6e11265aca34f9d9786894f",
+          "platform": "Windows (GitHub Actions windows-latest) and Ubuntu (portable-core job)",
+          "architecture": "x86_64",
+          "date": "2026-09-23T14:46:21+02:00",
+          "tester": "GitHub Actions Windows and Ubuntu jobs",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Configurations/Parsers/Wacom/IntuosV2/IntuosV2Report.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/actions/runs/35862717439",
+          "result": "pass",
+          "command": "cargo test --locked -p otd-core differential",
+          "fixture_sha256": "bcf1eef659a1964e41883abf36c4f399df41f59c81ff9981c04eb395cbd0a19d"
+        }
+      ],
       "blockers": []
     },
     "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV2.WacomDriverIntuosV2ReportParser": {

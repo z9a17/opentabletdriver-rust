@@ -1,0 +1,77 @@
+{
+  "description": "The first raw pressure that presses the tip for each OpenTabletDriver activation threshold.",
+  "max_pressure": 8191,
+  "origin": "upstream-generated",
+  "provenance": {
+    "generator": "bench/upstream --reference",
+    "upstream_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+    "runtime": ".NET 8.0.31"
+  },
+  "schema": "otd-differential-thresholds/1",
+  "thresholds": [
+    {
+      "first_pressing_raw": 1,
+      "percent": 0.0
+    },
+    {
+      "first_pressing_raw": 1,
+      "percent": 0.001
+    },
+    {
+      "first_pressing_raw": 41,
+      "percent": 0.5
+    },
+    {
+      "first_pressing_raw": 81,
+      "percent": 0.98
+    },
+    {
+      "first_pressing_raw": 82,
+      "percent": 0.99
+    },
+    {
+      "first_pressing_raw": 82,
+      "percent": 1.0
+    },
+    {
+      "first_pressing_raw": 82,
+      "percent": 1.001
+    },
+    {
+      "first_pressing_raw": 83,
+      "percent": 1.0011
+    },
+    {
+      "first_pressing_raw": 164,
+      "percent": 2.0
+    },
+    {
+      "first_pressing_raw": 410,
+      "percent": 5.0
+    },
+    {
+      "first_pressing_raw": 820,
+      "percent": 10.0
+    },
+    {
+      "first_pressing_raw": 2728,
+      "percent": 33.3
+    },
+    {
+      "first_pressing_raw": 4096,
+      "percent": 50.0
+    },
+    {
+      "first_pressing_raw": 8110,
+      "percent": 99.0
+    },
+    {
+      "first_pressing_raw": 8191,
+      "percent": 99.99
+    },
+    {
+      "first_pressing_raw": 8191,
+      "percent": 100.0
+    }
+  ]
+}
