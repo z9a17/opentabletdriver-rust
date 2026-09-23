@@ -544,7 +544,7 @@
           "rust_commit": "405e5a3206b70eba57e6cfa516fbe4192ff6187b",
           "platform": "Windows (local metadata check)",
           "architecture": "x86_64",
-          "date": "2026-09-23T18:38:09+02:00",
+          "date": "2026-09-23T18:40:44+02:00",
           "tester": "Release integrator",
           "reference": "https://github.com/OpenTabletDriver/Plugin-Repository/tree/2dfdff1cd77d274eb19c4d359b240167537c4db2",
           "link": "https://github.com/z9a17/opentabletdriver-rust/pull/27#issuecomment-5798789306",
