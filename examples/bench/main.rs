@@ -24,6 +24,7 @@ mod plugins;
 mod priority;
 
 mod clock;
+mod differential;
 mod replay;
 mod stats;
 mod trace;
@@ -67,7 +68,10 @@ const USAGE: &str = "Usage: bench [options]
   --replay-seconds N      paced replay length; 0 skips it (default 0)
   --only TEXT             runs only cases whose name contains TEXT
   --export-workload DIR   writes trace.bin, workload.json and osu-profile.toml
-                          for the upstream harness and the daemon, then exits";
+                          for the upstream harness and the daemon, then exits
+  --export-differential DIR
+                          writes differential fixture skeletons for the first
+                          --reports reports, then exits";
 
 /// The development machine's osu! profile, as in
 /// `tests/golden/absolute-radial-follow.toml`: an 85 x 47.8125 mm area on the
@@ -174,6 +178,7 @@ struct Options {
     replay_seconds: f64,
     only: Option<String>,
     export: Option<PathBuf>,
+    differential: Option<PathBuf>,
 }
 
 fn number<T: std::str::FromStr>(name: &str, text: &str) -> Result<T, String> {
@@ -194,6 +199,7 @@ fn options() -> Result<Options, String> {
         replay_seconds: 0.0,
         only: None,
         export: None,
+        differential: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -212,6 +218,7 @@ fn options() -> Result<Options, String> {
             "--replay-seconds" => options.replay_seconds = number(&arg, &value()?)?,
             "--only" => options.only = Some(value()?),
             "--export-workload" => options.export = Some(value()?.into()),
+            "--export-differential" => options.differential = Some(value()?.into()),
             "--help" | "-h" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -625,6 +632,9 @@ fn run() -> Result<(), String> {
     }
     if let Some(dir) = &options.export {
         return export(dir, &trace, &osu, &relative, options.rate_hz);
+    }
+    if let Some(dir) = &options.differential {
+        return differential::export(dir, &trace, &osu, &relative, options.reports);
     }
 
     let mut plain = osu.clone();

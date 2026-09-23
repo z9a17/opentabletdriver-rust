@@ -48,7 +48,7 @@ pwsh -File scripts/bench.ps1 -Runs 3 -SendInput -ReplaySeconds 30
 pwsh -File scripts/bench.ps1 -Runs 0 -Idle -UpstreamInstall <folder with OpenTabletDriver.Daemon.exe>
 ```
 
-`cargo test` also replays the golden traces in `tests/golden`, which freeze the driver's current output; see [behavior contracts](BEHAVIOR_CONTRACTS.md).
+`cargo test` also replays the golden traces in `tests/golden`, which freeze the driver's current output; see [behavior contracts](BEHAVIOR_CONTRACTS.md). It compares this driver with OpenTabletDriver 0.6.7 on the upstream-generated fixtures in `tests/differential` ([differential tests](BEHAVIOR_CONTRACTS.md#differential-tests)). It also runs seeded property tests in `crates/otd-core/src/properties.rs`: 200,000 random buffers through the parser; 400 random report sequences with jumping timestamps and an output that fails a fifth of the time; NaN, infinite and extreme values in every setting; filter stage order; and 150 random sessions whose monitor disappears and returns. None of them may panic, send an out-of-range position or leave a button held. `pwsh -File scripts/differential-fixtures.ps1` regenerates the differential fixtures from a clean upstream checkout at the pinned revision.
 
 Report decoding, mapping, filtering, the report pipeline and the device-session loop live in the portable `crates/otd-core` crate, which has no Windows dependency. In the repository root, `cargo test` and `cargo clippy` cover the driver and this crate; the plugin crates need `--workspace`. CI also runs these on Ubuntu:
 

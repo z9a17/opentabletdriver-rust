@@ -1,6 +1,7 @@
 // Times OpenTabletDriver 0.6.7's own report path on the workload that the Rust
 // harness (examples/bench) exports: the same reports, profile, method and
-// JSON schema. See docs/PERFORMANCE.md.
+// JSON schema. See docs/PERFORMANCE.md. With --reference it instead fills the
+// differential fixtures in tests/differential from the same pipeline.
 
 using System.Diagnostics;
 using System.Numerics;
@@ -18,6 +19,7 @@ sealed class Options
 {
     public string Workload = "";
     public string? RadialFollow, Out, Only;
+    public List<string> Reference = [];
     public int Rounds = 7, WarmupMs = 1000;
     public bool SendInput;
     public double ReplaySeconds;
@@ -32,6 +34,12 @@ sealed class Options
           --send-input            adds SendInput cases; moves the cursor, never clicks
           --replay-seconds N      paced replay length; 0 skips it (default 0)
           --only TEXT             runs only cases whose name contains TEXT
+
+        Usage: OtdUpstreamBench --reference FIXTURE.json [--reference ...] [--radialfollow DLL]
+
+          fills the expected outputs of differential fixtures (tests/differential)
+          from OpenTabletDriver's own pipeline; OTD_UPSTREAM_COMMIT names the
+          pinned revision
         """;
 
     public static Options Parse(string[] args)
@@ -50,12 +58,13 @@ sealed class Options
                 case "--send-input": options.SendInput = true; break;
                 case "--replay-seconds": options.ReplaySeconds = double.Parse(Value(), System.Globalization.CultureInfo.InvariantCulture); break;
                 case "--only": options.Only = Value(); break;
+                case "--reference": options.Reference.Add(Value()); break;
                 case "--help" or "-h": Console.WriteLine(Usage); Environment.Exit(0); break;
                 default: throw new ArgumentException($"unknown option {args[i]}\n\n{Usage}");
             }
         }
-        if (options.Workload.Length == 0)
-            throw new ArgumentException($"--workload is required\n\n{Usage}");
+        if (options.Workload.Length == 0 && options.Reference.Count == 0)
+            throw new ArgumentException($"--workload or --reference is required\n\n{Usage}");
         if (options.Rounds < 1)
             throw new ArgumentException("use at least one round");
         return options;
@@ -128,7 +137,15 @@ static unsafe class Program
     {
         try
         {
-            Run(Options.Parse(args));
+            var options = Options.Parse(args);
+            if (options.Reference.Count > 0)
+            {
+                string? radialFollow = options.RadialFollow == null ? null : Path.GetFullPath(options.RadialFollow);
+                foreach (string fixture in options.Reference)
+                    Reference.Fill(fixture, radialFollow);
+                return 0;
+            }
+            Run(options);
             return 0;
         }
         catch (Exception error)

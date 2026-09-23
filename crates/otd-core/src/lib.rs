@@ -20,4 +20,8 @@ pub mod state;
 pub mod test_alloc;
 
 #[cfg(test)]
+mod differential;
+#[cfg(test)]
 mod golden;
+#[cfg(test)]
+mod properties;

@@ -30,7 +30,7 @@ sealed class Workload
     public float RelativeRotation { get; init; }
     public TimeSpan RelativeReset { get; init; }
 
-    static Area ReadArea(JsonNode area) => new(
+    internal static Area ReadArea(JsonNode area) => new(
         area["width"]!.GetValue<float>(),
         area["height"]!.GetValue<float>(),
         new Vector2(area["x"]!.GetValue<float>(), area["y"]!.GetValue<float>()),
@@ -143,19 +143,19 @@ static class Pipelines
 
     /// <summary>
     /// <c>DriverDaemon.CreateBindingHandler</c> for a profile that binds the
-    /// tip and the eraser to the left button at the given threshold.
+    /// tip and the eraser to the left button at the given thresholds.
     /// </summary>
-    static BindingHandler Bindings(Workload workload, IMouseButtonHandler buttons) => new(Tablet)
+    public static BindingHandler Bindings(float tipPercent, float eraserPercent, IMouseButtonHandler buttons) => new(Tablet)
     {
         Tip = new ThresholdBindingState
         {
             Binding = new MouseBinding { Pointer = buttons, Button = nameof(MouseButton.Left) },
-            ActivationThreshold = workload.TipPercent,
+            ActivationThreshold = tipPercent,
         },
         Eraser = new ThresholdBindingState
         {
             Binding = new MouseBinding { Pointer = buttons, Button = nameof(MouseButton.Left) },
-            ActivationThreshold = workload.TipPercent,
+            ActivationThreshold = eraserPercent,
         },
     };
 
@@ -163,35 +163,46 @@ static class Pipelines
     /// <c>DriverDaemon.SetSettings</c> for absolute mode: areas, clipping,
     /// then the enabled filters followed by the binding handler.
     /// </summary>
-    public static Reader Absolute(Workload workload, IAbsolutePointer pointer, IMouseButtonHandler buttons, IPositionedPipelineElement<IDeviceReport>? filter)
+    public static Reader Absolute(
+        Area display, Area tablet, bool clipping, bool limiting, float tipPercent, float eraserPercent,
+        IAbsolutePointer pointer, IMouseButtonHandler buttons, IPositionedPipelineElement<IDeviceReport>? filter)
     {
         var mode = new AbsoluteMode { Pointer = pointer, Tablet = Tablet };
-        mode.Output = workload.Display;
-        mode.Input = workload.TabletArea;
-        mode.AreaClipping = workload.Clipping;
-        mode.AreaLimiting = workload.Limiting;
+        mode.Output = display;
+        mode.Input = tablet;
+        mode.AreaClipping = clipping;
+        mode.AreaLimiting = limiting;
         mode.Tablet = Tablet;
         var elements = new List<IPositionedPipelineElement<IDeviceReport>>();
         if (filter != null)
             elements.Add(filter);
-        elements.Add(Bindings(workload, buttons));
+        elements.Add(Bindings(tipPercent, eraserPercent, buttons));
         mode.Elements = elements;
         return new Reader(mode);
     }
 
-    public static Reader Relative(Workload workload, NullPointer pointer)
+    public static Reader Absolute(Workload workload, IAbsolutePointer pointer, IMouseButtonHandler buttons, IPositionedPipelineElement<IDeviceReport>? filter) =>
+        Absolute(workload.Display, workload.TabletArea, workload.Clipping, workload.Limiting, workload.TipPercent, workload.TipPercent, pointer, buttons, filter);
+
+    /// <summary><c>DriverDaemon.SetSettings</c> for relative mode.</summary>
+    public static Reader Relative(
+        Vector2 sensitivity, float rotation, TimeSpan reset, float tipPercent, float eraserPercent,
+        IRelativePointer pointer, IMouseButtonHandler buttons)
     {
         var mode = new RelativeMode
         {
             Pointer = pointer,
             Tablet = Tablet,
-            Sensitivity = workload.RelativeSensitivity,
-            Rotation = workload.RelativeRotation,
-            ResetTime = workload.RelativeReset,
+            Sensitivity = sensitivity,
+            Rotation = rotation,
+            ResetTime = reset,
         };
-        mode.Elements = [Bindings(workload, pointer)];
+        mode.Elements = [Bindings(tipPercent, eraserPercent, buttons)];
         return new Reader(mode);
     }
+
+    public static Reader Relative(Workload workload, NullPointer pointer) =>
+        Relative(workload.RelativeSensitivity, workload.RelativeRotation, workload.RelativeReset, workload.TipPercent, workload.TipPercent, pointer, pointer);
 
     /// <summary>
     /// Constructs an unchanged plugin filter as the daemon's plugin store does:
