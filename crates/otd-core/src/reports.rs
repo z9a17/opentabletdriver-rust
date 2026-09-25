@@ -358,3 +358,50 @@ pub fn from_pth660(
         values,
     })
 }
+
+/// Decode the IntuosV2 auxiliary packet without changing pen/touch state.
+/// Unknown IDs are left to the other parser; a known truncated packet is an
+/// error rather than an all-released report.
+///
+/// Pinned source: OpenTabletDriver.Configurations/Parsers/Wacom/IntuosV2/
+/// IntuosV2ReportParser.cs and IntuosV2AuxReport.cs at
+/// 736003ed72c8bbb28033b039d5a0bb76c344145c: ID 0x11, eight aux buttons in
+/// byte 1, ring button in byte 3 bit 0, absolute ring position in byte 4 bits
+/// 0..6 only when bit 7 is set. Ring-not-touched is null, not position zero.
+/// This parser only supplies values; it does not enable bindings or OS output.
+pub fn parse_intuos_auxiliary(
+    raw: &[u8],
+    metadata: ReportMetadata,
+) -> Result<Option<ReportEnvelope<'_>>, ReportError> {
+    let Some(&id) = raw.first() else {
+        return Err(ReportError::Empty);
+    };
+    if id != 0x11 {
+        return Ok(None);
+    }
+    if raw.len() < 5 {
+        return Err(ReportError::Short {
+            id,
+            got: raw.len(),
+            need: 5,
+        });
+    }
+    let ring_position = (raw[4] & 0x80 != 0).then_some(u32::from(raw[4] & 0x7f));
+    let values = ReportValues {
+        aux_buttons: Some(Buttons::from_bits(u64::from(raw[1]), 8)?),
+        absolute_analog: Some(AbsoluteAnalogReport {
+            kind: AnalogKind::Wheel,
+            positions: AbsoluteAnalog::from_slice(&[ring_position])?,
+        }),
+        wheel_buttons: Some(WheelButtons::from_slice(&[Buttons::from_bits(
+            u64::from(raw[3] & 1),
+            1,
+        )?])?),
+        ..ReportValues::default()
+    };
+    Ok(Some(ReportEnvelope {
+        metadata,
+        raw,
+        values,
+    }))
+}
