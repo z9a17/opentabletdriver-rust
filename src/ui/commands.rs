@@ -135,6 +135,28 @@ pub(super) fn confirm_discard(window: HWND) -> bool {
         ) == IDYES
 }
 
+fn offer_backup_recovery(window: HWND, primary: PathBuf) {
+    let backup = match otd_core::storage::backup_path(&primary) {
+        Ok(backup) => backup,
+        Err(error) => {
+            with_app(|app| app.log(Level::Error, "Settings", error));
+            return;
+        }
+    };
+    if message_box(
+        window,
+        &format!(
+            "Load the backup {} into the editor?\n\nThe original and backup will remain unchanged. Recovered settings will be unsaved and must be saved with a new file name.",
+            backup.display()
+        ),
+        "Recover profile backup",
+        MB_YESNO | MB_ICONQUESTION,
+    ) == IDYES
+    {
+        with_app(|app| app.recover_profile_backup(primary));
+    }
+}
+
 pub(super) fn shell_open(window: HWND, target: &str) {
     unsafe {
         ShellExecuteW(
@@ -183,6 +205,12 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
         match index {
             0 => {
                 append(menu, MF_STRING, CMD_LOAD, "Load settings...\tCtrl+O");
+                append(
+                    menu,
+                    MF_STRING,
+                    CMD_RECOVER_BACKUP,
+                    "Recover backup as unsaved settings...",
+                );
                 append(menu, MF_STRING, CMD_SAVE, "Save settings\tCtrl+S");
                 append(
                     menu,
@@ -343,7 +371,13 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
             if confirm_discard(window) {
                 match file_dialog(window, false, false, "Load settings") {
                     Ok(Some(path)) => {
-                        with_app(|app| app.load_file(path));
+                        let loaded = with_app(|app| app.load_file(path.clone())).unwrap_or(false);
+                        if !loaded
+                            && otd_core::storage::backup_path(&path)
+                                .is_ok_and(|backup| backup.is_file())
+                        {
+                            offer_backup_recovery(window, path);
+                        }
                     }
                     Ok(None) => {}
                     Err(error) => {
@@ -352,18 +386,30 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
                 }
             }
         }
-        CMD_SAVE => {
-            with_app(|app| app.save_to(app.profile_path.clone()));
+        CMD_RECOVER_BACKUP => {
+            if confirm_discard(window)
+                && let Some(primary) = with_app(|app| app.profile_path.clone())
+            {
+                offer_backup_recovery(window, primary);
+            }
         }
-        CMD_SAVE_AS => match file_dialog(window, true, false, "Save settings as a new file") {
-            Ok(Some(path)) => {
-                with_app(|app| app.save_as_to(path));
+        CMD_SAVE | CMD_SAVE_AS => {
+            let save_as =
+                id == CMD_SAVE_AS || with_app(|app| app.recovered_backup).unwrap_or(false);
+            if save_as {
+                match file_dialog(window, true, false, "Save settings as a new file") {
+                    Ok(Some(path)) => {
+                        with_app(|app| app.save_as_to(path));
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        with_app(|app| app.log(Level::Error, "UI", error));
+                    }
+                }
+            } else {
+                with_app(|app| app.save_to(app.profile_path.clone()));
             }
-            Ok(None) => {}
-            Err(error) => {
-                with_app(|app| app.log(Level::Error, "UI", error));
-            }
-        },
+        }
         CMD_RESET => {
             if message_box(
                 window,

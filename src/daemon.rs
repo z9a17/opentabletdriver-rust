@@ -394,6 +394,44 @@ pub fn print_reply(reply: &Reply) -> Result<(), String> {
     Ok(())
 }
 
+fn current_identity() -> Result<WorkerIdentity, String> {
+    match call(Command::Status)? {
+        Reply::Status { status } => Ok(status.identity()),
+        _ => Err("unexpected daemon status response".into()),
+    }
+}
+
+/// Fetch a coherent configuration snapshot without starting a daemon or worker.
+pub fn configuration() -> Result<Reply, String> {
+    call(Command::GetConfiguration {
+        expected: current_identity()?,
+    })
+}
+
+/// Guard the whole read/replace sequence against another client's lifecycle
+/// changes. A conflict is returned to the caller instead of retried implicitly.
+pub fn restart(replacement: Option<String>) -> Result<Reply, String> {
+    let expected = current_identity()?;
+    let profile_toml = match replacement {
+        Some(profile) => profile,
+        None => match call(Command::GetConfiguration {
+            expected: expected.clone(),
+        })? {
+            Reply::Configuration {
+                identity,
+                profile_toml,
+            } if identity == expected => {
+                profile_toml.ok_or("daemon has no saved worker configuration; specify --config")?
+            }
+            _ => return Err("unexpected daemon configuration response".into()),
+        },
+    };
+    call(Command::Restart {
+        expected,
+        profile_toml,
+    })
+}
+
 /// Invoked only by an explicit CLI command. No console window is created.
 pub fn background() -> Result<(), String> {
     let status = ensure_running(&AtomicBool::new(false))?;

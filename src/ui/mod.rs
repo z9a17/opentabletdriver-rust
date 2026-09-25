@@ -98,6 +98,7 @@ const CMD_APPLY: u16 = 204;
 const CMD_IMPORT: u16 = 205;
 const CMD_OPEN_FOLDER: u16 = 206;
 const CMD_QUIT: u16 = 207;
+const CMD_RECOVER_BACKUP: u16 = 208;
 const CMD_DETECT: u16 = 210;
 const CMD_ADD_DOTNET: u16 = 220;
 const CMD_ADD_NATIVE: u16 = 221;
@@ -674,6 +675,7 @@ struct App {
     profile_path: PathBuf,
     profile_snapshot: Option<otd_core::storage::FileSnapshot>,
     profile_revision_floor: u64,
+    recovered_backup: bool,
     dirty: bool,
     selected_filter: usize,
     properties: Vec<PropertyRow>,
@@ -1229,7 +1231,9 @@ pub fn run() -> Result<(), String> {
             Ok(profile) => (profile, Ok(format!("Loaded {}.", path.display()))),
             Err(error) => (
                 Profile::default(),
-                Err(format!("Could not load profile: {error}")),
+                Err(format!(
+                    "Could not load profile: {error}. Use File > Recover backup if a backup is available; recovered settings must be saved to a new file."
+                )),
             ),
         }
     } else {

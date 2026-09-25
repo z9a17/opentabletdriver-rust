@@ -200,6 +200,7 @@ impl App {
             profile_path: PathBuf::new(),
             profile_snapshot: None,
             profile_revision_floor: 0,
+            recovered_backup: false,
             dirty: false,
             selected_filter: 0,
             properties: Vec::new(),
@@ -975,6 +976,13 @@ impl App {
     }
 
     pub(super) fn update_save_tip(&self) {
+        if self.recovered_backup {
+            self.set_tool_text(
+                self.c.save as usize,
+                "Save recovered settings as a new file; preserve the original and backup",
+            );
+            return;
+        }
         self.set_tool_text(
             self.c.save as usize,
             &format!("Save to {}", self.profile_path.display()),
@@ -1043,6 +1051,9 @@ impl App {
 
     pub(super) fn update_title(&self) {
         let mut title = format!("OpenTabletDriver Rust v{}", env!("CARGO_PKG_VERSION"));
+        if self.recovered_backup {
+            title.push_str(" - Recovered backup (Save As required)");
+        }
         if self.driver == DriverState::Connected {
             title.push_str(" - ");
             title.push_str(TABLET_NAME);
@@ -2081,6 +2092,7 @@ impl App {
             self.profile_path = path;
             self.profile_snapshot = None;
             self.profile_revision_floor = 0;
+            self.recovered_backup = false;
         }
         self.dirty = dirty;
         self.selected_filter = 0;
@@ -2118,7 +2130,7 @@ impl App {
         Ok(())
     }
 
-    pub(super) fn load_file(&mut self, path: PathBuf) {
+    pub(super) fn load_file(&mut self, path: PathBuf) -> bool {
         let loaded = otd_core::storage::read_utf8(&path).and_then(|loaded| {
             Profile::from_toml_text(&loaded.text, &path).map(|profile| (profile, loaded.snapshot))
         });
@@ -2133,8 +2145,40 @@ impl App {
                     "Settings",
                     format!("Loaded {}.", path.display()),
                 );
+                true
             }
-            Err(error) => self.log(Level::Error, "Settings", error),
+            Err(error) => {
+                self.log(Level::Error, "Settings", error);
+                false
+            }
+        }
+    }
+
+    /// Recovery only changes the editor. Saving requires a new file so the
+    /// original primary and known-good backup both remain available.
+    pub(super) fn recover_profile_backup(&mut self, primary: PathBuf) {
+        let recovered = otd_core::storage::read_backup(&primary)
+            .and_then(|loaded| Profile::from_toml_text(&loaded.text, &primary));
+        match recovered {
+            Ok(profile) => {
+                self.replace_profile(profile, Some(primary.clone()), true);
+                self.recovered_backup = true;
+                self.update_title();
+                self.update_save_tip();
+                self.log(
+                    Level::Warning,
+                    "Settings",
+                    format!(
+                        "Recovered the backup of {} into unsaved settings. The original and backup were not changed. Save opens Save As; choose a new file name to keep the recovered settings.",
+                        primary.display()
+                    ),
+                );
+            }
+            Err(error) => self.log(
+                Level::Error,
+                "Settings",
+                format!("Could not recover backup: {error}. Current editor settings were kept."),
+            ),
         }
     }
 
@@ -2176,6 +2220,14 @@ impl App {
     }
 
     fn save_to_mode(&mut self, path: PathBuf, create_new: bool) {
+        if self.recovered_backup && !create_new {
+            self.log(
+                Level::Error,
+                "Settings",
+                "Recovered settings require Save As with a new file name to preserve the original and backup.",
+            );
+            return;
+        }
         let result = self.checked_profile().and_then(|mut profile| {
             let mode = match self.profile_snapshot.as_ref() {
                 Some(snapshot) if !create_new && snapshot.matches_path(&path)? => {
@@ -2194,6 +2246,7 @@ impl App {
                 self.profile_path = path;
                 self.profile_snapshot = Some(snapshot);
                 self.profile_revision_floor = profile.settings_revision;
+                self.recovered_backup = false;
                 self.dirty = false;
                 self.update_title();
                 self.update_save_tip();

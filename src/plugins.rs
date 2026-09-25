@@ -14,6 +14,7 @@ use windows_sys::Win32::System::LibraryLoader::{
 };
 
 pub use otd_core::plugins::{PipelineStage, PluginConfig, PluginKind};
+#[path = "plugins/graph.rs"]
 mod graph;
 
 pub struct Library(HMODULE);

@@ -8,6 +8,7 @@ use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+#[path = "dotnet/graph.rs"]
 mod graph;
 pub use graph::{Graph, GraphNode, GraphReport};
 
