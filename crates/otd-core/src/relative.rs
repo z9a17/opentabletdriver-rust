@@ -77,11 +77,14 @@ impl RelativeMapper {
         self.awaiting_movement = false;
     }
 
-    /// RelativeOutputMode.Read marks explicit loss before passing it through
-    /// the filters. Preserve last_read position for the duplicate-input gate;
-    /// elapsed reset_delay, not each emitted loss report, clears the origin.
+    /// Reset before passing a physical range-loss input through the filters.
+    /// Preserve the existing Rust lift/reentry contract (BC-18): the next
+    /// position establishes a fresh origin, even inside reset_delay. Upstream
+    /// RelativeOutputMode.Read only sets outOfRange here and keeps its origin
+    /// until timeout; retaining that origin would reintroduce quick-reentry
+    /// jumps into the native path. Plugin-emitted loss is not a new input.
     pub fn note_range_loss(&mut self) {
-        self.awaiting_movement = true;
+        self.reset();
     }
 
     pub fn map_at(

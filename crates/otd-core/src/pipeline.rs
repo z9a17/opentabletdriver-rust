@@ -134,9 +134,12 @@ impl ReportPipeline {
         mut send: impl FnMut(MousePacket) -> io::Result<()>,
     ) -> io::Result<DispatchStats> {
         let mut initial_stats = DispatchStats::default();
-        if self.faulted {
+        let mapping_paused = self.relative.is_none() && mapper.is_none();
+        if self.faulted || mapping_paused {
+            // Pausing the graph must also revoke held output, including when
+            // loss arrives while no absolute mapping exists. Failed cleanup
+            // remains pending before any subsequent graph input may run.
             initial_stats.packets += u64::from(self.release_all(&mut send)?);
-            self.faulted = false;
         }
         if let Some(relative) = &mut self.relative {
             if input.kind == ReportKind::OutOfRange {
@@ -146,10 +149,13 @@ impl ReportPipeline {
             {
                 return Ok(initial_stats);
             }
-        } else if mapper.is_none() {
+        } else if mapping_paused {
             return Ok(initial_stats);
         }
-        let physical_loss = input.kind == ReportKind::OutOfRange && input.pen.is_some();
+        // An incoming loss is a transport notification even when it came from
+        // a general report source without the legacy PenReport adapter. Loss
+        // emitted by a plugin reaches Runtime::output instead of this entry.
+        let physical_loss = input.kind == ReportKind::OutOfRange;
         let preserve_precision = !plugins.uses_managed_graph() && !plugins.has_pixels();
         let unfiltered_raw = if preserve_precision && !plugins.has_pre() && self.filters.is_empty()
         {
@@ -201,7 +207,11 @@ impl ReportPipeline {
         send: impl FnOnce(MousePacket) -> io::Result<()>,
     ) -> io::Result<bool> {
         self.desired_contact = false;
-        self.output.release_all(send)
+        let result = self.output.release_all(send);
+        // Display-change/session cleanup also calls this outside process_report.
+        // A failed release there must be retried before the graph can resume.
+        self.faulted = result.is_err();
+        result
     }
 }
 
