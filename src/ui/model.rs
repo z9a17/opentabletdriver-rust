@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::config::{Profile, activation_raw};
 use crate::display::DisplaySnapshot;
-use crate::dotnet::FilterMetadata;
+use crate::dotnet::{FilterMetadata, PropertyMetadata};
 use crate::mapping::{Crop, OtdArea, OtdMapping, Rect};
 use crate::plugins::{PluginConfig, PluginKind};
 use crate::protocol::{HEIGHT_MM, MAX_PRESSURE, MAX_X, MAX_Y, WIDTH_MM};
@@ -95,6 +95,30 @@ pub enum PropertyValue {
     /// The DLL metadata does not identify the expected type of a null value,
     /// so keep it editable as an explicitly typed JSON scalar.
     JsonScalar,
+    /// Preserve absence and explicit null independently; never guess constructor values.
+    Typed { saved: Option<serde_json::Value>, metadata: Box<PropertyMetadata> },
+    Json(serde_json::Value),
+}
+
+impl PropertyValue {
+    pub fn display_text(&self) -> String {
+        match self {
+            Self::Number(number) => number.to_string(),
+            Self::Text(text) => text.clone(),
+            Self::Bool(_) => String::new(),
+            Self::JsonScalar => "null".into(),
+            Self::Json(value) => value.to_string(),
+            Self::Typed { saved, .. } => match saved {
+                None | Some(serde_json::Value::Null) => String::new(),
+                Some(serde_json::Value::String(text)) => text.clone(),
+                Some(value) => value.to_string(),
+            },
+        }
+    }
+
+    pub fn writable(&self) -> bool {
+        !matches!(self, Self::Typed { metadata, .. } if !metadata.writable)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -528,21 +552,24 @@ pub fn plugin_properties(json: &str) -> Option<Vec<(String, PropertyValue)>> {
         .collect()
 }
 
-/// Keeps the DLL's property order and labels for settings already present in
-/// the profile. Unknown settings retain the generic editor as a fallback.
+/// Show declared properties without writing missing values into the profile.
+/// Unknown settings, including structured JSON, remain editable and preserved.
 pub fn plugin_editor_fields(
     json: &str,
     metadata: Option<&FilterMetadata>,
 ) -> Option<Vec<PluginField>> {
-    let mut properties = plugin_properties(json)?;
+    let mut properties = serde_json::from_str::<serde_json::Value>(json).ok()?.as_object()?.clone();
     let mut fields = Vec::with_capacity(properties.len());
     if let Some(metadata) = metadata {
         for descriptor in &metadata.properties {
-            if let Some(index) = properties
-                .iter()
-                .position(|(key, _)| *key == descriptor.name)
-            {
-                let (key, value) = properties.remove(index);
+            let saved = properties.remove(&descriptor.name);
+            if saved.is_some() || !descriptor.property_type.is_empty() {
+                let key = descriptor.name.clone();
+                let value = if descriptor.property_type.is_empty() {
+                    property_value(saved.unwrap_or(serde_json::Value::Null))
+                } else {
+                    PropertyValue::Typed { saved, metadata: Box::new(descriptor.clone()) }
+                };
                 fields.push(PluginField {
                     label: descriptor
                         .display_name
@@ -562,14 +589,30 @@ pub fn plugin_editor_fields(
         unit: String::new(),
         tooltip: None,
         key,
-        value,
+        value: property_value(value),
     }));
     Some(fields)
+}
+
+fn property_value(value: serde_json::Value) -> PropertyValue {
+    match value {
+        serde_json::Value::Number(number) => PropertyValue::Number(number),
+        serde_json::Value::Bool(value) => PropertyValue::Bool(value),
+        serde_json::Value::String(text) => PropertyValue::Text(text),
+        serde_json::Value::Null => PropertyValue::JsonScalar,
+        value => PropertyValue::Json(value),
+    }
 }
 
 /// Parses text typed for a setting, keeping integers integral.
 pub fn parse_property(text: &str, previous: &PropertyValue) -> Result<serde_json::Value, String> {
     match previous {
+        PropertyValue::Typed { metadata, .. } => {
+            if !metadata.writable { return Err("This property is read-only.".into()); }
+            if metadata.property_type == "System.String" { return Ok(text.into()); }
+            serde_json::from_str(text).map_err(|_| format!("Enter a value for {}.", metadata.property_type))
+        }
+        PropertyValue::Json(_) => serde_json::from_str(text).map_err(|error| format!("Enter valid JSON: {error}")),
         PropertyValue::Number(_) => {
             let trimmed = text.trim();
             if let Ok(integer) = trimmed.parse::<i64>() {
@@ -1087,12 +1130,14 @@ mod tests {
                     display_name: Some("Outer Radius".into()),
                     unit: Some("px".into()),
                     tooltip: Some("Maximum lag".into()),
+                    ..Default::default()
                 },
                 crate::dotnet::PropertyMetadata {
                     name: "InnerRadius".into(),
                     display_name: Some("Inner Radius".into()),
                     unit: Some("px".into()),
                     tooltip: None,
+                    ..Default::default()
                 },
             ],
         };

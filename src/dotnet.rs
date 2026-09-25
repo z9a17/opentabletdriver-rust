@@ -155,12 +155,28 @@ pub fn last_error() -> String {
     String::from_utf8_lossy(&buffer[..length as usize]).into_owned()
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
 pub struct PropertyMetadata {
     pub name: String,
     pub display_name: Option<String>,
     pub unit: Option<String>,
     pub tooltip: Option<String>,
+    #[serde(default)]
+    pub property_type: String,
+    #[serde(default = "property_writable")]
+    pub writable: bool,
+    #[serde(default)]
+    pub enum_flags: bool,
+    #[serde(default)]
+    pub enum_choices: Vec<EnumChoice>,
+}
+
+fn property_writable() -> bool { true }
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+pub struct EnumChoice {
+    pub name: String,
+    pub value: serde_json::Value,
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]

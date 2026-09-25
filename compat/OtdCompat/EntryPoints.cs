@@ -308,7 +308,11 @@ public static unsafe class EntryPoints
                                 name = p.Name,
                                 display_name = p.GetCustomAttribute<PropertyAttribute>()?.DisplayName,
                                 unit = p.GetCustomAttribute<UnitAttribute>()?.Unit,
-                                tooltip = p.GetCustomAttribute<ToolTipAttribute>()?.ToolTip
+                                tooltip = p.GetCustomAttribute<ToolTipAttribute>()?.ToolTip,
+                                property_type = (Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType).FullName,
+                                writable = p.SetMethod?.IsPublic == true && p.GetIndexParameters().Length == 0,
+                                enum_flags = (Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType).IsDefined(typeof(FlagsAttribute), false),
+                                enum_choices = EnumChoices(Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType)
                             }).ToArray()
                         };
                     }).ToArray();
@@ -322,6 +326,14 @@ public static unsafe class EntryPoints
         }
         catch (Exception e) { lastError = e.GetBaseException().Message; Console.Error.WriteLine($".NET plugin inspection failed: {lastError}"); return -1; }
     }
+
+    // Reflection only: inspecting controls must not construct or run a plugin.
+    static object[] EnumChoices(Type type) => type.IsEnum
+        ? Enum.GetNames(type).Select(name => (object)new {
+            name,
+            value = Convert.ChangeType(Enum.Parse(type, name), Enum.GetUnderlyingType(type), System.Globalization.CultureInfo.InvariantCulture)
+        }).ToArray()
+        : [];
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static int GetError(byte* output, int capacity)

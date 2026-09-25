@@ -803,12 +803,7 @@ impl App {
                 match properties {
                     Some(properties) => {
                         for field in properties {
-                            let shown = match &field.value {
-                                PropertyValue::Number(number) => number.to_string(),
-                                PropertyValue::Text(text) => text.clone(),
-                                PropertyValue::Bool(_) => String::new(),
-                                PropertyValue::JsonScalar => "null".to_owned(),
-                            };
+                            let shown = field.value.display_text();
                             let tooltip = if matches!(&field.value, PropertyValue::JsonScalar) {
                                 let guidance = "Enter a JSON scalar: null, true or false, a number, or a quoted string.";
                                 Some(match field.tooltip {
@@ -864,6 +859,12 @@ impl App {
             let Ok(hwnd) = created else {
                 continue;
             };
+            if let PropertyTarget::Plugin(_, value) = &target {
+                unsafe { EnableWindow(hwnd, value.writable().into()); }
+                if matches!(value, PropertyValue::Typed { saved: None | Some(serde_json::Value::Null), .. }) {
+                    unsafe { SendMessageW(hwnd, EM_SETCUEBANNER, 0, wide("Use default").as_ptr() as isize); }
+                }
+            }
             for control in [label_control, Some(hwnd)].into_iter().flatten() {
                 unsafe {
                     SetWindowPos(
