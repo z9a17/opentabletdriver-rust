@@ -173,6 +173,9 @@ impl App {
                 filter_up: null,
                 filter_down: null,
                 filter_defaults: null,
+                filter_json_toggle: null,
+                property_prev: null,
+                property_next: null,
                 filter_enable: null,
                 filter_json: null,
                 tip_binding: null,
@@ -201,6 +204,8 @@ impl App {
             plugin_metadata: HashMap::new(),
             labels: HashMap::new(),
             json_visible: false,
+            json_mode: false,
+            property_page: 0,
             json_error: None,
             invalid: HashSet::new(),
             drag: None,
@@ -267,6 +272,12 @@ impl App {
             self.button("Move down", CMD_FILTER_DOWN, Kind::Button, Surface::Page)?;
         self.c.filter_defaults =
             self.button("Defaults", CMD_FILTER_DEFAULTS, Kind::Button, Surface::Page)?;
+        self.c.filter_json_toggle =
+            self.button("Edit JSON", CMD_FILTER_JSON, Kind::Button, Surface::Group)?;
+        self.c.property_prev =
+            self.button("Previous", CMD_PROPERTY_PREV, Kind::Button, Surface::Group)?;
+        self.c.property_next =
+            self.button("Next", CMD_PROPERTY_NEXT, Kind::Button, Surface::Group)?;
         self.c.filter_enable = self.control(
             "BUTTON",
             "Enable",
@@ -365,6 +376,9 @@ impl App {
             c.filter_up,
             c.filter_down,
             c.filter_defaults,
+            c.filter_json_toggle,
+            c.property_prev,
+            c.property_next,
             c.filter_enable,
             c.filter_json,
             c.tip_binding,
@@ -673,7 +687,7 @@ impl App {
         }
     }
 
-    fn metadata_for(&self, plugin: &PluginConfig) -> Option<&FilterMetadata> {
+    pub(super) fn metadata_for(&self, plugin: &PluginConfig) -> Option<&FilterMetadata> {
         self.plugin_metadata
             .get(&plugin.path)?
             .as_ref()
@@ -731,7 +745,11 @@ impl App {
         for row in std::mem::take(&mut self.properties) {
             self.remove_tool(row.hwnd);
             self.invalid.remove(&(row.hwnd as isize));
-            for hwnd in [Some(row.hwnd), row.label_control].into_iter().flatten() {
+            for hwnd in [Some(row.hwnd), row.label_control, row.default_control]
+                .into_iter()
+                .flatten()
+            {
+                self.remove_tool(hwnd);
                 update_look(|look| {
                     look.controls.remove(&(hwnd as isize));
                 });
@@ -740,6 +758,7 @@ impl App {
         }
         self.json_visible = false;
         self.json_error = None;
+        self.set_invalid(self.c.filter_json, false, None);
         let Some(target) = self.selected_target() else {
             return;
         };
@@ -797,24 +816,29 @@ impl App {
             FilterRef::Plugin(index) => {
                 let plugin = &self.editor.profile.plugins[index];
                 let metadata = self.metadata_for(plugin).cloned();
-                let properties = (plugin.kind == PluginKind::Dotnet)
+                let properties = (plugin.kind == PluginKind::Dotnet
+                    && metadata.is_some()
+                    && !self.json_mode)
                     .then(|| model::plugin_editor_fields(&plugin.settings_json, metadata.as_ref()))
-                    .flatten();
+                    .flatten()
+                    .filter(|properties| properties.len() < MAX_PROPERTY_ROWS as usize);
                 match properties {
                     Some(properties) => {
                         for field in properties {
-                            let shown = match &field.value {
-                                PropertyValue::Number(number) => number.to_string(),
-                                PropertyValue::Text(text) => text.clone(),
-                                PropertyValue::Bool(_) => String::new(),
-                                PropertyValue::JsonScalar => "null".to_owned(),
-                            };
+                            let shown = field.value.display_text();
                             let tooltip = if matches!(&field.value, PropertyValue::JsonScalar) {
                                 let guidance = "Enter a JSON scalar: null, true or false, a number, or a quoted string.";
                                 Some(match field.tooltip {
                                     Some(tip) if !tip.is_empty() => format!("{tip}\n{guidance}"),
                                     _ => guidance.to_owned(),
                                 })
+                            } else if let PropertyValue::Typed { metadata, .. } = &field.value {
+                                let state = "Omitted settings keep constructor values. Use default restores the declared default, or the constructor value when no default is declared.";
+                                Some(format!(
+                                    "{}\n{}\n{state}",
+                                    field.tooltip.as_deref().unwrap_or(""),
+                                    metadata.property_type
+                                ))
                             } else {
                                 field.tooltip
                             };
@@ -850,6 +874,8 @@ impl App {
             } else {
                 None
             };
+            let dropdown =
+                matches!(&target, PropertyTarget::Plugin(_, value) if !value.choices().is_empty());
             let created = match checked {
                 Some(_) => self.control(
                     "BUTTON",
@@ -859,12 +885,57 @@ impl App {
                     Kind::Check,
                     Surface::Group,
                 ),
+                None if dropdown => self.button(&value, id, Kind::Dropdown, Surface::Group),
                 None => self.field(id, Surface::Group),
             };
             let Ok(hwnd) = created else {
                 continue;
             };
-            for control in [label_control, Some(hwnd)].into_iter().flatten() {
+            let default_control = if matches!(
+                &target,
+                PropertyTarget::Plugin(_, PropertyValue::Typed { .. })
+            ) {
+                let reset = self
+                    .button(
+                        "Use default",
+                        ID_PROPERTY_DEFAULT + index as u16,
+                        Kind::Button,
+                        Surface::Group,
+                    )
+                    .ok();
+                if let Some(reset) = reset {
+                    let writable = match &target {
+                        PropertyTarget::Plugin(_, value) => value.writable(),
+                        _ => false,
+                    };
+                    unsafe {
+                        EnableWindow(reset, writable.into());
+                    }
+                    self.add_tool(reset, 0, "Use the plugin's declared default, or its constructor value if no default is declared.");
+                }
+                reset
+            } else {
+                None
+            };
+            if let PropertyTarget::Plugin(_, value) = &target {
+                unsafe {
+                    EnableWindow(hwnd, value.writable().into());
+                }
+                if value.uses_default() && !dropdown {
+                    unsafe {
+                        SendMessageW(
+                            hwnd,
+                            EM_SETCUEBANNER,
+                            0,
+                            wide("Use default").as_ptr() as isize,
+                        );
+                    }
+                }
+            }
+            for control in [label_control, Some(hwnd), default_control]
+                .into_iter()
+                .flatten()
+            {
                 unsafe {
                     SetWindowPos(
                         control,
@@ -889,6 +960,7 @@ impl App {
             }
             self.properties.push(PropertyRow {
                 hwnd,
+                default_control,
                 label_control,
                 label,
                 unit,
@@ -1209,6 +1281,7 @@ impl App {
             return;
         };
         let hwnd = self.properties[index].hwnd;
+        let mut saved_value = None;
         let result = match (&self.properties[index].target, filter) {
             (PropertyTarget::Radial(field), FilterRef::Radial(radial)) => {
                 match model::parse_number(value) {
@@ -1223,17 +1296,32 @@ impl App {
             }
             (PropertyTarget::Plugin(key, previous), FilterRef::Plugin(plugin)) => {
                 model::parse_property(value, previous).and_then(|parsed| {
-                    let config = &mut self.editor.profile.plugins[plugin];
-                    let updated = model::set_plugin_property(&config.settings_json, key, parsed)?;
-                    config.settings_json = updated;
-                    config.validate()
+                    let config = &self.editor.profile.plugins[plugin];
+                    let settings_json =
+                        model::set_plugin_property(&config.settings_json, key, parsed.clone())?;
+                    let candidate = PluginConfig {
+                        settings_json,
+                        ..config.clone()
+                    };
+                    candidate.validate()?;
+                    self.editor.profile.plugins[plugin] = candidate;
+                    saved_value = Some(parsed);
+                    Ok(())
                 })
             }
             _ => Ok(()),
         };
         match result {
             Ok(()) => {
+                if let (
+                    Some(value),
+                    PropertyTarget::Plugin(_, PropertyValue::Typed { saved, .. }),
+                ) = (saved_value, &mut self.properties[index].target)
+                {
+                    *saved = Some(value);
+                }
                 self.set_invalid(hwnd, false, None);
+                self.update_property_cue(index);
                 self.mark_dirty();
             }
             Err(error) => self.set_invalid(hwnd, true, Some(&error)),
@@ -1245,20 +1333,103 @@ impl App {
             return;
         };
         let checked = unsafe { SendMessageW(hwnd, BM_GETCHECK, 0, 0) } == BST_CHECKED as isize;
-        if let (PropertyTarget::Plugin(key, _), Some(FilterRef::Plugin(plugin))) =
-            (&self.properties[index].target, self.selected_target())
+        if let (
+            PropertyTarget::Plugin(key, PropertyValue::Bool(_)),
+            Some(FilterRef::Plugin(plugin)),
+        ) = (&self.properties[index].target, self.selected_target())
         {
             let config = &mut self.editor.profile.plugins[plugin];
             if let Ok(updated) =
                 model::set_plugin_property(&config.settings_json, key, checked.into())
             {
-                config.settings_json = updated;
+                let candidate = PluginConfig {
+                    settings_json: updated,
+                    ..config.clone()
+                };
+                match candidate.validate() {
+                    Ok(()) => {
+                        *config = candidate;
+                        self.set_invalid(hwnd, false, None);
+                        self.mark_dirty();
+                    }
+                    Err(error) => self.set_invalid(hwnd, true, Some(&error)),
+                }
+            }
+        }
+    }
+
+    pub(super) fn choose_property(&mut self, hwnd: HWND, value: serde_json::Value) {
+        let Some(index) = self.properties.iter().position(|row| row.hwnd == hwnd) else {
+            return;
+        };
+        let Some(FilterRef::Plugin(plugin)) = self.selected_target() else {
+            return;
+        };
+        let PropertyTarget::Plugin(key, previous) = &self.properties[index].target else {
+            return;
+        };
+        if !previous.writable() {
+            return;
+        }
+        let config = &self.editor.profile.plugins[plugin];
+        let result = model::set_plugin_property(&config.settings_json, key, value.clone())
+            .and_then(|settings_json| {
+                let candidate = PluginConfig {
+                    settings_json,
+                    ..config.clone()
+                };
+                candidate.validate()?;
+                Ok(candidate)
+            });
+        match result {
+            Ok(candidate) => {
+                self.editor.profile.plugins[plugin] = candidate;
+                if let PropertyTarget::Plugin(_, PropertyValue::Typed { saved, .. }) =
+                    &mut self.properties[index].target
+                {
+                    *saved = Some(value);
+                }
+                if let PropertyTarget::Plugin(_, value) = &self.properties[index].target {
+                    set_text(hwnd, &value.display_text());
+                }
+                self.set_invalid(hwnd, false, None);
+                self.update_property_cue(index);
                 self.mark_dirty();
+            }
+            Err(error) => self.set_invalid(hwnd, true, Some(&error)),
+        }
+    }
+
+    fn update_property_cue(&self, index: usize) {
+        let row = &self.properties[index];
+        if let PropertyTarget::Plugin(_, value) = &row.target
+            && value.choices().is_empty()
+        {
+            let cue = if value.uses_default() {
+                "Use default"
+            } else {
+                ""
+            };
+            unsafe {
+                SendMessageW(row.hwnd, EM_SETCUEBANNER, 0, wide(cue).as_ptr() as isize);
             }
         }
     }
 
     pub(super) fn filter_toggled(&mut self) {
+        if !self.can_leave_filter() {
+            if let Some(target) = self.selected_target() {
+                unsafe {
+                    SendMessageW(
+                        self.c.filter_enable,
+                        BM_SETCHECK,
+                        usize::from(self.editor.filter_enabled(target)),
+                        0,
+                    );
+                }
+            }
+            return;
+        }
         let Some(target) = self.selected_target() else {
             return;
         };
@@ -1273,7 +1444,15 @@ impl App {
     pub(super) fn select_filter(&mut self) {
         let index = unsafe { SendMessageW(self.c.filter_list, LB_GETCURSEL, 0, 0) };
         if index >= 0 && index as usize != self.selected_filter {
+            if !self.can_leave_filter() {
+                unsafe {
+                    SendMessageW(self.c.filter_list, LB_SETCURSEL, self.selected_filter, 0);
+                }
+                return;
+            }
             self.selected_filter = index as usize;
+            self.json_mode = false;
+            self.property_page = 0;
             self.rebuild_properties();
             self.layout();
         }
@@ -1290,6 +1469,64 @@ impl App {
                 "Plugins",
                 format!("Removed {}.", model::plugin_name(&removed)),
             );
+        }
+    }
+
+    pub(super) fn can_leave_filter(&mut self) -> bool {
+        if self.json_error.is_some()
+            || self
+                .properties
+                .iter()
+                .any(|row| self.invalid.contains(&(row.hwnd as isize)))
+        {
+            self.show_status(
+                "Correct invalid filter edits or use Defaults before changing the editor view."
+                    .into(),
+                Level::Warning,
+                true,
+            );
+            false
+        } else {
+            true
+        }
+    }
+
+    pub(super) fn toggle_filter_json(&mut self) {
+        if !self.can_leave_filter() {
+            return;
+        }
+        let Some(FilterRef::Plugin(index)) = self.selected_target() else {
+            return;
+        };
+        let plugin = &self.editor.profile.plugins[index];
+        if plugin.kind != PluginKind::Dotnet || self.metadata_for(plugin).is_none() {
+            return;
+        }
+        if self.json_visible {
+            let fields =
+                model::plugin_editor_fields(&plugin.settings_json, self.metadata_for(plugin));
+            if fields
+                .as_ref()
+                .is_none_or(|fields| fields.len() >= MAX_PROPERTY_ROWS as usize)
+            {
+                self.show_status(
+                    "This settings object requires the JSON editor.".into(),
+                    Level::Info,
+                    false,
+                );
+                return;
+            }
+        }
+        self.json_mode = !self.json_visible;
+        self.property_page = 0;
+        self.rebuild_properties();
+        self.layout();
+        unsafe {
+            SetFocus(if self.json_visible {
+                self.c.filter_json
+            } else {
+                self.c.filter_json_toggle
+            });
         }
     }
 
@@ -1695,6 +1932,9 @@ impl App {
         if self.tab == tab {
             return;
         }
+        if self.tab == Tab::Filters && !self.can_leave_filter() {
+            return;
+        }
         self.tab = tab;
         self.drag = None;
         update_look(|look| look.tab = tab);
@@ -1837,6 +2077,8 @@ impl App {
         }
         self.dirty = dirty;
         self.selected_filter = 0;
+        self.json_mode = false;
+        self.property_page = 0;
         self.drag = None;
         self.sync_all();
         self.layout();
@@ -1845,6 +2087,9 @@ impl App {
 
     /// The profile exactly as Save and Start will use it.
     pub(super) fn checked_profile(&self) -> Result<Profile, String> {
+        if !self.invalid.is_empty() || self.json_error.is_some() {
+            return Err("Correct invalid editor values before saving or applying settings.".into());
+        }
         let profile = model::validated(&self.editor.profile, &self.profile_path)?;
         if profile.relative.is_none() {
             displays_for_driver(self.process_dpi)?.mapper(&profile)?;

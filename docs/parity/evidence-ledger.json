@@ -391,8 +391,8 @@
     "CAP-33": {
       "state": "open",
       "owner": "U04",
-      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/39",
-      "release": "v0.7.13",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/40",
+      "release": "v0.7.14",
       "evidence": [
         {
           "kind": "unit-tested",
@@ -439,7 +439,7 @@
         }
       ],
       "blockers": [
-        "Labels, units, tooltips, saved null editing, filter ordering and reset defaults have automated coverage; actions, properties without defaults or saved values, broader validation and interactive UI verification remain open. Native DLLs do not expose a defaults contract."
+        "Historical tests cover labels, units, tooltips, null editing, filter ordering and filter defaults. The v0.7.14 omitted-property, enum/scalar validation, per-property default and JSON-switch additions compiled and were statically reviewed, but no local tests or interactive UI checks were run at the owner's request. Actions, dynamic validation and broader plugin controls remain open. Native DLLs do not expose a defaults contract."
       ]
     },
     "CAP-34": {
