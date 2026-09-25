@@ -548,13 +548,25 @@ impl NativeProfileCollection {
     }
 
     pub fn to_toml(&self) -> Result<String, String> {
+        self.serialize(None)
+    }
+
+    pub fn to_toml_at(&self, destination: &Path) -> Result<String, String> {
+        self.serialize(Some(destination))
+    }
+
+    fn serialize(&self, destination: Option<&Path>) -> Result<String, String> {
         self.validate()?;
         let profiles = self
             .profiles
             .iter()
             .map(|entry| {
+                let text = match destination {
+                    Some(path) => entry.profile.to_toml_at(path)?,
+                    None => entry.profile.to_toml()?,
+                };
                 let profile: toml::Value =
-                    toml::from_str(&entry.profile.to_toml()?).map_err(|error| error.to_string())?;
+                    toml::from_str(&text).map_err(|error| error.to_string())?;
                 Ok(RawNamedProfile {
                     name: entry.name.clone(),
                     profile,

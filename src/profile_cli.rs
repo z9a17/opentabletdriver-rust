@@ -1,9 +1,8 @@
 //! Offline profile inspection and migration commands. No device or plugin loads.
-use std::fs::{self, OpenOptions};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use otd_core::config::{ImportOptions, NativeProfileCollection, OtdSettingsDocument, Profile};
+use otd_core::storage;
 use serde_json::{Value, json};
 
 pub fn usage() -> &'static str {
@@ -13,10 +12,14 @@ pub fn usage() -> &'static str {
   profiles import INPUT --profile INDEX --output PROFILE.toml [--legacy-force-radial-follow]
   profiles export PROFILE.toml --output SETTINGS.json
   profiles select COLLECTION.toml --name NAME --output COLLECTION.toml
+  profiles recover PROFILE.toml --output RECOVERED.toml
+  profiles paths
 
 Output files must not already exist. The source file is never overwritten.
 Importing a tablet profile does not establish runtime support for that tablet.
-The legacy flag explicitly activates disabled Radial Follow stores during OTD import."
+The legacy flag explicitly activates disabled Radial Follow stores during OTD import.
+Recovery reads the sibling .bak into a new file; it never replaces the source.
+OTD_RUST_PORTABLE_DIR selects an explicit absolute portable settings directory."
 }
 
 #[derive(Default)]
@@ -43,9 +46,19 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         println!("{}", usage());
         return Ok(());
     }
+    if command == "paths" {
+        if args.next().is_some() {
+            return Err("profiles paths takes no arguments".into());
+        }
+        let directory = storage::data_directory()?;
+        return print_json(
+            &json!({"directory": directory, "profile": directory.join("driver.toml"),
+            "preferences": directory.join("ui.toml"), "portable": std::env::var_os("OTD_RUST_PORTABLE_DIR").is_some()}),
+        );
+    }
     if !matches!(
         command.as_str(),
-        "list" | "preview" | "import" | "export" | "select"
+        "list" | "preview" | "import" | "export" | "select" | "recover"
     ) {
         return Err(format!("unknown profile command {command:?}\n{}", usage()));
     }
@@ -55,6 +68,19 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     );
     let options = parse_options(args)?;
     validate_options(&command, &options)?;
+    if command == "recover" {
+        let backup = storage::read_backup(&input_path)?;
+        let output = options
+            .output
+            .as_deref()
+            .ok_or("recover requires --output FILE")?;
+        let contents = match parse_input(&backup.text, &input_path)? {
+            Input::Native(profile) => profile.to_toml_at(output)?,
+            Input::Collection(collection) => collection.to_toml_at(output)?,
+            Input::Otd(document) => document.original_json().to_owned(),
+        };
+        return write_output(output, &contents);
+    }
     let input = read_input(&input_path)?;
     if options.legacy && !matches!(input, Input::Otd(_)) {
         return Err("--legacy-force-radial-follow applies only to OTD JSON imports; native profiles retain their stored filter behavior".into());
@@ -82,13 +108,11 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         "import" => {
             let index = options.profile.ok_or("import requires --profile INDEX")?;
             let profile = select_profile(&input, index, options.legacy)?;
-            write_output(
-                options
-                    .output
-                    .as_deref()
-                    .ok_or("import requires --output FILE")?,
-                &profile.to_toml()?,
-            )?;
+            let output = options
+                .output
+                .as_deref()
+                .ok_or("import requires --output FILE")?;
+            write_output(output, &profile.to_toml_at(output)?)?;
             for diagnostic in &profile.diagnostics {
                 eprintln!(
                     "{} [{}]: {}",
@@ -125,13 +149,11 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                     format!("no profile named {name:?}; use profiles list to see names")
                 })?;
             collection.select(index)?;
-            write_output(
-                options
-                    .output
-                    .as_deref()
-                    .ok_or("select requires --output FILE")?,
-                &collection.to_toml()?,
-            )
+            let output = options
+                .output
+                .as_deref()
+                .ok_or("select requires --output FILE")?;
+            write_output(output, &collection.to_toml_at(output)?)
         }
         _ => unreachable!("command was validated"),
     }
@@ -200,7 +222,7 @@ fn validate_options(command: &str, options: &Options) -> Result<(), String> {
             options.profile.is_some() && options.output.is_none() && options.name.is_none()
         }
         "import" => options.profile.is_some() && options.output.is_some() && options.name.is_none(),
-        "export" => {
+        "export" | "recover" => {
             options.profile.is_none()
                 && options.output.is_some()
                 && options.name.is_none()
@@ -225,22 +247,25 @@ fn validate_options(command: &str, options: &Options) -> Result<(), String> {
 }
 
 fn read_input(path: &Path) -> Result<Input, String> {
-    let text = fs::read_to_string(path)
-        .map_err(|error| format!("cannot read {} as UTF-8: {error}", path.display()))?;
+    let loaded = storage::read_utf8(path)?;
+    parse_input(&loaded.text, path)
+}
+
+fn parse_input(text: &str, path: &Path) -> Result<Input, String> {
     match path
         .extension()
         .and_then(|value| value.to_str())
         .map(str::to_ascii_lowercase)
         .as_deref()
     {
-        Some("json") => OtdSettingsDocument::from_json(&text, path).map(Input::Otd),
+        Some("json") => OtdSettingsDocument::from_json(text, path).map(Input::Otd),
         Some("toml") => {
-            let document: toml::Value = toml::from_str(&text)
+            let document: toml::Value = toml::from_str(text)
                 .map_err(|error| format!("invalid TOML {}: {error}", path.display()))?;
             if document.get("format").and_then(toml::Value::as_str) == Some("profile_collection") {
-                NativeProfileCollection::from_toml_text(&text, path).map(Input::Collection)
+                NativeProfileCollection::from_toml_text(text, path).map(Input::Collection)
             } else {
-                Profile::from_toml_text(&text, path).map(|profile| Input::Native(Box::new(profile)))
+                Profile::from_toml_text(text, path).map(|profile| Input::Native(Box::new(profile)))
             }
         }
         _ => Err("input must be an OTD .json file or a Rust .toml profile/collection".into()),
@@ -307,29 +332,7 @@ fn print_json(value: &Value) -> Result<(), String> {
 }
 
 fn write_output(path: &Path, text: &str) -> Result<(), String> {
-    let mut file = OpenOptions::new().write(true).create_new(true).open(path).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::AlreadyExists {
-            format!("output {} already exists; choose a new path (source files are never overwritten)", path.display())
-        } else { format!("cannot create output {}: {error}", path.display()) }
-    })?;
-    if let Err(error) = file
-        .write_all(text.as_bytes())
-        .and_then(|_| file.sync_all())
-    {
-        drop(file);
-        // This branch is reachable only after this call created this exact file.
-        // Never delete an existing output when create_new itself fails.
-        return match fs::remove_file(path) {
-            Ok(()) => Err(format!(
-                "could not write {}; removed the newly created partial file: {error}",
-                path.display()
-            )),
-            Err(cleanup) => Err(format!(
-                "could not write {}: {error}; the newly created partial file remains because cleanup failed: {cleanup}",
-                path.display()
-            )),
-        };
-    }
+    storage::save(path, text.as_bytes(), storage::SaveMode::CreateNew)?;
     println!("Saved {}", path.display());
     Ok(())
 }

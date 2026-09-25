@@ -29,7 +29,6 @@ mod tray;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
-use std::io::Write;
 use std::mem::size_of;
 use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
@@ -41,9 +40,6 @@ use windows_sys::Win32::Foundation::{
     WPARAM,
 };
 use windows_sys::Win32::Graphics::Gdi::*;
-use windows_sys::Win32::Storage::FileSystem::{
-    MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-};
 use windows_sys::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
 };
@@ -278,50 +274,22 @@ fn update_look(f: impl FnOnce(&mut Look)) {
 }
 
 pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), String> {
-    let path = std::path::absolute(path).map_err(|e| e.to_string())?;
-    let parent = path.parent().ok_or("path has no parent")?;
-    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_nanos();
-    let temporary = parent.join(format!(".otd-profile-{}-{stamp}.tmp", std::process::id()));
-    let mut created = false;
-    let outcome = (|| -> Result<(), String> {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)
-            .map_err(|e| e.to_string())?;
-        created = true;
-        file.write_all(contents)
-            .and_then(|_| file.sync_all())
-            .map_err(|e| e.to_string())?;
-        drop(file);
-        let from = crate::plugins::wide(temporary.as_os_str())?;
-        let to = crate::plugins::wide(path.as_os_str())?;
-        if unsafe {
-            MoveFileExW(
-                from.as_ptr(),
-                to.as_ptr(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-            )
-        } == 0
-        {
-            return Err(std::io::Error::last_os_error().to_string());
-        }
-        Ok(())
-    })();
-    if created && outcome.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
-    outcome
+    let expected = otd_core::storage::capture(path)?;
+    otd_core::storage::save(
+        path,
+        contents,
+        otd_core::storage::SaveMode::Replace(&expected),
+    )?;
+    Ok(())
 }
 
-pub fn save_profile(path: &Path, profile: &Profile) -> Result<(), String> {
-    write_atomic(path, profile.to_toml()?.as_bytes())
+pub fn save_profile(
+    path: &Path,
+    profile: &Profile,
+    mode: otd_core::storage::SaveMode<'_>,
+) -> Result<otd_core::storage::FileSnapshot, String> {
+    otd_core::storage::save(path, profile.to_toml_at(path)?.as_bytes(), mode)
 }
-
 pub(crate) fn create_font(pixels: i32, weight: i32, face: &str, escapement: i32) -> HFONT {
     unsafe {
         CreateFontW(
@@ -704,6 +672,7 @@ struct App {
     displays: DisplaySnapshot,
     editor: Editor,
     profile_path: PathBuf,
+    profile_snapshot: Option<otd_core::storage::FileSnapshot>,
     dirty: bool,
     selected_filter: usize,
     properties: Vec<PropertyRow>,
@@ -794,10 +763,7 @@ fn local_time() -> String {
 }
 
 fn profile_directory() -> Result<PathBuf, String> {
-    Ok(std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or(std::env::current_dir().map_err(|e| e.to_string())?)
-        .join("OpenTabletDriverRust"))
+    otd_core::storage::data_directory()
 }
 
 fn point_from(lp: LPARAM) -> (i32, i32) {
@@ -1251,8 +1217,14 @@ pub fn run() -> Result<(), String> {
         }
     };
     let path = directory.join("driver.toml");
+    let mut profile_snapshot = None;
     let (profile, loaded) = if path.exists() {
-        match Profile::load(Some(&path)) {
+        let load = otd_core::storage::read_utf8(&path).and_then(|loaded| {
+            let profile = Profile::from_toml_text(&loaded.text, &path)?;
+            profile_snapshot = Some(loaded.snapshot);
+            Ok(profile)
+        });
+        match load {
             Ok(profile) => (profile, Ok(format!("Loaded {}.", path.display()))),
             Err(error) => (
                 Profile::default(),
@@ -1278,6 +1250,7 @@ pub fn run() -> Result<(), String> {
         }
     };
     app.replace_profile(profile, Some(path), false);
+    app.profile_snapshot = profile_snapshot;
     app.set_driver_state(DriverState::Stopped);
     // A profile that failed to load is replaced by defaults; never drive
     // the tablet with those unasked.

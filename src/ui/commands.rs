@@ -88,7 +88,7 @@ pub(super) fn file_dialog(
         Flags: OFN_NOCHANGEDIR
             | OFN_PATHMUSTEXIST
             | if save {
-                OFN_OVERWRITEPROMPT
+                0 // Save As creates a new file; storage rejects existing paths.
             } else {
                 OFN_FILEMUSTEXIST
             },
@@ -355,9 +355,9 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         CMD_SAVE => {
             with_app(|app| app.save_to(app.profile_path.clone()));
         }
-        CMD_SAVE_AS => match file_dialog(window, true, false, "Save settings as") {
+        CMD_SAVE_AS => match file_dialog(window, true, false, "Save settings as a new file") {
             Ok(Some(path)) => {
-                with_app(|app| app.save_to(path));
+                with_app(|app| app.save_as_to(path));
             }
             Ok(None) => {}
             Err(error) => {

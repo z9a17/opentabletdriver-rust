@@ -198,6 +198,7 @@ impl App {
             displays,
             editor: Editor::new(Profile::default()),
             profile_path: PathBuf::new(),
+            profile_snapshot: None,
             dirty: false,
             selected_filter: 0,
             properties: Vec::new(),
@@ -2077,6 +2078,7 @@ impl App {
         self.plugin_metadata.clear();
         if let Some(path) = path {
             self.profile_path = path;
+            self.profile_snapshot = None;
         }
         self.dirty = dirty;
         self.selected_filter = 0;
@@ -2115,9 +2117,13 @@ impl App {
     }
 
     pub(super) fn load_file(&mut self, path: PathBuf) {
-        match Profile::load(Some(&path)) {
-            Ok(profile) => {
+        let loaded = otd_core::storage::read_utf8(&path).and_then(|loaded| {
+            Profile::from_toml_text(&loaded.text, &path).map(|profile| (profile, loaded.snapshot))
+        });
+        match loaded {
+            Ok((profile, snapshot)) => {
                 self.replace_profile(profile, Some(path.clone()), false);
+                self.profile_snapshot = Some(snapshot);
                 self.log(
                     Level::Info,
                     "Settings",
@@ -2158,14 +2164,29 @@ impl App {
     }
 
     pub(super) fn save_to(&mut self, path: PathBuf) {
+        self.save_to_mode(path, false);
+    }
+
+    pub(super) fn save_as_to(&mut self, path: PathBuf) {
+        self.save_to_mode(path, true);
+    }
+
+    fn save_to_mode(&mut self, path: PathBuf, create_new: bool) {
         let result = self.checked_profile().and_then(|mut profile| {
             profile.advance_revision()?;
-            save_profile(&path, &profile).map(|_| profile)
+            let mode = match self.profile_snapshot.as_ref() {
+                Some(snapshot) if !create_new && snapshot.matches_path(&path)? => {
+                    otd_core::storage::SaveMode::Replace(snapshot)
+                }
+                _ => otd_core::storage::SaveMode::CreateNew,
+            };
+            save_profile(&path, &profile, mode).map(|snapshot| (profile, snapshot))
         });
         match result {
-            Ok(profile) => {
+            Ok((profile, snapshot)) => {
                 self.editor.profile.settings_revision = profile.settings_revision;
                 self.profile_path = path;
+                self.profile_snapshot = Some(snapshot);
                 self.dirty = false;
                 self.update_title();
                 self.update_save_tip();
