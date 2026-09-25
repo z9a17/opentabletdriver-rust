@@ -30,4 +30,6 @@ This reads `driver.toml.bak`, validates the native profile or collection, and wr
 
 Relocation operates on resolved plugin paths from loaded profiles. API callers constructing profiles with relative references must first resolve them against their source directory. Existing symlink/junction aliases may be canonicalized to their current targets when saved.
 
-Saving and runtime activation remain separate guarantees. The daemon's current Apply operation validates then stops/restarts a worker; it is not yet a transactional hot swap that retains a prepared pipeline after every plugin or activation failure. Full C03/C04 preset transactions and physical validation remain open.
+Saving and runtime activation remain separate guarantees. The daemon now prepares a replacement before quiescing the old worker and can resume retained instances after a pre-commit activation failure; see [runtime reconfiguration](RUNTIME_RECONFIGURATION.md). File saves are not rolled back when runtime activation fails. GUI preset selection, broader C03/C04 behavior and physical validation remain open.
+
+The [named preset store](NAMED_PRESETS.md) uses these same snapshot, backup and relocation services under `presets/`. Its offline list/show/save/export commands preserve explicit names and require an existing loaded snapshot for replacement. They do not activate presets or change the running driver.

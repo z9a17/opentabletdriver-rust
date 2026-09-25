@@ -57,10 +57,10 @@ impl<'a> HidSource<'a> {
         selected: &'a SelectedDevice<'a>,
         notification: &'a Notification,
         stop: &'a Event,
-        initialize: bool,
+        driver_access: bool,
     ) -> io::Result<Self> {
         let candidate = selected.pen;
-        let writes = initialize
+        let writes = driver_access
             && (selected
                 .identifier
                 .feature_init_report
@@ -76,15 +76,6 @@ impl<'a> HidSource<'a> {
         } else {
             candidate.open_read()?
         };
-        if initialize {
-            hid::initialize(
-                candidate,
-                &handle,
-                &selected.identifier,
-                &selected.configuration,
-                stop,
-            )?;
-        }
         let read_event = Event::create(true)?;
         Ok(Self {
             label: format!(
@@ -250,6 +241,15 @@ pub fn run(
         stop_event,
         matches!(mode, Mode::Driver),
     )?;
+    if matches!(mode, Mode::Driver) {
+        hid::initialize(
+            selected.pen,
+            &source.handle,
+            &selected.identifier,
+            &selected.configuration,
+            stop_event,
+        )?;
+    }
     let _priority = ReaderPriority::raise();
     otd_core::session::run(
         &mut source,
@@ -260,6 +260,139 @@ pub fn run(
         send_input,
         status,
     )
+}
+
+/// A candidate owns its handle, event and read buffer before the old worker
+/// pauses. Preparation never initializes the tablet or issues a read.
+pub(crate) struct PreparedSession<'a> {
+    source: HidSource<'a>,
+    selected: &'a SelectedDevice<'a>,
+}
+
+impl<'a> PreparedSession<'a> {
+    pub fn new(
+        selected: &'a SelectedDevice<'a>,
+        notification: &'a Notification,
+        interrupt: &'a Event,
+    ) -> io::Result<Self> {
+        // Validate deterministic initialization failures before quiescing the
+        // current worker. Actual device writes belong to activation only.
+        if let Some(delay) = selected
+            .configuration
+            .attributes
+            .as_ref()
+            .and_then(|attributes| attributes.get("FeatureInitDelayMs"))
+        {
+            let delay = delay
+                .parse::<u32>()
+                .map_err(|_| io::Error::other("invalid FeatureInitDelayMs"))?;
+            if delay == u32::MAX {
+                return Err(io::Error::other(
+                    "infinite feature initialization delay is unsupported",
+                ));
+            }
+        }
+        for (reports, length) in [
+            (
+                &selected.identifier.feature_init_report,
+                selected.pen.endpoint.feature_length,
+            ),
+            (
+                &selected.identifier.output_init_report,
+                selected.pen.endpoint.output_length,
+            ),
+        ] {
+            for report in reports
+                .iter()
+                .flatten()
+                .filter(|report| !report.0.is_empty())
+            {
+                if length == 0 || length > u16::MAX as u32 || report.0.len() > length as usize {
+                    return Err(io::Error::other(
+                        "initialization report exceeds endpoint report length",
+                    ));
+                }
+            }
+        }
+        Ok(Self {
+            source: HidSource::open(selected, notification, interrupt, true)?,
+            selected,
+        })
+    }
+
+    pub fn activate(&mut self) -> io::Result<()> {
+        if !self.selected.pen.is_present() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "prepared tablet endpoint disappeared before activation",
+            ));
+        }
+        hid::initialize(
+            self.selected.pen,
+            &self.source.handle,
+            &self.selected.identifier,
+            &self.selected.configuration,
+            self.source.stop,
+        )?;
+        // The prepared handle may have queued input while the previous worker
+        // was still reading. Flush only after that worker has quiesced, so the
+        // replacement cannot replay its already-processed pen/button reports.
+        // https://learn.microsoft.com/windows-hardware/drivers/ddi/hidsdi/nf-hidsdi-hidd_flushqueue
+        if !unsafe {
+            windows_sys::Win32::Devices::HumanInterfaceDevice::HidD_FlushQueue(
+                self.source.handle.raw(),
+            )
+        } {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// The first-read gate runs after the portable session has constructed its
+    /// mapping/pipeline. No report reaches a plugin/output before gate success.
+    pub fn run(
+        self,
+        profile: &Profile,
+        plugins: &mut PluginChain,
+        status: &impl Fn(&str),
+        gate: impl FnOnce() -> io::Result<bool>,
+    ) -> io::Result<()> {
+        let mut source = GatedSource {
+            source: self.source,
+            gate: Some(gate),
+        };
+        let _priority = ReaderPriority::raise();
+        otd_core::session::run(
+            &mut source,
+            &mut WindowsDisplays,
+            profile,
+            Mode::Driver,
+            plugins,
+            send_input,
+            status,
+        )
+    }
+}
+
+struct GatedSource<'a, G> {
+    source: HidSource<'a>,
+    gate: Option<G>,
+}
+impl<G: FnOnce() -> io::Result<bool>> ReportSource for GatedSource<'_, G> {
+    fn label(&self) -> &str {
+        self.source.label()
+    }
+    fn now(&self) -> Instant {
+        self.source.now()
+    }
+    fn next(&mut self, timeout: Duration) -> io::Result<Read<'_>> {
+        if let Some(gate) = self.gate.take()
+            && !gate()?
+        {
+            return Ok(Read::Ended);
+        }
+        self.source.next(timeout)
+    }
 }
 
 pub fn wait_for_retry(notification: &Notification, stop_event: &Event) -> io::Result<bool> {
