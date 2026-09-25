@@ -673,6 +673,7 @@ struct App {
     editor: Editor,
     profile_path: PathBuf,
     profile_snapshot: Option<otd_core::storage::FileSnapshot>,
+    profile_revision_floor: u64,
     dirty: bool,
     selected_filter: usize,
     properties: Vec<PropertyRow>,
@@ -1232,7 +1233,7 @@ pub fn run() -> Result<(), String> {
             ),
         }
     } else {
-        match Profile::load(None) {
+        match crate::load_profile(None, None) {
             Ok(profile) => {
                 let message = if profile.source.starts_with("OpenTabletDriver") {
                     "Imported the active OpenTabletDriver mapping. Save writes it as a separate Rust profile."
@@ -1250,6 +1251,9 @@ pub fn run() -> Result<(), String> {
         }
     };
     app.replace_profile(profile, Some(path), false);
+    if profile_snapshot.is_some() {
+        app.profile_revision_floor = app.editor.profile.settings_revision;
+    }
     app.profile_snapshot = profile_snapshot;
     app.set_driver_state(DriverState::Stopped);
     // A profile that failed to load is replaced by defaults; never drive

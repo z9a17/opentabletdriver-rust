@@ -51,7 +51,8 @@ fn usage() -> &'static str {
   opentabletdriver-rust.exe capture [--config driver.toml | --otd-settings settings.json] [--seconds 1..60]
   opentabletdriver-rust.exe --version
 
-Without a profile argument, the daemon reads your OpenTabletDriver PTH-660 settings.json if present.
+Without a profile argument, use the saved Rust driver.toml, then OTD settings if present.
+OTD_RUST_PORTABLE_DIR selects portable storage and disables automatic OTD import.
 Capture does not inject cursor input. Plugin inspection/checks load trusted executable code."
 }
 
@@ -489,8 +490,17 @@ fn load_profile(
 ) -> Result<Profile, String> {
     if let Some(path) = otd_settings {
         Profile::load_otd(path)
+    } else if let Some(path) = config {
+        Profile::load(Some(path))
     } else {
-        Profile::load(config.map(PathBuf::as_path))
+        let path = otd_core::storage::data_directory()?.join("driver.toml");
+        if path.try_exists().map_err(|error| format!("cannot inspect saved profile {}: {error}",path.display()))? {
+            Profile::load(Some(&path))
+        } else if std::env::var_os("OTD_RUST_PORTABLE_DIR").is_some() {
+            Ok(Profile::default())
+        } else {
+            Profile::load(None)
+        }
     }
 }
 

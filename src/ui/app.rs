@@ -199,6 +199,7 @@ impl App {
             editor: Editor::new(Profile::default()),
             profile_path: PathBuf::new(),
             profile_snapshot: None,
+            profile_revision_floor: 0,
             dirty: false,
             selected_filter: 0,
             properties: Vec::new(),
@@ -2079,6 +2080,7 @@ impl App {
         if let Some(path) = path {
             self.profile_path = path;
             self.profile_snapshot = None;
+            self.profile_revision_floor = 0;
         }
         self.dirty = dirty;
         self.selected_filter = 0;
@@ -2122,8 +2124,10 @@ impl App {
         });
         match loaded {
             Ok((profile, snapshot)) => {
+                let revision = profile.settings_revision;
                 self.replace_profile(profile, Some(path.clone()), false);
                 self.profile_snapshot = Some(snapshot);
+                self.profile_revision_floor = revision;
                 self.log(
                     Level::Info,
                     "Settings",
@@ -2173,13 +2177,15 @@ impl App {
 
     fn save_to_mode(&mut self, path: PathBuf, create_new: bool) {
         let result = self.checked_profile().and_then(|mut profile| {
-            profile.advance_revision()?;
             let mode = match self.profile_snapshot.as_ref() {
                 Some(snapshot) if !create_new && snapshot.matches_path(&path)? => {
+                    profile.settings_revision =
+                        profile.settings_revision.max(self.profile_revision_floor);
                     otd_core::storage::SaveMode::Replace(snapshot)
                 }
                 _ => otd_core::storage::SaveMode::CreateNew,
             };
+            profile.advance_revision()?;
             save_profile(&path, &profile, mode).map(|snapshot| (profile, snapshot))
         });
         match result {
@@ -2187,6 +2193,7 @@ impl App {
                 self.editor.profile.settings_revision = profile.settings_revision;
                 self.profile_path = path;
                 self.profile_snapshot = Some(snapshot);
+                self.profile_revision_floor = profile.settings_revision;
                 self.dirty = false;
                 self.update_title();
                 self.update_save_tip();
@@ -2321,8 +2328,11 @@ impl App {
     }
 
     pub(super) fn auto_start(&mut self) {
-        if !self.closing && self.running.is_none() {
-            self.start();
+        if !self.closing && self.running.is_none() && !self.control_busy {
+            match self.checked_profile() {
+                Ok(profile) => self.start_with_intent(profile, true),
+                Err(error) => self.log(Level::Error, "Settings", error),
+            }
         }
     }
 
@@ -2337,11 +2347,20 @@ impl App {
     }
 
     pub(super) fn start_with(&mut self, profile: Profile) {
+        self.start_with_intent(profile, false);
+    }
+
+    fn start_with_intent(&mut self, profile: Profile, automatic: bool) {
         if let Err(error) = self.validate_start(&profile) {
             self.log(Level::Error, "Settings", error);
             return;
         }
-        if self.submit_control(client::ClientCommand::Start(Box::new(profile))) {
+        let command = if automatic {
+            client::ClientCommand::AutoStart(Box::new(profile))
+        } else {
+            client::ClientCommand::Start(Box::new(profile))
+        };
+        if self.submit_control(command) {
             self.set_driver_state(DriverState::Starting);
             self.log(
                 Level::Info,

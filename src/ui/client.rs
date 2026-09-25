@@ -16,6 +16,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
 pub(super) enum ClientCommand {
     /// Attach if a worker already exists; otherwise start with the supplied profile.
     Start(Box<Profile>),
+    /// Launch preference only: never revive a worker this panel already observed.
+    AutoStart(Box<Profile>),
     Stop(WorkerIdentity),
     Restart {
         expected: WorkerIdentity,
@@ -106,12 +108,20 @@ fn profile_text(profile: &Profile) -> Result<String, String> {
     Ok(text)
 }
 
-fn execute(command: ClientCommand, cancelled: &AtomicBool) -> Result<(), String> {
+fn execute(
+    command: ClientCommand,
+    cancelled: &AtomicBool,
+    observed_active: &mut bool,
+) -> Result<(), String> {
+    if matches!(&command, ClientCommand::AutoStart(_)) && *observed_active {
+        return Ok(());
+    }
     let wire = match command {
-        ClientCommand::Start(profile) => {
+        ClientCommand::Start(profile) | ClientCommand::AutoStart(profile) => {
             let text = profile_text(&profile)?;
             let status = crate::daemon::ensure_running(cancelled)?;
             if active(status.state) {
+                *observed_active = true;
                 return Ok(());
             }
             Command::StartIf {
@@ -177,11 +187,15 @@ fn run(
     let mut configured: Option<WorkerIdentity> = None;
     let mut previous_error: Option<String> = None;
     let mut was_online = true;
+    // Retain across disconnections and daemon replacement: a queued launch
+    // preference must not undo an explicit stop/shutdown from another client.
+    let mut observed_active = false;
     while !stop.load(Ordering::Acquire) {
         let snapshot = (|| -> io::Result<(ControlStatus, Option<Box<Profile>>)> {
             let Reply::Status { status } = call(Command::Status)? else {
                 return Err(io::Error::other("Unexpected daemon status response"));
             };
+            observed_active |= active(status.state);
             let identity = status.identity();
             let profile = if active(status.state) && configured.as_ref() != Some(&identity) {
                 match call(Command::GetConfiguration {
@@ -246,7 +260,7 @@ fn run(
         }
         match commands.recv_timeout(Duration::from_millis(500)) {
             Ok(command) => {
-                let result = execute(command, &stop);
+                let result = execute(command, &stop, &mut observed_active);
                 if !publish(
                     &events,
                     ClientEvent::ActionFinished(result),

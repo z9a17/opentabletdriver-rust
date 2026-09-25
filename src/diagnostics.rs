@@ -1,7 +1,5 @@
 //! Explicit diagnostic export, with conservative privacy defaults. This module
 //! never opens a tablet, loads a plugin or subscribes to the report thread.
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -152,22 +150,5 @@ fn daemon_summary(private: bool) -> Value {
 }
 
 fn write_new(path: &Path, data: &[u8]) -> Result<(), String> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|error| {
-            format!(
-                "cannot create {} (choose a new output file): {error}",
-                path.display()
-            )
-        })?;
-    if let Err(error) = file.write_all(data).and_then(|_| file.sync_all()) {
-        drop(file);
-        let cleanup = std::fs::remove_file(path);
-        return Err(format!(
-            "diagnostic write failed: {error}; partial-file cleanup: {cleanup:?}"
-        ));
-    }
-    Ok(())
+    otd_core::storage::save(path, data, otd_core::storage::SaveMode::CreateNew).map(|_| ())
 }

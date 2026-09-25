@@ -155,7 +155,7 @@ impl Daemon {
     fn prepare(profile_toml: Option<String>) -> Result<(Profile, String), ControlError> {
         let profile = match profile_toml {
             Some(text) => Profile::from_toml_text(&text, Path::new("daemon-request.toml")),
-            None => Profile::load(None),
+            None => crate::load_profile(None, None),
         }
         .and_then(|profile| {
             profile.validate_runtime_tablet("Wacom PTH-660")?;

@@ -443,7 +443,8 @@ pub(super) fn serve(handler: &mut impl ControlHandler, stop: &AtomicBool) -> io:
         // A malformed/slow/disconnected client must not terminate the daemon.
         let transaction = (|| -> io::Result<()> {
             let frame = read_frame(pipe.0, deadline, stop, &mut || handler.poll())?;
-            handler.poll();
+            // Dispatch a complete Stop/Shutdown before another lifecycle poll
+            // can activate a pending restart that the command would cancel.
             let response = super::dispatch(handler, &frame);
             shutdown = matches!(response.reply, Reply::ShutdownAccepted);
             let bytes = serde_json::to_vec(&response).map_err(io::Error::other)?;
