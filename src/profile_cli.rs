@@ -1,5 +1,6 @@
 //! Offline profile inspection and migration commands. No device or plugin loads.
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use otd_core::config::{ImportOptions, NativeProfileCollection, OtdSettingsDocument, Profile};
 use otd_core::storage;
@@ -13,14 +14,36 @@ pub fn usage() -> &'static str {
   profiles export PROFILE.toml --output SETTINGS.json
   profiles select COLLECTION.toml --name NAME --output COLLECTION.toml
   profiles recover PROFILE.toml --output RECOVERED.toml
+  profiles get INPUT [--profile INDEX] [--section SECTION]
+  profiles set PROFILE.toml --output NEW.toml [--sensitivity X,Y]
+      [--relative-rotation DEGREES] [--reset-time MS]
   profiles paths
 
 Output files must not already exist. The source file is never overwritten.
 Importing a tablet profile does not establish runtime support for that tablet.
 The legacy flag explicitly activates disabled Radial Follow stores during OTD import.
 Recovery reads the sibling .bak into a new file; it never replaces the source.
+Get prints JSON for one section: all, output, areas, sensitivity, bindings,
+filters or misc (default all). A collection defaults to its selected profile and
+a single Rust profile to index 0; OTD JSON requires --profile.
+Set changes relative-mode settings only and writes a new profile with the next
+settings revision; it neither contacts the daemon nor applies the result.
 OTD_RUST_PORTABLE_DIR selects an explicit absolute portable settings directory."
 }
+
+/// Profile keys shown by `profiles get --section`, grouped like the upstream
+/// console getters (`getareas`, `getsensitivity`, `getbindings`, `getfilters`,
+/// `getmiscsettings`). `output` and `all` are handled separately.
+const SECTIONS: [(&str, &[&str]); 5] = [
+    ("areas", &["monitor", "rotation", "crop", "absolute"]),
+    ("sensitivity", &["relative"]),
+    ("bindings", &["bindings"]),
+    ("filters", &["radial_follow", "plugins"]),
+    (
+        "misc",
+        &["device_path", "schema_version", "settings_revision"],
+    ),
+];
 
 #[derive(Default)]
 struct Options {
@@ -28,6 +51,18 @@ struct Options {
     output: Option<PathBuf>,
     name: Option<String>,
     legacy: bool,
+    section: Option<String>,
+    sensitivity: Option<(f64, f64)>,
+    relative_rotation: Option<f64>,
+    reset_time_ms: Option<u64>,
+}
+
+impl Options {
+    fn sets_relative(&self) -> bool {
+        self.sensitivity.is_some()
+            || self.relative_rotation.is_some()
+            || self.reset_time_ms.is_some()
+    }
 }
 
 enum Input {
@@ -58,7 +93,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     }
     if !matches!(
         command.as_str(),
-        "list" | "preview" | "import" | "export" | "select" | "recover"
+        "list" | "preview" | "import" | "export" | "select" | "recover" | "get" | "set"
     ) {
         return Err(format!("unknown profile command {command:?}\n{}", usage()));
     }
@@ -155,6 +190,45 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 .ok_or("select requires --output FILE")?;
             write_output(output, &collection.to_toml_at(output)?)
         }
+        "get" => {
+            let index = match (&input, options.profile) {
+                (_, Some(index)) => index,
+                (Input::Native(_), None) => 0,
+                (Input::Collection(collection), None) => collection.selected_profile,
+                (Input::Otd(_), None) => {
+                    return Err("get from OTD JSON requires --profile INDEX".into());
+                }
+            };
+            let profile = select_profile(&input, index, options.legacy)?;
+            print_json(&profile_section(
+                &profile,
+                options.section.as_deref().unwrap_or("all"),
+            )?)
+        }
+        "set" => {
+            let Input::Native(mut profile) = input else {
+                return Err("set requires a single Rust profile TOML file. Extract a profile with profiles import first.".into());
+            };
+            let mut relative = profile
+                .relative
+                .ok_or("set changes relative-mode settings; this profile uses absolute output")?;
+            if let Some(sensitivity) = options.sensitivity {
+                relative.sensitivity = sensitivity;
+            }
+            if let Some(rotation) = options.relative_rotation {
+                relative.rotation = rotation;
+            }
+            if let Some(ms) = options.reset_time_ms {
+                relative.reset_delay = Duration::from_millis(ms);
+            }
+            profile.relative = Some(relative.validate()?);
+            profile.advance_revision()?;
+            let output = options
+                .output
+                .as_deref()
+                .ok_or("set requires --output FILE")?;
+            write_output(output, &profile.to_toml_at(output)?)
+        }
         _ => unreachable!("command was validated"),
     }
 }
@@ -192,6 +266,44 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> 
                 }
                 options.legacy = true;
             }
+            "--section" => {
+                if options.section.is_some() {
+                    return Err("--section was specified more than once".into());
+                }
+                let section = option_value(&mut args, &flag)?;
+                if !matches!(section.as_str(), "all" | "output")
+                    && !SECTIONS.iter().any(|(name, _)| *name == section)
+                {
+                    return Err(format!(
+                        "unknown section {section:?}; use all, output, areas, sensitivity, bindings, filters or misc"
+                    ));
+                }
+                options.section = Some(section);
+            }
+            "--sensitivity" => {
+                if options.sensitivity.is_some() {
+                    return Err("--sensitivity was specified more than once".into());
+                }
+                let value = option_value(&mut args, &flag)?;
+                let (x, y) = value.split_once(',').ok_or("--sensitivity requires X,Y")?;
+                options.sensitivity = Some((finite(x, &flag)?, finite(y, &flag)?));
+            }
+            "--relative-rotation" => {
+                if options.relative_rotation.is_some() {
+                    return Err("--relative-rotation was specified more than once".into());
+                }
+                options.relative_rotation = Some(finite(&option_value(&mut args, &flag)?, &flag)?);
+            }
+            "--reset-time" => {
+                if options.reset_time_ms.is_some() {
+                    return Err("--reset-time was specified more than once".into());
+                }
+                options.reset_time_ms = Some(
+                    option_value(&mut args, &flag)?
+                        .parse()
+                        .map_err(|_| "--reset-time requires nonnegative whole milliseconds")?,
+                );
+            }
             _ => return Err(format!("unknown profile option {flag:?}\n{}", usage())),
         }
     }
@@ -210,7 +322,27 @@ fn option_value(
         .ok_or_else(|| format!("{flag} requires a nonempty value"))
 }
 
+fn finite(text: &str, flag: &str) -> Result<f64, String> {
+    text.trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| format!("{flag} requires finite numbers"))
+}
+
 fn validate_options(command: &str, options: &Options) -> Result<(), String> {
+    if options.section.is_some() && command != "get" {
+        return Err(format!(
+            "--section applies only to profiles get\n{}",
+            usage()
+        ));
+    }
+    if options.sets_relative() && command != "set" {
+        return Err(format!(
+            "relative setting options apply only to profiles set\n{}",
+            usage()
+        ));
+    }
     let valid = match command {
         "list" => {
             options.profile.is_none()
@@ -233,6 +365,14 @@ fn validate_options(command: &str, options: &Options) -> Result<(), String> {
                 && options.output.is_some()
                 && options.name.is_some()
                 && !options.legacy
+        }
+        "get" => options.output.is_none() && options.name.is_none(),
+        "set" => {
+            options.profile.is_none()
+                && options.output.is_some()
+                && options.name.is_none()
+                && !options.legacy
+                && options.sets_relative()
         }
         _ => false,
     };
@@ -313,6 +453,56 @@ fn list(input: &Input) -> Result<Value, String> {
     })
 }
 
+fn output_mode(profile: &Profile) -> &'static str {
+    if profile.relative.is_some() {
+        "relative"
+    } else {
+        "absolute"
+    }
+}
+
+/// The profile's stored settings for one `get` section. The archived OTD
+/// document and preserved unknown fields are summarized rather than printed.
+fn profile_section(profile: &Profile, section: &str) -> Result<Value, String> {
+    let tablet = profile
+        .tablet_name()?
+        .unwrap_or_else(|| "Wacom PTH-660".into());
+    if section == "output" {
+        return Ok(json!({"tablet": tablet, "output_mode": output_mode(profile)}));
+    }
+    let document: toml::Value = toml::from_str(&profile.to_toml()?)
+        .map_err(|error| format!("profile did not round-trip through TOML: {error}"))?;
+    let Value::Object(mut settings) =
+        serde_json::to_value(document).map_err(|error| error.to_string())?
+    else {
+        return Err("serialized profile is not a table".into());
+    };
+    settings.remove("imported_otd");
+    settings.remove("preserved_fields");
+    settings.insert("tablet".into(), json!(tablet));
+    settings.insert("output_mode".into(), json!(output_mode(profile)));
+    if section == "all" {
+        settings.insert(
+            "imported_otd_archive".into(),
+            json!(profile.imported_otd.is_some()),
+        );
+        settings.insert(
+            "preserved_field_count".into(),
+            json!(profile.preserved_fields.len()),
+        );
+        return Ok(Value::Object(settings));
+    }
+    let (_, keys) = SECTIONS
+        .iter()
+        .find(|(name, _)| *name == section)
+        .ok_or_else(|| format!("unknown section {section:?}"))?;
+    let mut selected = serde_json::Map::new();
+    for key in ["tablet", "output_mode"].iter().chain(keys.iter()) {
+        selected.insert((*key).into(), settings.remove(*key).unwrap_or(Value::Null));
+    }
+    Ok(Value::Object(selected))
+}
+
 fn native_summary(index: usize, name: Option<&str>, profile: &Profile) -> Result<Value, String> {
     let tablet = profile
         .tablet_name()?
@@ -320,7 +510,7 @@ fn native_summary(index: usize, name: Option<&str>, profile: &Profile) -> Result
     Ok(json!({"index": index, "name": name, "tablet": tablet,
         "runtime_tablet_supported": tablet == "Wacom PTH-660",
         "schema_version": profile.schema_version, "settings_revision": profile.settings_revision,
-        "output_mode": if profile.relative.is_some() { "relative" } else { "absolute" }}))
+        "output_mode": output_mode(profile)}))
 }
 
 fn print_json(value: &Value) -> Result<(), String> {
