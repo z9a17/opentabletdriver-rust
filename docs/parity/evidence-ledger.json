@@ -50,7 +50,7 @@
         }
       ],
       "blockers": [
-        "The pure matcher is not connected to live HID discovery or initialization."
+        "Live Windows matching is now implemented for the supported PTH-660 path; new matching/ambiguity/override behavior has no current hardware validation."
       ]
     },
     "CAP-03": {
@@ -59,7 +59,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Selected HID initialization is implemented; current hardware validation is pending. Partial failures abort the session, and synchronous HID string/feature calls cannot be cancelled in flight."
+      ]
     },
     "CAP-04": {
       "state": "open",
@@ -83,7 +85,7 @@
         }
       ],
       "blockers": [
-        "Physical endpoint pairing is tested only with fake collections; the live driver still opens only its fixed PTH-660 pen collection."
+        "Live physical identity now pairs PTH-660 collections, but auxiliary reading and current physical pairing evidence remain open."
       ]
     },
     "CAP-05": {
@@ -116,7 +118,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Bounded native report types and owned managed pen reports are implemented; wider reports, non-position mutation propagation and current integration/hardware evidence remain open."
+      ]
     },
     "CAP-09": {
       "state": "open",
@@ -124,7 +128,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Native capability values and an IntuosV2 auxiliary decoder are foundations only; auxiliary endpoint reading and full report routing/output remain open."
+      ]
     },
     "CAP-10": {
       "state": "open",
@@ -266,7 +272,9 @@
           "command": "cargo test --locked -p otd-core properties"
         }
       ],
-      "blockers": []
+      "blockers": [
+        "Fixed-capacity shared action ownership and a Windows adapter are implemented as foundations. Integration with all bindings and current failure/cleanup execution evidence remain open."
+      ]
     },
     "CAP-18": {
       "state": "open",
@@ -306,7 +314,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Schema-1 profiles preserve complete OTD source documents and profile collections; full executable settings/tool coverage and current round-trip execution evidence remain open."
+      ]
     },
     "CAP-23": {
       "state": "open",
@@ -314,7 +324,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "New imports honor Enable and preserve source/unknown values. Broader filter/store execution and current migration execution evidence remain open; historical evidence does not cover the new schema."
+      ]
     },
     "CAP-24": {
       "state": "open",
@@ -330,7 +342,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Profile collection, import preview and export reconciliation foundations exist; complete presets/UI workflows and current end-to-end validation remain open."
+      ]
     },
     "CAP-26": {
       "state": "open",
@@ -346,7 +360,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Headless CLI daemon implemented; GUI remains in-process. Current daemon lifecycle, startup-race and output-cleanup validation remain open."
+      ]
     },
     "CAP-28": {
       "state": "open",
@@ -354,7 +370,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Project-local versioned control protocol implemented; upstream RPC, subscriptions, GUI reconnect and current IPC/security execution evidence remain open."
+      ]
     },
     "CAP-29": {
       "state": "open",
@@ -362,7 +380,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Daemon/profile CLI increments implemented; full command coverage and current CLI execution evidence remain open."
+      ]
     },
     "CAP-30": {
       "state": "open",
@@ -544,7 +564,7 @@
         }
       ],
       "blockers": [
-        "The bridge receives a pinned database configuration at plugin load, but the live driver still chooses built-in PTH-660 and its first digitizer identifier. Other services, type conversion, validation and wider unchanged plugins remain open."
+        "Supported live selected configuration/identifier supplies TabletReference; broader dependency services and current selected-device integration evidence remain open."
       ]
     },
     "CAP-39": {
@@ -553,7 +573,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Owned managed pen/raw/button data with tilt/proximity implemented; full report interfaces, concrete vendor types and non-position output mutations remain open. Per-call managed allocation has no current performance evidence."
+      ]
     },
     "CAP-40": {
       "state": "open",

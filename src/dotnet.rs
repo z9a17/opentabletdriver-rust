@@ -2,7 +2,7 @@
 //! profiles never initialize .NET. Managed calls are direct function pointers;
 //! there is no JSON serialization or interprocess message per pen report.
 use crate::plugins::{Library, wide};
-use otd_plugin_api::FilterApi;
+use otd_plugin_api::{FilterApi, Sample};
 use std::ffi::{OsStr, OsString, c_void};
 use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
@@ -12,11 +12,33 @@ type GetApi = unsafe extern "C" fn() -> *const FilterApi;
 type GetPosition = unsafe extern "C" fn(*mut c_void) -> i32;
 type Inspect = unsafe extern "C" fn(*const u8, i32, *mut u8, i32) -> i32;
 type GetError = unsafe extern "C" fn(*mut u8, i32) -> i32;
+type ProcessReport = unsafe extern "C" fn(*mut c_void, *mut Sample, *const NativePenReport) -> i32;
+type ResetReport = unsafe extern "C" fn(*mut c_void, *const u8, u32) -> i32;
+
+/// Managed bridge extension only. Native filter ABI v1 remains unchanged.
+/// Layout matches NativePenReport in compat/OtdCompat/EntryPoints.cs.
+#[repr(C)]
+struct NativePenReport {
+    version: u32,
+    size: u32,
+    raw: *const u8,
+    raw_length: u32,
+    pen_buttons: u32,
+    pen_button_count: u32,
+    tilt_x: f32,
+    tilt_y: f32,
+    near_proximity: u32,
+    hover_distance: u32,
+    capabilities: u32,
+}
+
 struct Bridge {
     get_api: GetApi,
     get_position: GetPosition,
     inspect: Inspect,
     get_error: GetError,
+    process_report: ProcessReport,
+    reset_report: ResetReport,
 }
 static BRIDGE: OnceLock<Result<Bridge, String>> = OnceLock::new();
 
@@ -112,6 +134,14 @@ fn load_bridge() -> Result<Bridge, String> {
         },
         inspect: unsafe { std::mem::transmute::<*mut c_void, Inspect>(entry("Inspect")?) },
         get_error: unsafe { std::mem::transmute::<*mut c_void, GetError>(entry("GetError")?) },
+        process_report: unsafe {
+            std::mem::transmute::<*mut c_void, ProcessReport>(entry("ProcessReport").map_err(|error|
+                format!("The installed .NET bridge lacks owned raw-report support. Replace the compat directory with this release's files: {error}"))?)
+        },
+        reset_report: unsafe {
+            std::mem::transmute::<*mut c_void, ResetReport>(entry("ResetReport").map_err(|error|
+                format!("The installed .NET bridge lacks owned reset-report support. Replace the compat directory with this release's files: {error}"))?)
+        },
     };
     // The runtime and managed entry points live for this process. Retain the
     // hosting module as well; do not attempt to unload CoreCLR under plugins.
@@ -141,6 +171,53 @@ pub fn position(context: *mut c_void) -> Result<crate::plugins::PipelineStage, S
         -1 => Err(last_error()),
         other => Err(format!("unsupported .NET pipeline position {other}")),
     }
+}
+
+/// Copies into fresh managed ownership during this synchronous call. The native
+/// pointer is never retained by the bridge. The PTH adapter checks ID and length.
+pub fn process_report(
+    context: *mut c_void,
+    sample: &mut Sample,
+    pen: crate::protocol::PenReport,
+    raw: &[u8],
+) -> i32 {
+    let (flags_at, button_count, minimum) = match pen.id {
+        0x10 => (1, 2, 17),
+        0x1e => (2, 3, 13),
+        _ => return -1,
+    };
+    if raw.first() != Some(&pen.id) || raw.len() < minimum || raw.len() > 192 {
+        return -1;
+    }
+    let report = NativePenReport {
+        version: 1,
+        size: std::mem::size_of::<NativePenReport>() as u32,
+        raw: raw.as_ptr(),
+        raw_length: raw.len() as u32,
+        pen_buttons: u32::from(raw[flags_at] >> 1) & ((1 << button_count) - 1),
+        pen_button_count: button_count,
+        tilt_x: f32::from(pen.tilt[0]),
+        tilt_y: f32::from(pen.tilt[1]),
+        near_proximity: u32::from(pen.in_range),
+        hover_distance: u32::from(pen.hover_distance.unwrap_or(0)),
+        // IProximityReport requires both fields. Offset distance is unknown in
+        // the checked native decoder; do not advertise an invented zero value.
+        capabilities: u32::from(pen.hover_distance.is_some()),
+    };
+    let Ok(bridge) = bridge() else {
+        return -1;
+    };
+    unsafe { (bridge.process_report)(context, sample, &report) }
+}
+
+pub fn reset_report(context: *mut c_void, raw: &[u8]) -> i32 {
+    if raw.len() > 192 {
+        return -1;
+    }
+    let Ok(bridge) = bridge() else {
+        return -1;
+    };
+    unsafe { (bridge.reset_report)(context, raw.as_ptr(), raw.len() as u32) }
 }
 
 pub fn last_error() -> String {
@@ -264,6 +341,25 @@ mod tests {
     use otd_core::pipeline::ReportPipeline;
     use otd_plugin_api::Sample;
     use std::time::{Duration, Instant};
+
+    // Existing synthetic pipeline fixtures now supply the raw context required
+    // by managed dispatch, just as the transport session does.
+    fn prepare_synthetic_pen(chain: &mut PluginChain, pen: PenReport) {
+        let mut raw = [0u8; 192];
+        raw[0] = pen.id;
+        raw[1] = u8::from(pen.tip_switch)
+            | (u8::from(pen.eraser) << 4)
+            | (u8::from(pen.in_range) << 5)
+            | (u8::from(pen.sense) << 6);
+        raw[2..5].copy_from_slice(&pen.x.to_le_bytes()[..3]);
+        raw[5..8].copy_from_slice(&pen.y.to_le_bytes()[..3]);
+        raw[8..10].copy_from_slice(&pen.pressure.to_le_bytes());
+        raw[10] = pen.tilt[0] as u8;
+        raw[11] = pen.tilt[1] as u8;
+        raw[12..14].copy_from_slice(&pen.rotation.unwrap_or(0).to_le_bytes());
+        raw[16] = pen.hover_distance.unwrap_or(0);
+        chain.prepare_report(pen, &raw);
+    }
 
     #[test]
     #[ignore = "requires bridge and SettingsFixture DLL; set OTD_COMPAT_DIR and OTD_TEST_SETTINGS_PLUGIN"]
@@ -532,6 +628,7 @@ mod tests {
         };
         std::thread::sleep(Duration::from_millis(55));
         let mut first = None;
+        prepare_synthetic_pen(&mut chain, pen);
         assert!(
             pipeline
                 .process(pen, Instant::now(), Some(mapper), &mut chain, |packet| {
@@ -543,6 +640,7 @@ mod tests {
         assert!(first.is_some());
         pen.x += 20; // Under one screen pixel, inside the configured 5 px dead zone.
         let mut second = None;
+        prepare_synthetic_pen(&mut chain, pen);
         assert!(
             !pipeline
                 .process(pen, Instant::now(), Some(mapper), &mut chain, |packet| {
@@ -608,6 +706,7 @@ mod tests {
             let mut run = |reports: u32| {
                 for index in 0..reports {
                     pen.x = 20_000 + index % 1_000;
+                    prepare_synthetic_pen(&mut chain, pen);
                     pipeline
                         .process(pen, Instant::now(), Some(mapper), &mut chain, |packet| {
                             black_box(packet);

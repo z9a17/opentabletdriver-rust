@@ -64,6 +64,10 @@ impl PluginConfig {
 /// pipeline calls them. PreTransform filters receive report units; Pixels
 /// filters receive display pixels after absolute mapping.
 pub trait Filters {
+    /// Supplies the exact transport packet before its decoded pen is dispatched.
+    /// Implementations retaining it must copy into storage allocated at setup.
+    /// Synthetic position-only consumers may leave this hook as a no-op.
+    fn prepare_report(&mut self, _pen: PenReport, _raw: &[u8]) {}
     fn has_pre(&self) -> bool;
     fn process_pre(&mut self, position: (f32, f32), pen: PenReport, now: Instant) -> (f32, f32);
     fn has_pixels(&self) -> bool;

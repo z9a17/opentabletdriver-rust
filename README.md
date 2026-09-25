@@ -14,9 +14,39 @@ On Windows, double-click **opentabletdriver-rust.exe**. It is a console applicat
 
 With no arguments, the driver reads `%LOCALAPPDATA%\OpenTabletDriver\settings.json` and selects its **Wacom PTH-660** profile. It follows the enabled absolute or relative output mode and enabled tip/eraser bindings with their pressure activation thresholds. Absolute mode imports tablet and display area sizes and centers, tablet rotation, clipping, and area limiting. Relative mode imports per-axis sensitivity, rotation, and reset delay, preserving fractional motion between reports. The current development-machine absolute profile maps an 85 × 47.8125 mm tablet area to a 2560 × 1440 display area with clipping and a 1% tip threshold. Profile values are read at launch, so restart the daemon after changing them in OpenTabletDriver.
 
-When the PTH-660 profile contains **AbstractQbit's Radial Follow Smoothing (Tablet coordinates)** (`RadialFollow.RadialFollowSmoothingTabletSpace`), the Rust implementation enables it automatically before absolute or relative mapping, even if OpenTabletDriver's `Enable` flag is false. This is an intentional override for the Rust build; the console reports it. It reads the original `OuterRadius`, `InnerRadius`, `SmoothingCoefficient`, `SoftKneeScale`, and `SmoothingLeakCoefficient` properties; the current profile uses 0.7039 mm, 0.302 mm, 0.302, 0.603, and 0.201 respectively. The filter keeps its original dead zone, radial curve, and 50 ms reset. This built-in path loads no .NET DLL. Other enabled filters in imported OTD settings are reported and skipped; add their DLLs explicitly through the plugin manager. Pen side buttons and tablet express keys remain unimplemented. Unsupported output modes and nonstandard tip actions are rejected with a clear message rather than silently using a different mapping. If OpenTabletDriver settings are absent, the built-in fallback maps the whole PTH-660 to the whole virtual desktop without filtering.
+New OpenTabletDriver imports honor each filter's `Enable` flag. Enabled **Radial Follow Smoothing (Tablet coordinates)** entries become the native Rust filter; disabled entries remain in the preserved source archive and are not activated. Existing saved native `[[radial_follow]]` entries stay active when an older Rust profile is loaded. The explicit legacy import option restores the earlier force-enable behavior for that import only. The native filter keeps its original settings, curve and 50 ms reset without loading .NET. Other unsupported enabled filters and bindings produce diagnostics and remain archived; add supported filter DLLs explicitly to run them. Unsupported output modes are rejected. Pen side buttons, express keys and Windows Ink output remain unimplemented.
 
 For relative mode without OpenTabletDriver settings, use `opentabletdriver-rust.exe run --config driver.relative.example.toml`. [Relative mode details](docs/RELATIVE_MODE.md) document reset behavior, performance checks, and upstream compatibility. Windows pointer speed and acceleration affect relative motion. Relative mode has automated replay coverage but still needs live tablet validation.
+
+## Profiles and headless control
+
+Schema-1 TOML profiles preserve the full original OpenTabletDriver settings text, source revision, disabled stores and unknown fields. Unsupported native TOML fields are archived under `preserved_fields`; preservation does not execute those features. The profile collection and import/export commands can inspect other tablets' settings, but the driver still runs only a supported USB PTH-660 configuration. Export reconciles representable edits into a copy and leaves the original source archive unchanged. See [settings contracts](docs/parity/BEHAVIOR_CONTRACTS.md#settings-import).
+
+Offline profile commands do not open devices or load plugins. Profile indexes start at zero, and output files must be new:
+
+```text
+opentabletdriver-rust.exe profiles list settings.json
+opentabletdriver-rust.exe profiles preview settings.json --profile 0
+opentabletdriver-rust.exe profiles import settings.json --profile 0 --output imported.toml
+opentabletdriver-rust.exe profiles export imported.toml --output exported-settings.json
+opentabletdriver-rust.exe profiles select collection.toml --name Gaming --output selected-collection.toml
+```
+
+Use `--legacy-force-radial-follow` on OTD preview/import only when that earlier behavior is intended. Collection selection does not switch a running driver; extract the desired entry with `profiles import` before starting it.
+
+An optional headless daemon stays open independently of CLI clients:
+
+```text
+opentabletdriver-rust.exe daemon --background
+opentabletdriver-rust.exe start --config driver.toml
+opentabletdriver-rust.exe status
+opentabletdriver-rust.exe stop
+opentabletdriver-rust.exe shutdown
+```
+
+`daemon --background` creates no console window and starts an idle control service. `start` requests a driver worker; inspect `status` for startup errors. `stop` can return `stopping` until cleanup finishes; `shutdown` exits the service after worker cleanup. A running worker may be waiting for a tablet. The GUI still owns its own worker: it does not attach to this service yet, and closing it stops that worker. The existing single-instance guard prevents two Rust workers from injecting simultaneously. The console's no-argument foreground behavior is retained.
+
+Control uses a versioned, bounded, current-user Windows named pipe; it rejects remote clients. After a timeout, check status before retrying a command because the daemon may already have accepted it. Device initialization checks cancellation between operations, but synchronous HID string/feature calls cannot be cancelled in flight. Interactive UI, daemon IPC and hardware validation for 0.8.0 remain pending.
 
 ## Build and diagnostics
 

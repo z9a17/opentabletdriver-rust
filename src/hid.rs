@@ -1,32 +1,39 @@
 //! Narrow ownership wrappers for Windows HID discovery and PnP notification.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::c_void;
 use std::io;
 use std::mem::size_of;
 use std::os::windows::ffi::OsStringExt;
 use std::ptr;
 
+use otd_core::endpoint_match::{self, Endpoint, Transport};
+use otd_core::tablets::{Database, DeviceIdentifier, Role, TabletConfiguration};
 use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
-    CM_NOTIFY_ACTION, CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL,
+    CM_Get_Device_IDW, CM_Get_Parent, CM_NOTIFY_ACTION, CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL,
     CM_NOTIFY_ACTION_DEVICEREMOVECOMPLETE, CM_NOTIFY_FILTER, CM_NOTIFY_FILTER_0,
     CM_NOTIFY_FILTER_0_0, CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE, CM_Register_Notification,
     CM_Unregister_Notification, CR_SUCCESS, DIGCF_DEVICEINTERFACE, DIGCF_PRESENT, HCMNOTIFICATION,
-    HDEVINFO, SP_DEVICE_INTERFACE_DATA, SP_DEVICE_INTERFACE_DETAIL_DATA_W,
+    HDEVINFO, SP_DEVICE_INTERFACE_DATA, SP_DEVICE_INTERFACE_DETAIL_DATA_W, SP_DEVINFO_DATA,
     SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInterfaces, SetupDiGetClassDevsW,
     SetupDiGetDeviceInterfaceDetailW,
 };
 use windows_sys::Win32::Devices::HumanInterfaceDevice::{
     HIDD_ATTRIBUTES, HIDP_CAPS, HIDP_STATUS_SUCCESS, HidD_FreePreparsedData, HidD_GetAttributes,
-    HidD_GetHidGuid, HidD_GetPreparsedData, HidP_GetCaps, PHIDP_PREPARSED_DATA,
+    HidD_GetHidGuid, HidD_GetIndexedString, HidD_GetPreparsedData, HidD_SetFeature, HidP_GetCaps,
+    PHIDP_PREPARSED_DATA,
 };
 use windows_sys::Win32::Foundation::{
-    CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_NO_MORE_ITEMS, GENERIC_READ, HANDLE,
-    INVALID_HANDLE_VALUE,
+    CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_NO_MORE_ITEMS, GENERIC_READ,
+    GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_FLAG_OVERLAPPED, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    CreateFileW, FILE_FLAG_OVERLAPPED, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, WriteFile,
 };
-use windows_sys::Win32::System::Threading::{CreateEventW, GetCurrentProcess, SetEvent};
+use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
+use windows_sys::Win32::System::Threading::{
+    CreateEventW, GetCurrentProcess, SetEvent, WaitForMultipleObjects, WaitForSingleObject,
+};
 use windows_sys::core::GUID;
 
 pub const WACOM_VENDOR: u16 = 0x056a;
@@ -125,6 +132,7 @@ pub struct Candidate {
     pub input_length: u16,
     pub usage_page: u16,
     pub usage: u16,
+    pub endpoint: Endpoint,
 }
 
 impl Candidate {
@@ -163,10 +171,14 @@ impl Candidate {
     }
 
     pub fn open_read(&self) -> io::Result<OwnedHandle> {
+        self.open(false)
+    }
+
+    pub fn open(&self, write: bool) -> io::Result<OwnedHandle> {
         let raw = unsafe {
             CreateFileW(
                 self.path.as_ptr(),
-                GENERIC_READ,
+                GENERIC_READ | if write { GENERIC_WRITE } else { 0 },
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
                 ptr::null(),
                 OPEN_EXISTING,
@@ -192,7 +204,10 @@ fn hid_guid() -> GUID {
     guid
 }
 
-fn detail_path(set: HDEVINFO, interface: &SP_DEVICE_INTERFACE_DATA) -> io::Result<Vec<u16>> {
+fn detail_path(
+    set: HDEVINFO,
+    interface: &SP_DEVICE_INTERFACE_DATA,
+) -> io::Result<(Vec<u16>, String)> {
     let mut required = 0u32;
     unsafe {
         SetupDiGetDeviceInterfaceDetailW(
@@ -214,6 +229,10 @@ fn detail_path(set: HDEVINFO, interface: &SP_DEVICE_INTERFACE_DATA) -> io::Resul
         .as_mut_ptr()
         .cast::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>();
     unsafe { (*detail).cbSize = size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>() as u32 };
+    let mut device = SP_DEVINFO_DATA {
+        cbSize: size_of::<SP_DEVINFO_DATA>() as u32,
+        ..Default::default()
+    };
     if unsafe {
         SetupDiGetDeviceInterfaceDetailW(
             set,
@@ -221,7 +240,7 @@ fn detail_path(set: HDEVINFO, interface: &SP_DEVICE_INTERFACE_DATA) -> io::Resul
             detail,
             required,
             &mut required,
-            ptr::null_mut(),
+            &mut device,
         )
     } == 0
     {
@@ -239,10 +258,49 @@ fn detail_path(set: HDEVINFO, interface: &SP_DEVICE_INTERFACE_DATA) -> io::Resul
     };
     let mut out = raw[..end].to_vec();
     out.push(0);
-    Ok(out)
+    Ok((out, physical_id(device.DevInst)))
 }
 
-fn inspect(path: &[u16]) -> Option<Candidate> {
+// Walk collection/interface ancestors to the physical USB device. Never pair
+// unrelated devices using only VID/PID or a collection path with bits removed.
+fn physical_id(mut instance: u32) -> String {
+    for _ in 0..12 {
+        let mut buffer = [0u16; 512];
+        if unsafe { CM_Get_Device_IDW(instance, buffer.as_mut_ptr(), buffer.len() as u32, 0) }
+            == CR_SUCCESS
+        {
+            let length = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+            let id = String::from_utf16_lossy(&buffer[..length]).to_uppercase();
+            if id.starts_with("USB\\VID_") && !id.contains("&MI_") {
+                return id;
+            }
+        }
+        let mut parent = 0;
+        if unsafe { CM_Get_Parent(&mut parent, instance, 0) } != CR_SUCCESS {
+            break;
+        }
+        instance = parent;
+    }
+    String::new()
+}
+
+fn indexed_string(handle: HANDLE, index: u8) -> io::Result<String> {
+    let mut buffer = [0u16; 256];
+    if !unsafe {
+        HidD_GetIndexedString(
+            handle,
+            u32::from(index),
+            buffer.as_mut_ptr().cast(),
+            size_of::<[u16; 256]>() as u32,
+        )
+    } {
+        return Err(io::Error::last_os_error());
+    }
+    let length = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+    Ok(String::from_utf16_lossy(&buffer[..length]))
+}
+
+fn inspect(path: &[u16], physical_id: String, database: &Database) -> Option<Candidate> {
     let handle = OwnedHandle::new(unsafe {
         CreateFileW(
             path.as_ptr(),
@@ -264,9 +322,7 @@ fn inspect(path: &[u16]) -> Option<Candidate> {
     if !unsafe { HidD_GetAttributes(handle.raw(), &mut attrs) } {
         return None;
     }
-    if attrs.VendorID != WACOM_VENDOR || attrs.ProductID != PTH660_USB {
-        return None;
-    }
+    database.find(attrs.VendorID, attrs.ProductID).next()?;
     let mut preparsed: PHIDP_PREPARSED_DATA = 0;
     if !unsafe { HidD_GetPreparsedData(handle.raw(), &mut preparsed) } {
         return None;
@@ -277,6 +333,47 @@ fn inspect(path: &[u16]) -> Option<Candidate> {
     if status != HIDP_STATUS_SUCCESS {
         return None;
     }
+    let path_text = String::from_utf16_lossy(&path[..path.len().saturating_sub(1)]);
+    let indices: BTreeSet<u8> = database
+        .find(attrs.VendorID, attrs.ProductID)
+        .flat_map(|found| {
+            found
+                .identifier
+                .device_strings
+                .iter()
+                .flat_map(|strings| strings.keys())
+        })
+        .filter_map(|index| index.parse().ok())
+        .collect();
+    let strings = indices
+        .into_iter()
+        .filter_map(|index| {
+            indexed_string(handle.raw(), index)
+                .ok()
+                .map(|value| (index, value))
+        })
+        .collect();
+    let mut attributes = BTreeMap::new();
+    if let Some((_, after)) = path_text.to_ascii_lowercase().split_once("&mi_")
+        && let Some(value) = after
+            .get(..2)
+            .and_then(|value| u8::from_str_radix(value, 16).ok())
+    {
+        attributes.insert("USB_INTERFACE_NUMBER".into(), value.to_string());
+    }
+    let endpoint = Endpoint {
+        path: path_text,
+        physical_id,
+        transport: Transport::UsbHid,
+        vendor_id: attrs.VendorID,
+        product_id: attrs.ProductID,
+        can_open: true,
+        input_length: u32::from(caps.InputReportByteLength),
+        output_length: u32::from(caps.OutputReportByteLength),
+        feature_length: u32::from(caps.FeatureReportByteLength),
+        strings,
+        attributes: Some(attributes),
+    };
     Some(Candidate {
         path: path.to_vec(),
         vendor: attrs.VendorID,
@@ -284,10 +381,15 @@ fn inspect(path: &[u16]) -> Option<Candidate> {
         input_length: caps.InputReportByteLength,
         usage_page: caps.UsagePage,
         usage: caps.Usage,
+        endpoint,
     })
 }
 
 pub fn enumerate() -> io::Result<Vec<Candidate>> {
+    enumerate_with_database(Database::builtin())
+}
+
+pub fn enumerate_with_database(database: &Database) -> io::Result<Vec<Candidate>> {
     let guid = hid_guid();
     let set = unsafe {
         SetupDiGetClassDevsW(
@@ -317,8 +419,8 @@ pub fn enumerate() -> io::Result<Vec<Candidate>> {
             }
             return Err(error);
         }
-        if let Ok(path) = detail_path(set, &interface)
-            && let Some(candidate) = inspect(&path)
+        if let Ok((path, physical_id)) = detail_path(set, &interface)
+            && let Some(candidate) = inspect(&path, physical_id, database)
         {
             found.push(candidate);
         }
@@ -326,6 +428,220 @@ pub fn enumerate() -> io::Result<Vec<Candidate>> {
     }
     found.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(found)
+}
+
+pub struct SelectedDevice<'a> {
+    pub pen: &'a Candidate,
+    pub configuration: TabletConfiguration,
+    pub identifier: DeviceIdentifier,
+    pub auxiliary: Option<(&'a Candidate, DeviceIdentifier)>,
+}
+
+/// Database predicates govern selection; the execution gate remains explicit
+/// until other parser/specification combinations have a runtime implementation.
+pub fn select_pth660<'a>(
+    devices: &'a [Candidate],
+    database: &Database,
+    path: Option<&str>,
+) -> Result<Option<SelectedDevice<'a>>, String> {
+    let builtin = Database::builtin()
+        .find(WACOM_VENDOR, PTH660_USB)
+        .find(|found| found.role == Role::Digitizer)
+        .expect("pinned PTH-660 configuration");
+    let mut selected = None;
+    for found in database.find(WACOM_VENDOR, PTH660_USB).filter(|found| {
+        found.role == Role::Digitizer && found.configuration.name == "Wacom PTH-660"
+    }) {
+        for device in devices
+            .iter()
+            .filter(|device| path.is_none_or(|path| device.path_text().eq_ignore_ascii_case(path)))
+        {
+            if endpoint_match::matches(&device.endpoint, &found).is_err() {
+                continue;
+            }
+            if found.identifier.parser() != builtin.identifier.parser()
+                || device.input_length != PEN_REPORT_LENGTH
+                || found.configuration.specifications != builtin.configuration.specifications
+            {
+                return Err("The matched PTH-660 override changes its parser, report length or specifications; this runtime cannot safely execute that configuration yet.".into());
+            }
+            if let Some(previous) = &selected {
+                let previous: &SelectedDevice<'_> = previous;
+                if previous.pen.path != device.path {
+                    return Err("Multiple matching PTH-660 pen endpoints; select device_path in the profile.".into());
+                }
+                continue;
+            }
+            let auxiliary = database
+                .find(device.vendor, device.product)
+                .filter(|aux| {
+                    aux.role == Role::Auxiliary
+                        && std::ptr::eq(aux.configuration, found.configuration)
+                })
+                .find_map(|aux| {
+                    devices
+                        .iter()
+                        .find(|other| {
+                            other.path != device.path
+                                && !other.endpoint.physical_id.is_empty()
+                                && other.endpoint.physical_id == device.endpoint.physical_id
+                                && endpoint_match::matches(&other.endpoint, &aux).is_ok()
+                        })
+                        .map(|endpoint| (endpoint, aux.identifier.clone()))
+                });
+            let mut configuration = found.configuration.clone();
+            // The managed TabletReference constructor receives the actual selected identifier.
+            configuration.digitizer_identifiers = vec![found.identifier.clone()];
+            selected = Some(SelectedDevice {
+                pen: device,
+                configuration,
+                identifier: found.identifier.clone(),
+                auxiliary,
+            });
+        }
+    }
+    Ok(selected)
+}
+
+/// Initialization follows pinned InputDevice.Initialize: strings, delayed
+/// features, then output writes. Unlike upstream's warning-and-continue policy,
+/// failures abort this session so partially initialized hardware never injects.
+pub fn initialize(
+    candidate: &Candidate,
+    handle: &OwnedHandle,
+    identifier: &DeviceIdentifier,
+    configuration: &TabletConfiguration,
+    stop: &Event,
+) -> io::Result<()> {
+    let cancelled = || {
+        if unsafe { WaitForSingleObject(stop.raw(), 0) } == WAIT_OBJECT_0 {
+            Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "device initialization cancelled",
+            ))
+        } else {
+            Ok(())
+        }
+    };
+    let delay = configuration
+        .attributes
+        .as_ref()
+        .and_then(|attributes| attributes.get("FeatureInitDelayMs"))
+        .map(|text| {
+            text.parse::<u32>().map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "invalid FeatureInitDelayMs")
+            })
+        })
+        .transpose()?
+        .unwrap_or(0);
+    if delay == u32::MAX {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "infinite feature initialization delay is unsupported",
+        ));
+    }
+    for &index in identifier
+        .initialization_strings
+        .as_deref()
+        .unwrap_or_default()
+    {
+        cancelled()?;
+        indexed_string(handle.raw(), index)?;
+    }
+    for report in identifier
+        .feature_init_report
+        .iter()
+        .flatten()
+        .filter(|report| !report.0.is_empty())
+    {
+        cancelled()?;
+        match unsafe { WaitForSingleObject(stop.raw(), delay) } {
+            WAIT_OBJECT_0 => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "device initialization cancelled",
+                ));
+            }
+            WAIT_TIMEOUT => {}
+            _ => return Err(io::Error::last_os_error()),
+        }
+        let mut data = padded_report(&report.0, candidate.endpoint.feature_length)?;
+        if !unsafe { HidD_SetFeature(handle.raw(), data.as_mut_ptr().cast(), data.len() as u32) } {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    for report in identifier
+        .output_init_report
+        .iter()
+        .flatten()
+        .filter(|report| !report.0.is_empty())
+    {
+        cancelled()?;
+        let data = padded_report(&report.0, candidate.endpoint.output_length)?;
+        let event = Event::create(true)?;
+        let mut operation = OVERLAPPED {
+            hEvent: event.raw(),
+            ..Default::default()
+        };
+        let started = unsafe {
+            WriteFile(
+                handle.raw(),
+                data.as_ptr(),
+                data.len() as u32,
+                ptr::null_mut(),
+                &mut operation,
+            )
+        };
+        if started == 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(windows_sys::Win32::Foundation::ERROR_IO_PENDING as i32)
+            {
+                return Err(error);
+            }
+            let handles = [stop.raw(), event.raw()];
+            let result = unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, 5000) };
+            if result != WAIT_OBJECT_0 + 1 {
+                unsafe {
+                    CancelIoEx(handle.raw(), &operation);
+                }
+                let mut ignored = 0;
+                unsafe {
+                    GetOverlappedResult(handle.raw(), &operation, &mut ignored, 1);
+                }
+                return Err(io::Error::new(
+                    if result == WAIT_OBJECT_0 {
+                        io::ErrorKind::Interrupted
+                    } else {
+                        io::ErrorKind::TimedOut
+                    },
+                    "device initialization write cancelled or timed out",
+                ));
+            }
+        }
+        let mut written = 0;
+        if unsafe { GetOverlappedResult(handle.raw(), &operation, &mut written, 0) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if written != data.len() as u32 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "partial device initialization write",
+            ));
+        }
+    }
+    cancelled()
+}
+
+fn padded_report(report: &[u8], length: u32) -> io::Result<Vec<u8>> {
+    if length == 0 || report.len() > length as usize || length > u16::MAX as u32 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "initialization report exceeds endpoint report length",
+        ));
+    }
+    let mut data = vec![0; length as usize];
+    data[..report.len()].copy_from_slice(report);
+    Ok(data)
 }
 
 unsafe extern "system" fn notification_callback(

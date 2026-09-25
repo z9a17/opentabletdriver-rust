@@ -290,12 +290,14 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .as_nanos();
     let temporary = parent.join(format!(".otd-profile-{}-{stamp}.tmp", std::process::id()));
+    let mut created = false;
     let outcome = (|| -> Result<(), String> {
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&temporary)
             .map_err(|e| e.to_string())?;
+        created = true;
         file.write_all(contents)
             .and_then(|_| file.sync_all())
             .map_err(|e| e.to_string())?;
@@ -314,7 +316,7 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), String> {
         }
         Ok(())
     })();
-    if outcome.is_err() {
+    if created && outcome.is_err() {
         let _ = std::fs::remove_file(&temporary);
     }
     outcome
