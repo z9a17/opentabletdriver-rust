@@ -59,6 +59,10 @@ pub struct Profile {
     pub auto_enabled_radial_follow: usize,
     pub ignored_filters: usize,
     pub source: String,
+    /// The tablet a native profile is for, by configuration name, or `None`
+    /// for whichever tablet is connected. Imported profiles name their
+    /// tablet in the preserved OpenTabletDriver document instead.
+    pub target_tablet: Option<String>,
     /// The tablet this profile drives. Not saved: an imported profile takes
     /// it from its tablet's configuration, and the runtime sets it for the
     /// device it selected (`for_tablet`).
@@ -86,6 +90,7 @@ impl Default for Profile {
             ignored_filters: 0,
             source: "built-in full-area defaults".into(),
             tablet: TabletSpec::PTH_660,
+            target_tablet: None,
         }
     }
 }
@@ -121,6 +126,9 @@ struct RawProfile {
     radial_follow: Vec<RadialFollowSettings>,
     #[serde(default)]
     plugins: Vec<PluginConfig>,
+    /// The tablet a native profile is for, by configuration name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tablet: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -750,7 +758,8 @@ impl Profile {
                 .validate()
             })
             .transpose()?;
-        let profile = Self {
+        let target_tablet = raw.tablet;
+        let mut profile = Self {
             settings_revision: raw.settings_revision,
             imported_otd: raw.imported_otd,
             preserved_fields: archived,
@@ -770,10 +779,21 @@ impl Profile {
             rotation: raw.rotation.unwrap_or(0),
             device_path: raw.device_path,
             source: format!("Rust profile: {}", path.display()),
+            target_tablet,
             ..Self::default()
         };
-        if !profile.crop.valid() {
-            return Err("crop must be nonzero and within 0..44800 X, 0..29600 Y".into());
+        profile.tablet = profile
+            .tablet_name()?
+            .map_or(TabletSpec::PTH_660, |name| spec_for_tablet(&name));
+        // The default crop means the whole digitizer of any tablet.
+        if profile.crop != Crop::default() && !profile.crop.valid_for(profile.tablet) {
+            return Err(format!(
+                "crop must be nonzero and within 0..{} X, 0..{} Y",
+                profile.tablet.max_x, profile.tablet.max_y
+            ));
+        }
+        if let Some(relative) = profile.relative {
+            relative.validate_for(profile.tablet)?;
         }
         if !matches!(profile.rotation, 0 | 90 | 180 | 270) {
             return Err("rotation must be 0, 90, 180, or 270".into());
@@ -797,6 +817,9 @@ impl Profile {
     }
 
     pub fn tablet_name(&self) -> Result<Option<String>, String> {
+        if let Some(name) = &self.target_tablet {
+            return Ok(Some(name.clone()));
+        }
         let Some(imported) = &self.imported_otd else {
             return Ok(None);
         };
@@ -890,6 +913,7 @@ impl Profile {
             bindings: self.contact,
             radial_follow: self.radial_follow.clone(),
             plugins: self.plugins.clone(),
+            tablet: self.target_tablet.clone(),
         };
         toml::to_string_pretty(&raw).map_err(|e| e.to_string())
     }
@@ -1043,6 +1067,23 @@ impl Profile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_native_profile_keeps_its_tablet() {
+        let profile = Profile {
+            target_tablet: Some("Wacom CTL-4100".into()),
+            ..Profile::default()
+        };
+        let text = profile.to_toml().unwrap();
+        assert!(text.contains("tablet = \"Wacom CTL-4100\""), "{text}");
+        let loaded = Profile::from_toml_text(&text, Path::new("driver.toml")).unwrap();
+        assert_eq!(loaded.target_tablet.as_deref(), Some("Wacom CTL-4100"));
+        assert_eq!(loaded.tablet, spec_for_tablet("Wacom CTL-4100"));
+        assert_ne!(loaded.tablet, TabletSpec::PTH_660);
+        // Earlier profiles have no tablet and keep the PTH-660's ranges.
+        let old = Profile::from_toml_text("", Path::new("driver.toml")).unwrap();
+        assert_eq!((old.target_tablet, old.tablet), (None, TabletSpec::PTH_660));
+    }
 
     #[test]
     fn default_profile_is_valid() {

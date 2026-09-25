@@ -6,20 +6,24 @@
 use std::path::Path;
 use std::time::Duration;
 
-use crate::config::{Profile, activation_raw};
+#[cfg(test)]
+use crate::config::activation_raw;
+use crate::config::{Profile, activation_raw_for};
 use crate::display::DisplaySnapshot;
 use crate::dotnet::{FilterMetadata, PropertyMetadata};
 #[cfg(test)]
 use crate::mapping::Rect;
 use crate::mapping::{Crop, OtdArea, OtdMapping};
 use crate::plugins::{PluginConfig, PluginKind};
-use crate::protocol::{HEIGHT_MM, MAX_PRESSURE, MAX_X, MAX_Y, WIDTH_MM};
+#[cfg(test)]
+use crate::protocol::{MAX_PRESSURE, WIDTH_MM};
 use crate::radial_follow::{FILTER_NAME, RadialFollowSettings};
 use crate::relative::RelativeSettings;
+use otd_core::spec::TabletSpec;
 
-/// PTH-660 active area. The absolute and relative mappers use the same size.
+/// PTH-660 active area, the default tablet's.
+#[cfg(test)]
 pub const TABLET_WIDTH_MM: f64 = WIDTH_MM;
-pub const TABLET_HEIGHT_MM: f64 = HEIGHT_MM;
 
 pub use otd_core::areas::{
     Align, AspectSource, Bounds, align, constrain, fit_aspect, flip_handedness, flip_horizontal,
@@ -186,9 +190,13 @@ pub fn default_relative() -> RelativeSettings {
 /// OpenTabletDriver, so it can be shown in the same editors. The mapping is
 /// equivalent within one output pixel.
 pub fn simple_mapping(profile: &Profile, displays: &DisplaySnapshot) -> OtdMapping {
-    let mm_x = TABLET_WIDTH_MM / f64::from(MAX_X);
-    let mm_y = TABLET_HEIGHT_MM / f64::from(MAX_Y);
-    let crop = profile.crop;
+    let (mm_x, mm_y) = profile.tablet.mm_per_unit();
+    // The default crop is the whole digitizer of the profile's tablet.
+    let crop = if profile.crop == Crop::default() {
+        Crop::full(profile.tablet)
+    } else {
+        profile.crop
+    };
     let (width, height) = (f64::from(crop.width) * mm_x, f64::from(crop.height) * mm_y);
     let (width, height) = if matches!(profile.rotation, 90 | 270) {
         (height, width)
@@ -247,7 +255,7 @@ impl Editor {
             mapping
         } else if self.profile.relative.is_some() {
             self.absolute_stash
-                .unwrap_or_else(|| simple_mapping(&Profile::default(), displays))
+                .unwrap_or_else(|| simple_mapping(&self.blank(), displays))
         } else {
             simple_mapping(&self.profile, displays)
         }
@@ -279,7 +287,7 @@ impl Editor {
                 let mapping = self
                     .absolute_stash
                     .take()
-                    .unwrap_or_else(|| simple_mapping(&Profile::default(), displays));
+                    .unwrap_or_else(|| simple_mapping(&self.blank(), displays));
                 self.set_absolute(mapping);
             }
             OutputMode::Relative if self.profile.relative.is_none() => {
@@ -319,7 +327,44 @@ impl Editor {
         } else {
             self.profile.contact.tip_threshold_raw
         };
-        raw.map(threshold_percent)
+        raw.map(|raw| threshold_percent_for(raw, self.profile.tablet.max_pressure))
+    }
+
+    /// A full-area profile for the same tablet.
+    fn blank(&self) -> Profile {
+        Profile {
+            tablet: self.profile.tablet,
+            target_tablet: self.profile.target_tablet.clone(),
+            ..Profile::default()
+        }
+    }
+
+    /// Makes the profile target a tablet, or any tablet with `None`. Areas
+    /// that no longer fit the tablet become its full area.
+    pub fn set_tablet(&mut self, name: Option<String>) {
+        let spec = name
+            .as_deref()
+            .map_or(TabletSpec::PTH_660, otd_core::config::spec_for_tablet);
+        self.profile.target_tablet = name;
+        if spec == self.profile.tablet {
+            return;
+        }
+        self.profile.tablet = spec;
+        if let Some(mapping) = &mut self.profile.otd_mapping {
+            constrain(&mut mapping.tablet, Bounds::tablet_for(spec));
+        } else if self.profile.relative.is_none() {
+            // A simple full-area profile keeps covering the whole tablet.
+            self.profile.crop = Crop::default();
+        }
+        for raw in [
+            &mut self.profile.contact.tip_threshold_raw,
+            &mut self.profile.contact.eraser_threshold_raw,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            *raw = (*raw).min(spec.max_pressure);
+        }
     }
 
     pub fn set_threshold_percent(
@@ -327,7 +372,10 @@ impl Editor {
         eraser: bool,
         percent: Option<f64>,
     ) -> Result<(), String> {
-        let raw = percent.map(activation_raw).transpose()?;
+        let max = self.profile.tablet.max_pressure;
+        let raw = percent
+            .map(|percent| activation_raw_for(percent, max))
+            .transpose()?;
         if eraser {
             self.profile.contact.eraser_threshold_raw = raw;
         } else {
@@ -502,8 +550,14 @@ impl Editor {
 }
 
 /// The shortest percentage that `activation_raw` maps back to `raw`.
+#[cfg(test)]
 pub fn threshold_percent(raw: u16) -> f64 {
-    let max = f64::from(MAX_PRESSURE);
+    threshold_percent_for(raw, MAX_PRESSURE)
+}
+
+/// `threshold_percent` for a tablet with another pressure range.
+pub fn threshold_percent_for(raw: u16, max_pressure: u16) -> f64 {
+    let max = f64::from(max_pressure);
     let low = f64::from(raw.saturating_sub(1)) / max * 100.0;
     let middle = (low + f64::from(raw) / max * 100.0) / 2.0;
     (0..=6)
@@ -511,7 +565,7 @@ pub fn threshold_percent(raw: u16) -> f64 {
             let scale = 10f64.powi(decimals);
             (middle * scale).round() / scale
         })
-        .find(|&percent| activation_raw(percent) == Ok(raw))
+        .find(|&percent| activation_raw_for(percent, max_pressure) == Ok(raw))
         .unwrap_or(low)
 }
 
@@ -732,6 +786,29 @@ pub fn parse_number(text: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switching_tablets_resizes_areas_and_thresholds() {
+        let mut editor = Editor::new(Profile::default());
+        let mut mapping = simple_mapping(&editor.profile, &displays());
+        mapping.tablet.width = 200.0;
+        editor.set_absolute(mapping);
+        editor.set_threshold_percent(false, Some(50.0)).unwrap();
+        editor.set_tablet(Some("Wacom CTL-4100".into()));
+        let spec = editor.profile.tablet;
+        assert_eq!(spec, otd_core::config::spec_for_tablet("Wacom CTL-4100"));
+        assert!(spec.width_mm < 200.0);
+        let area = editor.profile.otd_mapping.unwrap().tablet;
+        assert!(area.width <= spec.width_mm, "{area:?}");
+        assert!(editor.profile.contact.tip_threshold_raw.unwrap() <= spec.max_pressure);
+        assert_eq!(
+            editor.profile.tablet_name().unwrap().as_deref(),
+            Some("Wacom CTL-4100")
+        );
+        editor.set_tablet(None);
+        assert_eq!(editor.profile.tablet, TabletSpec::PTH_660);
+        assert_eq!(editor.profile.tablet_name().unwrap(), None);
+    }
 
     fn displays() -> DisplaySnapshot {
         DisplaySnapshot {

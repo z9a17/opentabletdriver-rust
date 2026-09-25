@@ -197,6 +197,7 @@ pub(super) fn extract_unknown_fields(document: &mut toml::Value) -> BTreeMap<Str
             "bindings",
             "radial_follow",
             "plugins",
+            "tablet",
         ],
         &mut preserved,
     );

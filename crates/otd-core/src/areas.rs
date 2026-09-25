@@ -172,12 +172,23 @@ pub struct Bounds {
 }
 
 impl Bounds {
+    /// The PTH-660's active area.
     pub fn tablet() -> Self {
         Self {
             left: 0.0,
             top: 0.0,
             right: TABLET_WIDTH_MM,
             bottom: TABLET_HEIGHT_MM,
+        }
+    }
+
+    /// A tablet's active area in millimetres.
+    pub fn tablet_for(spec: crate::spec::TabletSpec) -> Self {
+        Self {
+            left: 0.0,
+            top: 0.0,
+            right: spec.width_mm,
+            bottom: spec.height_mm,
         }
     }
 

@@ -243,6 +243,41 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
             }
             1 => {
                 append(menu, MF_STRING, CMD_DETECT, "Detect tablet\tCtrl+D");
+                append(menu, MF_STRING, CMD_DEBUGGER, "Tablet debugger...");
+                // The profile's tablet: whichever is connected, a connected
+                // tablet, or the one it already names.
+                let target = app.editor.profile.target_tablet.clone();
+                let mut choices = crate::hid::connected_tablets();
+                if let Some(name) = &target
+                    && !choices.contains(name)
+                {
+                    choices.push(name.clone());
+                }
+                choices.truncate(usize::from(TABLET_CHOICES));
+                let tablets = unsafe { CreatePopupMenu() };
+                append(
+                    tablets,
+                    checked(target.is_none()),
+                    CMD_TABLET_ANY,
+                    "Any connected tablet",
+                );
+                for (index, name) in choices.iter().enumerate() {
+                    append(
+                        tablets,
+                        checked(target.as_ref() == Some(name)),
+                        CMD_TABLET_FIRST + index as u16,
+                        name,
+                    );
+                }
+                app.tablet_choices = choices;
+                unsafe {
+                    AppendMenuW(
+                        menu,
+                        MF_POPUP,
+                        tablets as usize,
+                        wide("Settings for tablet").as_ptr(),
+                    )
+                };
                 append(
                     menu,
                     if app.editor.mode() == OutputMode::Absolute {
@@ -459,6 +494,31 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         },
         CMD_DETECT => {
             with_app(App::detect_tablet);
+        }
+        CMD_TABLET_ANY => {
+            with_app(|app| app.choose_tablet(None));
+        }
+        id if (CMD_TABLET_FIRST..CMD_TABLET_FIRST + TABLET_CHOICES).contains(&id) => {
+            with_app(|app| {
+                let name = app
+                    .tablet_choices
+                    .get(usize::from(id - CMD_TABLET_FIRST))
+                    .cloned();
+                if name.is_some() {
+                    app.choose_tablet(name);
+                }
+            });
+        }
+        CMD_DEBUGGER => {
+            if let Err(error) = debugger::open() {
+                with_app(|app| {
+                    app.log(
+                        Level::Error,
+                        "Tablet",
+                        format!("Cannot open the tablet debugger: {error}"),
+                    )
+                });
+            }
         }
         CMD_ADD_DOTNET | CMD_ADD_NATIVE => {
             if !with_app(App::can_leave_filter).unwrap_or(false) {

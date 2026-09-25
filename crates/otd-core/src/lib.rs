@@ -10,6 +10,7 @@
 pub mod actions;
 pub mod areas;
 pub mod config;
+pub mod debug;
 pub mod decoders;
 pub mod display;
 pub mod endpoint_match;

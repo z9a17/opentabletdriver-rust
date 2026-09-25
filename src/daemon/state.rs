@@ -740,6 +740,9 @@ impl ControlHandler for Daemon {
                 }
             }
             Command::Shutdown => Ok(Reply::ShutdownAccepted),
+            Command::Debug => Ok(Reply::Debug {
+                report: crate::decode_cli::debug_report(),
+            }),
         }
     }
 }

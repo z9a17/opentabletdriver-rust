@@ -43,7 +43,7 @@ fn usage() -> &'static str {
   opentabletdriver-rust.exe start [--config driver.toml | --otd-settings settings.json]
   opentabletdriver-rust.exe restart [--config driver.toml | --otd-settings settings.json]
   opentabletdriver-rust.exe configuration
-  opentabletdriver-rust.exe status | stop | shutdown
+  opentabletdriver-rust.exe status | stop | shutdown | debug
   opentabletdriver-rust.exe profiles list|preview|import|export|select ...
   opentabletdriver-rust.exe presets list|show|save|export ...
   opentabletdriver-rust.exe area convert|full|fit ...
@@ -140,13 +140,14 @@ fn parse_args() -> Result<Command, String> {
             }
             Ok(Command::Daemon { background })
         }
-        "status" | "stop" | "shutdown" => {
+        "status" | "stop" | "shutdown" | "debug" => {
             if args.next().is_some() {
                 return Err(usage().into());
             }
             Ok(Command::Control(match command.as_str() {
                 "status" => control::Command::Status,
                 "stop" => control::Command::Stop,
+                "debug" => control::Command::Debug,
                 _ => control::Command::Shutdown,
             }))
         }

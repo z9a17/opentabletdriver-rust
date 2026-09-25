@@ -68,7 +68,7 @@ impl App {
                         ),
                         AreaKind::Tablet => (
                             self.tablet_view.as_ref(),
-                            vec![Bounds::tablet()],
+                            vec![Bounds::tablet_for(self.editor.profile.tablet)],
                             "mm",
                             "Invalid tablet area.",
                         ),
@@ -135,10 +135,11 @@ impl App {
             canvas.circle(dot, style.px(4.5), None, Some((color, 1.0)));
         }
         let left = r.left + s(18);
-        let (name_width, _) = canvas.measure(style.fonts.bold, TABLET_NAME);
+        let name = self.tablet_label();
+        let (name_width, _) = canvas.measure(style.fonts.bold, &name);
         canvas.text(
             rect(left, r.top, left + name_width + 1, r.bottom),
-            TABLET_NAME,
+            &name,
             style.fonts.bold,
             p.text,
             draw::TEXT_LEFT | DT_NOPREFIX,
