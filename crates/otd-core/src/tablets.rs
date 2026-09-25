@@ -1220,15 +1220,12 @@ mod tests {
             );
         }
         // An identifier that names no parser gets OpenTabletDriver's
-        // generic parser. Its portable implementation does not make it a
-        // PTH-660 parser, even with the PTH-660's USB IDs.
+        // passthrough parser, which has no registered decoder, even with
+        // the PTH-660's USB IDs. This differs from TabletReportParser.
         let unnamed: DeviceIdentifier =
             serde_json::from_str(r#"{"VendorID": 1386, "ProductID": 855}"#).unwrap();
         assert_eq!(unnamed.parser(), DEFAULT_PARSER);
-        assert!(matches!(
-            parser_support(unnamed.parser()),
-            ParserSupport::Partial(_)
-        ));
+        assert_eq!(parser_support(unnamed.parser()), ParserSupport::Missing);
     }
 
     #[test]
