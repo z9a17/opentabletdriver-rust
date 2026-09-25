@@ -18,7 +18,7 @@ namespace OtdUpstreamBench;
 sealed class Options
 {
     public string Workload = "";
-    public string? RadialFollow, Out, Only;
+    public string? RadialFollow, Out, Only, Parsers;
     public List<string> Reference = [];
     public int Rounds = 7, WarmupMs = 1000;
     public bool SendInput;
@@ -40,6 +40,11 @@ sealed class Options
           fills the expected outputs of differential fixtures (tests/differential)
           from OpenTabletDriver's own pipeline; OTD_UPSTREAM_COMMIT names the
           pinned revision
+
+        Usage: OtdUpstreamBench --parsers OUT.json
+
+          decodes seeded packets with every report parser the configurations
+          name and writes the parser fixture (tests/parsers/upstream.json)
         """;
 
     public static Options Parse(string[] args)
@@ -59,11 +64,12 @@ sealed class Options
                 case "--replay-seconds": options.ReplaySeconds = double.Parse(Value(), System.Globalization.CultureInfo.InvariantCulture); break;
                 case "--only": options.Only = Value(); break;
                 case "--reference": options.Reference.Add(Value()); break;
+                case "--parsers": options.Parsers = Value(); break;
                 case "--help" or "-h": Console.WriteLine(Usage); Environment.Exit(0); break;
                 default: throw new ArgumentException($"unknown option {args[i]}\n\n{Usage}");
             }
         }
-        if (options.Workload.Length == 0 && options.Reference.Count == 0)
+        if (options.Workload.Length == 0 && options.Reference.Count == 0 && options.Parsers == null)
             throw new ArgumentException($"--workload or --reference is required\n\n{Usage}");
         if (options.Rounds < 1)
             throw new ArgumentException("use at least one round");
@@ -138,6 +144,11 @@ static unsafe class Program
         try
         {
             var options = Options.Parse(args);
+            if (options.Parsers != null)
+            {
+                Parsers.Write(options.Parsers);
+                return 0;
+            }
             if (options.Reference.Count > 0)
             {
                 string? radialFollow = options.RadialFollow == null ? null : Path.GetFullPath(options.RadialFollow);

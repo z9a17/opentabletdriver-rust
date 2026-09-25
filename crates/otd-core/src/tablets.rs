@@ -295,66 +295,15 @@ pub enum ParserSupport {
     Missing,
 }
 
+/// What the live driver does with a parser's reports.
+pub const LIVE_SUPPORT: &str = "every upstream report variant is decoded; the live driver uses pen position, pressure, tip, eraser and proximity, while buttons, wheels, strips and touch have no bindings yet";
+
+/// Passthrough produces raw reports only, so it cannot drive input.
 pub fn parser_support(type_name: &str) -> ParserSupport {
-    match type_name {
-        "OpenTabletDriver.Plugin.Tablet.TabletReportParser"
-        | "OpenTabletDriver.Plugin.Tablet.AuxReportParser"
-        | "OpenTabletDriver.Configurations.Parsers.SkipByteTabletReportParser"
-        | "OpenTabletDriver.Configurations.Parsers.Veikk.VeikkReportParser"
-        | "OpenTabletDriver.Configurations.Parsers.Veikk.VeikkA15ReportParser"
-        | "OpenTabletDriver.Configurations.Parsers.Veikk.VeikkTiltReportParser"
-        | "OpenTabletDriver.Configurations.Parsers.Veikk.VeikkV1ReportParser" => {
-            ParserSupport::Partial("portable pinned parser dispatch; not connected to live runtime")
-        }
-        "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV2.WacomDriverIntuosV2ReportParser" => {
-            ParserSupport::Partial(
-                "portable prefixed touch decoding only; pen/auxiliary dispatch and live runtime remain missing",
-            )
-        }
-        "OpenTabletDriver.Configurations.Parsers.Huion.GianoReportParser"
-        | "OpenTabletDriver.Configurations.Parsers.Huion.InspiroyReportParser"
-        | "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenReportParser"
-        | "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenGen2ReportParser"
-        | "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenOffsetPressureReportParser"
-        | "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenOffsetAuxReportParser"
-        | "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenDedicatedAuxReportParser" => {
-            ParserSupport::Partial("portable pinned parser dispatch; not connected to live runtime")
-        }
-        "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicReportParser"
-        | "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicTiltReportParser"
-        | "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicV1ReportParser"
-        | "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicV2ReportParser"
-        | "OpenTabletDriver.Configurations.Parsers.Huion.HuionTiltReportParser" => {
-            ParserSupport::Partial(
-                "portable full pinned pen/auxiliary/range dispatch; not connected to live runtime",
-            )
-        }
-        "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV2.IntuosV2ReportParser" => {
-            ParserSupport::Partial(
-                "PTH-660 pen reports 0x10/0x1E; portable auxiliary 0x11 and stateful touch 0x21/0xD2 decoding; live auxiliary/touch output remains disabled",
-            )
-        }
-        "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV3.IntuosV3ReportParser" => {
-            ParserSupport::Partial(
-                "portable pen 0x1E/0x1F and auxiliary 0x11 decoding; not connected to live runtime",
-            )
-        }
-        "OpenTabletDriver.Configurations.Parsers.Wacom.Bamboo.BambooReportParser" => {
-            ParserSupport::Partial(
-                "portable pen/mouse/auxiliary 0x02 decoding; not connected to live runtime",
-            )
-        }
-        "OpenTabletDriver.Configurations.Parsers.Wacom.BambooPad.BambooPadReportParser" => {
-            ParserSupport::Partial(
-                "portable pen/auxiliary 0x10 subtype decoding; not connected to live runtime",
-            )
-        }
-        "OpenTabletDriver.Configurations.Parsers.Wacom.BambooV2.BambooV2AuxReportParser" => {
-            ParserSupport::Partial(
-                "portable auxiliary 0x02 decoding; not connected to live runtime",
-            )
-        }
-        _ => ParserSupport::Missing,
+    if type_name != DEFAULT_PARSER && crate::decoders::ReportParser::for_type(type_name).is_some() {
+        ParserSupport::Partial(LIVE_SUPPORT)
+    } else {
+        ParserSupport::Missing
     }
 }
 
@@ -1132,8 +1081,7 @@ mod tests {
         }
     }
 
-    /// The 52 parser types resolve to a support status; only the PTH-660's
-    /// parser is partly implemented.
+    /// Every one of the 52 referenced parser types has a decoder.
     #[test]
     fn referenced_parsers_resolve_to_partial_or_missing() {
         let inventory = inventory();
@@ -1148,41 +1096,12 @@ mod tests {
         let database = Database::builtin();
         let used: Vec<&str> = database.parsers().into_keys().collect();
         assert_eq!(used, referenced);
-        let partial: Vec<&str> = referenced
+        let missing: Vec<&str> = referenced
             .iter()
             .copied()
-            .filter(|parser| parser_support(parser) != ParserSupport::Missing)
+            .filter(|parser| parser_support(parser) == ParserSupport::Missing)
             .collect();
-        assert_eq!(
-            partial,
-            [
-                "OpenTabletDriver.Configurations.Parsers.Huion.GianoReportParser",
-                "OpenTabletDriver.Configurations.Parsers.Huion.HuionTiltReportParser",
-                "OpenTabletDriver.Configurations.Parsers.Huion.InspiroyReportParser",
-                "OpenTabletDriver.Configurations.Parsers.SkipByteTabletReportParser",
-                "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicReportParser",
-                "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicTiltReportParser",
-                "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicV1ReportParser",
-                "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicV2ReportParser",
-                "OpenTabletDriver.Configurations.Parsers.Veikk.VeikkA15ReportParser",
-                "OpenTabletDriver.Configurations.Parsers.Veikk.VeikkReportParser",
-                "OpenTabletDriver.Configurations.Parsers.Veikk.VeikkTiltReportParser",
-                "OpenTabletDriver.Configurations.Parsers.Veikk.VeikkV1ReportParser",
-                "OpenTabletDriver.Configurations.Parsers.Wacom.Bamboo.BambooReportParser",
-                "OpenTabletDriver.Configurations.Parsers.Wacom.BambooPad.BambooPadReportParser",
-                "OpenTabletDriver.Configurations.Parsers.Wacom.BambooV2.BambooV2AuxReportParser",
-                PTH_660,
-                "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV2.WacomDriverIntuosV2ReportParser",
-                "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV3.IntuosV3ReportParser",
-                "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenDedicatedAuxReportParser",
-                "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenGen2ReportParser",
-                "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenOffsetAuxReportParser",
-                "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenOffsetPressureReportParser",
-                "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenReportParser",
-                "OpenTabletDriver.Plugin.Tablet.AuxReportParser",
-                "OpenTabletDriver.Plugin.Tablet.TabletReportParser",
-            ]
-        );
+        assert!(missing.is_empty(), "{missing:?}");
     }
 
     #[test]

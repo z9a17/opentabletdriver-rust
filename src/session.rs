@@ -46,7 +46,7 @@ struct HidSource<'a> {
     stop: &'a Event,
     handle: OwnedHandle,
     read_event: Event,
-    buffer: Box<[u8; hid::PEN_REPORT_LENGTH as usize]>,
+    buffer: Box<[u8]>,
     operation: OVERLAPPED,
     pending: bool,
     label: String,
@@ -91,7 +91,8 @@ impl<'a> HidSource<'a> {
             stop,
             handle,
             read_event,
-            buffer: Box::new([0; hid::PEN_REPORT_LENGTH as usize]),
+            // ReadFile needs room for the collection's whole input report.
+            buffer: vec![0; usize::from(candidate.input_length.max(1))].into_boxed_slice(),
             pending: false,
         })
     }
@@ -250,12 +251,17 @@ pub fn run(
             stop_event,
         )?;
     }
+    let profile = profile
+        .for_tablet(selected.spec)
+        .map_err(io::Error::other)?;
+    let mut decoder = selected.decoder()?;
     let _priority = ReaderPriority::raise();
     otd_core::session::run(
         &mut source,
         &mut WindowsDisplays,
-        profile,
+        &profile,
         mode,
+        &mut decoder,
         plugins,
         send_input,
         status,
@@ -357,6 +363,10 @@ impl<'a> PreparedSession<'a> {
         status: &impl Fn(&str),
         gate: impl FnOnce() -> io::Result<bool>,
     ) -> io::Result<()> {
+        let profile = profile
+            .for_tablet(self.selected.spec)
+            .map_err(io::Error::other)?;
+        let mut decoder = self.selected.decoder()?;
         let mut source = GatedSource {
             source: self.source,
             gate: Some(gate),
@@ -365,8 +375,9 @@ impl<'a> PreparedSession<'a> {
         otd_core::session::run(
             &mut source,
             &mut WindowsDisplays,
-            profile,
+            &profile,
             Mode::Driver,
+            &mut decoder,
             plugins,
             send_input,
             status,

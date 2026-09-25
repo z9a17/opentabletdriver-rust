@@ -8,6 +8,7 @@ use std::io;
 use std::time::{Duration, Instant};
 
 use crate::config::Profile;
+use crate::decoders::PenDecoder;
 use crate::display::{DisplayFingerprint, DisplaySnapshot};
 use crate::mapping::Mapper;
 use crate::output::MousePacket;
@@ -251,11 +252,13 @@ impl Layout {
 /// Runs one session until the source ends, the capture deadline or report
 /// limit is reached, or an error occurs. A held button is released before it
 /// returns.
+#[allow(clippy::too_many_arguments)] // Each is an independent platform seam.
 pub fn run(
     source: &mut impl ReportSource,
     displays: &mut impl Displays,
     profile: &Profile,
     mode: Mode,
+    decoder: &mut impl PenDecoder,
     filters: &mut impl Filters,
     mut send: impl FnMut(MousePacket) -> io::Result<()>,
     status: &impl Fn(&str),
@@ -283,8 +286,8 @@ pub fn run(
     let mut timing = Timing::new();
     let mut capture_trace = CaptureTrace::default();
 
-    eprintln!("PTH-660 connected: {}", source.label());
-    status("PTH-660 connected; receiving pen input");
+    eprintln!("Tablet connected: {}", source.label());
+    status("Tablet connected; receiving pen input");
     let outcome = (|| -> io::Result<()> {
         loop {
             let timeout = match mode {
@@ -323,7 +326,7 @@ pub fn run(
                 timing.queued += 1;
             }
             counters.read += 1;
-            match protocol::parse(bytes) {
+            match decoder.decode(bytes) {
                 Ok(Some(pen)) => {
                     counters.accepted += 1;
                     if let Mode::Capture { .. } = mode {
@@ -392,6 +395,7 @@ pub fn run(
         }
         Ok(())
     })();
+    decoder.reset();
     let cleanup = pipeline.release_all(&mut send).map(|_| ());
     if let Err(error) = &cleanup {
         eprintln!("could not release mouse buttons: {error}");
@@ -587,6 +591,7 @@ mod tests {
             &mut displays,
             profile,
             mode,
+            &mut crate::decoders::TabletDecoder::pth_660(),
             filters,
             |packet| {
                 packets.borrow_mut().push(packet);
@@ -625,7 +630,7 @@ mod tests {
         );
         let flags: Vec<u32> = packets.iter().map(|p| p.flags).collect();
         assert_eq!(flags, [ABSOLUTE, ABSOLUTE | flags::LEFTDOWN, flags::LEFTUP]);
-        assert_eq!(statuses[0], "PTH-660 connected; receiving pen input");
+        assert_eq!(statuses[0], "Tablet connected; receiving pen input");
         assert!(
             statuses[1].starts_with("Processed 2 reports")
                 && statuses[1].ends_with("1 reads found a report already waiting"),
@@ -746,6 +751,7 @@ mod tests {
             &mut displays,
             &profile(),
             Mode::Driver,
+            &mut crate::decoders::TabletDecoder::pth_660(),
             &mut NoFilters,
             |_| {
                 packets.set(packets.get() + 1);
@@ -777,7 +783,7 @@ mod tests {
         );
         assert!(packets.is_empty());
         // No report reached output, so there is no timing summary.
-        assert_eq!(statuses, ["PTH-660 connected; receiving pen input"]);
+        assert_eq!(statuses, ["Tablet connected; receiving pen input"]);
     }
 
     #[test]

@@ -573,6 +573,7 @@ fn sessions_end_with_nothing_held() {
             &mut displays,
             &profile,
             Mode::Driver,
+            &mut crate::decoders::TabletDecoder::pth_660(),
             &mut NoFilters,
             |packet| {
                 // Fail about one packet in eight, except the final release.

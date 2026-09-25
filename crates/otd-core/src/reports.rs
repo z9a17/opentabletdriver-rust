@@ -21,6 +21,8 @@ mod intuos_touch;
 mod intuos_v3;
 mod uc_logic;
 mod veikk;
+mod vendors;
+mod wacom;
 mod xp_pen;
 pub use bamboo::{parse_bamboo, parse_bamboo_pad, parse_bamboo_v2_auxiliary};
 pub use generic::{TransportReport, parse_auxiliary, parse_skip_byte_tablet, parse_tablet};
@@ -31,8 +33,16 @@ pub use uc_logic::{
     parse_huion_tilt, parse_uc_logic, parse_uc_logic_tilt, parse_uc_logic_v1, parse_uc_logic_v2,
 };
 pub use veikk::{parse_veikk, parse_veikk_a15, parse_veikk_tilt, parse_veikk_v1};
+pub use vendors::{
+    AcepenParser, parse_bosto, parse_floogoo, parse_genius, parse_genius_v2, parse_lifetec,
+    parse_robot_pen, parse_wood_pad, parse_xencelabs, parse_xenx,
+};
+pub use wacom::{
+    CintiqV1Parser, Intuos3Parser, Intuos4Parser, IntuosProParser, IntuosV1Parser, PlParser,
+    Wacom64bAuxParser, parse_graphire, parse_intuos, parse_ptu, parse_wacom_driver_intuos,
+};
 pub use xp_pen::{
-    parse_xp_pen, parse_xp_pen_dedicated_auxiliary, parse_xp_pen_gen2,
+    Deco03Parser, parse_xp_pen, parse_xp_pen_dedicated_auxiliary, parse_xp_pen_gen2,
     parse_xp_pen_offset_auxiliary, parse_xp_pen_offset_pressure,
 };
 

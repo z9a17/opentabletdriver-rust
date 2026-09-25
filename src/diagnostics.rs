@@ -48,7 +48,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         "build":{"version":env!("CARGO_PKG_VERSION"), "os":std::env::consts::OS,
             "architecture":std::env::consts::ARCH, "control_protocol":control::PROTOCOL_VERSION,
             "upstream_revision":otd_core::tablets::source_revision()},
-        "backend":{"transport":"windows_usb_hid", "runtime_tablet":"Wacom PTH-660",
+        "backend":{"transport":"windows_usb_hid", "runtime_tablet":"any configuration with a supported parser",
             "output":"SendInput mouse", "hid_inspected":false, "plugins_loaded":false},
         "displays":display_summary(private),
         "profile":profile.as_ref().map(|profile| profile_summary(profile, private)).transpose()?,

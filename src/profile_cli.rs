@@ -318,7 +318,7 @@ fn native_summary(index: usize, name: Option<&str>, profile: &Profile) -> Result
         .tablet_name()?
         .unwrap_or_else(|| "Wacom PTH-660".into());
     Ok(json!({"index": index, "name": name, "tablet": tablet,
-        "runtime_tablet_supported": tablet == "Wacom PTH-660",
+        "runtime_tablet_supported": otd_core::config::runtime_tablet(&tablet).is_ok(),
         "schema_version": profile.schema_version, "settings_revision": profile.settings_revision,
         "output_mode": if profile.relative.is_some() { "relative" } else { "absolute" }}))
 }
