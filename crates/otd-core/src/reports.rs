@@ -14,6 +14,9 @@
 use crate::protocol::PenReport;
 use std::time::Duration;
 
+mod intuos_touch;
+pub use intuos_touch::{IntuosV2TouchParser, WacomDriverIntuosV2TouchParser, WacomDriverReport};
+
 pub const MAX_BUTTONS: usize = 64;
 pub const MAX_ANALOG_CHANNELS: usize = 16;
 pub const MAX_WHEELS: usize = 8;
