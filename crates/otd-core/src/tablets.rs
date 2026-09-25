@@ -297,6 +297,15 @@ pub enum ParserSupport {
 
 pub fn parser_support(type_name: &str) -> ParserSupport {
     match type_name {
+        "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicReportParser"
+        | "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicTiltReportParser"
+        | "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicV1ReportParser"
+        | "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicV2ReportParser"
+        | "OpenTabletDriver.Configurations.Parsers.Huion.HuionTiltReportParser" => {
+            ParserSupport::Partial(
+                "portable full pinned pen/auxiliary/range dispatch; not connected to live runtime",
+            )
+        }
         "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV2.IntuosV2ReportParser" => {
             ParserSupport::Partial(
                 "PTH-660 pen reports 0x10/0x1E; portable auxiliary 0x11 and stateful touch 0x21/0xD2 decoding; live auxiliary/touch output remains disabled",
@@ -1124,6 +1133,11 @@ mod tests {
         assert_eq!(
             partial,
             [
+                "OpenTabletDriver.Configurations.Parsers.Huion.HuionTiltReportParser",
+                "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicReportParser",
+                "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicTiltReportParser",
+                "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicV1ReportParser",
+                "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicV2ReportParser",
                 "OpenTabletDriver.Configurations.Parsers.Wacom.Bamboo.BambooReportParser",
                 "OpenTabletDriver.Configurations.Parsers.Wacom.BambooPad.BambooPadReportParser",
                 "OpenTabletDriver.Configurations.Parsers.Wacom.BambooV2.BambooV2AuxReportParser",
@@ -1144,7 +1158,7 @@ mod tests {
         assert_eq!(pen.len(), 1, "{matches:?}");
         assert_eq!(pen[0].configuration.name, "Wacom PTH-660");
         assert!(matches!(pen[0].parser, ParserSupport::Partial(_)));
-        // Another vendor's tablet names its own parser, which is missing.
+        // Another vendor retains its own parser and implementation classification.
         let huion: Vec<Match> = database
             .entries()
             .iter()
@@ -1160,7 +1174,12 @@ mod tests {
         assert!(!huion.is_empty());
         for m in huion {
             assert_ne!(m.identifier.parser(), PTH_660);
-            assert_eq!(m.parser, ParserSupport::Missing, "{}", m.configuration.name);
+            assert_eq!(
+                m.parser,
+                parser_support(m.identifier.parser()),
+                "{}",
+                m.configuration.name
+            );
         }
         // An identifier that names no parser gets OpenTabletDriver's
         // passthrough parser, which this driver does not decode, even with

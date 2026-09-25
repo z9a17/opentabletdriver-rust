@@ -13,14 +13,19 @@ const USAGE: &str = "Offline report decoding:
 
 Parsers: pth660-pen, intuos-v2-aux, intuos-v2-touch,
          wacom-driver-intuos-v2-touch, intuos-v3, bamboo, bamboo-pad,
-         bamboo-v2-aux
+         bamboo-v2-aux, uc-logic, uc-logic-tilt, uc-logic-v1, uc-logic-v2,
+         huion-tilt
 Hex may contain ASCII whitespace or colons. Files contain one packet per line;
 blank lines and lines starting with # are ignored. Limits: 4 MiB, 4096 reports,
 192 bytes per packet. Each output line is one JSON snapshot; a later error does
 not retract earlier lines. Touch state lasts only for this command.
 This command never opens a tablet, loads a plugin, or injects input.";
 
+type StatelessParser =
+    for<'a> fn(&'a [u8], ReportMetadata) -> Result<(ReportKind, ReportEnvelope<'a>), ReportError>;
+
 enum Decoder {
+    Stateless(StatelessParser),
     Pen,
     Aux,
     Touch(IntuosV2TouchParser),
@@ -36,8 +41,13 @@ impl Decoder {
         &mut self,
         raw: &'a [u8],
         metadata: ReportMetadata,
-    ) -> Result<Option<ReportEnvelope<'a>>, String> {
-        match self {
+    ) -> Result<(ReportKind, Option<ReportEnvelope<'a>>), String> {
+        let report = match self {
+            Self::Stateless(parser) => {
+                return parser(raw, metadata)
+                    .map(|(kind, report)| (kind, Some(report)))
+                    .map_err(|e| format!("{e:?}"));
+            }
             Self::Pen => protocol::parse(raw)
                 .map_err(|e| format!("{e:?}"))?
                 .map(|pen| from_pth660(pen, raw, metadata).map_err(|e| format!("{e:?}")))
@@ -60,7 +70,8 @@ impl Decoder {
             Self::BambooV2Aux => parse_bamboo_v2_auxiliary(raw, metadata)
                 .map(Some)
                 .map_err(|e| format!("{e:?}")),
-        }
+        }?;
+        Ok((ReportKind::Data, report))
     }
 }
 
@@ -95,6 +106,11 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         "bamboo" => Decoder::Bamboo,
         "bamboo-pad" => Decoder::BambooPad,
         "bamboo-v2-aux" => Decoder::BambooV2Aux,
+        "uc-logic" => Decoder::Stateless(parse_uc_logic),
+        "uc-logic-tilt" => Decoder::Stateless(parse_uc_logic_tilt),
+        "uc-logic-v1" => Decoder::Stateless(parse_uc_logic_v1),
+        "uc-logic-v2" => Decoder::Stateless(parse_uc_logic_v2),
+        "huion-tilt" => Decoder::Stateless(parse_huion_tilt),
         _ => return Err(format!("unknown parser {parser:?}\n{USAGE}")),
     };
     let source = match (hex, input) {
@@ -134,12 +150,13 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             received_at: Duration::ZERO,
             sequence: sequence as u64,
         };
-        let report = decoder
+        let (kind, report) = decoder
             .parse(&raw, metadata)
             .map_err(|e| format!("line {}: {e}", line_index + 1))?;
         let values = report.as_ref().map(|r| r.values).unwrap_or_default();
         let output = json!({
             "schema_version": 1, "parser": parser, "sequence": sequence,
+            "kind": match kind { ReportKind::Data => "data", ReportKind::OutOfRange => "out_of_range" },
             "line": line_index + 1, "raw_hex": encode_hex(&raw),
             "report_raw_hex": report.as_ref().map(|r| encode_hex(r.raw)),
             "has_capabilities": values != ReportValues::default(),

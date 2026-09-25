@@ -19,8 +19,15 @@ Input files contain one hex packet per line. ASCII whitespace and colons can sep
 | `bamboo` | Pinned Bamboo 0x02 pen/mouse/auxiliary dispatch |
 | `bamboo-pad` | Pinned BambooPad 0x10 pen and auxiliary subtypes |
 | `bamboo-v2-aux` | Pinned BambooV2 auxiliary 0x02 layout |
+| `uc-logic` | Base UCLogic pen/auxiliary and explicit range loss |
+| `uc-logic-tilt` | UCLogic tilt pen and auxiliary dispatch |
+| `uc-logic-v1` | UCLogic V1 pen/auxiliary and explicit range loss |
+| `uc-logic-v2` | UCLogic V2 pen/auxiliary; undecoded wheel bytes stay raw-only |
+| `huion-tilt` | Huion tilt, auxiliary buttons and nullable absolute wheel |
 
 All fields that a report does not provide are `null`, distinct from zero, false or an explicitly empty array. `has_capabilities: false` identifies unrecognized/raw-only results. Raw bytes remain present as `raw_hex`; `report_raw_hex` shows the parser's view, including removal of the Wacom-driver prefix where applicable. These exports are deliberately unredacted bytes supplied by the caller and can contain device-specific identifiers.
+
+`kind` distinguishes ordinary `data` (including raw-only packets) from explicit `out_of_range` notifications, which also have no capabilities. UCLogic and Huion dispatch by flags rather than a report-ID whitelist, matching the pinned source. The PTH-660 decoder shows its transport fields; it does not infer the later output pipeline's range-loss events.
 
 Touch packets update the retained snapshot in line order for this invocation only. Files must contain one endpoint/session; start another command to reset state. No timestamps, device identity, gestures or output events are inferred from a hex file.
 
