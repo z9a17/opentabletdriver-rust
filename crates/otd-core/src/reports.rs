@@ -14,8 +14,10 @@
 use crate::protocol::PenReport;
 use std::time::Duration;
 
+mod bamboo;
 mod intuos_touch;
 mod intuos_v3;
+pub use bamboo::{parse_bamboo, parse_bamboo_pad, parse_bamboo_v2_auxiliary};
 pub use intuos_touch::{IntuosV2TouchParser, WacomDriverIntuosV2TouchParser, WacomDriverReport};
 pub use intuos_v3::parse_intuos_v3;
 
