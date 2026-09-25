@@ -29,7 +29,7 @@ struct Options {
 
 enum Input {
     Otd(OtdSettingsDocument),
-    Native(Profile),
+    Native(Box<Profile>),
     Collection(NativeProfileCollection),
 }
 
@@ -240,7 +240,7 @@ fn read_input(path: &Path) -> Result<Input, String> {
             if document.get("format").and_then(toml::Value::as_str) == Some("profile_collection") {
                 NativeProfileCollection::from_toml_text(&text, path).map(Input::Collection)
             } else {
-                Profile::from_toml_text(&text, path).map(Input::Native)
+                Profile::from_toml_text(&text, path).map(|profile| Input::Native(Box::new(profile)))
             }
         }
         _ => Err("input must be an OTD .json file or a Rust .toml profile/collection".into()),
@@ -255,7 +255,7 @@ fn select_profile(input: &Input, index: usize, legacy: bool) -> Result<Profile, 
                 legacy_force_radial_follow: legacy,
             },
         ),
-        Input::Native(profile) if index == 0 => Ok(profile.clone()),
+        Input::Native(profile) if index == 0 => Ok((**profile).clone()),
         Input::Native(_) => Err("a single Rust profile has index 0".into()),
         Input::Collection(collection) => collection
             .profiles

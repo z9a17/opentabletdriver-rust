@@ -1,3 +1,6 @@
+pub mod action_output;
+mod control;
+mod daemon;
 mod display;
 mod dotnet;
 mod hid;
@@ -5,6 +8,7 @@ mod original_driver;
 mod output;
 mod plugins;
 mod priority;
+mod profile_cli;
 mod session;
 mod ui;
 
@@ -21,7 +25,7 @@ use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError, WAIT_OB
 use windows_sys::Win32::System::Threading::{CreateMutexW, SetEvent, WaitForSingleObject};
 
 use crate::config::Profile;
-use crate::hid::{Candidate, Event, Notification, OwnedHandle};
+use crate::hid::{Event, Notification, OwnedHandle};
 use crate::session::Mode;
 
 fn usage() -> &'static str {
@@ -30,6 +34,10 @@ fn usage() -> &'static str {
   opentabletdriver-rust.exe ui              Open the same control panel
   opentabletdriver-rust.exe                 Start the visible cursor daemon
   opentabletdriver-rust.exe run [--config driver.toml | --otd-settings settings.json]
+  opentabletdriver-rust.exe daemon [--background]
+  opentabletdriver-rust.exe start [--config driver.toml | --otd-settings settings.json]
+  opentabletdriver-rust.exe status | stop | shutdown
+  opentabletdriver-rust.exe profiles list|preview|import|export|select ...
   opentabletdriver-rust.exe settings [--config driver.toml | --otd-settings settings.json]
   opentabletdriver-rust.exe inspect-plugin path/to/managed-plugin.dll
   opentabletdriver-rust.exe check-plugins driver.toml
@@ -44,6 +52,15 @@ Capture does not inject cursor input. Plugin inspection/checks load trusted exec
 }
 
 enum Command {
+    Profiles(Vec<String>),
+    Daemon {
+        background: bool,
+    },
+    Control(control::Command),
+    Start {
+        config: Option<PathBuf>,
+        otd_settings: Option<PathBuf>,
+    },
     Ui,
     Version,
     InspectPlugin(PathBuf),
@@ -85,6 +102,28 @@ fn parse_args() -> Result<Command, String> {
         };
     };
     match command.as_str() {
+        "profiles" => Ok(Command::Profiles(args.collect())),
+        "daemon" => {
+            let background = match args.next().as_deref() {
+                None => false,
+                Some("--background") => true,
+                _ => return Err(usage().into()),
+            };
+            if args.next().is_some() {
+                return Err(usage().into());
+            }
+            Ok(Command::Daemon { background })
+        }
+        "status" | "stop" | "shutdown" => {
+            if args.next().is_some() {
+                return Err(usage().into());
+            }
+            Ok(Command::Control(match command.as_str() {
+                "status" => control::Command::Status,
+                "stop" => control::Command::Stop,
+                _ => control::Command::Shutdown,
+            }))
+        }
         "ui" if args.next().is_none() => Ok(Command::Ui),
         "--version" | "version" => Ok(Command::Version),
         "inspect-plugin" | "check-plugins" => {
@@ -137,7 +176,7 @@ fn parse_args() -> Result<Command, String> {
                 Ok(Command::Displays)
             }
         }
-        "run" | "capture" | "settings" => {
+        "run" | "capture" | "settings" | "start" => {
             let mut config = None;
             let mut otd_settings = None;
             let mut seconds = 10;
@@ -167,6 +206,10 @@ fn parse_args() -> Result<Command, String> {
                 return Err("choose either --config or --otd-settings".into());
             }
             match command.as_str() {
+                "start" => Ok(Command::Start {
+                    config,
+                    otd_settings,
+                }),
                 "run" => Ok(Command::Run {
                     config,
                     otd_settings,
@@ -189,12 +232,12 @@ fn parse_args() -> Result<Command, String> {
 fn list(paths: bool) -> Result<(), String> {
     let devices = hid::enumerate().map_err(|e| format!("HID discovery failed: {e}"))?;
     if devices.is_empty() {
-        println!("No USB PTH-660 HID collections found.");
+        println!("No HID collections matching known tablet vendor/product IDs found.");
     }
     for (index, device) in devices.iter().enumerate() {
-        let role = match device.input_length {
-            hid::PEN_REPORT_LENGTH => "pen",
-            hid::AUX_REPORT_LENGTH => "auxiliary",
+        let role = match (device.vendor, device.product, device.input_length) {
+            (hid::WACOM_VENDOR, hid::PTH660_USB, hid::PEN_REPORT_LENGTH) => "PTH-660 pen",
+            (hid::WACOM_VENDOR, hid::PTH660_USB, hid::AUX_REPORT_LENGTH) => "PTH-660 auxiliary",
             _ => "other",
         };
         let openable = device.open_read().is_ok();
@@ -231,8 +274,8 @@ fn load_tablets(directory: Option<&Path>) -> Result<(Option<Database>, usize), S
 }
 
 /// Says which configuration declares the USB PTH-660 pen interface. The
-/// report path implements the built-in configuration, so an override that
-/// changes it is reported, not applied (BC-28).
+/// report path still requires the pinned parser/specifications. Endpoint
+/// predicates and initialization declarations are applied by the adapter.
 fn report_pth_660(database: &Database) {
     let builtin = Database::builtin()
         .find(hid::WACOM_VENDOR, hid::PTH660_USB)
@@ -247,7 +290,7 @@ fn report_pth_660(database: &Database) {
     }
     if declaring.is_empty() {
         eprintln!(
-            "warning: no usable tablet configuration declares the USB PTH-660; this driver uses the built-in one"
+            "warning: no usable tablet configuration declares the USB PTH-660; it will not be selected"
         );
     }
     for entry in &declaring {
@@ -268,7 +311,7 @@ fn report_pth_660(database: &Database) {
             );
         } else {
             eprintln!(
-                "warning: {} changes {} of {}; this driver uses the built-in configuration",
+                "Tablet override {} changes {} of {}; endpoint predicates and initialization apply, unsupported parser/specification changes will be rejected",
                 entry.path,
                 changed.join(", "),
                 configuration.name
@@ -286,12 +329,9 @@ fn report_pth_660(database: &Database) {
 /// Loads the tablet configurations as OpenTabletDriver's daemon does when it
 /// starts and reports what the USB PTH-660 resolves to. Nothing here runs per
 /// report.
-fn check_tablet_configurations() {
+fn check_tablet_configurations() -> Result<Option<Database>, String> {
     let directory = otd_configurations().filter(|directory| directory.is_dir());
-    let (custom, _) = load_tablets(directory.as_deref()).unwrap_or_else(|error| {
-        eprintln!("warning: tablet configuration files not read: {error}");
-        (None, 0)
-    });
+    let (custom, _) = load_tablets(directory.as_deref())?;
     let database = custom.as_ref().unwrap_or_else(|| Database::builtin());
     let errors = database
         .entries()
@@ -304,6 +344,7 @@ fn check_tablet_configurations() {
         );
     }
     report_pth_660(database);
+    Ok(custom)
 }
 
 /// Summarizes the tablet configuration database; with `list`, every tablet,
@@ -434,23 +475,6 @@ fn single_instance() -> Result<OwnedHandle, String> {
     Ok(handle)
 }
 
-fn choose<'a>(
-    devices: &'a [Candidate],
-    profile: &Profile,
-) -> Result<Option<&'a Candidate>, String> {
-    let mut matching = devices.iter().filter(|d| d.is_pen());
-    if let Some(path) = &profile.device_path {
-        return Ok(matching.find(|d| d.path_text().eq_ignore_ascii_case(path)));
-    }
-    let first = matching.next();
-    if first.is_some() && matching.next().is_some() {
-        return Err(
-            "multiple PTH-660 pen collections found; set device_path in the profile".into(),
-        );
-    }
-    Ok(first)
-}
-
 fn load_profile(
     config: Option<&PathBuf>,
     otd_settings: Option<&PathBuf>,
@@ -492,6 +516,8 @@ fn drive(
     capture_seconds: Option<u64>,
     status: impl Fn(&str),
 ) -> Result<(), String> {
+    profile.validate_runtime_tablet("Wacom PTH-660")?;
+    profile.validate_filter_execution()?;
     if profile.relative.is_none() {
         display::read_snapshot()?.mapper(&profile)?;
     }
@@ -500,19 +526,16 @@ fn drive(
         env!("CARGO_PKG_VERSION")
     );
     profile.print_summary();
-    check_tablet_configurations();
+    let custom_tablets = check_tablet_configurations()?;
+    let database = custom_tablets
+        .as_ref()
+        .unwrap_or_else(|| Database::builtin());
     if capture_seconds.is_none() {
         println!("Reading pen input and moving the cursor. Press Ctrl+C to stop.");
     } else {
         println!("Read-only capture; no cursor input is injected.");
     }
     let _instance = single_instance()?;
-    let mut plugins = plugins::PluginChain::load(if capture_seconds.is_none() {
-        &profile.plugins
-    } else {
-        &[]
-    })?;
-    plugins.validate_output_mode(profile.relative.is_some())?;
     // Register before enumerating so an arrival between the two is not missed.
     let notification =
         Notification::register().map_err(|e| format!("PnP notification failed: {e}"))?;
@@ -539,8 +562,11 @@ fn drive(
         {
             break;
         }
-        let devices = hid::enumerate().map_err(|e| format!("HID discovery failed: {e}"))?;
-        let Some(candidate) = choose(&devices, &profile)? else {
+        let devices = hid::enumerate_with_database(database)
+            .map_err(|e| format!("HID discovery failed: {e}"))?;
+        let Some(selected) =
+            hid::select_pth660(&devices, database, profile.device_path.as_deref())?
+        else {
             if !waiting {
                 eprintln!("Waiting for USB PTH-660.");
                 status("Waiting for USB PTH-660");
@@ -554,9 +580,21 @@ fn drive(
             continue;
         };
         waiting = false;
+        let mut plugins = plugins::PluginChain::load_with_tablet(
+            if capture_seconds.is_none() {
+                &profile.plugins
+            } else {
+                &[]
+            },
+            &selected.configuration,
+        )?;
+        plugins.validate_output_mode(profile.relative.is_some())?;
+        if selected.auxiliary.is_some() {
+            status("PTH-660 auxiliary collection paired; auxiliary output is not enabled yet");
+        }
         status("PTH-660 found; opening pen input");
         match session::run(
-            candidate,
+            &selected,
             &profile,
             &notification,
             stop_event,
@@ -584,6 +622,27 @@ fn drive(
 
 fn main() {
     let result = match parse_args() {
+        Ok(Command::Profiles(args)) => profile_cli::run(args),
+        Ok(Command::Daemon { background }) => {
+            if background {
+                daemon::background()
+            } else {
+                daemon::serve()
+            }
+        }
+        Ok(Command::Control(command)) => {
+            daemon::call(command).and_then(|reply| daemon::print_reply(&reply))
+        }
+        Ok(Command::Start {
+            config,
+            otd_settings,
+        }) => load_profile(config.as_ref(), otd_settings.as_ref()).and_then(|profile| {
+            profile.validate_runtime_tablet("Wacom PTH-660")?;
+            daemon::call(control::Command::Start {
+                profile_toml: Some(profile.to_toml()?),
+            })
+            .and_then(|reply| daemon::print_reply(&reply))
+        }),
         Ok(Command::Ui) => ui::run(),
         Ok(Command::Version) => {
             println!("opentabletdriver-rust {}", env!("CARGO_PKG_VERSION"));
@@ -623,6 +682,7 @@ fn main() {
         }) => run(config, otd_settings, Some(seconds)),
         Ok(Command::Help) => {
             println!("{}", usage());
+            println!("\n{}", profile_cli::usage());
             Ok(())
         }
         Err(error) => Err(error),

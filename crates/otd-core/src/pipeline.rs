@@ -29,6 +29,7 @@ pub struct ReportPipeline {
 
 impl ReportPipeline {
     pub fn new(profile: &Profile) -> Result<Self, String> {
+        profile.validate_filter_execution()?;
         Ok(Self {
             contact: profile.contact,
             filters: profile

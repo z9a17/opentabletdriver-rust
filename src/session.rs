@@ -17,7 +17,7 @@ use otd_core::session::{Read, ReportSource};
 
 use crate::config::Profile;
 use crate::display::WindowsDisplays;
-use crate::hid::{self, Candidate, Event, Notification, OwnedHandle};
+use crate::hid::{self, Candidate, Event, Notification, OwnedHandle, SelectedDevice};
 use crate::output::send_input;
 use crate::plugins::PluginChain;
 use crate::priority::ReaderPriority;
@@ -52,11 +52,37 @@ struct HidSource<'a> {
 
 impl<'a> HidSource<'a> {
     fn open(
-        candidate: &'a Candidate,
+        selected: &'a SelectedDevice<'a>,
         notification: &'a Notification,
         stop: &'a Event,
+        initialize: bool,
     ) -> io::Result<Self> {
-        let handle = candidate.open_read()?;
+        let candidate = selected.pen;
+        let writes = initialize
+            && (selected
+                .identifier
+                .feature_init_report
+                .as_ref()
+                .is_some_and(|reports| reports.iter().any(|report| !report.0.is_empty()))
+                || selected
+                    .identifier
+                    .output_init_report
+                    .as_ref()
+                    .is_some_and(|reports| reports.iter().any(|report| !report.0.is_empty())));
+        let handle = if writes {
+            candidate.open(true)?
+        } else {
+            candidate.open_read()?
+        };
+        if initialize {
+            hid::initialize(
+                candidate,
+                &handle,
+                &selected.identifier,
+                &selected.configuration,
+                stop,
+            )?;
+        }
         let read_event = Event::create(true)?;
         Ok(Self {
             label: format!(
@@ -189,7 +215,7 @@ impl Drop for HidSource<'_> {
 }
 
 pub fn run(
-    candidate: &Candidate,
+    selected: &SelectedDevice<'_>,
     profile: &Profile,
     notification: &Notification,
     stop_event: &Event,
@@ -198,7 +224,12 @@ pub fn run(
     status: &impl Fn(&str),
 ) -> io::Result<()> {
     plugins.reset();
-    let mut source = HidSource::open(candidate, notification, stop_event)?;
+    let mut source = HidSource::open(
+        selected,
+        notification,
+        stop_event,
+        matches!(mode, Mode::Driver),
+    )?;
     let _priority = ReaderPriority::raise();
     otd_core::session::run(
         &mut source,

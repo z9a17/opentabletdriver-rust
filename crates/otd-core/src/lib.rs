@@ -5,6 +5,7 @@
 //! platform supplies the device (`session::ReportSource`), the desktop layout
 //! (`session::Displays`), DLL filters (`plugins::Filters`) and the output sink.
 
+pub mod actions;
 pub mod config;
 pub mod display;
 pub mod endpoint_match;
@@ -15,6 +16,7 @@ pub mod plugins;
 pub mod protocol;
 pub mod radial_follow;
 pub mod relative;
+pub mod reports;
 pub mod session;
 pub mod state;
 pub mod tablets;

@@ -865,7 +865,7 @@ fn set_store_property(store: &mut Value, property: &str, value: Value) -> Result
 }
 
 fn timespan(duration: std::time::Duration) -> Result<String, String> {
-    if duration.as_nanos() % 100 != 0 || duration.as_nanos() / 100 > i64::MAX as u128 {
+    if !duration.as_nanos().is_multiple_of(100) || duration.as_nanos() / 100 > i64::MAX as u128 {
         return Err("OTD TimeSpan cannot exactly represent this reset delay; use nonnegative 100-nanosecond ticks within Int64 range".into());
     }
     let seconds = duration.as_secs();
@@ -917,9 +917,7 @@ fn reject_precision_loss(text: &str) -> Result<(), String> {
 fn decimal_identity(text: &str) -> Option<(bool, String, i64)> {
     let negative = text.starts_with('-');
     let unsigned = text.trim_start_matches('-');
-    let (mantissa, exponent) = unsigned
-        .split_once(['e', 'E'])
-        .map_or((unsigned, "0"), |parts| parts);
+    let (mantissa, exponent) = unsigned.split_once(['e', 'E']).unwrap_or((unsigned, "0"));
     let fractional = mantissa
         .split_once('.')
         .map_or(0, |(_, digits)| digits.len());

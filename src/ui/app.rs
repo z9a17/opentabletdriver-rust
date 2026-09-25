@@ -2083,6 +2083,13 @@ impl App {
         self.sync_all();
         self.layout();
         self.update_title();
+        for diagnostic in self.editor.profile.diagnostics.clone() {
+            self.log(
+                Level::Warning,
+                "Settings",
+                format!("{}: {}", diagnostic.location, diagnostic.message),
+            );
+        }
     }
 
     /// The profile exactly as Save and Start will use it.
@@ -2091,6 +2098,7 @@ impl App {
             return Err("Correct invalid editor values before saving or applying settings.".into());
         }
         let profile = model::validated(&self.editor.profile, &self.profile_path)?;
+        profile.validate_runtime_tablet("Wacom PTH-660")?;
         if profile.relative.is_none() {
             displays_for_driver(self.process_dpi)?.mapper(&profile)?;
         }
@@ -2141,11 +2149,13 @@ impl App {
     }
 
     pub(super) fn save_to(&mut self, path: PathBuf) {
-        let result = self
-            .checked_profile()
-            .and_then(|profile| save_profile(&path, &profile).map(|_| profile));
+        let result = self.checked_profile().and_then(|mut profile| {
+            profile.advance_revision()?;
+            save_profile(&path, &profile).map(|_| profile)
+        });
         match result {
             Ok(profile) => {
+                self.editor.profile.settings_revision = profile.settings_revision;
                 self.profile_path = path;
                 self.dirty = false;
                 self.update_title();
