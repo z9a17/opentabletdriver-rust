@@ -320,6 +320,84 @@ impl Editor {
         }
     }
 
+    /// Built-in filters precede DLLs; each group keeps its own saved order.
+    /// DLL execution also respects the stage declared by the plugin.
+    pub fn filter_move_target(&self, target: FilterRef, down: bool) -> Option<FilterRef> {
+        let (index, count) = match target {
+            FilterRef::Radial(index) => (index, self.profile.radial_follow.len()),
+            FilterRef::Plugin(index) => (index, self.profile.plugins.len()),
+        };
+        let next = if down {
+            index.checked_add(1)?
+        } else {
+            index.checked_sub(1)?
+        };
+        if index >= count || next >= count {
+            return None;
+        }
+        Some(match target {
+            FilterRef::Radial(_) => FilterRef::Radial(next),
+            FilterRef::Plugin(_) => FilterRef::Plugin(next),
+        })
+    }
+
+    pub fn move_filter(&mut self, target: FilterRef, down: bool) -> Option<FilterRef> {
+        let next = self.filter_move_target(target, down)?;
+        match (target, next) {
+            (FilterRef::Radial(from), FilterRef::Radial(to)) => {
+                self.profile.radial_follow.swap(from, to)
+            }
+            (FilterRef::Plugin(from), FilterRef::Plugin(to)) => self.profile.plugins.swap(from, to),
+            _ => unreachable!("filter moves stay within their group"),
+        }
+        Some(next)
+    }
+
+    /// Reset only settings. Identity, order and enabled state are preserved.
+    pub fn reset_filter(
+        &mut self,
+        target: FilterRef,
+        metadata: Option<&FilterMetadata>,
+    ) -> Result<(), String> {
+        match target {
+            FilterRef::Radial(index) => {
+                if index >= self.profile.radial_follow.len()
+                    && !(index == 0 && self.profile.radial_follow.is_empty())
+                {
+                    return Err("The selected filter no longer exists.".into());
+                }
+                self.set_radial(index, RadialFollowSettings::default());
+            }
+            FilterRef::Plugin(index) => {
+                let plugin = self
+                    .profile
+                    .plugins
+                    .get_mut(index)
+                    .ok_or("The selected filter no longer exists.")?;
+                let metadata = metadata
+                    .filter(|metadata| {
+                        plugin.kind == PluginKind::Dotnet && metadata.type_name == plugin.type_name
+                    })
+                    .ok_or(
+                        "Defaults are unavailable for this plugin. Its settings have been kept.",
+                    )?;
+                let defaults: serde_json::Value =
+                    serde_json::from_str(&metadata.default_settings_json)
+                        .map_err(|error| error.to_string())?;
+                if !defaults.is_object() {
+                    return Err("Plugin defaults must be a JSON object.".into());
+                }
+                let candidate = PluginConfig {
+                    settings_json: defaults.to_string(),
+                    ..plugin.clone()
+                };
+                candidate.validate()?;
+                *plugin = candidate;
+            }
+        }
+        Ok(())
+    }
+
     pub fn radial(&self, index: usize) -> RadialFollowSettings {
         self.profile
             .radial_follow
@@ -895,10 +973,114 @@ mod tests {
     }
 
     #[test]
+    fn filter_controls_reorder_round_trip_preserves_identity_and_settings() {
+        let mut editor = Editor::new(Profile::default());
+        editor.profile.radial_follow = vec![
+            RadialFollowSettings {
+                outer_radius: 2.0,
+                ..Default::default()
+            },
+            RadialFollowSettings {
+                outer_radius: 4.0,
+                ..Default::default()
+            },
+        ];
+        editor.profile.plugins = (0..3)
+            .map(|index| PluginConfig {
+                path: "filter.dll".into(),
+                kind: PluginKind::Dotnet,
+                enabled: index != 1,
+                type_name: format!("Filter{index}"),
+                settings_json: format!("{{\"Value\":{index}}}"),
+            })
+            .collect();
+        assert_eq!(editor.move_filter(FilterRef::Plugin(0), false), None);
+        assert_eq!(editor.move_filter(FilterRef::Plugin(2), true), None);
+        assert_eq!(editor.move_filter(FilterRef::Plugin(99), false), None);
+        assert_eq!(editor.move_filter(FilterRef::Radial(1), true), None);
+        assert_eq!(
+            editor.move_filter(FilterRef::Plugin(1), false),
+            Some(FilterRef::Plugin(0))
+        );
+        assert_eq!(
+            editor.move_filter(FilterRef::Radial(0), true),
+            Some(FilterRef::Radial(1))
+        );
+        let saved = editor.profile.to_toml().unwrap();
+        let loaded = Profile::from_toml_text(&saved, Path::new("profile.toml")).unwrap();
+        assert_eq!(
+            loaded
+                .plugins
+                .iter()
+                .map(|p| p.type_name.as_str())
+                .collect::<Vec<_>>(),
+            ["Filter1", "Filter0", "Filter2"]
+        );
+        assert!(!loaded.plugins[0].enabled);
+        assert_eq!(loaded.plugins[0].settings_json, r#"{"Value":1}"#);
+        assert_eq!(loaded.radial_follow[0].outer_radius, 4.0);
+        assert_eq!(loaded.radial_follow[1].outer_radius, 2.0);
+    }
+
+    #[test]
+    fn filter_controls_defaults_preserve_disabled_state_and_reject_unavailable_defaults() {
+        let mut editor = Editor::new(Profile::default());
+        editor.set_radial(
+            0,
+            RadialFollowSettings {
+                outer_radius: 9.0,
+                ..Default::default()
+            },
+        );
+        editor.reset_filter(FilterRef::Radial(0), None).unwrap();
+        assert!(editor.profile.radial_follow.is_empty());
+        editor.set_filter_enabled(FilterRef::Radial(0), true);
+        assert_eq!(
+            editor.radial(0).outer_radius,
+            RadialFollowSettings::default().outer_radius
+        );
+        editor.profile.plugins.push(PluginConfig {
+            path: "filter.dll".into(),
+            kind: PluginKind::Dotnet,
+            enabled: false,
+            type_name: "Example.Filter".into(),
+            settings_json: r#"{"Radius":99,"Custom":true}"#.into(),
+        });
+        let target = FilterRef::Plugin(0);
+        let original = editor.profile.plugins[0].settings_json.clone();
+        assert!(editor.reset_filter(target, None).is_err());
+        let mut metadata = FilterMetadata {
+            type_name: "Wrong.Filter".into(),
+            display_name: None,
+            properties: Vec::new(),
+            default_settings_json: r#"{"Radius":2,"Nullable":null}"#.into(),
+        };
+        assert!(editor.reset_filter(target, Some(&metadata)).is_err());
+        assert_eq!(editor.profile.plugins[0].settings_json, original);
+        metadata.type_name = "Example.Filter".into();
+        editor.reset_filter(target, Some(&metadata)).unwrap();
+        let plugin = &editor.profile.plugins[0];
+        assert!(!plugin.enabled);
+        assert_eq!(plugin.type_name, "Example.Filter");
+        assert_eq!(plugin.path, std::path::PathBuf::from("filter.dll"));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&plugin.settings_json).unwrap(),
+            serde_json::json!({"Radius":2,"Nullable":null})
+        );
+        let reset = plugin.settings_json.clone();
+        metadata.default_settings_json = "null".into();
+        assert!(editor.reset_filter(target, Some(&metadata)).is_err());
+        assert_eq!(editor.profile.plugins[0].settings_json, reset);
+        editor.profile.plugins[0].kind = PluginKind::Native;
+        assert!(editor.reset_filter(target, Some(&metadata)).is_err());
+    }
+
+    #[test]
     fn plugin_editor_uses_dll_labels_units_and_order_without_losing_unknown_settings() {
         let metadata = FilterMetadata {
             type_name: "RadialFollow.Screen".into(),
             display_name: Some("Screen smoothing".into()),
+            default_settings_json: "{}".into(),
             properties: vec![
                 crate::dotnet::PropertyMetadata {
                     name: "OuterRadius".into(),

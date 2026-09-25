@@ -20,6 +20,8 @@ For relative mode without OpenTabletDriver settings, use `opentabletdriver-rust.
 
 ## Build and diagnostics
 
+In **Filters**, use **Move up** / **Move down** to change saved filter order. Built-in Radial Follow entries stay before DLL filters; DLL filters execute in saved order within their declared stage (tablet coordinates before mapping, pixels after mapping). Disabled entries keep their place. **Defaults** restores the selected built-in or inspected .NET filter's settings without changing its enabled state, DLL path or class. .NET defaults come from the DLL's default-value attributes; settings without attributes revert to constructor behavior when applied. Native DLLs have no default-settings contract, so their Defaults button is disabled. These edits take effect on **Apply** or the next driver start; **Save** persists them.
+
 Use the stable Rust MSVC toolchain on Windows 11:
 
     cargo build --locked --workspace --release

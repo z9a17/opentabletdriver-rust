@@ -108,6 +108,9 @@ const CMD_DETECT: u16 = 210;
 const CMD_ADD_DOTNET: u16 = 220;
 const CMD_ADD_NATIVE: u16 = 221;
 const CMD_REMOVE_FILTER: u16 = 222;
+const CMD_FILTER_UP: u16 = 223;
+const CMD_FILTER_DOWN: u16 = 224;
+const CMD_FILTER_DEFAULTS: u16 = 225;
 const CMD_THEME_SYSTEM: u16 = 230;
 const CMD_THEME_LIGHT: u16 = 231;
 const CMD_THEME_DARK: u16 = 232;
@@ -656,6 +659,9 @@ struct Controls {
     add_dotnet: HWND,
     add_native: HWND,
     remove_filter: HWND,
+    filter_up: HWND,
+    filter_down: HWND,
+    filter_defaults: HWND,
     filter_enable: HWND,
     filter_json: HWND,
     tip_binding: HWND,

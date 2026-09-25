@@ -170,6 +170,9 @@ impl App {
                 add_dotnet: null,
                 add_native: null,
                 remove_filter: null,
+                filter_up: null,
+                filter_down: null,
+                filter_defaults: null,
                 filter_enable: null,
                 filter_json: null,
                 tip_binding: null,
@@ -259,6 +262,11 @@ impl App {
             self.button("Add native…", CMD_ADD_NATIVE, Kind::Button, Surface::Page)?;
         self.c.remove_filter =
             self.button("Remove", CMD_REMOVE_FILTER, Kind::Button, Surface::Page)?;
+        self.c.filter_up = self.button("Move up", CMD_FILTER_UP, Kind::Button, Surface::Page)?;
+        self.c.filter_down =
+            self.button("Move down", CMD_FILTER_DOWN, Kind::Button, Surface::Page)?;
+        self.c.filter_defaults =
+            self.button("Defaults", CMD_FILTER_DEFAULTS, Kind::Button, Surface::Page)?;
         self.c.filter_enable = self.control(
             "BUTTON",
             "Enable",
@@ -354,6 +362,9 @@ impl App {
             c.add_dotnet,
             c.add_native,
             c.remove_filter,
+            c.filter_up,
+            c.filter_down,
+            c.filter_defaults,
             c.filter_enable,
             c.filter_json,
             c.tip_binding,
@@ -746,6 +757,28 @@ impl App {
                 self.c.remove_filter,
                 matches!(target, FilterRef::Plugin(_)).into(),
             );
+            EnableWindow(
+                self.c.filter_up,
+                self.editor
+                    .filter_move_target(target, false)
+                    .is_some()
+                    .into(),
+            );
+            EnableWindow(
+                self.c.filter_down,
+                self.editor
+                    .filter_move_target(target, true)
+                    .is_some()
+                    .into(),
+            );
+            let can_reset = match target {
+                FilterRef::Radial(_) => true,
+                FilterRef::Plugin(index) => {
+                    let plugin = &self.editor.profile.plugins[index];
+                    plugin.kind == PluginKind::Dotnet && self.metadata_for(plugin).is_some()
+                }
+            };
+            EnableWindow(self.c.filter_defaults, can_reset.into());
         }
         let mut rows = Vec::new();
         match target {
@@ -1257,6 +1290,63 @@ impl App {
                 "Plugins",
                 format!("Removed {}.", model::plugin_name(&removed)),
             );
+        }
+    }
+
+    pub(super) fn move_filter(&mut self, down: bool) {
+        // Rebuilding controls would discard invalid text, so retain it until corrected.
+        if self
+            .properties
+            .iter()
+            .any(|row| self.invalid.contains(&(row.hwnd as isize)))
+            || self.json_error.is_some()
+        {
+            self.show_status(
+                "Correct the selected filter's invalid settings before moving it.".into(),
+                Level::Warning,
+                true,
+            );
+            return;
+        }
+        let Some(target) = self.selected_target() else {
+            return;
+        };
+        let Some(next) = self.editor.move_filter(target, down) else {
+            return;
+        };
+        self.selected_filter = match next {
+            FilterRef::Radial(index) => index,
+            FilterRef::Plugin(index) => self.editor.profile.radial_follow.len().max(1) + index,
+        };
+        self.mark_dirty();
+        self.refresh_filters();
+        self.layout();
+    }
+
+    pub(super) fn reset_filter(&mut self) {
+        let Some(target) = self.selected_target() else {
+            return;
+        };
+        let metadata = match target {
+            FilterRef::Plugin(index) => self
+                .metadata_for(&self.editor.profile.plugins[index])
+                .cloned(),
+            FilterRef::Radial(_) => None,
+        };
+        match self.editor.reset_filter(target, metadata.as_ref()) {
+            Ok(()) => {
+                // Defaults intentionally replace invalid edits, including raw JSON.
+                self.set_invalid(self.c.filter_json, false, None);
+                self.mark_dirty();
+                self.refresh_filters();
+                self.layout();
+                self.log(
+                    Level::Info,
+                    "Plugins",
+                    "Restored selected filter defaults. Use Apply to update the running driver.",
+                );
+            }
+            Err(error) => self.log(Level::Warning, "Plugins", error),
         }
     }
 

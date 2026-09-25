@@ -362,11 +362,21 @@ impl App {
             content.left,
             content.top,
             content.left + list_width,
-            buttons_top - s(10),
+            buttons_top - s(46),
         );
         items.push(Item::Group(list_box));
         shown.push((self.c.filter_list, draw::inset(list_box, 1, s(4))));
         let width = (list_width - s(12)) / 3;
+        for (index, hwnd) in [self.c.filter_up, self.c.filter_down, self.c.filter_defaults]
+            .into_iter()
+            .enumerate()
+        {
+            let left = content.left + index as i32 * (width + s(6));
+            shown.push((
+                hwnd,
+                rect(left, buttons_top - s(36), left + width, buttons_top - s(6)),
+            ));
+        }
         for (index, hwnd) in [self.c.add_dotnet, self.c.add_native, self.c.remove_filter]
             .into_iter()
             .enumerate()
@@ -404,7 +414,7 @@ impl App {
                 let plugin = &self.editor.profile.plugins[index];
                 match plugin.kind {
                     PluginKind::Dotnet => format!(
-                        ".NET filter {} from {}",
+                        ".NET filter {} from {}. Saved order applies within each pipeline stage; tablet filters run before mapping and pixel filters after it.",
                         plugin.type_name,
                         plugin.path.display()
                     ),

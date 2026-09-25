@@ -391,9 +391,23 @@
     "CAP-33": {
       "state": "open",
       "owner": "U04",
-      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/35",
-      "release": "v0.7.12",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/39",
+      "release": "v0.7.13",
       "evidence": [
+        {
+          "kind": "unit-tested",
+          "task": "U04",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "bba32dce313c54af29dd06bb57c737e69a6c5218",
+          "platform": "Windows 11 (local)",
+          "architecture": "x86_64",
+          "date": "2026-09-25T02:45:00+02:00",
+          "tester": "Codex local focused model tests",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Desktop/Reflection/PluginSettingStore.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/pull/39",
+          "result": "pass",
+          "command": "cargo test --locked -p opentabletdriver-rust --bin opentabletdriver-rust ui::model::tests::filter_controls -- --nocapture"
+        },
         {
           "kind": "integration-tested",
           "task": "P02",
@@ -425,7 +439,7 @@
         }
       ],
       "blockers": [
-        "Labels, units, tooltips and saved null JSON-scalar editing have automated coverage; actions, properties without defaults or saved values, broader validation and interactive UI verification remain open."
+        "Labels, units, tooltips, saved null editing, filter ordering and reset defaults have automated coverage; actions, properties without defaults or saved values, broader validation and interactive UI verification remain open. Native DLLs do not expose a defaults contract."
       ]
     },
     "CAP-34": {
