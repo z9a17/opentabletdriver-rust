@@ -168,6 +168,8 @@ pub struct FilterMetadata {
     pub type_name: String,
     pub display_name: Option<String>,
     pub properties: Vec<PropertyMetadata>,
+    /// Attribute defaults from inspection; omitted properties retain constructor defaults.
+    pub default_settings_json: String,
 }
 
 pub struct InspectedFilter {
@@ -222,6 +224,7 @@ pub fn inspect_details(path: &Path) -> Result<Vec<InspectedFilter>, String> {
                 type_name: entry.type_name,
                 display_name: entry.display_name,
                 properties: entry.properties,
+                default_settings_json: entry.settings.to_string(),
             },
         })
         .collect())

@@ -424,6 +424,12 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         CMD_REMOVE_FILTER => {
             with_app(App::remove_filter);
         }
+        CMD_FILTER_UP | CMD_FILTER_DOWN => {
+            with_app(|app| app.move_filter(id == CMD_FILTER_DOWN));
+        }
+        CMD_FILTER_DEFAULTS => {
+            with_app(App::reset_filter);
+        }
         CMD_THEME_SYSTEM | CMD_THEME_LIGHT | CMD_THEME_DARK => {
             let mode = match id {
                 CMD_THEME_LIGHT => ThemeMode::Light,
