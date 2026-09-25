@@ -429,6 +429,82 @@ pub fn enumerate_with_database(database: &Database) -> io::Result<Vec<Candidate>
     Ok(found)
 }
 
+/// A collection's path and its strings by index.
+pub type DeviceStrings = (String, Vec<(u8, Result<String, String>)>);
+
+/// USB string descriptors of every HID collection with these IDs, as
+/// OpenTabletDriver's device string reader shows them. Read-only: each
+/// collection is opened without read or write access.
+pub fn read_strings(vendor: u16, product: u16, indices: &[u8]) -> io::Result<Vec<DeviceStrings>> {
+    let guid = hid_guid();
+    let set = unsafe {
+        SetupDiGetClassDevsW(
+            &guid,
+            ptr::null(),
+            ptr::null_mut(),
+            DIGCF_PRESENT | DIGCF_DEVICEINTERFACE,
+        )
+    };
+    if set == INVALID_HANDLE_VALUE as isize {
+        return Err(io::Error::last_os_error());
+    }
+    let _guard = DeviceInfoSet(set);
+    let mut found = Vec::new();
+    for index in 0.. {
+        let mut interface = SP_DEVICE_INTERFACE_DATA {
+            cbSize: size_of::<SP_DEVICE_INTERFACE_DATA>() as u32,
+            ..Default::default()
+        };
+        if unsafe { SetupDiEnumDeviceInterfaces(set, ptr::null(), &guid, index, &mut interface) }
+            == 0
+        {
+            break;
+        }
+        let Ok((path, _)) = detail_path(set, &interface) else {
+            continue;
+        };
+        let Ok(handle) = OwnedHandle::new(unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                ptr::null(),
+                OPEN_EXISTING,
+                0,
+                ptr::null_mut(),
+            )
+        }) else {
+            continue;
+        };
+        let mut attrs = HIDD_ATTRIBUTES {
+            Size: size_of::<HIDD_ATTRIBUTES>() as u32,
+            VendorID: 0,
+            ProductID: 0,
+            VersionNumber: 0,
+        };
+        if !unsafe { HidD_GetAttributes(handle.raw(), &mut attrs) }
+            || attrs.VendorID != vendor
+            || attrs.ProductID != product
+        {
+            continue;
+        }
+        let strings = indices
+            .iter()
+            .map(|&string| {
+                (
+                    string,
+                    indexed_string(handle.raw(), string).map_err(|error| error.to_string()),
+                )
+            })
+            .collect();
+        found.push((
+            String::from_utf16_lossy(&path[..path.len().saturating_sub(1)]),
+            strings,
+        ));
+    }
+    Ok(found)
+}
+
 pub struct SelectedDevice<'a> {
     pub pen: &'a Candidate,
     pub configuration: TabletConfiguration,
