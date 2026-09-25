@@ -99,6 +99,16 @@ impl MouseOutput {
         result
     }
 
+    /// An ordinary non-positional report does not invalidate the last known
+    /// pointer position. Explicit range loss uses release_all/emit_mapped(None).
+    pub fn emit_contact(
+        &mut self,
+        contact: bool,
+        send: impl FnOnce(MousePacket) -> Result<(), std::io::Error>,
+    ) -> Result<bool, std::io::Error> {
+        self.emit_motion_with(Motion::Absolute(self.last_position), contact, send)
+    }
+
     pub fn emit_relative(
         &mut self,
         delta: (i32, i32),

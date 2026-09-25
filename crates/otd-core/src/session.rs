@@ -310,25 +310,33 @@ pub fn run(
                         // While an absolute mapping is paused, reports do not
                         // reach the filters either.
                         filters.prepare_report(pen, bytes);
-                        let emitted =
-                            pipeline.process(pen, ready, layout.mapper, filters, &mut send);
+                        let emitted = pipeline.process_with_raw(
+                            pen,
+                            bytes,
+                            ready,
+                            layout.mapper,
+                            filters,
+                            |packet| {
+                                send(packet)?;
+                                // Count acknowledged prefixes even if a later
+                                // emission from this input fails.
+                                counters.injected += 1;
+                                Ok(())
+                            },
+                        );
                         if let Some(name) = filters.take_failure() {
                             status(&format!(
                                 "Disabled failing plugin: {name}. Restart to retry."
                             ));
                         }
-                        match emitted {
-                            Ok(true) => counters.injected += 1,
-                            Ok(false) => {}
-                            Err(error) => {
-                                counters.output_failures += 1;
-                                let now = source.now();
-                                if last_output_warning
-                                    .is_none_or(|last| now - last >= Duration::from_secs(5))
-                                {
-                                    eprintln!("SendInput failed: {error}");
-                                    last_output_warning = Some(now);
-                                }
+                        if let Err(error) = emitted {
+                            counters.output_failures += 1;
+                            let now = source.now();
+                            if last_output_warning
+                                .is_none_or(|last| now - last >= Duration::from_secs(5))
+                            {
+                                eprintln!("Report pipeline failed: {error}");
+                                last_output_warning = Some(now);
                             }
                         }
                         timing.record(source.now().saturating_duration_since(ready));

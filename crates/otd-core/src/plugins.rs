@@ -7,6 +7,26 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 
 use crate::protocol::PenReport;
+use crate::reports::{ReportKind, ReportValues};
+use std::io;
+
+/// One synchronous graph input. Raw and properties are independent; never
+/// reparse plugin-mutated raw bytes to replace the exposed property values.
+pub struct DispatchInput<'a> {
+    pub kind: ReportKind,
+    pub values: ReportValues,
+    pub raw: &'a [u8],
+    pub pen: Option<PenReport>,
+    pub now: Instant,
+}
+
+/// Host-owned stages. A suppressed transform returns false and never reaches
+/// bindings/output. Each final emission invokes output separately, in order.
+pub trait PipelineRuntime {
+    fn builtins(&mut self, values: &mut ReportValues) -> io::Result<()>;
+    fn transform(&mut self, kind: ReportKind, values: &mut ReportValues) -> io::Result<bool>;
+    fn output(&mut self, kind: ReportKind, values: &ReportValues, raw: &[u8]) -> io::Result<()>;
+}
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -62,8 +82,43 @@ impl PluginConfig {
 
 /// The enabled DLL filters of a profile, in profile order, as the report
 /// pipeline calls them. PreTransform filters receive report units; Pixels
-/// filters receive display pixels after absolute mapping.
+/// filters receive pixels after absolute mapping or deltas in relative mode.
 pub trait Filters {
+    /// Managed graph callbacks expose upstream f32 positions. Native-only
+    /// chains can retain the host mapper's f64 precision until final output.
+    fn uses_managed_graph(&self) -> bool {
+        false
+    }
+    /// Synchronous continuation graph. Implementations may emit zero or many
+    /// reports; a failure never authorizes replaying the original input.
+    fn dispatch(
+        &mut self,
+        input: DispatchInput<'_>,
+        runtime: &mut dyn PipelineRuntime,
+    ) -> io::Result<()> {
+        let mut values = input.values;
+        runtime.builtins(&mut values)?;
+        // Compatibility for native/synthetic implementations of the older
+        // position-only trait. The real DLL chain overrides this whole method.
+        if self.has_pre()
+            && let (Some(position), Some(pen)) = (values.position, input.pen)
+        {
+            let point = self.process_pre((position[0], position[1]), pen, input.now);
+            values.position = Some([point.0, point.1]);
+        } else if input.kind == ReportKind::OutOfRange {
+            self.reset();
+        }
+        if !runtime.transform(input.kind, &mut values)? {
+            return Ok(());
+        }
+        if self.has_pixels()
+            && let (Some(position), Some(pen)) = (values.position, input.pen)
+        {
+            let point = self.process_pixels((position[0], position[1]), pen, input.now);
+            values.position = Some([point.0, point.1]);
+        }
+        runtime.output(input.kind, &values, input.raw)
+    }
     /// Supplies the exact transport packet before its decoded pen is dispatched.
     /// Implementations retaining it must copy into storage allocated at setup.
     /// Synthetic position-only consumers may leave this hook as a no-op.

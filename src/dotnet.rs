@@ -8,6 +8,9 @@ use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+mod graph;
+pub use graph::{Graph, GraphNode, GraphReport};
+
 type GetApi = unsafe extern "C" fn() -> *const FilterApi;
 type GetPosition = unsafe extern "C" fn(*mut c_void) -> i32;
 type Inspect = unsafe extern "C" fn(*const u8, i32, *mut u8, i32) -> i32;
@@ -39,6 +42,10 @@ struct Bridge {
     get_error: GetError,
     process_report: ProcessReport,
     reset_report: ResetReport,
+    create_graph: graph::CreateGraph,
+    dispatch_graph: graph::DispatchGraph,
+    graph_failure: graph::GraphFailure,
+    destroy_graph: graph::DestroyGraph,
 }
 static BRIDGE: OnceLock<Result<Bridge, String>> = OnceLock::new();
 
@@ -128,6 +135,18 @@ fn load_bridge() -> Result<Bridge, String> {
         Ok(entry)
     };
     let bridge = Bridge {
+        create_graph: unsafe {
+            std::mem::transmute::<*mut c_void, graph::CreateGraph>(entry("CreateGraph").map_err(|error| format!("The installed .NET bridge lacks synchronous graph support. Replace the compat directory with this release's files: {error}"))?)
+        },
+        dispatch_graph: unsafe {
+            std::mem::transmute::<*mut c_void, graph::DispatchGraph>(entry("DispatchGraph")?)
+        },
+        graph_failure: unsafe {
+            std::mem::transmute::<*mut c_void, graph::GraphFailure>(entry("GraphFailure")?)
+        },
+        destroy_graph: unsafe {
+            std::mem::transmute::<*mut c_void, graph::DestroyGraph>(entry("DestroyGraph")?)
+        },
         get_api: unsafe { std::mem::transmute::<*mut c_void, GetApi>(entry("GetApi")?) },
         get_position: unsafe {
             std::mem::transmute::<*mut c_void, GetPosition>(entry("GetPosition")?)
@@ -604,7 +623,7 @@ mod tests {
 
         let mut chain = PluginChain::load(&[config.clone()]).unwrap();
         assert!(chain.validate_output_mode(false).is_ok());
-        assert!(chain.validate_output_mode(true).is_err());
+        assert!(chain.validate_output_mode(true).is_ok());
         let desktop = Rect {
             left: 0,
             top: 0,

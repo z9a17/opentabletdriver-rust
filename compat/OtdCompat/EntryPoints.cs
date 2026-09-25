@@ -85,9 +85,24 @@ static class PluginEligibility
 
 class Report : ITabletReport, IEraserReport
 {
+    // Transport-only fallback for the Rust profile's raw tip-switch policy.
+    // Independent of Raw: changing bytes does not reparse any property.
+    internal bool? NativeTipSwitch;
+    uint pressure;
     public byte[] Raw { get; set; } = [];
     public Vector2 Position { get; set; }
-    public uint Pressure { get; set; }
+    public uint Pressure
+    {
+        get => pressure;
+        set
+        {
+            // Rust interop policy only: an actual pressure edit opts out of
+            // the physical tip-switch fallback. Explicit profile thresholds
+            // always use final pressure. Raw edits never affect this property.
+            if (pressure != value) NativeTipSwitch = null;
+            pressure = value;
+        }
+    }
     public bool[] PenButtons { get; set; } = [];
     public bool Eraser { get; set; }
 }
@@ -114,6 +129,7 @@ sealed class Instance : IDisposable
     int emissionCount;
     int consuming;
     int asyncEmission;
+    Action<IDeviceReport>? graphContinuation;
     public PipelinePosition Position { get; }
 
     public Instance(JObject config)
@@ -205,6 +221,11 @@ sealed class Instance : IDisposable
     {
         if (Environment.CurrentManagedThreadId != ownerThread || Volatile.Read(ref consuming) == 0)
         { Interlocked.Exchange(ref asyncEmission, 1); return; }
+        if (graphContinuation is { } continuation)
+        {
+            continuation(value ?? throw new InvalidOperationException("A filter emitted a null report."));
+            return;
+        }
         emitted = value;
         emissionCount++;
     }
@@ -220,6 +241,26 @@ sealed class Instance : IDisposable
             Eraser = (sample.Flags & 2) != 0,
             PenButtons = new bool[2]
         });
+    }
+
+    public void ConsumeGraph(IDeviceReport report, Action<IDeviceReport> continuation)
+    {
+        if (Environment.CurrentManagedThreadId != ownerThread || Volatile.Read(ref asyncEmission) != 0)
+            throw new NotSupportedException("Asynchronous plugin emissions require the P05 scheduler.");
+        if (Interlocked.Exchange(ref consuming, 1) != 0)
+            throw new InvalidOperationException("Reentrant consumption of the same filter is unsupported.");
+        graphContinuation = continuation;
+        try
+        {
+            filter.Consume(report);
+            if (Volatile.Read(ref asyncEmission) != 0)
+                throw new NotSupportedException("Asynchronous plugin emissions require the P05 scheduler.");
+        }
+        finally
+        {
+            graphContinuation = null;
+            Volatile.Write(ref consuming, 0);
+        }
     }
 
     public unsafe int Process(ref Sample sample, in NativePenReport native)
@@ -286,7 +327,7 @@ sealed class Instance : IDisposable
     }
 }
 
-public static unsafe class EntryPoints
+public static unsafe partial class EntryPoints
 {
     [ThreadStatic] static string? lastError;
     static readonly nint Api = MakeApi();

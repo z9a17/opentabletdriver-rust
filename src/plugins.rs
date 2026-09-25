@@ -14,6 +14,7 @@ use windows_sys::Win32::System::LibraryLoader::{
 };
 
 pub use otd_core::plugins::{PipelineStage, PluginConfig, PluginKind};
+mod graph;
 
 pub struct Library(HMODULE);
 
@@ -261,6 +262,8 @@ impl Drop for Plugin {
 }
 
 pub struct PluginChain {
+    // Drop the graph's managed references before disposing the plugin handles.
+    graph: Option<crate::dotnet::Graph>,
     plugins: Vec<Plugin>,
     has_pre: bool,
     has_pixels: bool,
@@ -289,7 +292,9 @@ impl PluginChain {
             .iter()
             .any(|p| p.stage == PipelineStage::PreTransform);
         let has_pixels = plugins.iter().any(|p| p.stage == PipelineStage::Pixels);
+        let graph = graph::create(&plugins)?;
         Ok(Self {
+            graph,
             plugins,
             has_pre,
             has_pixels,
@@ -404,18 +409,9 @@ impl PluginChain {
         self.prepared_pen = None;
         self.raw_length = 0;
     }
-    pub fn validate_output_mode(&self, relative: bool) -> Result<(), String> {
-        if relative
-            && let Some(plugin) = self
-                .plugins
-                .iter()
-                .find(|plugin| plugin.stage == PipelineStage::Pixels)
-        {
-            return Err(format!(
-                "{} runs after absolute mapping; pixel-space filters cannot run in Relative Mode",
-                plugin.name
-            ));
-        }
+    pub fn validate_output_mode(&self, _relative: bool) -> Result<(), String> {
+        // PostTransform sees desktop pixels in absolute mode and motion deltas
+        // in relative mode, matching the pinned OutputMode pipeline stages.
         Ok(())
     }
 
@@ -427,6 +423,16 @@ impl PluginChain {
 }
 
 impl otd_core::plugins::Filters for PluginChain {
+    fn uses_managed_graph(&self) -> bool {
+        self.graph.is_some()
+    }
+    fn dispatch(
+        &mut self,
+        input: otd_core::plugins::DispatchInput<'_>,
+        runtime: &mut dyn otd_core::plugins::PipelineRuntime,
+    ) -> std::io::Result<()> {
+        self.dispatch_graph(input, runtime)
+    }
     fn prepare_report(&mut self, pen: crate::protocol::PenReport, raw: &[u8]) {
         PluginChain::prepare_report(self, pen, raw);
     }
@@ -521,6 +527,7 @@ mod tests {
         let mut seen_pixels = Seen::default();
         // Config order may interleave stages; execution order is by stage.
         let mut chain = PluginChain {
+            graph: None,
             plugins: vec![
                 fake(
                     PipelineStage::Pixels,
