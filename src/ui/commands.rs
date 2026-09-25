@@ -459,8 +459,7 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         CMD_START_STOP => {
             with_app(|app| {
                 if app.running.is_some() {
-                    // An explicit stop also cancels a restart from Apply or Save.
-                    app.restart = None;
+                    // The daemon cancels any pending restart when Stop is accepted.
                     app.stop();
                 } else {
                     app.start();

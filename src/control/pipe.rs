@@ -127,10 +127,22 @@ fn current_sid() -> io::Result<String> {
     process_sid(unsafe { GetCurrentProcess() })
 }
 fn name_for_sid(sid: &str) -> String {
-    format!(r"\\.\pipe\OpenTabletDriverRust.Control.v1.{sid}")
+    format!(r"\\.\pipe\OpenTabletDriverRust.Control.v{PROTOCOL_VERSION}.{sid}")
 }
 pub(super) fn endpoint_name() -> io::Result<String> {
     current_sid().map(|sid| name_for_sid(&sid))
+}
+
+pub(super) fn legacy_service_present() -> io::Result<bool> {
+    let name = wide(&format!(
+        r"\\.\pipe\OpenTabletDriverRust.Control.v1.{}",
+        current_sid()?
+    ));
+    if unsafe { WaitNamedPipeW(name.as_ptr(), 1) } != 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    Ok(error.raw_os_error() != Some(ERROR_FILE_NOT_FOUND as i32))
 }
 
 fn create_server(sid: &str) -> io::Result<Handle> {

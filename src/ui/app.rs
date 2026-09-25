@@ -211,7 +211,10 @@ impl App {
             drag: None,
             context_area: AreaKind::Display,
             running: None,
-            restart: None,
+            daemon_client: None,
+            control_busy: false,
+            daemon_instance: None,
+            daemon_log_sequence: 0,
             closing: false,
             driver: DriverState::Stopped,
             tablet_present: None,
@@ -2214,15 +2217,19 @@ impl App {
         let running = self.running.is_some();
         update_look(|look| look.running = running);
         let label = match state {
+            DriverState::Starting if self.control_busy => "Starting…",
             DriverState::Stopping => "Stopping…",
             _ if running => "Stop driver",
             _ => "Start driver",
         };
         set_text(self.c.start, label);
         unsafe {
-            EnableWindow(self.c.start, (state != DriverState::Stopping).into());
+            EnableWindow(self.c.start, (!self.control_busy).into());
             InvalidateRect(self.c.start, ptr::null(), 0);
-            EnableWindow(self.c.apply, running.into());
+            EnableWindow(
+                self.c.apply,
+                (running && !self.control_busy && state != DriverState::Stopping).into(),
+            );
         }
         if was_connected != (state == DriverState::Connected) {
             self.update_title();
@@ -2250,35 +2257,62 @@ impl App {
         self.in_tray = tray::add(self.hwnd, self.tray_icon, &self.tray_tip());
     }
 
-    /// Starts the driver when the panel opens, as OpenTabletDriver's UX
-    /// starts its daemon, unless another process already runs it.
+    /// Attach on every panel launch, including when automatic driver start is off.
+    pub(super) fn connect_daemon(&mut self) {
+        if self.daemon_client.is_some() {
+            return;
+        }
+        match client::DaemonClient::new(self.hwnd) {
+            Ok(client) => self.daemon_client = Some(client),
+            Err(error) => self.log(
+                Level::Error,
+                "Daemon",
+                format!("Could not create daemon client: {error}"),
+            ),
+        }
+    }
+
+    fn submit_control(&mut self, command: client::ClientCommand) -> bool {
+        if self.closing {
+            return false;
+        }
+        if self.control_busy {
+            self.log(Level::Warning, "Daemon", "Another daemon request is pending; these settings were not applied. Retry Apply after the status updates.");
+            return false;
+        }
+        self.connect_daemon();
+        let result = self
+            .daemon_client
+            .as_ref()
+            .ok_or_else(|| "Daemon client unavailable".to_owned())
+            .and_then(|client| client.submit(command));
+        match result {
+            Ok(()) => {
+                self.control_busy = true;
+                self.set_driver_state(self.driver);
+                true
+            }
+            Err(error) => {
+                self.log(Level::Error, "Daemon", error);
+                false
+            }
+        }
+    }
+
     pub(super) fn auto_start(&mut self) {
-        if self.running.is_some() || self.closing {
-            return;
+        if !self.closing && self.running.is_none() {
+            self.start();
         }
-        if driver_instance_running() {
-            self.log(
-                Level::Warning,
-                "Driver",
-                "Another OpenTabletDriver Rust driver is already running, so the panel did not start one. Stop the other driver, then use Start driver.",
-            );
-            return;
-        }
-        self.start();
     }
 
     pub(super) fn start(&mut self) {
-        if self.running.is_some() {
+        if self.running.is_some() || self.control_busy {
             return;
         }
-        let profile = match self.checked_profile() {
-            Ok(profile) => profile,
-            Err(error) => {
-                self.log(Level::Error, "Settings", error);
-                return;
-            }
-        };
-        self.start_with(profile);
+        match self.checked_profile() {
+            Ok(profile) => self.start_with(profile),
+            Err(error) => self.log(Level::Error, "Settings", error),
+        }
     }
 
     pub(super) fn start_with(&mut self, profile: Profile) {
@@ -2286,68 +2320,30 @@ impl App {
             self.log(Level::Error, "Settings", error);
             return;
         }
-        let spawned = (|| -> Result<Running, String> {
-            let stop = Event::create(true).map_err(|e| e.to_string())?;
-            let worker_stop = stop.duplicate().map_err(|e| e.to_string())?;
-            let (sender, messages) = mpsc::sync_channel(64);
-            let window = self.hwnd as isize;
-            let dpi = self.process_dpi;
-            let thread = std::thread::Builder::new()
-                .name("tablet-driver".into())
-                .spawn(move || {
-                    // Match the console daemon's display coordinates.
-                    unsafe { SetThreadDpiAwarenessContext(dpi as DPI_AWARENESS_CONTEXT) };
-                    let result = crate::drive(profile, &worker_stop, None, |message| {
-                        if sender.try_send(message.to_owned()).is_ok() {
-                            unsafe { PostMessageW(window as HWND, WM_DRIVER_STATUS, 0, 0) };
-                        }
-                    });
-                    unsafe { PostMessageW(window as HWND, WM_DRIVER_EXITED, 0, 0) };
-                    result
-                })
-                .map_err(|e| e.to_string())?;
-            Ok(Running {
-                stop,
-                thread,
-                messages,
-            })
-        })();
-        match spawned {
-            Ok(running) => {
-                self.running = Some(running);
-                self.set_driver_state(DriverState::Starting);
-                self.log(
-                    Level::Info,
-                    "Driver",
-                    "Starting the driver with the current settings…",
-                );
-            }
-            Err(error) => self.log(
-                Level::Error,
-                "Driver",
-                format!("Could not start the driver: {error}"),
-            ),
+        if self.submit_control(client::ClientCommand::Start(Box::new(profile))) {
+            self.set_driver_state(DriverState::Starting);
+            self.log(
+                Level::Info,
+                "Daemon",
+                "Connecting to the daemon; an existing driver keeps its active settings.",
+            );
         }
     }
 
     pub(super) fn stop(&mut self) {
-        if self.driver == DriverState::Stopping {
+        let Some(identity) = self
+            .running
+            .as_ref()
+            .map(|running| running.identity.clone())
+        else {
             return;
-        }
-        if let Some(running) = &self.running {
-            if let Err(error) = running.stop.signal() {
-                self.log(
-                    Level::Error,
-                    "Driver",
-                    format!("Could not stop the driver: {error}"),
-                );
-                return;
-            }
+        };
+        if self.submit_control(client::ClientCommand::Stop(identity)) {
             self.set_driver_state(DriverState::Stopping);
             self.log(
                 Level::Info,
-                "Driver",
-                "Stopping; waiting for input cleanup and original driver restoration…",
+                "Daemon",
+                "Stop requested; waiting for daemon input cleanup.",
             );
         }
     }
@@ -2357,7 +2353,7 @@ impl App {
             self.log(
                 Level::Info,
                 "Driver",
-                "The driver is not running. Start driver uses the current settings.",
+                "The driver is not attached. Start driver connects to the daemon.",
             );
             return;
         }
@@ -2367,96 +2363,114 @@ impl App {
         }
     }
 
-    /// Stops the running driver and starts it again with `profile`.
+    /// The daemon validates then owns the complete stop/start sequence. Its
+    /// generation check rejects stale clients before they can stop newer input.
     pub(super) fn restart_with(&mut self, profile: Profile) {
         if let Err(error) = self.validate_start(&profile) {
             self.log(Level::Error, "Settings", error);
             return;
         }
-        let stopping = self.driver == DriverState::Stopping;
-        self.restart = Some(profile);
-        if !stopping {
-            self.stop();
+        let Some(expected) = self
+            .running
+            .as_ref()
+            .map(|running| running.identity.clone())
+        else {
+            return;
+        };
+        if self.submit_control(client::ClientCommand::Restart {
+            expected,
+            profile: Box::new(profile),
+        }) {
+            self.set_driver_state(DriverState::Stopping);
+            self.log(Level::Info, "Daemon", "Restart requested with current settings; the daemon waits for cleanup before starting again.");
         }
     }
 
     pub(super) fn driver_status(&mut self) {
-        let messages: Vec<String> = self
-            .running
+        let events = self
+            .daemon_client
             .as_ref()
-            .map(|running| running.messages.try_iter().collect())
+            .map(client::DaemonClient::drain)
             .unwrap_or_default();
-        for message in messages {
-            let (state, level) = if message.contains("connected; receiving") {
-                (Some(DriverState::Connected), Level::Info)
-            } else if message.starts_with("Waiting for") {
-                (Some(DriverState::Waiting), Level::Info)
-            } else if message.contains("found; opening") {
-                (Some(DriverState::Connecting), Level::Info)
-            } else if message.starts_with("Device session stopped") {
-                (Some(DriverState::Waiting), Level::Warning)
-            } else if message.starts_with("Disabled failing plugin") {
-                (None, Level::Warning)
-            } else {
-                (None, Level::Info)
-            };
-            if let Some(state) = state.filter(|_| self.driver != DriverState::Stopping) {
-                self.set_driver_state(state);
+        for event in events {
+            match event {
+                client::ClientEvent::ActionFinished(result) => {
+                    self.control_busy = false;
+                    if let Err(error) = result {
+                        self.log(Level::Error, "Daemon", error);
+                    }
+                    self.set_driver_state(self.driver);
+                }
+                client::ClientEvent::Offline(error) => {
+                    self.running = None;
+                    self.set_driver_state(DriverState::Disconnected);
+                    self.log(if error.is_some() { Level::Warning } else { Level::Info }, "Daemon",
+                        error.unwrap_or_else(|| "No daemon is available. Start driver launches it; closing this panel does not stop daemon input.".into()));
+                }
+                client::ClientEvent::Snapshot { status, profile } => {
+                    let identity = status.identity();
+                    if self.daemon_instance.as_deref() != Some(&status.instance) {
+                        self.daemon_instance = Some(status.instance.clone());
+                        self.daemon_log_sequence = 0;
+                    }
+                    self.running = client::active(status.state).then_some(Running { identity });
+                    if let Some(profile) = profile {
+                        if self.dirty {
+                            self.log(Level::Warning, "Settings", "Daemon configuration changed. Unsaved local edits were kept; Apply deliberately replaces the active configuration.");
+                        } else {
+                            self.replace_profile(*profile, None, false);
+                            self.log(Level::Info, "Settings", "Loaded the daemon's active configuration. Save writes it to the local profile file.");
+                        }
+                    }
+                    let mut state = match status.state {
+                        crate::control::DriverState::Stopped => DriverState::Stopped,
+                        crate::control::DriverState::Starting => DriverState::Starting,
+                        crate::control::DriverState::Running => DriverState::Connected,
+                        crate::control::DriverState::Stopping => DriverState::Stopping,
+                        crate::control::DriverState::Failed => DriverState::Failed,
+                    };
+                    let first_sequence =
+                        status.log_sequence.saturating_sub(status.logs.len() as u64);
+                    for (index, message) in status.logs.into_iter().enumerate() {
+                        // Derive current tablet state from the bounded snapshot,
+                        // but append each daemon log sequence only once.
+                        if status.state == crate::control::DriverState::Running {
+                            if message.contains("connected; receiving") {
+                                state = DriverState::Connected;
+                            } else if message.starts_with("Waiting for")
+                                || message.starts_with("Device session stopped")
+                            {
+                                state = DriverState::Waiting;
+                            } else if message.contains("found; opening") {
+                                state = DriverState::Connecting;
+                            }
+                        }
+                        let sequence = first_sequence + index as u64 + 1;
+                        if sequence > self.daemon_log_sequence {
+                            let level = if message.starts_with("Device session stopped")
+                                || message.starts_with("Disabled failing plugin")
+                            {
+                                Level::Warning
+                            } else {
+                                Level::Info
+                            };
+                            self.log(level, "Driver", message);
+                        }
+                    }
+                    self.daemon_log_sequence = status.log_sequence;
+                    self.set_driver_state(state);
+                }
             }
-            self.log(level, "Driver", message);
         }
     }
 
-    /// Returns true when the window should now close.
-    pub(super) fn driver_exited(&mut self) -> bool {
-        self.driver_status();
-        let Some(running) = self.running.take() else {
-            return self.closing;
-        };
-        let failed = match running.thread.join() {
-            Ok(Ok(())) => {
-                self.log(Level::Info, "Driver", "Driver stopped.");
-                false
-            }
-            Ok(Err(error)) => {
-                self.log(Level::Error, "Driver", format!("Driver stopped: {error}"));
-                true
-            }
-            Err(_) => {
-                self.log(Level::Error, "Driver", "Driver thread failed.");
-                true
-            }
-        };
-        self.set_driver_state(if failed {
-            DriverState::Failed
-        } else {
-            DriverState::Stopped
-        });
-        if self.closing {
-            return true;
-        }
-        if let Some(profile) = self.restart.take() {
-            self.start_with(profile);
-        } else if failed {
-            // Upstream switches to the console for errors.
-            self.select_tab(Tab::Console);
-        }
-        false
-    }
-
-    /// Returns true when nothing is left to wait for.
+    /// Closing the panel detaches immediately; the daemon retains its worker.
     pub(super) fn begin_close(&mut self) -> bool {
         self.closing = true;
-        self.restart = None;
         self.save_prefs();
-        if self.running.is_some() {
-            self.stop();
-            false
-        } else {
-            true
-        }
+        self.daemon_client.take();
+        true
     }
-
     // ----- Console -------------------------------------------------------------------
 
     pub(super) fn copy_log(&mut self, all: bool) {

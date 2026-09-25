@@ -2,11 +2,10 @@
 //! bar, Output / Filters / Pen Settings / Console tabs with graphical area
 //! editors, and a Save / Apply bar. It follows the Windows light or dark
 //! setting unless the user picks one, and uses system colors in high
-//! contrast. The message loop stays off the driver thread; stop requests use
-//! a duplicated Windows event handle.
+//! contrast. A bounded background IPC client keeps pipe calls off the UI thread.
 //!
 //! Like OpenTabletDriver's UX, which starts its daemon, the panel starts the
-//! driver when it opens; it runs in-process on a background thread. The panel
+//! driver when requested. The independent daemon keeps running when the panel closes. The panel
 //! keeps an icon in the notification area and minimizes into it. Opening the
 //! panel again brings the running one forward.
 //!
@@ -17,6 +16,7 @@
 mod app;
 mod area;
 mod canvas;
+mod client;
 mod commands;
 mod draw;
 mod layout;
@@ -34,13 +34,11 @@ use std::mem::size_of;
 use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::ptr;
-use std::sync::mpsc::{self, Receiver};
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, GetLastError, GlobalFree, HWND, LPARAM,
-    LRESULT, POINT, RECT, SYSTEMTIME, WPARAM,
+    ERROR_ALREADY_EXISTS, GetLastError, GlobalFree, HWND, LPARAM, LRESULT, POINT, RECT, SYSTEMTIME,
+    WPARAM,
 };
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::Storage::FileSystem::{
@@ -53,8 +51,7 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows_sys::Win32::System::SystemInformation::GetLocalTime;
 use windows_sys::Win32::System::Threading::{
-    CreateMutexW, GetStartupInfoW, OpenMutexW, STARTF_USESHOWWINDOW, STARTUPINFOW,
-    SYNCHRONIZATION_SYNCHRONIZE,
+    CreateMutexW, GetStartupInfoW, STARTF_USESHOWWINDOW, STARTUPINFOW,
 };
 use windows_sys::Win32::UI::Controls::Dialogs::*;
 use windows_sys::Win32::UI::Controls::{
@@ -81,7 +78,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use crate::config::Profile;
 use crate::display::DisplaySnapshot;
 use crate::dotnet::FilterMetadata;
-use crate::hid::{Event, OwnedHandle};
+use crate::hid::OwnedHandle;
 use crate::mapping::{OtdArea, OtdMapping};
 use crate::plugins::{PluginConfig, PluginKind};
 use crate::radial_follow::RadialFollowSettings;
@@ -158,7 +155,6 @@ const AREA_LIMITING: u16 = 833;
 const AREA_DISPLAY: u16 = 840;
 
 const WM_DRIVER_STATUS: u32 = WM_APP + 1;
-const WM_DRIVER_EXITED: u32 = WM_APP + 2;
 const WM_DETECT: u32 = WM_APP + 3;
 const WM_AUTOSTART: u32 = WM_APP + 4;
 /// Posted by a second launch of the panel.
@@ -628,6 +624,7 @@ enum DriverState {
     Connected,
     Stopping,
     Failed,
+    Disconnected,
 }
 
 impl DriverState {
@@ -640,14 +637,13 @@ impl DriverState {
             DriverState::Connected => "Running",
             DriverState::Stopping => "Stopping",
             DriverState::Failed => "Stopped with an error",
+            DriverState::Disconnected => "Daemon connection unavailable",
         }
     }
 }
 
 struct Running {
-    stop: Event,
-    thread: JoinHandle<Result<(), String>>,
-    messages: Receiver<String>,
+    identity: crate::control::WorkerIdentity,
 }
 
 struct Drag {
@@ -723,7 +719,10 @@ struct App {
     drag: Option<Drag>,
     context_area: AreaKind,
     running: Option<Running>,
-    restart: Option<Profile>,
+    daemon_client: Option<client::DaemonClient>,
+    control_busy: bool,
+    daemon_instance: Option<String>,
+    daemon_log_sequence: u64,
     closing: bool,
     driver: DriverState,
     tablet_present: Option<bool>,
@@ -738,12 +737,8 @@ struct App {
 
 impl Drop for App {
     fn drop(&mut self) {
-        // Normal close waits asynchronously for this thread. This also covers
-        // a message-loop failure without force-killing input or losing releases.
-        if let Some(running) = self.running.take() {
-            let _ = running.stop.signal();
-            let _ = running.thread.join();
-        }
+        // The daemon owns input; closing this client only detaches.
+        self.daemon_client.take();
         unsafe {
             DestroyAcceleratorTable(self.accelerators);
             if !self.tray_icon.is_null() {
@@ -810,18 +805,6 @@ fn point_from(lp: LPARAM) -> (i32, i32) {
         (lp & 0xFFFF) as i16 as i32,
         ((lp >> 16) & 0xFFFF) as i16 as i32,
     )
-}
-
-/// True while another process, such as the console daemon, runs the driver.
-fn driver_instance_running() -> bool {
-    let name = wide(crate::INSTANCE_MUTEX);
-    let handle = unsafe { OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, 0, name.as_ptr()) };
-    if handle.is_null() {
-        // An elevated driver's mutex exists but cannot be opened.
-        return unsafe { GetLastError() } == ERROR_ACCESS_DENIED;
-    }
-    unsafe { CloseHandle(handle) };
-    true
 }
 
 /// Holds the panel's instance mutex, or brings the panel that already holds
@@ -1091,12 +1074,6 @@ unsafe extern "system" fn window_proc(
             with_app(App::driver_status);
             0
         }
-        WM_DRIVER_EXITED => {
-            if with_app(App::driver_exited) == Some(true) {
-                unsafe { DestroyWindow(window) };
-            }
-            0
-        }
         WM_DETECT => {
             with_app(App::detect_tablet);
             0
@@ -1322,6 +1299,7 @@ pub fn run() -> Result<(), String> {
     }
     let accelerators = app.accelerators;
     let first_tab = app.c.tabs[0];
+    app.connect_daemon();
     app.set_icons();
     // Before the window is shown, so a minimized launch goes to the tray.
     app.add_tray();

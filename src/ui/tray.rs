@@ -79,18 +79,14 @@ fn menu(window: HWND, (x, y): (i32, i32)) {
         show_panel(window);
         return;
     }
-    let Some((running, state)) = with_app(|app| (app.running.is_some(), app.driver)) else {
+    let Some((running, busy)) = with_app(|app| (app.running.is_some(), app.control_busy)) else {
         return;
     };
     let menu = unsafe { CreatePopupMenu() };
     append(menu, MF_STRING, CMD_SHOW, "Show Window");
     append(
         menu,
-        if state == DriverState::Stopping {
-            MF_GRAYED
-        } else {
-            MF_STRING
-        },
+        if busy { MF_GRAYED } else { MF_STRING },
         CMD_START_STOP,
         if running {
             "Stop driver"
