@@ -312,6 +312,7 @@ public static unsafe class EntryPoints
                                 property_type = (Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType).FullName,
                                 writable = p.SetMethod?.IsPublic == true && p.GetIndexParameters().Length == 0,
                                 enum_flags = (Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType).IsDefined(typeof(FlagsAttribute), false),
+                                enum_underlying_type = EnumUnderlyingType(Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType),
                                 enum_choices = EnumChoices(Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType)
                             }).ToArray()
                         };
@@ -328,6 +329,8 @@ public static unsafe class EntryPoints
     }
 
     // Reflection only: inspecting controls must not construct or run a plugin.
+    static string? EnumUnderlyingType(Type type) => type.IsEnum ? Enum.GetUnderlyingType(type).FullName : null;
+
     static object[] EnumChoices(Type type) => type.IsEnum
         ? Enum.GetNames(type).Select(name => (object)new {
             name,

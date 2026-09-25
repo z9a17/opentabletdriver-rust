@@ -168,6 +168,8 @@ pub struct PropertyMetadata {
     #[serde(default)]
     pub enum_flags: bool,
     #[serde(default)]
+    pub enum_underlying_type: Option<String>,
+    #[serde(default)]
     pub enum_choices: Vec<EnumChoice>,
 }
 
