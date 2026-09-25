@@ -36,6 +36,8 @@ opentabletdriver-rust.exe profiles paths
 
 Use `--legacy-force-radial-follow` on OTD preview/import only when that earlier behavior is intended. Collection selection does not switch a running driver; extract the desired entry with `profiles import` before starting it.
 
+Offline named presets support `presets list`, `presets show NAME`, `presets save NAME --config FILE` and `presets export NAME --output NEWFILE`. Save creates a new name; explicit `--replace` uses a loaded-byte conflict guard and retains a backup. Names preserve spelling and reject unsafe paths or case-only aliases. These commands do not select/apply runtime settings. See [named presets](docs/NAMED_PRESETS.md).
+
 The default Rust settings directory is `%LOCALAPPDATA%\OpenTabletDriverRust`. Set `OTD_RUST_PORTABLE_DIR` to an absolute directory for portable profiles/preferences. Saves stage and flush a sibling file, retain the previous bytes in the reserved `.bak` sidecar, and reject changes made since the editor loaded the destination. Save As requires a new name. Recovery validates the backup and writes a new file. Relative plugin locations within the destination/portable tree are retained; other locations stay absolute. See [persistence limits](docs/parity/BEHAVIOR_CONTRACTS.md#profile-persistence).
 
 An optional headless daemon stays open independently of CLI clients:

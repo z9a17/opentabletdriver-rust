@@ -10,6 +10,7 @@ mod hid;
 mod original_driver;
 mod output;
 mod plugins;
+mod preset_cli;
 mod priority;
 mod profile_cli;
 mod session;
@@ -43,6 +44,7 @@ fn usage() -> &'static str {
   opentabletdriver-rust.exe configuration
   opentabletdriver-rust.exe status | stop | shutdown
   opentabletdriver-rust.exe profiles list|preview|import|export|select ...
+  opentabletdriver-rust.exe presets list|show|save|export ...
   opentabletdriver-rust.exe area convert|full|fit ...
   opentabletdriver-rust.exe diagnostics --output NEW_FILE.json [--config PROFILE.toml]
   opentabletdriver-rust.exe decode --parser NAME --hex HEX_BYTES
@@ -65,6 +67,7 @@ enum Command {
     Diagnostics(Vec<String>),
     Area(Vec<String>),
     Profiles(Vec<String>),
+    Presets(Vec<String>),
     Daemon {
         background: bool,
     },
@@ -124,6 +127,7 @@ fn parse_args() -> Result<Command, String> {
         "area" => Ok(Command::Area(args.collect())),
         "configuration" if args.next().is_none() => Ok(Command::Configuration),
         "profiles" => Ok(Command::Profiles(args.collect())),
+        "presets" => Ok(Command::Presets(args.collect())),
         "daemon" => {
             let background = match args.next().as_deref() {
                 None => false,
@@ -678,6 +682,7 @@ fn main() {
         Ok(Command::Diagnostics(args)) => diagnostics::run(args),
         Ok(Command::Area(args)) => area_cli::run(args),
         Ok(Command::Profiles(args)) => profile_cli::run(args),
+        Ok(Command::Presets(args)) => preset_cli::run(args),
         Ok(Command::Daemon { background }) => {
             if background {
                 daemon::background()

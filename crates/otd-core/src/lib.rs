@@ -16,6 +16,7 @@ pub mod mapping;
 pub mod output;
 pub mod pipeline;
 pub mod plugins;
+pub mod presets;
 pub mod protocol;
 pub mod radial_follow;
 pub mod relative;
