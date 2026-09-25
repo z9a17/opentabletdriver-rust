@@ -6,6 +6,7 @@
 //! (`session::Displays`), DLL filters (`plugins::Filters`) and the output sink.
 
 pub mod actions;
+pub mod areas;
 pub mod config;
 pub mod display;
 pub mod endpoint_match;
