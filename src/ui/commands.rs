@@ -238,6 +238,8 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                     CMD_OPEN_FOLDER,
                     "Open settings directory...",
                 );
+                presets::append_menu(menu, app);
+                append(menu, MF_STRING, CMD_SAVE_LOG, "Save console log...");
                 unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null()) };
                 append(menu, MF_STRING, CMD_QUIT, "Quit\tCtrl+Q");
             }
@@ -305,10 +307,18 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                     CMD_AUTOSTART,
                     "Start driver when the panel opens",
                 );
+                append(
+                    menu,
+                    checked(startup::enabled()),
+                    CMD_START_WITH_WINDOWS,
+                    "Start with Windows (in the tray)",
+                );
             }
             2 => {
                 append(menu, MF_STRING, CMD_ADD_DOTNET, "Add .NET plugin...");
                 append(menu, MF_STRING, CMD_ADD_NATIVE, "Add native plugin...");
+                unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null()) };
+                append(menu, MF_STRING, CMD_PLUGIN_MANAGER, "Plugin manager...");
             }
             3 => {
                 let theme = unsafe { CreatePopupMenu() };
@@ -342,6 +352,13 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
             }
             _ => {
                 append(menu, MF_STRING, CMD_DOCS, "Open documentation...");
+                append(menu, MF_STRING, CMD_CHECK_UPDATES, "Check for updates...");
+                append(
+                    menu,
+                    checked(app.prefs.check_for_updates),
+                    CMD_UPDATE_ON_OPEN,
+                    "Check for updates when the panel opens",
+                );
                 append(menu, MF_STRING, CMD_ABOUT, "About...\tF1");
             }
         }
@@ -540,6 +557,11 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
                 }
             }
         }
+        CMD_PLUGIN_MANAGER => {
+            if let Err(error) = plugin_manager::open() {
+                with_app(|app| app.log(Level::Error, "Plugins", error));
+            }
+        }
         CMD_REMOVE_FILTER => {
             with_app(App::remove_filter);
         }
@@ -588,9 +610,66 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
                 app.save_prefs();
             });
         }
+        CMD_CHECK_UPDATES => updates::check(window, true),
+        presets::CMD_PRESET_SAVE => presets::save(window),
+        presets::CMD_PRESET_FOLDER => presets::open_folder(window),
+        id if (presets::CMD_PRESET_FIRST..presets::CMD_PRESET_FIRST + presets::PRESET_CHOICES)
+            .contains(&id) =>
+        {
+            let index = usize::from(id - presets::CMD_PRESET_FIRST);
+            with_app(|app| presets::apply(app, index));
+        }
+        CMD_START_WITH_WINDOWS => {
+            let enable = !startup::enabled();
+            let result = startup::set(enable);
+            with_app(|app| match result {
+                Ok(()) => app.log(
+                    Level::Info,
+                    "UI",
+                    if enable {
+                        "The panel will start in the tray when you sign in to Windows."
+                    } else {
+                        "The panel no longer starts with Windows."
+                    },
+                ),
+                Err(error) => app.log(
+                    Level::Error,
+                    "UI",
+                    format!("Cannot change startup: {error}"),
+                ),
+            });
+        }
+        CMD_UPDATE_ON_OPEN => {
+            with_app(|app| {
+                app.prefs.check_for_updates = !app.prefs.check_for_updates;
+                app.save_prefs();
+            });
+        }
         CMD_SHOW => tray::show_panel(window),
         CMD_COPY_LOG => {
             with_app(|app| app.copy_log(true));
+        }
+        CMD_SAVE_LOG => {
+            match text_save_dialog(window, "Save console log", "opentabletdriver-rust-log.txt") {
+                Ok(Some(path)) => with_app(|app| {
+                    let text = app.log_text();
+                    match std::fs::write(&path, text) {
+                        Ok(()) => app.log(
+                            Level::Info,
+                            "UI",
+                            format!("Saved the log to {}.", path.display()),
+                        ),
+                        Err(error) => {
+                            app.log(Level::Error, "UI", format!("Cannot save the log: {error}"))
+                        }
+                    }
+                })
+                .unwrap_or(()),
+                Ok(None) => {}
+                Err(error) => {
+                    with_app(|app| app.log(Level::Error, "UI", error));
+                }
+            }
         }
         CMD_CLEAR_LOG => {
             with_app(App::clear_log);
@@ -695,4 +774,43 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         }
         _ => {}
     }
+}
+
+/// A save dialog for a text file, asking before replacing one.
+pub(super) fn text_save_dialog(
+    window: HWND,
+    title: &str,
+    name: &str,
+) -> Result<Option<PathBuf>, String> {
+    let mut buffer = vec![0u16; 32_768];
+    for (slot, unit) in buffer.iter_mut().zip(name.encode_utf16()) {
+        *slot = unit;
+    }
+    let filter = wide("Text file (*.txt)\0*.txt\0All files\0*.*\0\0");
+    let extension = wide("txt");
+    let title = wide(title);
+    let mut dialog = OPENFILENAMEW {
+        lStructSize: size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: window,
+        lpstrFilter: filter.as_ptr(),
+        lpstrFile: buffer.as_mut_ptr(),
+        nMaxFile: buffer.len() as u32,
+        lpstrDefExt: extension.as_ptr(),
+        lpstrTitle: title.as_ptr(),
+        Flags: OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT,
+        ..Default::default()
+    };
+    if unsafe { GetSaveFileNameW(&mut dialog) } == 0 {
+        let code = unsafe { CommDlgExtendedError() };
+        return if code == 0 {
+            Ok(None)
+        } else {
+            Err(format!("file dialog failed (0x{code:x})"))
+        };
+    }
+    let length = buffer
+        .iter()
+        .position(|c| *c == 0)
+        .ok_or("invalid file dialog path")?;
+    Ok(Some(OsString::from_wide(&buffer[..length]).into()))
 }

@@ -9,6 +9,7 @@ mod dotnet;
 mod hid;
 mod original_driver;
 mod output;
+mod plugin_catalog;
 mod plugins;
 mod preset_cli;
 mod priority;
@@ -16,6 +17,7 @@ mod profile_cli;
 mod runtime;
 mod session;
 mod ui;
+mod update;
 
 // The portable core, at the crate paths the Windows modules use.
 use otd_core::tablets::{self, Database, Origin, ParserSupport, Role, Severity};
@@ -36,7 +38,7 @@ use crate::session::Mode;
 fn usage() -> &'static str {
     "Usage:
   opentabletdriver-rust-ui.exe              Open the native control panel
-  opentabletdriver-rust.exe ui              Open the same control panel
+  opentabletdriver-rust.exe ui [--tray]     Open the same control panel (--tray: in the tray)
   opentabletdriver-rust.exe                 Start the visible cursor daemon
   opentabletdriver-rust.exe run [--config driver.toml | --otd-settings settings.json]
   opentabletdriver-rust.exe daemon [--background]
@@ -56,6 +58,8 @@ fn usage() -> &'static str {
   opentabletdriver-rust.exe displays
   opentabletdriver-rust.exe tablets [--list] [--configurations DIRECTORY]
   opentabletdriver-rust.exe capture [--config driver.toml | --otd-settings settings.json] [--seconds 1..60]
+  opentabletdriver-rust.exe plugins catalog|installed|install NAME|remove NAME
+  opentabletdriver-rust.exe update [--check]
   opentabletdriver-rust.exe --version
 
 Without a profile argument, use the saved Rust driver.toml, then OTD settings if present.
@@ -83,6 +87,10 @@ enum Command {
         otd_settings: Option<PathBuf>,
     },
     Ui,
+    Plugins(Vec<String>),
+    Update {
+        check: bool,
+    },
     Version,
     InspectPlugin(PathBuf),
     CheckPlugins(PathBuf),
@@ -125,6 +133,7 @@ fn parse_args() -> Result<Command, String> {
     match command.as_str() {
         "diagnostics" => Ok(Command::Diagnostics(args.collect())),
         "decode" => Ok(Command::Decode(args.collect())),
+        "plugins" => Ok(Command::Plugins(args.collect())),
         "area" => Ok(Command::Area(args.collect())),
         "configuration" if args.next().is_none() => Ok(Command::Configuration),
         "profiles" => Ok(Command::Profiles(args.collect())),
@@ -151,7 +160,19 @@ fn parse_args() -> Result<Command, String> {
                 _ => control::Command::Shutdown,
             }))
         }
-        "ui" if args.next().is_none() => Ok(Command::Ui),
+        "ui" => match (args.next().as_deref(), args.next()) {
+            (None, _) => Ok(Command::Ui),
+            (Some("--tray"), None) => {
+                ui::START_IN_TRAY.store(true, std::sync::atomic::Ordering::Relaxed);
+                Ok(Command::Ui)
+            }
+            _ => Err(usage().into()),
+        },
+        "update" => match (args.next().as_deref(), args.next()) {
+            (None, _) => Ok(Command::Update { check: false }),
+            (Some("--check"), None) => Ok(Command::Update { check: true }),
+            _ => Err(usage().into()),
+        },
         "--version" | "version" => Ok(Command::Version),
         "inspect-plugin" | "check-plugins" => {
             let path = PathBuf::from(args.next().ok_or("command needs a file path")?);
@@ -708,8 +729,10 @@ fn drive(
 }
 
 fn main() {
+    update::remove_leftovers();
     let result = match parse_args() {
         Ok(Command::Decode(args)) => decode_cli::run(args),
+        Ok(Command::Plugins(args)) => plugin_catalog::run(args),
         Ok(Command::Diagnostics(args)) => diagnostics::run(args),
         Ok(Command::Area(args)) => area_cli::run(args),
         Ok(Command::Profiles(args)) => profile_cli::run(args),
@@ -753,6 +776,7 @@ fn main() {
             .and_then(|reply| daemon::print_reply(&reply))
         }),
         Ok(Command::Ui) => ui::run(),
+        Ok(Command::Update { check }) => update::run(check),
         Ok(Command::Version) => {
             println!("opentabletdriver-rust {}", env!("CARGO_PKG_VERSION"));
             Ok(())

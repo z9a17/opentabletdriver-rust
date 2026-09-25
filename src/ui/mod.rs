@@ -24,9 +24,13 @@ mod draw;
 mod layout;
 mod model;
 mod paint;
+mod plugin_manager;
+mod presets;
 mod property_validation;
+mod startup;
 mod theme;
 mod tray;
+mod updates;
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -103,11 +107,15 @@ const CMD_QUIT: u16 = 207;
 const CMD_RECOVER_BACKUP: u16 = 208;
 const CMD_DETECT: u16 = 210;
 const CMD_DEBUGGER: u16 = 211;
+const CMD_CHECK_UPDATES: u16 = 242;
+const CMD_START_WITH_WINDOWS: u16 = 264;
+const CMD_UPDATE_ON_OPEN: u16 = 243;
 const CMD_TABLET_ANY: u16 = 6000;
 const CMD_TABLET_FIRST: u16 = 6001;
 const TABLET_CHOICES: u16 = 64;
 const CMD_ADD_DOTNET: u16 = 220;
 const CMD_ADD_NATIVE: u16 = 221;
+const CMD_PLUGIN_MANAGER: u16 = 229;
 const CMD_REMOVE_FILTER: u16 = 222;
 const CMD_FILTER_UP: u16 = 223;
 const CMD_FILTER_DOWN: u16 = 224;
@@ -124,6 +132,7 @@ const CMD_NEXT_TAB: u16 = 250;
 const CMD_PREV_TAB: u16 = 251;
 const CMD_START_STOP: u16 = 260;
 const CMD_COPY_LOG: u16 = 261;
+const CMD_SAVE_LOG: u16 = 265;
 const CMD_CLEAR_LOG: u16 = 262;
 const CMD_AUTOSTART: u16 = 263;
 const CMD_SHOW: u16 = 270;
@@ -200,6 +209,10 @@ const MENUS: [&str; 5] = ["&File", "&Tablets", "&Plugins", "&View", "&Help"];
 const DOCS_URL: &str = "https://github.com/z9a17/opentabletdriver-rust#readme";
 const TABLET_NAME: &str = "Wacom PTH-660";
 const LOG_LIMIT: usize = 1_000;
+
+/// Set by `ui --tray`, as the sign-in entry starts the panel.
+pub(crate) static START_IN_TRAY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
@@ -707,6 +720,8 @@ struct App {
     tablet_present: Option<bool>,
     /// The tablets listed in the last Tablets menu, by command offset.
     tablet_choices: Vec<String>,
+    /// The presets listed in the last File menu, by command offset.
+    preset_choices: Vec<String>,
     status: String,
     status_level: Level,
     validation_status: bool,
@@ -818,6 +833,10 @@ fn claim_panel() -> Result<Option<OwnedHandle>, String> {
 /// substitutes the launch's show command only for a plain `SW_SHOW`, so a
 /// panel saved maximized asks for it here and still restores maximized.
 fn show_initial(window: HWND, maximized: bool) {
+    if START_IN_TRAY.load(std::sync::atomic::Ordering::Relaxed) {
+        unsafe { ShowWindow(window, SW_SHOWMINNOACTIVE) };
+        return;
+    }
     let mut startup = STARTUPINFOW {
         cb: size_of::<STARTUPINFOW>() as u32,
         ..Default::default()
@@ -1064,6 +1083,10 @@ unsafe extern "system" fn window_proc(
             tray::show_panel(window);
             0
         }
+        updates::WM_UPDATE => {
+            updates::on_message(window);
+            0
+        }
         WM_TRAY => {
             tray::notify(window, wp, lp);
             0
@@ -1159,6 +1182,7 @@ fn place_window(window: HWND, prefs: &UiPrefs) {
 }
 
 pub fn run() -> Result<(), String> {
+    updates::wait_for_previous_panel();
     let Some(_panel) = claim_panel()? else {
         return Ok(());
     };
@@ -1269,6 +1293,9 @@ pub fn run() -> Result<(), String> {
     }
     app.profile_snapshot = profile_snapshot;
     app.set_driver_state(DriverState::Stopped);
+    if prefs.check_for_updates {
+        updates::check(window, false);
+    }
     // A profile that failed to load is replaced by defaults; never drive
     // the tablet with those unasked.
     let auto_start = prefs.start_driver_on_launch && loaded.is_ok();
