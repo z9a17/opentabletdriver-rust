@@ -15,6 +15,17 @@ namespace OtdCompat;
 [StructLayout(LayoutKind.Sequential)]
 public struct Sample { public float X, Y; public ulong TimeNs; public uint Pressure, Flags; }
 
+// Separate extension to the managed bridge, not a change to native FilterApi v1.
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct NativePenReport
+{
+    public uint Version, Size;
+    public byte* Raw;
+    public uint RawLength, PenButtons, PenButtonCount;
+    public float TiltX, TiltY;
+    public uint NearProximity, HoverDistance, Capabilities;
+}
+
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct FilterApi
 {
@@ -72,21 +83,32 @@ static class PluginEligibility
     }
 }
 
-sealed class Report : ITabletReport, IEraserReport
+class Report : ITabletReport, IEraserReport
 {
     public byte[] Raw { get; set; } = [];
     public Vector2 Position { get; set; }
     public uint Pressure { get; set; }
-    public bool[] PenButtons { get; set; } = new bool[2];
+    public bool[] PenButtons { get; set; } = [];
     public bool Eraser { get; set; }
+}
+
+// Implement only real pinned 0.6.7 interfaces. There is no rotation interface;
+// rotation and the other transport-only fields remain available through Raw.
+class TiltReport : Report, ITiltReport
+{
+    public Vector2 Tilt { get; set; }
+}
+
+sealed class ProximityReport : TiltReport, IProximityReport
+{
+    public bool NearProximity { get; set; }
+    public uint HoverDistance { get; set; }
 }
 
 sealed class Instance : IDisposable
 {
     readonly PluginContext context;
     readonly IPositionedPipelineElement<IDeviceReport> filter;
-    readonly Report report = new();
-    readonly OutOfRangeReport outOfRange = new();
     readonly int ownerThread = Environment.CurrentManagedThreadId;
     IDeviceReport? emitted;
     int emissionCount;
@@ -189,16 +211,52 @@ sealed class Instance : IDisposable
 
     public int Process(ref Sample sample)
     {
-        if (Volatile.Read(ref asyncEmission) != 0) return 2;
+        // Legacy sample-only entry remains available for native-v1 callers.
+        // Production Rust managed dispatch requires ProcessReport with raw data.
+        return Consume(ref sample, new Report {
+            Raw = new byte[0],
+            Position = new Vector2(sample.X, sample.Y),
+            Pressure = sample.Pressure,
+            Eraser = (sample.Flags & 2) != 0,
+            PenButtons = new bool[2]
+        });
+    }
+
+    public unsafe int Process(ref Sample sample, in NativePenReport native)
+    {
+        // Every input has independent ownership: a synchronous filter may retain
+        // the report, Raw, or PenButtons and inspect it after a later Consume.
+        // Source interfaces: OpenTabletDriver.Plugin/Tablet/{ITabletReport,
+        // ITiltReport,IEraserReport,IProximityReport}.cs at
+        // 736003ed72c8bbb28033b039d5a0bb76c344145c.
+        TiltReport report = (native.Capabilities & 1) != 0
+            ? new ProximityReport {
+                NearProximity = native.NearProximity != 0,
+                HoverDistance = native.HoverDistance
+            }
+            : new TiltReport();
+        report.Raw = new byte[native.RawLength];
+        new ReadOnlySpan<byte>(native.Raw, (int)native.RawLength).CopyTo(report.Raw);
+        report.PenButtons = new bool[native.PenButtonCount];
+        for (int index = 0; index < report.PenButtons.Length; index++)
+            report.PenButtons[index] = (native.PenButtons & (1u << index)) != 0;
         report.Position = new Vector2(sample.X, sample.Y);
         report.Pressure = sample.Pressure;
         report.Eraser = (sample.Flags & 2) != 0;
+        report.Tilt = new Vector2(native.TiltX, native.TiltY);
+        return Consume(ref sample, report);
+    }
+
+    int Consume(ref Sample sample, IDeviceReport report)
+    {
+        if (Volatile.Read(ref asyncEmission) != 0) return 2;
         emitted = null;
         emissionCount = 0;
         Volatile.Write(ref consuming, 1);
         try { filter.Consume(report); }
         finally { Volatile.Write(ref consuming, 0); }
-        // A reusable report is safe only for synchronous, one-output filters.
+        // Owned reports make retention safe, but asynchronous emissions, report
+        // suppression, and multiple outputs still require the P04/P05 scheduler.
         if (emissionCount != 1 || emitted is not IAbsolutePositionReport output || Volatile.Read(ref asyncEmission) != 0)
             return 3;
         sample.X = output.Position.X;
@@ -206,10 +264,15 @@ sealed class Instance : IDisposable
         return 0;
     }
 
-    public void Reset()
+    public void Reset(ReadOnlySpan<byte> raw)
     {
         // OTD filters receive a range-loss report; they decide how to reset.
+        // A fresh boxed struct and raw array keep retained loss reports stable.
+        byte[] ownedRaw = new byte[raw.Length];
+        raw.CopyTo(ownedRaw);
+        IDeviceReport outOfRange = new OutOfRangeReport(ownedRaw);
         emitted = null;
+        emissionCount = 0;
         Volatile.Write(ref consuming, 1);
         try { filter.Consume(outOfRange); }
         finally { Volatile.Write(ref consuming, 0); }
@@ -266,9 +329,41 @@ public static unsafe class EntryPoints
     }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static int ProcessReport(nint context, Sample* sample, NativePenReport* report)
+    {
+        try
+        {
+            if (sample == null || report == null || report->Version != 1
+                || report->Size != sizeof(NativePenReport) || report->Raw == null
+                || report->RawLength > 192 || report->RawLength == 0
+                || report->PenButtonCount > 3 || (report->Capabilities & ~1u) != 0)
+                throw new ArgumentException("Invalid owned pen-report bridge payload.");
+            byte id = report->Raw[0];
+            if (!((id == 0x10 && report->RawLength >= 17 && report->PenButtonCount == 2)
+                || (id == 0x1e && report->RawLength >= 13 && report->PenButtonCount == 3)))
+                throw new ArgumentException("Owned pen-report payload does not match a PTH-660 pen packet.");
+            return ((Instance)GCHandle.FromIntPtr(context).Target!).Process(ref *sample, in *report);
+        }
+        catch (Exception e) { lastError = e.GetBaseException().Message; Console.Error.WriteLine($".NET plugin disabled: {lastError}"); return 1; }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static int ResetReport(nint context, byte* raw, uint length)
+    {
+        try
+        {
+            if (length > 192 || (raw == null && length != 0))
+                throw new ArgumentException("Invalid owned range-loss payload.");
+            ((Instance)GCHandle.FromIntPtr(context).Target!).Reset(new ReadOnlySpan<byte>(raw, (int)length));
+            return 0;
+        }
+        catch (Exception e) { lastError = e.GetBaseException().Message; Console.Error.WriteLine($".NET plugin reset failed: {lastError}"); return 1; }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     static void Reset(nint context)
     {
-        try { ((Instance)GCHandle.FromIntPtr(context).Target!).Reset(); }
+        try { ((Instance)GCHandle.FromIntPtr(context).Target!).Reset(ReadOnlySpan<byte>.Empty); }
         catch (Exception e) { Console.Error.WriteLine($".NET plugin reset failed: {e.GetBaseException().Message}"); }
     }
 

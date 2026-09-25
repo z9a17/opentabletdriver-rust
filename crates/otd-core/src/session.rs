@@ -309,6 +309,7 @@ pub fn run(
                     } else if pipeline.is_relative() || layout.mapper.is_some() {
                         // While an absolute mapping is paused, reports do not
                         // reach the filters either.
+                        filters.prepare_report(pen, bytes);
                         let emitted =
                             pipeline.process(pen, ready, layout.mapper, filters, &mut send);
                         if let Some(name) = filters.take_failure() {
