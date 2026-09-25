@@ -245,6 +245,16 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                 append(menu, MF_STRING, CMD_DETECT, "Detect tablet\tCtrl+D");
                 append(
                     menu,
+                    if app.editor.mode() == OutputMode::Absolute {
+                        MF_STRING
+                    } else {
+                        MF_GRAYED
+                    },
+                    AREA_CONVERT,
+                    "Convert tablet area from...",
+                );
+                append(
+                    menu,
                     MF_STRING,
                     CMD_START_STOP,
                     if running {
@@ -619,6 +629,7 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
                 with_app(|app| app.property_toggled(control));
             }
         }
+        AREA_CONVERT => conversion::open(window),
         id if (AREA_ALIGN..=AREA_DISPLAY + 32).contains(&id) => {
             with_app(|app| app.area_action(id));
         }

@@ -1830,6 +1830,7 @@ impl App {
                     );
                 }
                 AreaKind::Tablet => {
+                    append(menu, MF_STRING, AREA_CONVERT, "Convert area from...");
                     append(
                         menu,
                         checked(self.prefs.lock_aspect_ratio),

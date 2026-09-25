@@ -23,4 +23,14 @@ Results are JSON containing the area's width, height, center X/Y and rotation, i
 
 The baseline is [OTD 0.6.7's conversion sources](https://github.com/OpenTabletDriver/OpenTabletDriver/tree/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Desktop/Conversion). In its Gaomon V2 converter, the fourth input is unused: both center offsets depend on X. The Rust command exposes that behavior under the explicit `otd067` name and reports a notice. The corrected variant is separate; it is not silently substituted. Specification and result rounding follows the upstream Single-valued properties and Area fields.
 
-These commands preview a result and never rewrite profiles. A graphical conversion dialog, automatic profile application and new execution/round-trip evidence remain open work. This increment was reviewed and compiled without local test, UI or hardware execution.
+These commands preview a result and never rewrite profiles.
+
+## Graphical conversion
+
+In Absolute Mode, right-click the tablet area and choose **Convert area from...**, or use **Tablets > Convert tablet area from...**. Select a source format and enter its four values. Labels, units and the pinned/corrected Gaomon notice follow the selected format. **Preview** validates finite inputs and positive output dimensions and shows width, height, center and zero rotation in millimetres. Editing a value or changing format invalidates the preview; **Use area** stays disabled until another valid preview exists.
+
+**Use area** replaces only the unsaved tablet area with the displayed conversion result. It deliberately does not enforce aspect/usable-area locks or change those preferences; the dialog states this before acceptance. Display area, clipping, limiting, filters and other settings stay intact. Save and runtime Apply remain separate actions. Cancel, invalid inputs or a profile change while the dialog is open leave the selected profile unchanged. An older simple crop/monitor profile becomes the equivalent area mapping only after acceptance, as with other graphical area edits.
+
+The graphical editor currently uses pinned PTH-660 specifications and rejects other stored tablet profiles explicitly. The offline CLI can preview other configured tablets; conversion does not imply runtime support. No dependencies, device opens or automatic saves are introduced by this workflow.
+
+The graphical slice has been source-reviewed and formatted, without local tests, UI or hardware execution. Compilation is delegated to integration; interactive accessibility, DPI/layout and conversion/runtime evidence remain open. Earlier shared-service compilation does not validate this dialog.
