@@ -2,6 +2,7 @@ pub mod action_output;
 mod area_cli;
 mod control;
 mod daemon;
+mod diagnostics;
 mod display;
 mod dotnet;
 mod hid;
@@ -40,6 +41,7 @@ fn usage() -> &'static str {
   opentabletdriver-rust.exe status | stop | shutdown
   opentabletdriver-rust.exe profiles list|preview|import|export|select ...
   opentabletdriver-rust.exe area convert|full|fit ...
+  opentabletdriver-rust.exe diagnostics --output NEW_FILE.json [--config PROFILE.toml]
   opentabletdriver-rust.exe settings [--config driver.toml | --otd-settings settings.json]
   opentabletdriver-rust.exe inspect-plugin path/to/managed-plugin.dll
   opentabletdriver-rust.exe check-plugins driver.toml
@@ -54,6 +56,7 @@ Capture does not inject cursor input. Plugin inspection/checks load trusted exec
 }
 
 enum Command {
+    Diagnostics(Vec<String>),
     Area(Vec<String>),
     Profiles(Vec<String>),
     Daemon {
@@ -105,6 +108,7 @@ fn parse_args() -> Result<Command, String> {
         };
     };
     match command.as_str() {
+        "diagnostics" => Ok(Command::Diagnostics(args.collect())),
         "area" => Ok(Command::Area(args.collect())),
         "profiles" => Ok(Command::Profiles(args.collect())),
         "daemon" => {
@@ -626,6 +630,7 @@ fn drive(
 
 fn main() {
     let result = match parse_args() {
+        Ok(Command::Diagnostics(args)) => diagnostics::run(args),
         Ok(Command::Area(args)) => area_cli::run(args),
         Ok(Command::Profiles(args)) => profile_cli::run(args),
         Ok(Command::Daemon { background }) => {
@@ -689,6 +694,7 @@ fn main() {
             println!("{}", usage());
             println!("\n{}", profile_cli::usage());
             println!("\n{}", area_cli::usage());
+            println!("\n{}", diagnostics::usage());
             Ok(())
         }
         Err(error) => Err(error),
