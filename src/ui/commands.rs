@@ -405,6 +405,9 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
             with_app(App::detect_tablet);
         }
         CMD_ADD_DOTNET | CMD_ADD_NATIVE => {
+            if !with_app(App::can_leave_filter).unwrap_or(false) {
+                return;
+            }
             let dotnet = id == CMD_ADD_DOTNET;
             let title = if dotnet {
                 "Add .NET plugin"
@@ -429,6 +432,19 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         }
         CMD_FILTER_DEFAULTS => {
             with_app(App::reset_filter);
+        }
+        CMD_FILTER_JSON => {
+            with_app(App::toggle_filter_json);
+        }
+        CMD_PROPERTY_PREV | CMD_PROPERTY_NEXT => {
+            with_app(|app| {
+                app.property_page = if id == CMD_PROPERTY_NEXT {
+                    app.property_page.saturating_add(1)
+                } else {
+                    app.property_page.saturating_sub(1)
+                };
+                app.layout();
+            });
         }
         CMD_THEME_SYSTEM | CMD_THEME_LIGHT | CMD_THEME_DARK => {
             let mode = match id {
@@ -513,21 +529,45 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         ID_FILTER_ENABLE => {
             with_app(App::filter_toggled);
         }
+        id if (ID_PROPERTY_DEFAULT..ID_PROPERTY_DEFAULT + MAX_PROPERTY_ROWS).contains(&id) => {
+            with_app(|app| {
+                if let Some(hwnd) = app
+                    .properties
+                    .iter()
+                    .find(|row| row.default_control == Some(control))
+                    .map(|row| row.hwnd)
+                {
+                    app.choose_property(hwnd, serde_json::Value::Null);
+                }
+            });
+        }
         id if (ID_PROPERTY..ID_PROPERTY + MAX_PROPERTY_ROWS).contains(&id) => {
             let choices = with_app(|app| {
                 let row = app.properties.iter().find(|row| row.hwnd == control)?;
-                let PropertyTarget::Plugin(_, value) = &row.target else { return None; };
+                let PropertyTarget::Plugin(_, value) = &row.target else {
+                    return None;
+                };
                 let choices = value.choices();
-                if choices.is_empty() || !value.writable() { return None; }
+                if choices.is_empty() || !value.writable() {
+                    return None;
+                }
                 let menu = unsafe { CreatePopupMenu() };
                 for (index, (label, choice)) in choices.iter().enumerate() {
-                    append(menu, MFT_RADIOCHECK | checked(value.choice_selected(choice)), index as u16 + 1, label);
+                    append(
+                        menu,
+                        MFT_RADIOCHECK | checked(value.choice_selected(choice)),
+                        index as u16 + 1,
+                        label,
+                    );
                 }
                 Some((menu, choices))
-            }).flatten();
+            })
+            .flatten();
             if let Some((menu, choices)) = choices {
                 let command = popup(window, menu, control);
-                if command > 0 && let Some((_, value)) = choices.get(command as usize - 1) {
+                if command > 0
+                    && let Some((_, value)) = choices.get(command as usize - 1)
+                {
                     with_app(|app| app.choose_property(control, value.clone()));
                 }
             } else {

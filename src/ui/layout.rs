@@ -80,7 +80,7 @@ impl App {
         all.extend(
             self.properties
                 .iter()
-                .flat_map(|row| [Some(row.hwnd), row.label_control])
+                .flat_map(|row| [Some(row.hwnd), row.label_control, row.default_control])
                 .flatten(),
         );
         unsafe {
@@ -432,6 +432,30 @@ impl App {
         ));
         y += detail_height + s(14);
 
+        // This toolbar stays outside the property rows, so switching pages never
+        // destroys edits or takes space from a row's Use default button.
+        let toolbar_y = y;
+        if let FilterRef::Plugin(index) = target {
+            let plugin = &self.editor.profile.plugins[index];
+            let editable = plugin.kind == PluginKind::Dotnet && self.metadata_for(plugin).is_some();
+            set_text(
+                self.c.filter_json_toggle,
+                if self.json_visible {
+                    "Properties"
+                } else {
+                    "Edit JSON"
+                },
+            );
+            unsafe {
+                EnableWindow(self.c.filter_json_toggle, editable.into());
+            }
+            shown.push((
+                self.c.filter_json_toggle,
+                rect(inner.right - s(104), y, inner.right, y + s(28)),
+            ));
+        }
+        y += s(36);
+
         let mut notes: Vec<(String, Tone)> = Vec::new();
         if let FilterRef::Plugin(_) = target {
             notes.push((
@@ -460,17 +484,65 @@ impl App {
             .map(|row| measure(style.fonts.ui, &row.label).0)
             .max()
             .unwrap_or(0)
-            .min(s(240));
+            .min(s(180))
+            .min((inner.right - inner.left - s(230)).max(s(60)));
         // Rows tighten when many properties would run into the notes.
         let room = inner.bottom - notes_total - s(12) - y;
-        let pitch = if self.properties.is_empty() {
+        let page_size = (room / s(32)).max(1) as usize;
+        let pages = self.properties.len().div_ceil(page_size).max(1);
+        self.property_page = self.property_page.min(pages - 1);
+        if pages > 1 {
+            for (hwnd, left, enabled) in [
+                (self.c.property_prev, inner.left, self.property_page > 0),
+                (
+                    self.c.property_next,
+                    inner.left + s(84),
+                    self.property_page + 1 < pages,
+                ),
+            ] {
+                unsafe {
+                    EnableWindow(hwnd, enabled.into());
+                }
+                shown.push((hwnd, rect(left, toolbar_y, left + s(78), toolbar_y + s(28))));
+            }
+            items.push(Item::Label(
+                rect(
+                    inner.left + s(168),
+                    toolbar_y,
+                    inner.right - s(110),
+                    toolbar_y + s(28),
+                ),
+                format!("{} / {pages}", self.property_page + 1),
+                Tone::Muted,
+                draw::TEXT_LEFT,
+            ));
+        }
+        let visible_count = self
+            .properties
+            .len()
+            .saturating_sub(self.property_page * page_size)
+            .min(page_size);
+        let pitch = if visible_count == 0 {
             s(44)
         } else {
-            (room / self.properties.len() as i32).clamp(s(32), s(44))
+            (room / visible_count as i32).clamp(s(32), s(44))
         };
         let row_height = pitch - s(6);
-        for row in &self.properties {
-            let line = rect(inner.left, y, inner.right, y + row_height);
+        for row in self
+            .properties
+            .iter()
+            .skip(self.property_page * page_size)
+            .take(page_size)
+        {
+            let mut line = rect(inner.left, y, inner.right, y + row_height);
+            if let Some(reset) = row.default_control {
+                let reset_width = s(94);
+                shown.push((
+                    reset,
+                    rect(line.right - reset_width, line.top, line.right, line.bottom),
+                ));
+                line.right -= reset_width + s(6);
+            }
             items.push(Item::Unit(line));
             let is_check = with_look(|look| look.info(row.hwnd).map(|i| i.kind)).flatten()
                 == Some(Kind::Check);
@@ -503,14 +575,16 @@ impl App {
                 let unit_width = if row.unit.is_empty() {
                     0
                 } else {
-                    measure(style.fonts.ui, &row.unit).0 + s(8)
+                    (measure(style.fonts.ui, &row.unit).0 + s(8)).min(s(72))
                 };
                 let field_left = label.right + s(12);
                 let field_width = (line.right - s(10) - unit_width - field_left)
                     .min(s(400))
                     .max(s(60));
                 let frame = self.frame_rect(field_left, (line.top + line.bottom) / 2, field_width);
-                if with_look(|look| look.info(row.hwnd).map(|info| info.kind)).flatten() == Some(Kind::Dropdown) {
+                if with_look(|look| look.info(row.hwnd).map(|info| info.kind)).flatten()
+                    == Some(Kind::Dropdown)
+                {
                     shown.push((row.hwnd, frame));
                 } else {
                     self.place_field(row.hwnd, frame, items, shown);

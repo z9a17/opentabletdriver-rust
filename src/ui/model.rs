@@ -96,32 +96,55 @@ pub enum PropertyValue {
     /// so keep it editable as an explicitly typed JSON scalar.
     JsonScalar,
     /// Preserve absence and explicit null independently; never guess constructor values.
-    Typed { saved: Option<serde_json::Value>, metadata: Box<PropertyMetadata> },
+    Typed {
+        saved: Option<serde_json::Value>,
+        metadata: Box<PropertyMetadata>,
+    },
     Json(serde_json::Value),
 }
 
 impl PropertyValue {
     pub fn choices(&self) -> Vec<(String, serde_json::Value)> {
-        let Self::Typed { metadata, .. } = self else { return Vec::new(); };
+        let Self::Typed { metadata, .. } = self else {
+            return Vec::new();
+        };
         let mut choices = if metadata.property_type == "System.Boolean" {
             vec![("True".into(), true.into()), ("False".into(), false.into())]
         } else if !metadata.enum_flags && !metadata.enum_choices.is_empty() {
-            metadata.enum_choices.iter().map(|choice| (choice.name.clone(), serde_json::Value::String(choice.name.clone()))).collect()
-        } else { return Vec::new(); };
+            metadata
+                .enum_choices
+                .iter()
+                .map(|choice| {
+                    (
+                        choice.name.clone(),
+                        serde_json::Value::String(choice.name.clone()),
+                    )
+                })
+                .collect()
+        } else {
+            return Vec::new();
+        };
         choices.insert(0, ("Use default".into(), serde_json::Value::Null));
         choices
     }
 
     pub fn choice_selected(&self, value: &serde_json::Value) -> bool {
-        let Self::Typed { saved, metadata } = self else { return false; };
+        let Self::Typed { saved, metadata } = self else {
+            return false;
+        };
         let saved = saved.as_ref().unwrap_or(&serde_json::Value::Null);
-        saved == value || metadata.enum_choices.iter().any(|choice| {
-            saved == &choice.value && value.as_str() == Some(choice.name.as_str())
-        })
+        saved == value
+            || metadata.enum_choices.iter().any(|choice| {
+                saved == &choice.value && value.as_str() == Some(choice.name.as_str())
+            })
     }
 
     pub fn display_text(&self) -> String {
-        if let Some((label, _)) = self.choices().into_iter().find(|(_, value)| self.choice_selected(value)) {
+        if let Some((label, _)) = self
+            .choices()
+            .into_iter()
+            .find(|(_, value)| self.choice_selected(value))
+        {
             return label;
         }
         match self {
@@ -130,9 +153,28 @@ impl PropertyValue {
             Self::Bool(_) => String::new(),
             Self::JsonScalar => "null".into(),
             Self::Json(value) => value.to_string(),
-            Self::Typed { saved, .. } => match saved {
+            Self::Typed { saved, metadata } => match saved {
                 None | Some(serde_json::Value::Null) => String::new(),
-                Some(serde_json::Value::String(text)) => text.clone(),
+                Some(serde_json::Value::String(text))
+                    if metadata.enum_underlying_type.is_some()
+                        || matches!(
+                            metadata.property_type.as_str(),
+                            "System.String"
+                                | "System.Boolean"
+                                | "System.SByte"
+                                | "System.Byte"
+                                | "System.Int16"
+                                | "System.UInt16"
+                                | "System.Int32"
+                                | "System.UInt32"
+                                | "System.Int64"
+                                | "System.UInt64"
+                                | "System.Single"
+                                | "System.Double"
+                        ) =>
+                {
+                    text.clone()
+                }
                 Some(value) => value.to_string(),
             },
         }
@@ -140,6 +182,16 @@ impl PropertyValue {
 
     pub fn writable(&self) -> bool {
         !matches!(self, Self::Typed { metadata, .. } if !metadata.writable)
+    }
+
+    pub fn uses_default(&self) -> bool {
+        matches!(
+            self,
+            Self::Typed {
+                saved: None | Some(serde_json::Value::Null),
+                ..
+            }
+        )
     }
 }
 
@@ -556,6 +608,7 @@ pub fn display_name(key: &str) -> String {
 
 /// Scalar settings, in file order, or `None` when the object holds values
 /// that need the JSON editor.
+#[cfg(test)]
 pub fn plugin_properties(json: &str) -> Option<Vec<(String, PropertyValue)>> {
     let value: serde_json::Value = serde_json::from_str(json).ok()?;
     value
@@ -580,7 +633,10 @@ pub fn plugin_editor_fields(
     json: &str,
     metadata: Option<&FilterMetadata>,
 ) -> Option<Vec<PluginField>> {
-    let mut properties = serde_json::from_str::<serde_json::Value>(json).ok()?.as_object()?.clone();
+    let mut properties = serde_json::from_str::<serde_json::Value>(json)
+        .ok()?
+        .as_object()?
+        .clone();
     let mut fields = Vec::with_capacity(properties.len());
     if let Some(metadata) = metadata {
         for descriptor in &metadata.properties {
@@ -590,7 +646,10 @@ pub fn plugin_editor_fields(
                 let value = if descriptor.property_type.is_empty() {
                     property_value(saved.unwrap_or(serde_json::Value::Null))
                 } else {
-                    PropertyValue::Typed { saved, metadata: Box::new(descriptor.clone()) }
+                    PropertyValue::Typed {
+                        saved,
+                        metadata: Box::new(descriptor.clone()),
+                    }
                 };
                 fields.push(PluginField {
                     label: descriptor
@@ -629,12 +688,10 @@ fn property_value(value: serde_json::Value) -> PropertyValue {
 /// Parses text typed for a setting, keeping integers integral.
 pub fn parse_property(text: &str, previous: &PropertyValue) -> Result<serde_json::Value, String> {
     match previous {
-        PropertyValue::Typed { metadata, .. } => {
-            if !metadata.writable { return Err("This property is read-only.".into()); }
-            if metadata.property_type == "System.String" { return Ok(text.into()); }
-            serde_json::from_str(text).map_err(|_| format!("Enter a value for {}.", metadata.property_type))
+        PropertyValue::Typed { metadata, .. } => super::property_validation::parse(text, metadata),
+        PropertyValue::Json(_) => {
+            serde_json::from_str(text).map_err(|error| format!("Enter valid JSON: {error}"))
         }
-        PropertyValue::Json(_) => serde_json::from_str(text).map_err(|error| format!("Enter valid JSON: {error}")),
         PropertyValue::Number(_) => {
             let trimmed = text.trim();
             if let Ok(integer) = trimmed.parse::<i64>() {

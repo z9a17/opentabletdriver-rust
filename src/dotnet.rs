@@ -173,7 +173,9 @@ pub struct PropertyMetadata {
     pub enum_choices: Vec<EnumChoice>,
 }
 
-fn property_writable() -> bool { true }
+fn property_writable() -> bool {
+    true
+}
 
 #[derive(Clone, Debug, PartialEq, serde::Deserialize)]
 pub struct EnumChoice {

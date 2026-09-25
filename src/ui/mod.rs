@@ -22,6 +22,7 @@ mod draw;
 mod layout;
 mod model;
 mod paint;
+mod property_validation;
 mod theme;
 mod tray;
 
@@ -111,6 +112,9 @@ const CMD_REMOVE_FILTER: u16 = 222;
 const CMD_FILTER_UP: u16 = 223;
 const CMD_FILTER_DOWN: u16 = 224;
 const CMD_FILTER_DEFAULTS: u16 = 225;
+const CMD_FILTER_JSON: u16 = 226;
+const CMD_PROPERTY_PREV: u16 = 227;
+const CMD_PROPERTY_NEXT: u16 = 228;
 const CMD_THEME_SYSTEM: u16 = 230;
 const CMD_THEME_LIGHT: u16 = 231;
 const CMD_THEME_DARK: u16 = 232;
@@ -132,6 +136,7 @@ const ID_FILTER_ENABLE: u16 = 401;
 const ID_FILTER_JSON: u16 = 402;
 const ID_PROPERTY: u16 = 2000;
 const MAX_PROPERTY_ROWS: u16 = 1000;
+const ID_PROPERTY_DEFAULT: u16 = 4000;
 const ID_TIP_BINDING: u16 = 500;
 const ID_TIP_SLIDER: u16 = 501;
 const ID_TIP_FIELD: u16 = 502;
@@ -604,6 +609,7 @@ enum PropertyTarget {
 
 struct PropertyRow {
     hwnd: HWND,
+    default_control: Option<HWND>,
     /// Static text before the field, which also names it for screen readers.
     label_control: Option<HWND>,
     label: String,
@@ -663,6 +669,9 @@ struct Controls {
     filter_up: HWND,
     filter_down: HWND,
     filter_defaults: HWND,
+    filter_json_toggle: HWND,
+    property_prev: HWND,
+    property_next: HWND,
     filter_enable: HWND,
     filter_json: HWND,
     tip_binding: HWND,
@@ -705,6 +714,8 @@ struct App {
     /// Label controls keyed by the control they name.
     labels: HashMap<isize, HWND>,
     json_visible: bool,
+    json_mode: bool,
+    property_page: usize,
     json_error: Option<String>,
     invalid: HashSet<isize>,
     drag: Option<Drag>,
