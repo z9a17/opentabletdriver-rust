@@ -101,7 +101,29 @@ pub enum PropertyValue {
 }
 
 impl PropertyValue {
+    pub fn choices(&self) -> Vec<(String, serde_json::Value)> {
+        let Self::Typed { metadata, .. } = self else { return Vec::new(); };
+        let mut choices = if metadata.property_type == "System.Boolean" {
+            vec![("True".into(), true.into()), ("False".into(), false.into())]
+        } else if !metadata.enum_flags && !metadata.enum_choices.is_empty() {
+            metadata.enum_choices.iter().map(|choice| (choice.name.clone(), serde_json::Value::String(choice.name.clone()))).collect()
+        } else { return Vec::new(); };
+        choices.insert(0, ("Use default".into(), serde_json::Value::Null));
+        choices
+    }
+
+    pub fn choice_selected(&self, value: &serde_json::Value) -> bool {
+        let Self::Typed { saved, metadata } = self else { return false; };
+        let saved = saved.as_ref().unwrap_or(&serde_json::Value::Null);
+        saved == value || metadata.enum_choices.iter().any(|choice| {
+            saved == &choice.value && value.as_str() == Some(choice.name.as_str())
+        })
+    }
+
     pub fn display_text(&self) -> String {
+        if let Some((label, _)) = self.choices().into_iter().find(|(_, value)| self.choice_selected(value)) {
+            return label;
+        }
         match self {
             Self::Number(number) => number.to_string(),
             Self::Text(text) => text.clone(),

@@ -845,6 +845,7 @@ impl App {
             } else {
                 None
             };
+            let dropdown = matches!(&target, PropertyTarget::Plugin(_, value) if !value.choices().is_empty());
             let created = match checked {
                 Some(_) => self.control(
                     "BUTTON",
@@ -854,6 +855,7 @@ impl App {
                     Kind::Check,
                     Surface::Group,
                 ),
+                None if dropdown => self.button(&value, id, Kind::Dropdown, Surface::Group),
                 None => self.field(id, Surface::Group),
             };
             let Ok(hwnd) = created else {
@@ -1256,6 +1258,33 @@ impl App {
                 config.settings_json = updated;
                 self.mark_dirty();
             }
+        }
+    }
+
+    pub(super) fn choose_property(&mut self, hwnd: HWND, value: serde_json::Value) {
+        let Some(index) = self.properties.iter().position(|row| row.hwnd == hwnd) else { return; };
+        let Some(FilterRef::Plugin(plugin)) = self.selected_target() else { return; };
+        let PropertyTarget::Plugin(key, previous) = &self.properties[index].target else { return; };
+        if !previous.writable() { return; }
+        let config = &self.editor.profile.plugins[plugin];
+        let result = model::set_plugin_property(&config.settings_json, key, value.clone()).and_then(|settings_json| {
+            let candidate = PluginConfig { settings_json, ..config.clone() };
+            candidate.validate()?;
+            Ok(candidate)
+        });
+        match result {
+            Ok(candidate) => {
+                self.editor.profile.plugins[plugin] = candidate;
+                if let PropertyTarget::Plugin(_, PropertyValue::Typed { saved, .. }) = &mut self.properties[index].target {
+                    *saved = Some(value);
+                }
+                if let PropertyTarget::Plugin(_, value) = &self.properties[index].target {
+                    set_text(hwnd, &value.display_text());
+                }
+                self.set_invalid(hwnd, false, None);
+                self.mark_dirty();
+            }
+            Err(error) => self.set_invalid(hwnd, true, Some(&error)),
         }
     }
 

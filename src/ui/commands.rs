@@ -513,8 +513,26 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         ID_FILTER_ENABLE => {
             with_app(App::filter_toggled);
         }
-        id if (ID_PROPERTY..ID_PROPERTY + 100).contains(&id) => {
-            with_app(|app| app.property_toggled(control));
+        id if (ID_PROPERTY..ID_PROPERTY + MAX_PROPERTY_ROWS).contains(&id) => {
+            let choices = with_app(|app| {
+                let row = app.properties.iter().find(|row| row.hwnd == control)?;
+                let PropertyTarget::Plugin(_, value) = &row.target else { return None; };
+                let choices = value.choices();
+                if choices.is_empty() || !value.writable() { return None; }
+                let menu = unsafe { CreatePopupMenu() };
+                for (index, (label, choice)) in choices.iter().enumerate() {
+                    append(menu, MFT_RADIOCHECK | checked(value.choice_selected(choice)), index as u16 + 1, label);
+                }
+                Some((menu, choices))
+            }).flatten();
+            if let Some((menu, choices)) = choices {
+                let command = popup(window, menu, control);
+                if command > 0 && let Some((_, value)) = choices.get(command as usize - 1) {
+                    with_app(|app| app.choose_property(control, value.clone()));
+                }
+            } else {
+                with_app(|app| app.property_toggled(control));
+            }
         }
         id if (AREA_ALIGN..=AREA_DISPLAY + 32).contains(&id) => {
             with_app(|app| app.area_action(id));

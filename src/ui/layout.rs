@@ -510,7 +510,11 @@ impl App {
                     .min(s(400))
                     .max(s(60));
                 let frame = self.frame_rect(field_left, (line.top + line.bottom) / 2, field_width);
-                self.place_field(row.hwnd, frame, items, shown);
+                if with_look(|look| look.info(row.hwnd).map(|info| info.kind)).flatten() == Some(Kind::Dropdown) {
+                    shown.push((row.hwnd, frame));
+                } else {
+                    self.place_field(row.hwnd, frame, items, shown);
+                }
                 if !row.unit.is_empty() {
                     items.push(Item::Label(
                         rect(frame.right + s(8), line.top, line.right, line.bottom),
