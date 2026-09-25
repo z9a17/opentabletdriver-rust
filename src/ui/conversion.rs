@@ -34,6 +34,7 @@ struct Template {
 
 struct Dialog {
     window: HWND,
+    name: String,
     tablet: &'static DigitizerSpecifications,
     controls: Vec<(HWND, RECT)>,
     format: HWND,
@@ -95,7 +96,7 @@ impl Dialog {
                 std::io::Error::last_os_error()
             ));
         }
-        set_text(window, "Convert tablet area - Wacom PTH-660");
+        set_text(window, &format!("Convert tablet area - {}", self.name));
         self.add(
             "STATIC",
             "Source &format",
@@ -369,17 +370,18 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wp: WPARAM, lp: 
     }
 }
 
-fn show(parent: HWND) -> Result<Option<OtdArea>, String> {
+fn show(parent: HWND, name: &str) -> Result<Option<OtdArea>, String> {
     let tablet = Database::builtin()
         .entries()
         .iter()
         .filter_map(|entry| entry.usable())
-        .find(|tablet| tablet.name == TABLET_NAME)
+        .find(|tablet| tablet.name == name)
         .and_then(|tablet| tablet.specifications.as_ref())
         .and_then(|specs| specs.digitizer.as_ref())
-        .ok_or("The pinned PTH-660 digitizer specifications are unavailable.")?;
+        .ok_or_else(|| format!("The digitizer specifications of {name} are unavailable."))?;
     let state = RefCell::new(Dialog {
         window: ptr::null_mut(),
+        name: name.to_owned(),
         tablet,
         controls: Vec::new(),
         format: ptr::null_mut(),
@@ -433,17 +435,23 @@ fn show(parent: HWND) -> Result<Option<OtdArea>, String> {
 }
 
 pub(super) fn open(window: HWND) {
-    let source = with_app(|app| -> Result<(PathBuf, String), String> {
+    let source = with_app(|app| -> Result<(PathBuf, String, String), String> {
         if app.editor.mode() != OutputMode::Absolute {
             return Err("Area conversion is available in Absolute Mode.".into());
         }
         app.editor.profile.validate_runtime_tablet()?;
         // Do not discard an invalid field while replacing the visible area.
         app.checked_profile()?;
-        Ok((app.profile_path.clone(), app.editor.profile.to_toml()?))
+        Ok((
+            app.profile_path.clone(),
+            app.editor.profile.to_toml()?,
+            app.tablet_label(),
+        ))
     });
     let result = match source {
-        Some(Ok(source)) => show(window).map(|area| (source, area)),
+        Some(Ok((path, source, tablet))) => {
+            show(window, &tablet).map(|area| ((path, source), area))
+        }
         Some(Err(error)) => Err(error),
         None => return,
     };

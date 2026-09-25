@@ -255,6 +255,7 @@ pub fn run(
         .for_tablet(selected.spec)
         .map_err(io::Error::other)?;
     let mut decoder = selected.decoder()?;
+    let _debug = DebugDevice::set(selected);
     let _priority = ReaderPriority::raise();
     otd_core::session::run(
         &mut source,
@@ -266,6 +267,25 @@ pub fn run(
         send_input,
         status,
     )
+}
+
+/// Names the session's tablet for the tablet debugger while it runs.
+struct DebugDevice;
+
+impl DebugDevice {
+    fn set(selected: &SelectedDevice<'_>) -> Self {
+        otd_core::debug::set_device(Some(otd_core::debug::Device {
+            name: selected.configuration.name.clone(),
+            parser: selected.identifier.parser().to_owned(),
+        }));
+        Self
+    }
+}
+
+impl Drop for DebugDevice {
+    fn drop(&mut self) {
+        otd_core::debug::set_device(None);
+    }
 }
 
 /// A candidate owns its handle, event and read buffer before the old worker
@@ -367,6 +387,7 @@ impl<'a> PreparedSession<'a> {
             .for_tablet(self.selected.spec)
             .map_err(io::Error::other)?;
         let mut decoder = self.selected.decoder()?;
+        let _debug = DebugDevice::set(self.selected);
         let mut source = GatedSource {
             source: self.source,
             gate: Some(gate),

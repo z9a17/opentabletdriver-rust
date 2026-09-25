@@ -19,6 +19,7 @@ mod canvas;
 mod client;
 mod commands;
 mod conversion;
+mod debugger;
 mod draw;
 mod layout;
 mod model;
@@ -101,6 +102,10 @@ const CMD_OPEN_FOLDER: u16 = 206;
 const CMD_QUIT: u16 = 207;
 const CMD_RECOVER_BACKUP: u16 = 208;
 const CMD_DETECT: u16 = 210;
+const CMD_DEBUGGER: u16 = 211;
+const CMD_TABLET_ANY: u16 = 6000;
+const CMD_TABLET_FIRST: u16 = 6001;
+const TABLET_CHOICES: u16 = 64;
 const CMD_ADD_DOTNET: u16 = 220;
 const CMD_ADD_NATIVE: u16 = 221;
 const CMD_REMOVE_FILTER: u16 = 222;
@@ -700,6 +705,8 @@ struct App {
     closing: bool,
     driver: DriverState,
     tablet_present: Option<bool>,
+    /// The tablets listed in the last Tablets menu, by command offset.
+    tablet_choices: Vec<String>,
     status: String,
     status_level: Level,
     validation_status: bool,

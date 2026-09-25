@@ -326,6 +326,7 @@ pub fn run(
                 timing.queued += 1;
             }
             counters.read += 1;
+            crate::debug::record(bytes);
             match decoder.decode(bytes) {
                 Ok(Some(pen)) => {
                     counters.accepted += 1;

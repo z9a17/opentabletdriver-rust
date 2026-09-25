@@ -362,6 +362,33 @@ impl Canvas {
         self.gdi_pending = true;
     }
 
+    /// The buffer as a 32-bit BMP file, for rendering previews in tests.
+    #[cfg(test)]
+    pub fn to_bmp(&self) -> Vec<u8> {
+        unsafe { GdiFlush() };
+        let pixels = (self.width * self.height) as usize;
+        let data = unsafe { std::slice::from_raw_parts(self.bits.cast::<u8>(), pixels * 4) };
+        let size = 54 + data.len() as u32;
+        let mut file = Vec::with_capacity(size as usize);
+        file.extend_from_slice(b"BM");
+        file.extend_from_slice(&size.to_le_bytes());
+        file.extend_from_slice(&[0; 4]);
+        file.extend_from_slice(&54u32.to_le_bytes());
+        file.extend_from_slice(&40u32.to_le_bytes());
+        file.extend_from_slice(&self.width.to_le_bytes());
+        file.extend_from_slice(&(-self.height).to_le_bytes());
+        file.extend_from_slice(&1u16.to_le_bytes());
+        file.extend_from_slice(&32u16.to_le_bytes());
+        file.extend_from_slice(&[0; 24]);
+        file.extend_from_slice(data);
+        file
+    }
+
+    /// Height of `text` word-wrapped in `width` pixels.
+    pub fn wrapped_height(&self, font: HFONT, text: &str, width: i32) -> i32 {
+        wrapped_height(self.dc, font, text, width)
+    }
+
     pub fn measure(&self, font: HFONT, text: &str) -> (i32, i32) {
         measure(self.dc, font, text)
     }

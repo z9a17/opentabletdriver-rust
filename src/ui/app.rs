@@ -221,6 +221,7 @@ impl App {
             closing: false,
             driver: DriverState::Stopped,
             tablet_present: None,
+            tablet_choices: Vec::new(),
             status: String::new(),
             status_level: Level::Info,
             validation_status: false,
@@ -1056,12 +1057,39 @@ impl App {
         }
         if self.driver == DriverState::Connected {
             title.push_str(" - ");
-            title.push_str(TABLET_NAME);
+            title.push_str(&self.tablet_label());
         }
         if self.dirty {
             title.insert(0, '*');
         }
         unsafe { SetWindowTextW(self.hwnd, wide(&title).as_ptr()) };
+    }
+
+    /// The tablet the profile is for, or the default tablet.
+    pub(super) fn tablet_label(&self) -> String {
+        self.editor
+            .profile
+            .tablet_name()
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| TABLET_NAME.into())
+    }
+
+    /// Makes the profile target a tablet (`None`: whichever is connected).
+    pub(super) fn choose_tablet(&mut self, name: Option<String>) {
+        if self.editor.profile.target_tablet == name {
+            return;
+        }
+        self.editor.set_tablet(name);
+        self.mark_dirty();
+        self.sync_all();
+        self.layout();
+        unsafe { InvalidateRect(self.hwnd, ptr::null(), 0) };
+        let message = format!(
+            "Settings now target {}. Save or Apply to use them.",
+            self.tablet_label()
+        );
+        self.log(Level::Info, "Tablet", message);
     }
 
     pub(super) fn mark_dirty(&mut self) {
@@ -1138,7 +1166,7 @@ impl App {
     pub(super) fn bounds(&self, which: AreaKind) -> Bounds {
         match which {
             AreaKind::Display => Bounds::from_rect(self.displays.virtual_screen),
-            AreaKind::Tablet => Bounds::tablet(),
+            AreaKind::Tablet => Bounds::tablet_for(self.editor.profile.tablet),
         }
     }
 
@@ -2325,7 +2353,8 @@ impl App {
 
     fn tray_tip(&self) -> String {
         format!(
-            "OpenTabletDriver Rust\n{TABLET_NAME}: {}",
+            "OpenTabletDriver Rust\n{}: {}",
+            self.tablet_label(),
             self.driver.label()
         )
     }
