@@ -3,6 +3,7 @@
 use super::*;
 use otd_core::areas::Conversion;
 use otd_core::tablets::{Database, DigitizerSpecifications};
+use windows_sys::Win32::UI::HiDpi::{DDC_DISABLE_ALL, SetDialogDpiChangeBehavior};
 
 const FORMAT: u16 = 1000;
 const VALUE: u16 = 1010;
@@ -20,7 +21,9 @@ const FORMATS: [(Conversion, &str); 5] = [
 ];
 
 // Standard empty dialog template followed by the required zero-terminated
-// menu, class and title fields. Windows requires DWORD alignment for it.
+// menu, class and title fields. DLGTEMPLATE is packed(2), size 18: these
+// WORD fields begin at offsets 18/20/22; only the outer alignment is raised.
+// Windows requires DWORD alignment for the start of the template.
 #[repr(C, align(4))]
 struct Template {
     dialog: DLGTEMPLATE,
@@ -84,6 +87,14 @@ impl Dialog {
 
     fn initialize(&mut self, window: HWND) -> Result<(), String> {
         self.window = window;
+        // We own control positions/fonts and the dialog frame. Do not also let
+        // the PMv2 dialog manager scale the same controls from template units.
+        if unsafe { SetDialogDpiChangeBehavior(window, DDC_DISABLE_ALL, DDC_DISABLE_ALL) } == 0 {
+            return Err(format!(
+                "Cannot configure conversion dialog scaling: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
         set_text(window, "Convert tablet area - Wacom PTH-660");
         self.add(
             "STATIC",
@@ -168,7 +179,7 @@ impl Dialog {
             rect(498, 416, 604, 448),
         )?;
         self.format_changed();
-        self.resize(window, unsafe { GetDpiForWindow(window) }.max(96), true);
+        self.resize(window, unsafe { GetDpiForWindow(window) }.max(96), None);
         unsafe {
             SendMessageW(window, DM_SETDEFID, PREVIEW as usize, 0);
             SetFocus(self.format);
@@ -176,7 +187,7 @@ impl Dialog {
         Ok(())
     }
 
-    fn resize(&mut self, window: HWND, dpi: u32, center: bool) {
+    fn resize(&mut self, window: HWND, dpi: u32, suggested: Option<RECT>) {
         let fonts = FontSet::new(dpi);
         for (control, area) in &self.controls {
             unsafe {
@@ -203,15 +214,15 @@ impl Dialog {
                 dpi,
             );
             let mut parent = RECT::default();
-            GetWindowRect(if center { GetParent(window) } else { window }, &mut parent);
+            GetWindowRect(GetParent(window), &mut parent);
             let (width, height) = (bounds.right - bounds.left, bounds.bottom - bounds.top);
-            let (left, top) = if center {
+            let (left, top) = if let Some(suggested) = suggested {
+                (suggested.left, suggested.top)
+            } else {
                 (
                     (parent.left + parent.right - width) / 2,
                     (parent.top + parent.bottom - height) / 2,
                 )
-            } else {
-                (parent.left, parent.top)
             };
             SetWindowPos(
                 window,
@@ -346,7 +357,8 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wp: WPARAM, lp: 
             1
         }
         WM_DPICHANGED => {
-            state.resize(window, (wp & 0xffff) as u32, false);
+            let suggested = (lp != 0).then(|| unsafe { *(lp as *const RECT) });
+            state.resize(window, (wp & 0xffff) as u32, suggested);
             1
         }
         WM_CLOSE => {
@@ -421,14 +433,14 @@ fn show(parent: HWND) -> Result<Option<OtdArea>, String> {
 }
 
 pub(super) fn open(window: HWND) {
-    let source = with_app(|app| -> Result<String, String> {
+    let source = with_app(|app| -> Result<(PathBuf, String), String> {
         if app.editor.mode() != OutputMode::Absolute {
             return Err("Area conversion is available in Absolute Mode.".into());
         }
         app.editor.profile.validate_runtime_tablet(TABLET_NAME)?;
         // Do not discard an invalid field while replacing the visible area.
         app.checked_profile()?;
-        app.editor.profile.to_toml()
+        Ok((app.profile_path.clone(), app.editor.profile.to_toml()?))
     });
     let result = match source {
         Some(Ok(source)) => show(window).map(|area| (source, area)),
@@ -436,8 +448,11 @@ pub(super) fn open(window: HWND) {
         None => return,
     };
     with_app(|app| match result {
-        Ok((source, Some(area))) => {
-            if app.editor.profile.to_toml().as_ref() != Ok(&source) {
+        Ok(((path, source), Some(area))) => {
+            if app.closing {
+                return;
+            }
+            if app.profile_path != path || app.editor.profile.to_toml().as_ref() != Ok(&source) {
                 app.log(Level::Warning, "Settings", "The profile changed while conversion was open. Reopen conversion to use the current settings; no area was replaced.");
                 return;
             }
