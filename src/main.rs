@@ -13,6 +13,7 @@ mod plugins;
 mod preset_cli;
 mod priority;
 mod profile_cli;
+mod runtime;
 mod session;
 mod ui;
 
