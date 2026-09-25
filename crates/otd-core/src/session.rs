@@ -15,6 +15,28 @@ use crate::pipeline::ReportPipeline;
 use crate::plugins::Filters;
 use crate::protocol;
 
+/// A session cannot safely reconnect after its acknowledged output failed to
+/// release. Preserve this distinction through the platform session adapter.
+#[derive(Debug)]
+struct OutputCleanupError(io::Error);
+
+impl std::fmt::Display for OutputCleanupError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "output cleanup failed: {}", self.0)
+    }
+}
+
+impl std::error::Error for OutputCleanupError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+pub fn is_cleanup_failure(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<OutputCleanupError>())
+}
 #[derive(Clone, Copy)]
 pub enum Mode {
     Driver,
@@ -306,29 +328,39 @@ pub fn run(
                     counters.accepted += 1;
                     if let Mode::Capture { .. } = mode {
                         capture_trace.pen(bytes, pen);
-                    } else if pipeline.is_relative() || layout.mapper.is_some() {
-                        // While an absolute mapping is paused, reports do not
-                        // reach the filters either.
-                        filters.prepare_report(pen, bytes);
-                        let emitted =
-                            pipeline.process(pen, ready, layout.mapper, filters, &mut send);
+                    } else {
+                        // Paused mappings still enter the pipeline's cleanup
+                        // gate, which retries failed releases without filters.
+                        if pipeline.is_relative() || layout.mapper.is_some() {
+                            filters.prepare_report(pen, bytes);
+                        }
+                        let emitted = pipeline.process_with_raw(
+                            pen,
+                            bytes,
+                            ready,
+                            layout.mapper,
+                            filters,
+                            |packet| {
+                                send(packet)?;
+                                // Count acknowledged prefixes even if a later
+                                // emission from this input fails.
+                                counters.injected += 1;
+                                Ok(())
+                            },
+                        );
                         if let Some(name) = filters.take_failure() {
                             status(&format!(
                                 "Disabled failing plugin: {name}. Restart to retry."
                             ));
                         }
-                        match emitted {
-                            Ok(true) => counters.injected += 1,
-                            Ok(false) => {}
-                            Err(error) => {
-                                counters.output_failures += 1;
-                                let now = source.now();
-                                if last_output_warning
-                                    .is_none_or(|last| now - last >= Duration::from_secs(5))
-                                {
-                                    eprintln!("SendInput failed: {error}");
-                                    last_output_warning = Some(now);
-                                }
+                        if let Err(error) = emitted {
+                            counters.output_failures += 1;
+                            let now = source.now();
+                            if last_output_warning
+                                .is_none_or(|last| now - last >= Duration::from_secs(5))
+                            {
+                                eprintln!("Report pipeline failed: {error}");
+                                last_output_warning = Some(now);
                             }
                         }
                         timing.record(source.now().saturating_duration_since(ready));
@@ -360,7 +392,8 @@ pub fn run(
         }
         Ok(())
     })();
-    if let Err(error) = pipeline.release_all(&mut send) {
+    let cleanup = pipeline.release_all(&mut send).map(|_| ());
+    if let Err(error) = &cleanup {
         eprintln!("could not release mouse buttons: {error}");
     }
     eprintln!(
@@ -376,6 +409,9 @@ pub fn run(
         eprintln!("{summary}");
         status(&summary);
     }
+    // Cleanup failure takes precedence: reconnecting would discard ownership
+    // of an action that the OS may still consider held.
+    cleanup.map_err(|error| io::Error::other(OutputCleanupError(error)))?;
     outcome
 }
 

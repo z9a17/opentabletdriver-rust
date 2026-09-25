@@ -2,11 +2,10 @@
 //! bar, Output / Filters / Pen Settings / Console tabs with graphical area
 //! editors, and a Save / Apply bar. It follows the Windows light or dark
 //! setting unless the user picks one, and uses system colors in high
-//! contrast. The message loop stays off the driver thread; stop requests use
-//! a duplicated Windows event handle.
+//! contrast. A bounded background IPC client keeps pipe calls off the UI thread.
 //!
 //! Like OpenTabletDriver's UX, which starts its daemon, the panel starts the
-//! driver when it opens; it runs in-process on a background thread. The panel
+//! driver when requested. The independent daemon keeps running when the panel closes. The panel
 //! keeps an icon in the notification area and minimizes into it. Opening the
 //! panel again brings the running one forward.
 //!
@@ -17,6 +16,7 @@
 mod app;
 mod area;
 mod canvas;
+mod client;
 mod commands;
 mod draw;
 mod layout;
@@ -29,23 +29,17 @@ mod tray;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
-use std::io::Write;
 use std::mem::size_of;
 use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::ptr;
-use std::sync::mpsc::{self, Receiver};
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, GetLastError, GlobalFree, HWND, LPARAM,
-    LRESULT, POINT, RECT, SYSTEMTIME, WPARAM,
+    ERROR_ALREADY_EXISTS, GetLastError, GlobalFree, HWND, LPARAM, LRESULT, POINT, RECT, SYSTEMTIME,
+    WPARAM,
 };
 use windows_sys::Win32::Graphics::Gdi::*;
-use windows_sys::Win32::Storage::FileSystem::{
-    MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-};
 use windows_sys::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
 };
@@ -53,8 +47,7 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows_sys::Win32::System::SystemInformation::GetLocalTime;
 use windows_sys::Win32::System::Threading::{
-    CreateMutexW, GetStartupInfoW, OpenMutexW, STARTF_USESHOWWINDOW, STARTUPINFOW,
-    SYNCHRONIZATION_SYNCHRONIZE,
+    CreateMutexW, GetStartupInfoW, STARTF_USESHOWWINDOW, STARTUPINFOW,
 };
 use windows_sys::Win32::UI::Controls::Dialogs::*;
 use windows_sys::Win32::UI::Controls::{
@@ -81,7 +74,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use crate::config::Profile;
 use crate::display::DisplaySnapshot;
 use crate::dotnet::FilterMetadata;
-use crate::hid::{Event, OwnedHandle};
+use crate::hid::OwnedHandle;
 use crate::mapping::{OtdArea, OtdMapping};
 use crate::plugins::{PluginConfig, PluginKind};
 use crate::radial_follow::RadialFollowSettings;
@@ -105,6 +98,7 @@ const CMD_APPLY: u16 = 204;
 const CMD_IMPORT: u16 = 205;
 const CMD_OPEN_FOLDER: u16 = 206;
 const CMD_QUIT: u16 = 207;
+const CMD_RECOVER_BACKUP: u16 = 208;
 const CMD_DETECT: u16 = 210;
 const CMD_ADD_DOTNET: u16 = 220;
 const CMD_ADD_NATIVE: u16 = 221;
@@ -158,7 +152,6 @@ const AREA_LIMITING: u16 = 833;
 const AREA_DISPLAY: u16 = 840;
 
 const WM_DRIVER_STATUS: u32 = WM_APP + 1;
-const WM_DRIVER_EXITED: u32 = WM_APP + 2;
 const WM_DETECT: u32 = WM_APP + 3;
 const WM_AUTOSTART: u32 = WM_APP + 4;
 /// Posted by a second launch of the panel.
@@ -282,50 +275,22 @@ fn update_look(f: impl FnOnce(&mut Look)) {
 }
 
 pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), String> {
-    let path = std::path::absolute(path).map_err(|e| e.to_string())?;
-    let parent = path.parent().ok_or("path has no parent")?;
-    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_nanos();
-    let temporary = parent.join(format!(".otd-profile-{}-{stamp}.tmp", std::process::id()));
-    let mut created = false;
-    let outcome = (|| -> Result<(), String> {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)
-            .map_err(|e| e.to_string())?;
-        created = true;
-        file.write_all(contents)
-            .and_then(|_| file.sync_all())
-            .map_err(|e| e.to_string())?;
-        drop(file);
-        let from = crate::plugins::wide(temporary.as_os_str())?;
-        let to = crate::plugins::wide(path.as_os_str())?;
-        if unsafe {
-            MoveFileExW(
-                from.as_ptr(),
-                to.as_ptr(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-            )
-        } == 0
-        {
-            return Err(std::io::Error::last_os_error().to_string());
-        }
-        Ok(())
-    })();
-    if created && outcome.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
-    outcome
+    let expected = otd_core::storage::capture(path)?;
+    otd_core::storage::save(
+        path,
+        contents,
+        otd_core::storage::SaveMode::Replace(&expected),
+    )?;
+    Ok(())
 }
 
-pub fn save_profile(path: &Path, profile: &Profile) -> Result<(), String> {
-    write_atomic(path, profile.to_toml()?.as_bytes())
+pub fn save_profile(
+    path: &Path,
+    profile: &Profile,
+    mode: otd_core::storage::SaveMode<'_>,
+) -> Result<otd_core::storage::FileSnapshot, String> {
+    otd_core::storage::save(path, profile.to_toml_at(path)?.as_bytes(), mode)
 }
-
 pub(crate) fn create_font(pixels: i32, weight: i32, face: &str, escapement: i32) -> HFONT {
     unsafe {
         CreateFontW(
@@ -628,6 +593,7 @@ enum DriverState {
     Connected,
     Stopping,
     Failed,
+    Disconnected,
 }
 
 impl DriverState {
@@ -640,14 +606,13 @@ impl DriverState {
             DriverState::Connected => "Running",
             DriverState::Stopping => "Stopping",
             DriverState::Failed => "Stopped with an error",
+            DriverState::Disconnected => "Daemon connection unavailable",
         }
     }
 }
 
 struct Running {
-    stop: Event,
-    thread: JoinHandle<Result<(), String>>,
-    messages: Receiver<String>,
+    identity: crate::control::WorkerIdentity,
 }
 
 struct Drag {
@@ -708,6 +673,9 @@ struct App {
     displays: DisplaySnapshot,
     editor: Editor,
     profile_path: PathBuf,
+    profile_snapshot: Option<otd_core::storage::FileSnapshot>,
+    profile_revision_floor: u64,
+    recovered_backup: bool,
     dirty: bool,
     selected_filter: usize,
     properties: Vec<PropertyRow>,
@@ -723,7 +691,10 @@ struct App {
     drag: Option<Drag>,
     context_area: AreaKind,
     running: Option<Running>,
-    restart: Option<Profile>,
+    daemon_client: Option<client::DaemonClient>,
+    control_busy: bool,
+    daemon_instance: Option<String>,
+    daemon_log_sequence: u64,
     closing: bool,
     driver: DriverState,
     tablet_present: Option<bool>,
@@ -738,12 +709,8 @@ struct App {
 
 impl Drop for App {
     fn drop(&mut self) {
-        // Normal close waits asynchronously for this thread. This also covers
-        // a message-loop failure without force-killing input or losing releases.
-        if let Some(running) = self.running.take() {
-            let _ = running.stop.signal();
-            let _ = running.thread.join();
-        }
+        // The daemon owns input; closing this client only detaches.
+        self.daemon_client.take();
         unsafe {
             DestroyAcceleratorTable(self.accelerators);
             if !self.tray_icon.is_null() {
@@ -799,10 +766,7 @@ fn local_time() -> String {
 }
 
 fn profile_directory() -> Result<PathBuf, String> {
-    Ok(std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or(std::env::current_dir().map_err(|e| e.to_string())?)
-        .join("OpenTabletDriverRust"))
+    otd_core::storage::data_directory()
 }
 
 fn point_from(lp: LPARAM) -> (i32, i32) {
@@ -810,18 +774,6 @@ fn point_from(lp: LPARAM) -> (i32, i32) {
         (lp & 0xFFFF) as i16 as i32,
         ((lp >> 16) & 0xFFFF) as i16 as i32,
     )
-}
-
-/// True while another process, such as the console daemon, runs the driver.
-fn driver_instance_running() -> bool {
-    let name = wide(crate::INSTANCE_MUTEX);
-    let handle = unsafe { OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, 0, name.as_ptr()) };
-    if handle.is_null() {
-        // An elevated driver's mutex exists but cannot be opened.
-        return unsafe { GetLastError() } == ERROR_ACCESS_DENIED;
-    }
-    unsafe { CloseHandle(handle) };
-    true
 }
 
 /// Holds the panel's instance mutex, or brings the panel that already holds
@@ -1091,12 +1043,6 @@ unsafe extern "system" fn window_proc(
             with_app(App::driver_status);
             0
         }
-        WM_DRIVER_EXITED => {
-            if with_app(App::driver_exited) == Some(true) {
-                unsafe { DestroyWindow(window) };
-            }
-            0
-        }
         WM_DETECT => {
             with_app(App::detect_tablet);
             0
@@ -1274,16 +1220,24 @@ pub fn run() -> Result<(), String> {
         }
     };
     let path = directory.join("driver.toml");
+    let mut profile_snapshot = None;
     let (profile, loaded) = if path.exists() {
-        match Profile::load(Some(&path)) {
+        let load = otd_core::storage::read_utf8(&path).and_then(|loaded| {
+            let profile = Profile::from_toml_text(&loaded.text, &path)?;
+            profile_snapshot = Some(loaded.snapshot);
+            Ok(profile)
+        });
+        match load {
             Ok(profile) => (profile, Ok(format!("Loaded {}.", path.display()))),
             Err(error) => (
                 Profile::default(),
-                Err(format!("Could not load profile: {error}")),
+                Err(format!(
+                    "Could not load profile: {error}. Use File > Recover backup if a backup is available; recovered settings must be saved to a new file."
+                )),
             ),
         }
     } else {
-        match Profile::load(None) {
+        match crate::load_profile(None, None) {
             Ok(profile) => {
                 let message = if profile.source.starts_with("OpenTabletDriver") {
                     "Imported the active OpenTabletDriver mapping. Save writes it as a separate Rust profile."
@@ -1301,6 +1255,10 @@ pub fn run() -> Result<(), String> {
         }
     };
     app.replace_profile(profile, Some(path), false);
+    if profile_snapshot.is_some() {
+        app.profile_revision_floor = app.editor.profile.settings_revision;
+    }
+    app.profile_snapshot = profile_snapshot;
     app.set_driver_state(DriverState::Stopped);
     // A profile that failed to load is replaced by defaults; never drive
     // the tablet with those unasked.
@@ -1322,6 +1280,7 @@ pub fn run() -> Result<(), String> {
     }
     let accelerators = app.accelerators;
     let first_tab = app.c.tabs[0];
+    app.connect_daemon();
     app.set_icons();
     // Before the window is shown, so a minimized launch goes to the tray.
     app.add_tray();

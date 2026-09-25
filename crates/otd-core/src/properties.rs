@@ -408,7 +408,7 @@ impl Filters for StageRecorder {
 
 /// PreTransform filters run before mapping and Pixels filters after it, at
 /// most once each per report; a report without a detected pen resets them
-/// instead; relative mode never calls Pixels filters.
+/// instead. Pixels filters receive absolute pixels or relative motion deltas.
 #[test]
 fn filters_run_in_stage_order() {
     let desktop = desktop();
@@ -449,7 +449,7 @@ fn filters_run_in_stage_order() {
                     allowed.iter().any(|a| a == calls),
                     "case {case}: calls {calls:?} for {pen:?}"
                 );
-                if relative || !filters.pixels {
+                if !filters.pixels {
                     assert!(!calls.contains('x'), "case {case}");
                 }
             }

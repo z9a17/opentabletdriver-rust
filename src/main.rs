@@ -1,6 +1,8 @@
 pub mod action_output;
+mod area_cli;
 mod control;
 mod daemon;
+mod diagnostics;
 mod display;
 mod dotnet;
 mod hid;
@@ -36,8 +38,12 @@ fn usage() -> &'static str {
   opentabletdriver-rust.exe run [--config driver.toml | --otd-settings settings.json]
   opentabletdriver-rust.exe daemon [--background]
   opentabletdriver-rust.exe start [--config driver.toml | --otd-settings settings.json]
+  opentabletdriver-rust.exe restart [--config driver.toml | --otd-settings settings.json]
+  opentabletdriver-rust.exe configuration
   opentabletdriver-rust.exe status | stop | shutdown
   opentabletdriver-rust.exe profiles list|preview|import|export|select ...
+  opentabletdriver-rust.exe area convert|full|fit ...
+  opentabletdriver-rust.exe diagnostics --output NEW_FILE.json [--config PROFILE.toml]
   opentabletdriver-rust.exe settings [--config driver.toml | --otd-settings settings.json]
   opentabletdriver-rust.exe inspect-plugin path/to/managed-plugin.dll
   opentabletdriver-rust.exe check-plugins driver.toml
@@ -47,16 +53,24 @@ fn usage() -> &'static str {
   opentabletdriver-rust.exe capture [--config driver.toml | --otd-settings settings.json] [--seconds 1..60]
   opentabletdriver-rust.exe --version
 
-Without a profile argument, the daemon reads your OpenTabletDriver PTH-660 settings.json if present.
+Without a profile argument, use the saved Rust driver.toml, then OTD settings if present.
+OTD_RUST_PORTABLE_DIR selects portable storage and disables automatic OTD import.
 Capture does not inject cursor input. Plugin inspection/checks load trusted executable code."
 }
 
 enum Command {
+    Diagnostics(Vec<String>),
+    Area(Vec<String>),
     Profiles(Vec<String>),
     Daemon {
         background: bool,
     },
     Control(control::Command),
+    Configuration,
+    Restart {
+        config: Option<PathBuf>,
+        otd_settings: Option<PathBuf>,
+    },
     Start {
         config: Option<PathBuf>,
         otd_settings: Option<PathBuf>,
@@ -102,6 +116,9 @@ fn parse_args() -> Result<Command, String> {
         };
     };
     match command.as_str() {
+        "diagnostics" => Ok(Command::Diagnostics(args.collect())),
+        "area" => Ok(Command::Area(args.collect())),
+        "configuration" if args.next().is_none() => Ok(Command::Configuration),
         "profiles" => Ok(Command::Profiles(args.collect())),
         "daemon" => {
             let background = match args.next().as_deref() {
@@ -176,7 +193,7 @@ fn parse_args() -> Result<Command, String> {
                 Ok(Command::Displays)
             }
         }
-        "run" | "capture" | "settings" | "start" => {
+        "run" | "capture" | "settings" | "start" | "restart" => {
             let mut config = None;
             let mut otd_settings = None;
             let mut seconds = 10;
@@ -206,6 +223,10 @@ fn parse_args() -> Result<Command, String> {
                 return Err("choose either --config or --otd-settings".into());
             }
             match command.as_str() {
+                "restart" => Ok(Command::Restart {
+                    config,
+                    otd_settings,
+                }),
                 "start" => Ok(Command::Start {
                     config,
                     otd_settings,
@@ -481,8 +502,20 @@ fn load_profile(
 ) -> Result<Profile, String> {
     if let Some(path) = otd_settings {
         Profile::load_otd(path)
+    } else if let Some(path) = config {
+        Profile::load(Some(path))
     } else {
-        Profile::load(config.map(PathBuf::as_path))
+        let path = otd_core::storage::data_directory()?.join("driver.toml");
+        if path
+            .try_exists()
+            .map_err(|error| format!("cannot inspect saved profile {}: {error}", path.display()))?
+        {
+            Profile::load(Some(&path))
+        } else if std::env::var_os("OTD_RUST_PORTABLE_DIR").is_some() {
+            Ok(Profile::default())
+        } else {
+            Profile::load(None)
+        }
     }
 }
 
@@ -543,7 +576,7 @@ fn drive(
         deadline: Instant::now() + Duration::from_secs(seconds),
         limit: 10_000,
     });
-    let _original_driver = if capture_seconds.is_none() {
+    let mut original_driver = if capture_seconds.is_none() {
         Some(
             original_driver::OriginalDriverGuard::pause().map_err(|error| {
                 format!("could not pause the original OpenTabletDriver safely: {error}")
@@ -552,76 +585,93 @@ fn drive(
     } else {
         None
     };
-    let mut waiting = false;
-    loop {
-        if unsafe { WaitForSingleObject(stop_event.raw(), 0) } == WAIT_OBJECT_0 {
-            break;
-        }
-        if let Mode::Capture { deadline, .. } = mode
-            && Instant::now() >= deadline
-        {
-            break;
-        }
-        let devices = hid::enumerate_with_database(database)
-            .map_err(|e| format!("HID discovery failed: {e}"))?;
-        let Some(selected) =
-            hid::select_pth660(&devices, database, profile.device_path.as_deref())?
-        else {
-            if !waiting {
-                eprintln!("Waiting for USB PTH-660.");
-                status("Waiting for USB PTH-660");
-                waiting = true;
+    let outcome = (|| {
+        let mut waiting = false;
+        loop {
+            if unsafe { WaitForSingleObject(stop_event.raw(), 0) } == WAIT_OBJECT_0 {
+                break;
+            }
+            if let Mode::Capture { deadline, .. } = mode
+                && Instant::now() >= deadline
+            {
+                break;
+            }
+            let devices = hid::enumerate_with_database(database)
+                .map_err(|e| format!("HID discovery failed: {e}"))?;
+            let Some(selected) =
+                hid::select_pth660(&devices, database, profile.device_path.as_deref())?
+            else {
+                if !waiting {
+                    eprintln!("Waiting for USB PTH-660.");
+                    status("Waiting for USB PTH-660");
+                    waiting = true;
+                }
+                if !session::wait_for_retry(&notification, stop_event)
+                    .map_err(|e| format!("wait failed: {e}"))?
+                {
+                    break;
+                }
+                continue;
+            };
+            waiting = false;
+            let mut plugins = plugins::PluginChain::load_with_tablet(
+                if capture_seconds.is_none() {
+                    &profile.plugins
+                } else {
+                    &[]
+                },
+                &selected.configuration,
+            )?;
+            plugins.validate_output_mode(profile.relative.is_some())?;
+            if selected.auxiliary.is_some() {
+                status("PTH-660 auxiliary collection paired; auxiliary output is not enabled yet");
+            }
+            status("PTH-660 found; opening pen input");
+            match session::run(
+                &selected,
+                &profile,
+                &notification,
+                stop_event,
+                mode,
+                &mut plugins,
+                &status,
+            ) {
+                Ok(()) => {}
+                Err(error) => {
+                    eprintln!("device session stopped: {error}");
+                    status(&format!("Device session stopped: {error}"));
+                    if otd_core::session::is_cleanup_failure(&error) {
+                        return Err(error.to_string());
+                    }
+                }
+            }
+            if matches!(mode, Mode::Capture { .. }) {
+                break;
             }
             if !session::wait_for_retry(&notification, stop_event)
                 .map_err(|e| format!("wait failed: {e}"))?
             {
                 break;
             }
-            continue;
-        };
-        waiting = false;
-        let mut plugins = plugins::PluginChain::load_with_tablet(
-            if capture_seconds.is_none() {
-                &profile.plugins
-            } else {
-                &[]
-            },
-            &selected.configuration,
-        )?;
-        plugins.validate_output_mode(profile.relative.is_some())?;
-        if selected.auxiliary.is_some() {
-            status("PTH-660 auxiliary collection paired; auxiliary output is not enabled yet");
         }
-        status("PTH-660 found; opening pen input");
-        match session::run(
-            &selected,
-            &profile,
-            &notification,
-            stop_event,
-            mode,
-            &mut plugins,
-            &status,
-        ) {
-            Ok(()) => {}
-            Err(error) => {
-                eprintln!("device session stopped: {error}");
-                status(&format!("Device session stopped: {error}"));
-            }
-        }
-        if matches!(mode, Mode::Capture { .. }) {
-            break;
-        }
-        if !session::wait_for_retry(&notification, stop_event)
-            .map_err(|e| format!("wait failed: {e}"))?
-        {
-            break;
-        }
+        Ok(())
+    })();
+    let restoration = original_driver.as_mut().map_or(Ok(()), |guard| {
+        guard
+            .restore()
+            .map_err(|error| format!("could not restore the original driver: {error}"))
+    });
+    match (outcome, restoration) {
+        (Err(error), Err(restore)) => Err(format!("{error}; {restore}")),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
     }
-    Ok(())
 }
 
 fn main() {
     let result = match parse_args() {
+        Ok(Command::Diagnostics(args)) => diagnostics::run(args),
+        Ok(Command::Area(args)) => area_cli::run(args),
         Ok(Command::Profiles(args)) => profile_cli::run(args),
         Ok(Command::Daemon { background }) => {
             if background {
@@ -632,6 +682,24 @@ fn main() {
         }
         Ok(Command::Control(command)) => {
             daemon::call(command).and_then(|reply| daemon::print_reply(&reply))
+        }
+        Ok(Command::Configuration) => {
+            daemon::configuration().and_then(|reply| daemon::print_reply(&reply))
+        }
+        Ok(Command::Restart {
+            config,
+            otd_settings,
+        }) => {
+            let replacement = if config.is_some() || otd_settings.is_some() {
+                load_profile(config.as_ref(), otd_settings.as_ref())
+                    .and_then(|profile| profile.to_toml())
+                    .map(Some)
+            } else {
+                Ok(None)
+            };
+            replacement
+                .and_then(daemon::restart)
+                .and_then(|reply| daemon::print_reply(&reply))
         }
         Ok(Command::Start {
             config,
@@ -683,6 +751,8 @@ fn main() {
         Ok(Command::Help) => {
             println!("{}", usage());
             println!("\n{}", profile_cli::usage());
+            println!("\n{}", area_cli::usage());
+            println!("\n{}", diagnostics::usage());
             Ok(())
         }
         Err(error) => Err(error),

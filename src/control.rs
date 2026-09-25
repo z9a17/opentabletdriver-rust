@@ -13,7 +13,7 @@ use std::io;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const MAX_FRAME_BYTES: usize = 256 * 1024;
 pub const MAX_PROFILE_BYTES: usize = 128 * 1024;
 pub const MAX_LOG_LINES: usize = 64;
@@ -54,11 +54,14 @@ impl Request {
                 "request ID must be nonzero",
             ));
         }
-        if let Command::Start {
-            profile_toml: Some(profile),
-        } = &self.command
-            && profile.len() > MAX_PROFILE_BYTES
-        {
+        let profile = match &self.command {
+            Command::Start { profile_toml } => profile_toml.as_ref(),
+            Command::StartIf { profile_toml, .. } | Command::Restart { profile_toml, .. } => {
+                Some(profile_toml)
+            }
+            _ => None,
+        };
+        if profile.is_some_and(|profile| profile.len() > MAX_PROFILE_BYTES) {
             return Err(ControlError::new(
                 ErrorCode::InvalidProfile,
                 "profile exceeds 128 KiB",
@@ -79,6 +82,28 @@ pub enum Command {
     },
     Stop,
     Shutdown,
+    GetConfiguration {
+        expected: WorkerIdentity,
+    },
+    StartIf {
+        expected: WorkerIdentity,
+        profile_toml: String,
+    },
+    StopIf {
+        expected: WorkerIdentity,
+    },
+    /// Prepared first, then stop/start under one daemon-owned pending operation.
+    Restart {
+        expected: WorkerIdentity,
+        profile_toml: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerIdentity {
+    pub instance: String,
+    pub generation: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -105,6 +130,13 @@ pub enum Reply {
     },
     /// Accepted shutdown: transport sends this response before ending its loop.
     ShutdownAccepted,
+    RestartAccepted {
+        generation: u64,
+    },
+    Configuration {
+        identity: WorkerIdentity,
+        profile_toml: Option<String>,
+    },
     Error {
         error: ControlError,
     },
@@ -113,12 +145,24 @@ pub enum Reply {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ControlStatus {
+    pub instance: String,
     pub state: DriverState,
     pub generation: u64,
     pub profile: Option<String>,
     pub last_error: Option<String>,
     /// A snapshot of recent messages, not an unbounded subscription.
     pub logs: Vec<String>,
+    /// Sequence number of the final log line, monotonically increasing per daemon.
+    pub log_sequence: u64,
+}
+
+impl ControlStatus {
+    pub fn identity(&self) -> WorkerIdentity {
+        WorkerIdentity {
+            instance: self.instance.clone(),
+            generation: self.generation,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,6 +200,7 @@ pub enum ErrorCode {
     StartFailed,
     StopFailed,
     Internal,
+    Conflict,
 }
 
 /// Handlers run on the control thread, never inside the report-processing loop.
@@ -184,6 +229,11 @@ pub fn request(request: &Request, timeout: Duration) -> io::Result<Response> {
 /// Stable per-user discovery name; contains the caller's Windows token SID.
 pub fn endpoint_name() -> io::Result<String> {
     pipe::endpoint_name()
+}
+
+/// Discovery only; never connects to or stops a protocol-v1 service.
+pub fn legacy_service_present() -> io::Result<bool> {
+    pipe::legacy_service_present()
 }
 
 fn dispatch(handler: &mut impl ControlHandler, bytes: &[u8]) -> Response {

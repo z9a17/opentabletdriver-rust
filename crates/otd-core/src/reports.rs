@@ -22,6 +22,14 @@ pub const MAX_ANALOG_CHANNELS: usize = 16;
 pub const MAX_WHEELS: usize = 8;
 pub const MAX_TOUCH_POINTS: usize = 32;
 
+/// An explicit upstream OutOfRangeReport is not an empty ordinary report.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ReportKind {
+    #[default]
+    Data,
+    OutOfRange,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReportError {
     Empty,

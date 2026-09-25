@@ -124,19 +124,40 @@ impl OriginalDriverGuard {
         }
         Ok(guard)
     }
+
+    /// Restore each process stopped by this guard. A successful spawn removes
+    /// that entry; failures remain pending for an explicit retry or Drop.
+    /// This reports process creation, not readiness of the restored driver.
+    pub fn restore(&mut self) -> io::Result<()> {
+        self.stopped.sort_by_key(|(name, _)| *name != DAEMON);
+        let mut failures = Vec::new();
+        let mut errors = Vec::new();
+        for (name, path) in std::mem::take(&mut self.stopped) {
+            eprintln!("Restoring {name}.");
+            match Command::new(&path)
+                .creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW)
+                .spawn()
+            {
+                Ok(_) => {}
+                Err(error) => {
+                    errors.push(format!("Could not restore {name}: {error}"));
+                    failures.push((name, path));
+                }
+            }
+        }
+        self.stopped = failures;
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(io::Error::other(errors.join("; ")))
+        }
+    }
 }
 
 impl Drop for OriginalDriverGuard {
     fn drop(&mut self) {
-        self.stopped.sort_by_key(|(name, _)| *name != DAEMON);
-        for (name, path) in &self.stopped {
-            eprintln!("Restoring {name}.");
-            if let Err(error) = Command::new(path)
-                .creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW)
-                .spawn()
-            {
-                eprintln!("Could not restore {name}: {error}");
-            }
+        if let Err(error) = self.restore() {
+            eprintln!("Original driver restoration remains incomplete: {error}");
         }
     }
 }

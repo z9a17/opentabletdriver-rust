@@ -49,7 +49,7 @@ pub struct RelativeMapper {
     transform: [f64; 4],
     reset_delay: Duration,
     last_sample: Option<Instant>,
-    last_raw: Option<(u32, u32)>,
+    last_raw: Option<(f32, f32)>,
     last_position: Option<(f64, f64)>,
     remainder: (f64, f64),
     awaiting_movement: bool,
@@ -77,6 +77,16 @@ impl RelativeMapper {
         self.awaiting_movement = false;
     }
 
+    /// Reset before passing a physical range-loss input through the filters.
+    /// Preserve the existing Rust lift/reentry contract (BC-18): the next
+    /// position establishes a fresh origin, even inside reset_delay. Upstream
+    /// RelativeOutputMode.Read only sets outOfRange here and keeps its origin
+    /// until timeout; retaining that origin would reintroduce quick-reentry
+    /// jumps into the native path. Plugin-emitted loss is not a new input.
+    pub fn note_range_loss(&mut self) {
+        self.reset();
+    }
+
     pub fn map_at(
         &mut self,
         raw: Option<(u32, u32)>,
@@ -87,6 +97,17 @@ impl RelativeMapper {
             self.reset();
             return (0, 0);
         };
+        if !self.begin_input((raw.0 as f32, raw.1 as f32), now) {
+            return (0, 0);
+        }
+        let position = filtered.unwrap_or((raw.0 as f32, raw.1 as f32));
+        let delta = self.transform_emission(position);
+        self.quantize(delta).unwrap_or((0, 0))
+    }
+
+    /// Upstream RelativeOutputMode.Read gates each transport input before any
+    /// filters. Multiple emissions from it must not repeat this timeout gate.
+    pub fn begin_input(&mut self, raw: (f32, f32), now: Instant) -> bool {
         if self
             .last_sample
             .is_some_and(|last| now.saturating_duration_since(last) > self.reset_delay)
@@ -100,31 +121,50 @@ impl RelativeMapper {
         // changed raw position before establishing the new origin. Filtering
         // must not turn this stale report into apparent movement.
         if self.awaiting_movement && self.last_raw == Some(raw) {
-            return (0, 0);
+            return false;
         }
         self.awaiting_movement = false;
         self.last_raw = Some(raw);
-        let position = filtered.map_or_else(
-            || (f64::from(raw.0), f64::from(raw.1)),
-            |(x, y)| (f64::from(x), f64::from(y)),
-        );
+        true
+    }
+
+    /// One transform per pre-stage emission, even if a post-stage filter later
+    /// suppresses it. Fractional output carry belongs after post-stage filters.
+    pub fn transform_emission(&mut self, position: (f32, f32)) -> (f64, f64) {
+        let position = (f64::from(position.0), f64::from(position.1));
         if !position.0.is_finite() || !position.1.is_finite() {
             self.reset();
-            return (0, 0);
+            return (0.0, 0.0);
         }
         let previous = self.last_position.replace(position);
         let Some(previous) = previous else {
-            return (0, 0);
+            return (0.0, 0.0);
         };
         // Transform the difference, avoiding cancellation between large
         // transformed absolute positions at low sensitivities.
         let x = position.0 - previous.0;
         let y = position.1 - previous.1;
         let [a, b, c, d] = self.transform;
-        let dx = a * x + b * y + self.remainder.0;
-        let dy = c * x + d * y + self.remainder.1;
+        (a * x + b * y, c * x + d * y)
+    }
+
+    pub fn quantize(&mut self, delta: (f64, f64)) -> std::io::Result<(i32, i32)> {
+        let dx = delta.0 + self.remainder.0;
+        let dy = delta.1 + self.remainder.1;
+        if !dx.is_finite()
+            || !dy.is_finite()
+            || dx < f64::from(i32::MIN)
+            || dx > f64::from(i32::MAX)
+            || dy < f64::from(i32::MIN)
+            || dy > f64::from(i32::MAX)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "relative plugin output exceeds finite mouse range",
+            ));
+        }
         self.remainder = (dx % 1.0, dy % 1.0);
-        (dx as i32, dy as i32)
+        Ok((dx as i32, dy as i32))
     }
 }
 

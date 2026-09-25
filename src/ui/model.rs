@@ -9,7 +9,9 @@ use std::time::Duration;
 use crate::config::{Profile, activation_raw};
 use crate::display::DisplaySnapshot;
 use crate::dotnet::{FilterMetadata, PropertyMetadata};
-use crate::mapping::{Crop, OtdArea, OtdMapping, Rect};
+#[cfg(test)]
+use crate::mapping::Rect;
+use crate::mapping::{Crop, OtdArea, OtdMapping};
 use crate::plugins::{PluginConfig, PluginKind};
 use crate::protocol::{HEIGHT_MM, MAX_PRESSURE, MAX_X, MAX_Y, WIDTH_MM};
 use crate::radial_follow::{FILTER_NAME, RadialFollowSettings};
@@ -19,52 +21,10 @@ use crate::relative::RelativeSettings;
 pub const TABLET_WIDTH_MM: f64 = WIDTH_MM;
 pub const TABLET_HEIGHT_MM: f64 = HEIGHT_MM;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Bounds {
-    pub left: f64,
-    pub top: f64,
-    pub right: f64,
-    pub bottom: f64,
-}
-
-impl Bounds {
-    pub fn tablet() -> Self {
-        Self {
-            left: 0.0,
-            top: 0.0,
-            right: TABLET_WIDTH_MM,
-            bottom: TABLET_HEIGHT_MM,
-        }
-    }
-
-    pub fn from_rect(rect: Rect) -> Self {
-        Self {
-            left: f64::from(rect.left),
-            top: f64::from(rect.top),
-            right: f64::from(rect.right),
-            bottom: f64::from(rect.bottom),
-        }
-    }
-
-    pub fn width(self) -> f64 {
-        self.right - self.left
-    }
-
-    pub fn height(self) -> f64 {
-        self.bottom - self.top
-    }
-
-    pub fn center(self) -> (f64, f64) {
-        (
-            (self.left + self.right) / 2.0,
-            (self.top + self.bottom) / 2.0,
-        )
-    }
-
-    pub fn valid(self) -> bool {
-        self.width() > 0.0 && self.height() > 0.0
-    }
-}
+pub use otd_core::areas::{
+    Align, AspectSource, Bounds, align, constrain, fit_aspect, flip_handedness, flip_horizontal,
+    flip_vertical, lock_aspect,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutputMode {
@@ -767,115 +727,6 @@ pub fn parse_number(text: &str) -> Option<f64> {
         .parse::<f64>()
         .ok()
         .filter(|value| value.is_finite())
-}
-
-/// Half extents of an area's bounding box after rotation about its center.
-pub fn rotated_extent(area: &OtdArea) -> (f64, f64) {
-    let (sin, cos) = area.rotation.to_radians().sin_cos();
-    let (half_width, half_height) = (area.width / 2.0, area.height / 2.0);
-    (
-        half_width * cos.abs() + half_height * sin.abs(),
-        half_width * sin.abs() + half_height * cos.abs(),
-    )
-}
-
-/// OpenTabletDriver's "Lock to usable area": shrink unrotated areas to the
-/// bounds, then move the rotated area back inside them.
-pub fn constrain(area: &mut OtdArea, bounds: Bounds) {
-    if !(area.width > 0.0 && area.height > 0.0) || !bounds.valid() {
-        return;
-    }
-    if area.rotation.rem_euclid(180.0) == 0.0 {
-        area.width = area.width.min(bounds.width());
-        area.height = area.height.min(bounds.height());
-    }
-    let (extent_x, extent_y) = rotated_extent(area);
-    area.x = clamp_center(area.x, extent_x, bounds.left, bounds.right);
-    area.y = clamp_center(area.y, extent_y, bounds.top, bounds.bottom);
-}
-
-fn clamp_center(center: f64, extent: f64, low: f64, high: f64) -> f64 {
-    if 2.0 * extent >= high - low {
-        (low + high) / 2.0
-    } else {
-        center.clamp(low + extent, high - extent)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Align {
-    Left,
-    Right,
-    Top,
-    Bottom,
-    Center,
-}
-
-pub fn align(area: &mut OtdArea, bounds: Bounds, align: Align) {
-    let (extent_x, extent_y) = rotated_extent(area);
-    match align {
-        Align::Left => area.x = bounds.left + extent_x,
-        Align::Right => area.x = bounds.right - extent_x,
-        Align::Top => area.y = bounds.top + extent_y,
-        Align::Bottom => area.y = bounds.bottom - extent_y,
-        Align::Center => (area.x, area.y) = bounds.center(),
-    }
-}
-
-pub fn flip_horizontal(area: &mut OtdArea, bounds: Bounds) {
-    area.x = bounds.left + bounds.right - area.x;
-}
-
-pub fn flip_vertical(area: &mut OtdArea, bounds: Bounds) {
-    area.y = bounds.top + bounds.bottom - area.y;
-}
-
-/// Rotates the area by 180 degrees for the other hand, as upstream does.
-pub fn flip_handedness(area: &mut OtdArea, bounds: Bounds) {
-    area.rotation = (area.rotation + 180.0).rem_euclid(360.0);
-    flip_horizontal(area, bounds);
-    flip_vertical(area, bounds);
-}
-
-/// Largest size with the given width/height ratio that fits the bounds.
-pub fn fit_aspect(bounds: Bounds, ratio: f64) -> (f64, f64) {
-    if ratio <= 0.0 || !ratio.is_finite() {
-        return (bounds.width(), bounds.height());
-    }
-    if bounds.width() / bounds.height() > ratio {
-        (bounds.height() * ratio, bounds.height())
-    } else {
-        (bounds.width(), bounds.width() / ratio)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum AspectSource {
-    TabletWidth,
-    TabletHeight,
-    DisplayWidth { previous: f64 },
-    DisplayHeight { previous: f64 },
-}
-
-/// OpenTabletDriver's "Lock aspect ratio": the tablet area follows the
-/// display area's shape.
-pub fn lock_aspect(mapping: &mut OtdMapping, source: AspectSource) {
-    let display = mapping.display;
-    if !(display.width > 0.0 && display.height > 0.0) {
-        return;
-    }
-    let tablet = &mut mapping.tablet;
-    match source {
-        AspectSource::TabletWidth => tablet.height = display.height / display.width * tablet.width,
-        AspectSource::TabletHeight => tablet.width = display.width / display.height * tablet.height,
-        AspectSource::DisplayWidth { previous } if previous > 0.0 => {
-            tablet.width *= display.width / previous;
-        }
-        AspectSource::DisplayHeight { previous } if previous > 0.0 => {
-            tablet.height *= display.height / previous;
-        }
-        _ => {}
-    }
 }
 
 #[cfg(test)]

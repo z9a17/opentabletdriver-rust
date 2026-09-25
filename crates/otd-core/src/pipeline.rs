@@ -1,12 +1,6 @@
-//! The stages after a report is decoded: contact state, the built-in Radial
-//! Follow filters, DLL filters, absolute or relative mapping, and output. The
-//! device session and the golden-trace tests both run reports through this
-//! type, so the traces cover exactly what the driver does.
-//!
-//! Order within one report: contact state from the raw report, built-in
-//! filters, PreTransform DLL filters, mapping, Pixels DLL filters, then at
-//! most one output packet carrying both the move and any button change. See
-//! `docs/parity/BEHAVIOR_CONTRACTS.md` for how this compares with upstream.
+//! Synchronous report graph: built-ins, pre filters, transform, post filters,
+//! bindings, then output. Every emission completes before the emitting filter
+//! resumes. Native-only processing uses inline report state and no queue.
 
 use std::io;
 use std::time::Instant;
@@ -14,17 +8,26 @@ use std::time::Instant;
 use crate::config::{ContactPolicy, Profile};
 use crate::mapping::Mapper;
 use crate::output::{MouseOutput, MousePacket};
-use crate::plugins::Filters;
+use crate::plugins::{DispatchInput, Filters, PipelineRuntime};
 use crate::protocol::PenReport;
 use crate::radial_follow::RadialFollowSmoothingTabletSpace;
 use crate::relative::RelativeMapper;
-use crate::state;
+use crate::reports::{Buttons, ReportKind, ReportValues};
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DispatchStats {
+    pub reports: u64,
+    pub packets: u64,
+}
 
 pub struct ReportPipeline {
     contact: ContactPolicy,
     filters: Vec<RadialFollowSmoothingTabletSpace>,
     relative: Option<RelativeMapper>,
     output: MouseOutput,
+    is_eraser: bool,
+    desired_contact: bool,
+    faulted: bool,
 }
 
 impl ReportPipeline {
@@ -40,6 +43,9 @@ impl ReportPipeline {
                 .collect(),
             relative: profile.relative.map(RelativeMapper::new).transpose()?,
             output: MouseOutput::new(),
+            is_eraser: false,
+            desired_contact: false,
+            faulted: false,
         })
     }
 
@@ -47,68 +53,282 @@ impl ReportPipeline {
         self.relative.is_some()
     }
 
-    /// Runs one decoded report. `now` is its processing time; `mapper` is the
-    /// current absolute mapping, unused in relative mode. Returns whether a
-    /// packet was sent.
+    /// Compatibility wrapper for callers interested only in whether any packet
+    /// was sent. The sink can now be invoked several times for one input.
     pub fn process(
         &mut self,
         pen: PenReport,
         now: Instant,
         mapper: Option<Mapper>,
         plugins: &mut impl Filters,
-        send: impl FnOnce(MousePacket) -> io::Result<()>,
+        send: impl FnMut(MousePacket) -> io::Result<()>,
     ) -> io::Result<bool> {
-        let frame = state::frame(pen, self.contact);
-        let mut filtered = frame.position.and_then(|(x, y)| {
-            let (first, rest) = self.filters.split_first_mut()?;
-            let mut position = first.filter_raw_at(x as f32, y as f32, now);
-            for filter in rest {
-                position = filter.filter_raw_at(position.0, position.1, now);
-            }
-            Some(position)
-        });
-        if let Some((x, y)) = frame.position {
-            if plugins.has_pre() {
-                filtered =
-                    Some(plugins.process_pre(filtered.unwrap_or((x as f32, y as f32)), pen, now));
-            }
-        } else {
-            plugins.reset();
-        }
-        if let Some(relative) = &mut self.relative {
-            let delta = relative.map_at(frame.position, filtered, now);
-            // Consume failed movement rather than accumulating a cursor jump.
-            // MouseOutput retries button transitions.
-            self.output.emit_relative(delta, frame.contact, send)
-        } else if let Some(mapper) = mapper {
-            if plugins.has_pixels() {
-                let mapped = frame.position.and_then(|(x, y)| {
-                    let position = filtered.unwrap_or((x as f32, y as f32));
-                    mapper.map_filtered_pixels(position.0, position.1)
-                });
-                if frame.position.is_some() && mapped.is_none() {
-                    // Area limiting stops the report before PostTransform.
-                    return Ok(false);
-                }
-                let position = mapped.and_then(|(x, y)| {
-                    let (x, y) = plugins.process_pixels((x as f32, y as f32), pen, now);
-                    mapper.normalize_pixels(f64::from(x), f64::from(y))
-                });
-                self.output.emit_mapped(position, frame.contact, send)
-            } else {
-                self.output.emit_filtered(frame, mapper, filtered, send)
-            }
-        } else {
-            Ok(false)
-        }
+        self.process_with_raw(pen, &[], now, mapper, plugins, send)
+            .map(|stats| stats.packets != 0)
     }
 
-    /// Releases a held button, as when a session ends or the mapping stops.
+    pub fn process_with_raw(
+        &mut self,
+        pen: PenReport,
+        raw: &[u8],
+        now: Instant,
+        mapper: Option<Mapper>,
+        plugins: &mut impl Filters,
+        send: impl FnMut(MousePacket) -> io::Result<()>,
+    ) -> io::Result<DispatchStats> {
+        let kind = if pen.in_range || pen.sense {
+            ReportKind::Data
+        } else {
+            ReportKind::OutOfRange
+        };
+        // Same checked byte/bit ordering as reports::from_pth660. A synthetic
+        // caller without the complete transport packet has no button reading.
+        let buttons = match (pen.id, raw) {
+            (0x10, [0x10, flags, ..]) if raw.len() >= 17 => {
+                Buttons::from_bits(u64::from(flags >> 1), 2).ok()
+            }
+            (0x1e, [0x1e, _, flags, ..]) if raw.len() >= 13 => {
+                Buttons::from_bits(u64::from(flags >> 1), 3).ok()
+            }
+            _ => None,
+        };
+        let values = if kind == ReportKind::Data {
+            ReportValues {
+                position: Some([pen.x as f32, pen.y as f32]),
+                pressure: Some(u32::from(pen.pressure)),
+                eraser: Some(pen.eraser),
+                pen_buttons: buttons,
+                tilt: Some([f32::from(pen.tilt[0]), f32::from(pen.tilt[1])]),
+                near_proximity: Some(pen.in_range),
+                hover_distance: pen.hover_distance.map(u32::from),
+                tip_switch: Some(pen.tip_switch),
+                sense: Some(pen.sense),
+                rotation: pen.rotation,
+                ..ReportValues::default()
+            }
+        } else {
+            ReportValues::default()
+        };
+        self.process_report(
+            DispatchInput {
+                kind,
+                values,
+                raw,
+                pen: Some(pen),
+                now,
+            },
+            mapper,
+            plugins,
+            send,
+        )
+    }
+
+    /// Non-positional reports retain their category; absent pressure/buttons do
+    /// not clear unrelated held state. This also accepts reports from aux/touch
+    /// decoders without pretending they are pen samples.
+    pub fn process_report(
+        &mut self,
+        input: DispatchInput<'_>,
+        mapper: Option<Mapper>,
+        plugins: &mut impl Filters,
+        mut send: impl FnMut(MousePacket) -> io::Result<()>,
+    ) -> io::Result<DispatchStats> {
+        let mut initial_stats = DispatchStats::default();
+        let mapping_paused = self.relative.is_none() && mapper.is_none();
+        if self.faulted || mapping_paused {
+            // Pausing the graph must also revoke held output, including when
+            // loss arrives while no absolute mapping exists. Failed cleanup
+            // remains pending before any subsequent graph input may run.
+            initial_stats.packets += u64::from(self.release_all(&mut send)?);
+        }
+        if let Some(relative) = &mut self.relative {
+            if input.kind == ReportKind::OutOfRange {
+                relative.note_range_loss();
+            } else if let Some([x, y]) = input.values.position
+                && !relative.begin_input((x, y), input.now)
+            {
+                return Ok(initial_stats);
+            }
+        } else if mapping_paused {
+            return Ok(initial_stats);
+        }
+        // An incoming loss is a transport notification even when it came from
+        // a general report source without the legacy PenReport adapter. Loss
+        // emitted by a plugin reaches Runtime::output instead of this entry.
+        let physical_loss = input.kind == ReportKind::OutOfRange;
+        let preserve_precision = !plugins.uses_managed_graph() && !plugins.has_pixels();
+        let unfiltered_raw = if preserve_precision && !plugins.has_pre() && self.filters.is_empty()
+        {
+            input
+                .pen
+                .filter(|pen| input.values.position == Some([pen.x as f32, pen.y as f32]))
+                .map(|pen| (pen.x, pen.y))
+        } else {
+            None
+        };
+        let mut runtime = Runtime {
+            pipeline: self,
+            mapper,
+            now: input.now,
+            send: &mut send,
+            stats: initial_stats,
+            exact_position: None,
+            shown_position: None,
+            preserve_precision,
+            unfiltered_raw,
+        };
+        let result = plugins.dispatch(input, &mut runtime);
+        let mut stats = runtime.stats;
+        if let Err(error) = result {
+            // A successful output prefix is already acknowledged. Never replay
+            // the original report. Cleanup must succeed before dispatch resumes.
+            self.faulted = true;
+            if self.release_all(&mut send).is_ok() {
+                self.faulted = false;
+            }
+            return Err(error);
+        }
+        if physical_loss {
+            // Physical endpoint loss revokes native action ownership even when
+            // a plugin suppresses the explicit OutOfRangeReport notification.
+            match self.release_all(&mut send) {
+                Ok(sent) => stats.packets += u64::from(sent),
+                Err(error) => {
+                    self.faulted = true;
+                    return Err(error);
+                }
+            }
+        }
+        Ok(stats)
+    }
+
     pub fn release_all(
         &mut self,
         send: impl FnOnce(MousePacket) -> io::Result<()>,
     ) -> io::Result<bool> {
-        self.output.release_all(send)
+        self.desired_contact = false;
+        let result = self.output.release_all(send);
+        // Display-change/session cleanup also calls this outside process_report.
+        // A failed release there must be retried before the graph can resume.
+        self.faulted = result.is_err();
+        result
+    }
+}
+
+struct Runtime<'a, F> {
+    pipeline: &'a mut ReportPipeline,
+    mapper: Option<Mapper>,
+    now: Instant,
+    send: &'a mut F,
+    stats: DispatchStats,
+    exact_position: Option<(f64, f64)>,
+    shown_position: Option<[f32; 2]>,
+    preserve_precision: bool,
+    unfiltered_raw: Option<(u32, u32)>,
+}
+
+impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F> {
+    fn builtins(&mut self, values: &mut ReportValues) -> io::Result<()> {
+        if let Some([mut x, mut y]) = values.position {
+            for filter in &mut self.pipeline.filters {
+                (x, y) = filter.filter_raw_at(x, y, self.now);
+            }
+            values.position = Some([x, y]);
+        }
+        Ok(())
+    }
+
+    fn transform(&mut self, _kind: ReportKind, values: &mut ReportValues) -> io::Result<bool> {
+        self.exact_position = None;
+        self.shown_position = None;
+        if let Some([x, y]) = values.position {
+            if !x.is_finite() || !y.is_finite() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "nonfinite filter position",
+                ));
+            }
+            let point = if let Some(relative) = &mut self.pipeline.relative {
+                relative.transform_emission((x, y))
+            } else {
+                let Some(point) = self
+                    .mapper
+                    .and_then(|mapper| mapper.map_filtered_pixels(x, y))
+                else {
+                    return Ok(false);
+                };
+                point
+            };
+            let position = [point.0 as f32, point.1 as f32];
+            if position.iter().any(|value| !value.is_finite()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "transformed position exceeds finite range",
+                ));
+            }
+            self.exact_position = Some(point);
+            self.shown_position = Some(position);
+            values.position = Some(position);
+        }
+        Ok(true)
+    }
+
+    fn output(&mut self, kind: ReportKind, values: &ReportValues, _raw: &[u8]) -> io::Result<()> {
+        self.stats.reports += 1;
+        if let Some(eraser) = values.eraser {
+            self.pipeline.is_eraser = eraser;
+        }
+        if kind == ReportKind::OutOfRange {
+            self.pipeline.desired_contact = false;
+        } else if let Some(pressure) = values.pressure {
+            let policy = self.pipeline.contact;
+            let (enabled, threshold) = if self.pipeline.is_eraser {
+                (policy.eraser_enabled, policy.eraser_threshold_raw)
+            } else {
+                (policy.tip_enabled, policy.tip_threshold_raw)
+            };
+            self.pipeline.desired_contact = enabled
+                && threshold.map_or_else(
+                    || values.tip_switch.unwrap_or(pressure != 0),
+                    |threshold| pressure >= u32::from(threshold),
+                );
+        }
+        let position = values.position.map(|[x, y]| {
+            if self.preserve_precision && self.shown_position == values.position {
+                self.exact_position.unwrap_or((f64::from(x), f64::from(y)))
+            } else {
+                (f64::from(x), f64::from(y))
+            }
+        });
+        if position.is_some_and(|(x, y)| !x.is_finite() || !y.is_finite()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "nonfinite post-transform output",
+            ));
+        }
+        let contact = self.pipeline.desired_contact;
+        let emitted = if position.is_none() && kind == ReportKind::Data {
+            self.pipeline
+                .output
+                .emit_contact(contact, &mut *self.send)?
+        } else if let Some(relative) = &mut self.pipeline.relative {
+            let delta = relative.quantize(position.unwrap_or((0.0, 0.0)))?;
+            self.pipeline
+                .output
+                .emit_relative(delta, contact, &mut *self.send)?
+        } else {
+            let mapped = if let Some((x, y)) = self.unfiltered_raw {
+                self.mapper.and_then(|mapper| mapper.map(x, y))
+            } else {
+                position
+                    .and_then(|(x, y)| self.mapper.and_then(|mapper| mapper.normalize_pixels(x, y)))
+            };
+            self.pipeline
+                .output
+                .emit_mapped(mapped, contact, &mut *self.send)?
+        };
+        self.stats.packets += u64::from(emitted);
+        Ok(())
     }
 }
 

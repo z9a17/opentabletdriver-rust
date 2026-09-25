@@ -125,6 +125,7 @@ impl App {
             | DriverState::Connecting
             | DriverState::Stopping => (p.warning, true),
             DriverState::Failed => (p.error, true),
+            DriverState::Disconnected => (p.warning, true),
             DriverState::Stopped => (p.muted, self.tablet_present == Some(true)),
         };
         let dot = (r.left as f32 + style.px(6.0), middle);

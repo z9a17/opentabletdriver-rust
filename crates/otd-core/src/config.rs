@@ -790,6 +790,70 @@ impl Profile {
         toml::to_string_pretty(&raw).map_err(|e| e.to_string())
     }
 
+    /// Preserve plugin locations within the destination directory, or within an
+    /// explicitly configured portable tree. External plugins stay absolute.
+    pub fn to_toml_at(&self, destination: &Path) -> Result<String, String> {
+        let destination = std::path::absolute(destination).map_err(|error| error.to_string())?;
+        let directory = destination
+            .parent()
+            .ok_or("profile destination has no parent")?;
+        let root = match std::env::var_os("OTD_RUST_PORTABLE_DIR") {
+            Some(root) => {
+                let root = PathBuf::from(root);
+                if !root.is_absolute() {
+                    return Err("OTD_RUST_PORTABLE_DIR must be an absolute directory".into());
+                }
+                if directory.starts_with(&root) {
+                    root
+                } else {
+                    directory.to_owned()
+                }
+            }
+            None => directory.to_owned(),
+        };
+        let mut saved = self.clone();
+        for plugin in &mut saved.plugins {
+            if !plugin.path.is_absolute() {
+                continue;
+            }
+            let absolute = std::path::absolute(&plugin.path).map_err(|error| error.to_string())?;
+            let (base, target, root) = match (
+                directory.canonicalize(),
+                absolute.canonicalize(),
+                root.canonicalize(),
+            ) {
+                (Ok(base), Ok(target), Ok(root)) => (base, target, root),
+                _ => (directory.to_owned(), absolute, root.clone()),
+            };
+            let (Ok(base), Ok(target)) = (base.strip_prefix(&root), target.strip_prefix(&root))
+            else {
+                continue;
+            };
+            let base: Vec<_> = base.components().collect();
+            let target: Vec<_> = target.components().collect();
+            if target.is_empty()
+                || !base
+                    .iter()
+                    .chain(&target)
+                    .all(|component| matches!(component, std::path::Component::Normal(_)))
+            {
+                continue;
+            }
+            let common = base.iter().zip(&target).take_while(|(a, b)| a == b).count();
+            let mut relative = PathBuf::new();
+            for _ in common..base.len() {
+                relative.push("..");
+            }
+            for component in &target[common..] {
+                relative.push(component.as_os_str());
+            }
+            if !relative.as_os_str().is_empty() {
+                plugin.path = relative;
+            }
+        }
+        saved.to_toml()
+    }
+
     pub fn print_summary(&self) {
         println!("Profile: {}", self.source);
         for diagnostic in &self.diagnostics {

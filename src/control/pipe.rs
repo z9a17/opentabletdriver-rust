@@ -127,10 +127,22 @@ fn current_sid() -> io::Result<String> {
     process_sid(unsafe { GetCurrentProcess() })
 }
 fn name_for_sid(sid: &str) -> String {
-    format!(r"\\.\pipe\OpenTabletDriverRust.Control.v1.{sid}")
+    format!(r"\\.\pipe\OpenTabletDriverRust.Control.v{PROTOCOL_VERSION}.{sid}")
 }
 pub(super) fn endpoint_name() -> io::Result<String> {
     current_sid().map(|sid| name_for_sid(&sid))
+}
+
+pub(super) fn legacy_service_present() -> io::Result<bool> {
+    let name = wide(&format!(
+        r"\\.\pipe\OpenTabletDriverRust.Control.v1.{}",
+        current_sid()?
+    ));
+    if unsafe { WaitNamedPipeW(name.as_ptr(), 1) } != 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    Ok(error.raw_os_error() != Some(ERROR_FILE_NOT_FOUND as i32))
 }
 
 fn create_server(sid: &str) -> io::Result<Handle> {
@@ -431,7 +443,8 @@ pub(super) fn serve(handler: &mut impl ControlHandler, stop: &AtomicBool) -> io:
         // A malformed/slow/disconnected client must not terminate the daemon.
         let transaction = (|| -> io::Result<()> {
             let frame = read_frame(pipe.0, deadline, stop, &mut || handler.poll())?;
-            handler.poll();
+            // Dispatch a complete Stop/Shutdown before another lifecycle poll
+            // can activate a pending restart that the command would cancel.
             let response = super::dispatch(handler, &frame);
             shutdown = matches!(response.reply, Reply::ShutdownAccepted);
             let bytes = serde_json::to_vec(&response).map_err(io::Error::other)?;
