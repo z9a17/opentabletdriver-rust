@@ -1,0 +1,225 @@
+//! Offline inspection of explicitly supplied bytes. Never opens devices/plugins.
+use otd_core::{protocol, reports::*};
+use serde_json::{Value, json};
+use std::{fs::File, io::Read, path::PathBuf, time::Duration};
+
+const MAX_INPUT_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_REPORTS: usize = 4096;
+const MAX_PACKET_BYTES: usize = 192;
+
+const USAGE: &str = "Offline report decoding:
+  decode --parser NAME --hex HEX_BYTES
+  decode --parser NAME --input HEX_LINES_FILE
+
+Parsers: pth660-pen, intuos-v2-aux, intuos-v2-touch,
+         wacom-driver-intuos-v2-touch, intuos-v3, bamboo, bamboo-pad,
+         bamboo-v2-aux
+Hex may contain ASCII whitespace or colons. Files contain one packet per line;
+blank lines and lines starting with # are ignored. Limits: 4 MiB, 4096 reports,
+192 bytes per packet. Each output line is one JSON snapshot; a later error does
+not retract earlier lines. Touch state lasts only for this command.
+This command never opens a tablet, loads a plugin, or injects input.";
+
+enum Decoder {
+    Pen,
+    Aux,
+    Touch(IntuosV2TouchParser),
+    PrefixedTouch(WacomDriverIntuosV2TouchParser),
+    IntuosV3,
+    Bamboo,
+    BambooPad,
+    BambooV2Aux,
+}
+
+impl Decoder {
+    fn parse<'a>(
+        &mut self,
+        raw: &'a [u8],
+        metadata: ReportMetadata,
+    ) -> Result<Option<ReportEnvelope<'a>>, String> {
+        match self {
+            Self::Pen => protocol::parse(raw)
+                .map_err(|e| format!("{e:?}"))?
+                .map(|pen| from_pth660(pen, raw, metadata).map_err(|e| format!("{e:?}")))
+                .transpose(),
+            Self::Aux => parse_intuos_auxiliary(raw, metadata).map_err(|e| format!("{e:?}")),
+            Self::Touch(parser) => parser.parse(raw, metadata).map_err(|e| format!("{e:?}")),
+            Self::PrefixedTouch(parser) => parser
+                .parse(raw, metadata)
+                .map(|report| report.map(|report| report.report))
+                .map_err(|e| format!("{e:?}")),
+            Self::IntuosV3 => parse_intuos_v3(raw, metadata)
+                .map(Some)
+                .map_err(|e| format!("{e:?}")),
+            Self::Bamboo => parse_bamboo(raw, metadata)
+                .map(Some)
+                .map_err(|e| format!("{e:?}")),
+            Self::BambooPad => parse_bamboo_pad(raw, metadata)
+                .map(Some)
+                .map_err(|e| format!("{e:?}")),
+            Self::BambooV2Aux => parse_bamboo_v2_auxiliary(raw, metadata)
+                .map(Some)
+                .map_err(|e| format!("{e:?}")),
+        }
+    }
+}
+
+pub fn run(args: Vec<String>) -> Result<(), String> {
+    let mut args = args.into_iter();
+    let (mut parser, mut hex, mut input) = (None, None, None::<PathBuf>);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--help" | "-h" => {
+                println!("{USAGE}");
+                return Ok(());
+            }
+            "--parser" if parser.is_none() => {
+                parser = Some(args.next().ok_or("--parser needs a name")?)
+            }
+            "--hex" if hex.is_none() => hex = Some(args.next().ok_or("--hex needs bytes")?),
+            "--input" if input.is_none() => {
+                input = Some(args.next().ok_or("--input needs a file")?.into())
+            }
+            _ => return Err(format!("unknown or repeated option: {arg}\n{USAGE}")),
+        }
+    }
+    let parser = parser.ok_or(USAGE)?;
+    let mut decoder = match parser.as_str() {
+        "pth660-pen" => Decoder::Pen,
+        "intuos-v2-aux" => Decoder::Aux,
+        "intuos-v2-touch" => Decoder::Touch(IntuosV2TouchParser::default()),
+        "wacom-driver-intuos-v2-touch" => {
+            Decoder::PrefixedTouch(WacomDriverIntuosV2TouchParser::default())
+        }
+        "intuos-v3" => Decoder::IntuosV3,
+        "bamboo" => Decoder::Bamboo,
+        "bamboo-pad" => Decoder::BambooPad,
+        "bamboo-v2-aux" => Decoder::BambooV2Aux,
+        _ => return Err(format!("unknown parser {parser:?}\n{USAGE}")),
+    };
+    let source = match (hex, input) {
+        (Some(hex), None) => hex,
+        (None, Some(path)) => {
+            let file =
+                File::open(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            let mut bytes = Vec::new();
+            file.take(MAX_INPUT_BYTES + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|e| e.to_string())?;
+            if bytes.len() as u64 > MAX_INPUT_BYTES {
+                return Err("input exceeds 4 MiB".into());
+            }
+            String::from_utf8(bytes).map_err(|_| "input must be UTF-8 hex text")?
+        }
+        _ => return Err(format!("choose exactly one of --hex or --input\n{USAGE}")),
+    };
+    if source.len() as u64 > MAX_INPUT_BYTES {
+        return Err("input exceeds 4 MiB".into());
+    }
+    let mut sequence = 0;
+    for (line_index, text) in source.lines().enumerate() {
+        let text = text.trim();
+        if text.is_empty() || text.starts_with('#') {
+            continue;
+        }
+        sequence += 1;
+        if sequence > MAX_REPORTS {
+            return Err("input exceeds 4096 reports".into());
+        }
+        let raw = parse_hex(text).map_err(|e| format!("line {}: {e}", line_index + 1))?;
+        let metadata = ReportMetadata {
+            device: DeviceId(0),
+            session: SessionId(0),
+            endpoint: EndpointId(0),
+            received_at: Duration::ZERO,
+            sequence: sequence as u64,
+        };
+        let report = decoder
+            .parse(&raw, metadata)
+            .map_err(|e| format!("line {}: {e}", line_index + 1))?;
+        let values = report.as_ref().map(|r| r.values).unwrap_or_default();
+        let output = json!({
+            "schema_version": 1, "parser": parser, "sequence": sequence,
+            "line": line_index + 1, "raw_hex": encode_hex(&raw),
+            "report_raw_hex": report.as_ref().map(|r| encode_hex(r.raw)),
+            "has_capabilities": values != ReportValues::default(),
+            "values": values_json(values)
+        });
+        println!(
+            "{}",
+            serde_json::to_string(&output).map_err(|e| e.to_string())?
+        );
+    }
+    if sequence == 0 {
+        return Err("input contains no reports".into());
+    }
+    Ok(())
+}
+
+fn parse_hex(text: &str) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::with_capacity(MAX_PACKET_BYTES);
+    let mut high = None;
+    for character in text.chars() {
+        if character.is_ascii_whitespace() || character == ':' {
+            continue;
+        }
+        let digit = character
+            .to_digit(16)
+            .ok_or("expected hexadecimal byte pairs")? as u8;
+        if let Some(value) = high.take() {
+            if bytes.len() == MAX_PACKET_BYTES {
+                return Err("packet exceeds 192 bytes".into());
+            }
+            bytes.push((value << 4) | digit);
+        } else {
+            high = Some(digit);
+        }
+    }
+    if high.is_some() {
+        return Err("hex input has an incomplete byte".into());
+    }
+    if bytes.is_empty() {
+        return Err("empty packet".into());
+    }
+    Ok(bytes)
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(encoded, "{byte:02x}");
+    }
+    encoded
+}
+
+fn buttons(value: Buttons) -> Vec<bool> {
+    (0..value.len())
+        .map(|index| value.get(index).unwrap_or(false))
+        .collect()
+}
+
+fn analog_kind(kind: AnalogKind) -> &'static str {
+    match kind {
+        AnalogKind::Generic => "generic",
+        AnalogKind::Wheel => "wheel",
+    }
+}
+
+fn values_json(values: ReportValues) -> Value {
+    json!({
+        "position": values.position, "pressure": values.pressure,
+        "tilt": values.tilt, "eraser": values.eraser,
+        "tool": values.tool.map(|v| json!({"serial": v.serial, "raw_tool_id": v.raw_tool_id,
+            "kind": match v.tool { ToolType::Pen => "pen", ToolType::Eraser => "eraser" }})),
+        "pen_buttons": values.pen_buttons.map(buttons),
+        "near_proximity": values.near_proximity, "hover_distance": values.hover_distance,
+        "sense": values.sense, "tip_switch": values.tip_switch, "rotation": values.rotation,
+        "aux_buttons": values.aux_buttons.map(buttons),
+        "mouse_buttons": values.mouse_buttons.map(buttons), "mouse_scroll": values.mouse_scroll,
+        "absolute_analog": values.absolute_analog.map(|v| json!({"kind": analog_kind(v.kind), "positions": v.positions.as_slice()})),
+        "relative_analog": values.relative_analog.map(|v| json!({"kind": analog_kind(v.kind), "deltas": v.deltas.as_slice()})),
+        "wheel_buttons": values.wheel_buttons.map(|v| v.as_slice().iter().copied().map(buttons).collect::<Vec<_>>()),
+        "touches": values.touches.map(|v| v.as_slice().iter().map(|p| p.map(|p| json!({"id": p.id, "position": p.position}))).collect::<Vec<_>>())
+    })
+}

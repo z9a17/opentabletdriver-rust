@@ -299,7 +299,27 @@ pub fn parser_support(type_name: &str) -> ParserSupport {
     match type_name {
         "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV2.IntuosV2ReportParser" => {
             ParserSupport::Partial(
-                "pen reports 0x10 and 0x1E; auxiliary 0x11 and touch 0x21 and 0xD2 are not decoded",
+                "PTH-660 pen reports 0x10/0x1E; portable auxiliary 0x11 and stateful touch 0x21/0xD2 decoding; live auxiliary/touch output remains disabled",
+            )
+        }
+        "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV3.IntuosV3ReportParser" => {
+            ParserSupport::Partial(
+                "portable pen 0x1E/0x1F and auxiliary 0x11 decoding; not connected to live runtime",
+            )
+        }
+        "OpenTabletDriver.Configurations.Parsers.Wacom.Bamboo.BambooReportParser" => {
+            ParserSupport::Partial(
+                "portable pen/mouse/auxiliary 0x02 decoding; not connected to live runtime",
+            )
+        }
+        "OpenTabletDriver.Configurations.Parsers.Wacom.BambooPad.BambooPadReportParser" => {
+            ParserSupport::Partial(
+                "portable pen/auxiliary 0x10 subtype decoding; not connected to live runtime",
+            )
+        }
+        "OpenTabletDriver.Configurations.Parsers.Wacom.BambooV2.BambooV2AuxReportParser" => {
+            ParserSupport::Partial(
+                "portable auxiliary 0x02 decoding; not connected to live runtime",
             )
         }
         _ => ParserSupport::Missing,
@@ -1101,7 +1121,16 @@ mod tests {
             .copied()
             .filter(|parser| parser_support(parser) != ParserSupport::Missing)
             .collect();
-        assert_eq!(partial, [PTH_660]);
+        assert_eq!(
+            partial,
+            [
+                "OpenTabletDriver.Configurations.Parsers.Wacom.Bamboo.BambooReportParser",
+                "OpenTabletDriver.Configurations.Parsers.Wacom.BambooPad.BambooPadReportParser",
+                "OpenTabletDriver.Configurations.Parsers.Wacom.BambooV2.BambooV2AuxReportParser",
+                PTH_660,
+                "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV3.IntuosV3ReportParser",
+            ]
+        );
     }
 
     #[test]
