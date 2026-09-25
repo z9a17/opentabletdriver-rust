@@ -15,18 +15,22 @@ use crate::protocol::PenReport;
 use std::time::Duration;
 
 mod bamboo;
+mod generic;
 mod huion;
 mod intuos_touch;
 mod intuos_v3;
 mod uc_logic;
+mod veikk;
 mod xp_pen;
 pub use bamboo::{parse_bamboo, parse_bamboo_pad, parse_bamboo_v2_auxiliary};
+pub use generic::{TransportReport, parse_auxiliary, parse_skip_byte_tablet, parse_tablet};
 pub use huion::{parse_huion_giano, parse_huion_inspiroy};
 pub use intuos_touch::{IntuosV2TouchParser, WacomDriverIntuosV2TouchParser, WacomDriverReport};
 pub use intuos_v3::parse_intuos_v3;
 pub use uc_logic::{
     parse_huion_tilt, parse_uc_logic, parse_uc_logic_tilt, parse_uc_logic_v1, parse_uc_logic_v2,
 };
+pub use veikk::{parse_veikk, parse_veikk_a15, parse_veikk_tilt, parse_veikk_v1};
 pub use xp_pen::{
     parse_xp_pen, parse_xp_pen_dedicated_auxiliary, parse_xp_pen_gen2,
     parse_xp_pen_offset_auxiliary, parse_xp_pen_offset_pressure,
