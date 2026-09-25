@@ -9,14 +9,14 @@ Baseline: [OTD v0.6.7](https://github.com/OpenTabletDriver/OpenTabletDriver/tree
 | ID | Upstream capability | Current Rust status | Work items |
 | --- | --- | --- | --- |
 | CAP-01 | Configuration database, specifications, parser selection, custom configuration files | Partial: the pinned database and override files load, validate and index, and each parser type resolves to partly decoded or missing (D01); device selection is still the fixed PTH-660 path, with one parser family | D01-D02, D06-D08 |
-| CAP-02 | VID/PID plus input/output/feature lengths, device strings, attributes and match precedence | Partial: identifiers are read and validated (D01); a pure matcher applies their predicates in fake-device tests, including the pinned XP-Pen negative-lookahead predicate (D02); live selection still uses the fixed Windows HID rule | D01-D02 |
-| CAP-03 | Feature/output initialization reports and initialization strings | Missing: PTH-660 USB currently needs none in its selected configuration | D02, D09 |
-| CAP-04 | Physical endpoint grouping, digitizer plus auxiliary collections | Partial: a pure matcher pairs fake collections by physical identity (D02); the live driver still opens only the pen endpoint | D02, D04-D05 |
+| CAP-02 | VID/PID plus input/output/feature lengths, device strings, attributes and match precedence | Partial: live Windows endpoint snapshots feed the database matcher; execution remains gated to the supported PTH-660 parser/specifications, with ambiguity rejected unless device_path is selected. Current live evidence pending | D01-D02 |
+| CAP-03 | Feature/output initialization reports and initialization strings | Partial: selected strings, delayed feature reports and output writes execute before pen reading; failures abort the session. Synchronous string/feature calls are not cancellable in flight; hardware evidence pending | D02, D09 |
+| CAP-04 | Physical endpoint grouping, digitizer plus auxiliary collections | Partial: live physical identity pairs PTH-660 pen/auxiliary collections; auxiliary reading and multi-device execution remain open | D02, D04-D05 |
 | CAP-05 | Multiple tablet models with independent settings and pipelines | Missing | D05, C02 |
 | CAP-06 | HID, supported WinUSB endpoints and wireless/Bluetooth variants | Partial: Windows USB HID only | D09, X02, X04 |
 | CAP-07 | Hotplug, cancellation, suspend/resume and orderly disposal | Partial; reconnect reopen observed, resumed pen input pending | F06, D05, V02, V04 |
-| CAP-08 | Position/pressure/eraser/tilt/proximity/tool/raw report contracts | Partial: PTH-660 values decoded, bridge exposes a subset | D03, P03 |
-| CAP-09 | Auxiliary, mouse/puck, analog, wheel and touch reports | Missing from runtime pipeline | D03-D04, B03, O05 |
+| CAP-08 | Position/pressure/eraser/tilt/proximity/tool/raw report contracts | Partial: bounded native capability values and raw ownership; managed pen adapters expose owned raw/buttons/tilt/proximity. Returned mutations still affect X/Y only | D03, P03 |
+| CAP-09 | Auxiliary, mouse/puck, analog, wheel and touch reports | Partial foundation: bounded report values and IntuosV2 auxiliary decoder; auxiliary endpoint reading, routing and output remain open | D03-D04, B03, O05 |
 | CAP-10 | Vendor/parser variants, truncated/unknown reports and parser extensions | Partial: IntuosV2 pen 0x10/0x1e; 0x1e lacks live capture; truncated, oversized and unknown reports property-tested (F05) | D06-D08, F05, P07 |
 | CAP-11 | Absolute area/rotation/clipping/limiting | Partial: implemented for the current model; replay-tested and differential-tested against upstream, including rotation and limiting (F05) | O01, V04 |
 | CAP-12 | Relative sensitivity/rotation/reset behavior | Partial: implemented with fractional carry and differential-tested against upstream (F05); live validation pending | O01, F06 |
@@ -24,7 +24,7 @@ Baseline: [OTD v0.6.7](https://github.com/OpenTabletDriver/OpenTabletDriver/tree
 | CAP-14 | Adaptive tip/eraser/pen bindings, thresholds, drag-only bindings | Partial: limited tip/eraser left-click behavior; thresholds and transitions differential-tested (F05) | B01-B02, B04 |
 | CAP-15 | Auxiliary/mouse buttons, keyboard chords, scroll and wheel bindings | Missing | B02-B04 |
 | CAP-16 | Preset actions and binding extension types | Missing | B04, C04, P06 |
-| CAP-17 | Shared action ownership and reliable release on failure | Partial: current single left-button state, with release after output failures property-tested (F05); broader ownership needed | B01, V02 |
+| CAP-17 | Shared action ownership and reliable release on failure | Partial: fixed-capacity owner/action reconciliation and Windows adapter with acknowledged output/cleanup; existing tip packet path remains separate and broader bindings need integration and validation | B01, V02 |
 | CAP-18 | Platform mouse and keyboard output | Partial: Windows absolute/relative mouse only | O02, X03-X04 |
 | CAP-19 | Pressure/tilt disable settings, proximity/eraser output, synchronous pointer flush/reset | Missing beyond mouse contact output | O03-O05, P06 |
 | CAP-20 | Linux Artist Mode and virtual tablet/pad | Missing | O04, X03 |
@@ -34,14 +34,14 @@ Baseline: [OTD v0.6.7](https://github.com/OpenTabletDriver/OpenTabletDriver/tree
 
 | ID | Upstream capability | Current Rust status | Work items |
 | --- | --- | --- | --- |
-| CAP-22 | Settings revision, all tablet profiles, tools and serialized plugin stores | Partial: selected PTH-660 import, limited TOML schema | C01-C02 |
-| CAP-23 | Preserve disabled entries, order, defaults and unknown settings | Partial: Radial Follow override and skipped filters are explicit differences | C01-C02, P02 |
+| CAP-22 | Settings revision, all tablet profiles, tools and serialized plugin stores | Partial: schema-1 native profiles, full OTD source archive, collection selection and revision tracking. Archived tools/stores are not necessarily executable | C01-C02 |
+| CAP-23 | Preserve disabled entries, order, defaults and unknown settings | Partial: new imports honor disabled Radial Follow, retain complete source text and archive unknown TOML fields; unsupported active stores produce diagnostics. Explicit legacy import and existing native entries retain prior behavior | C01-C02, P02 |
 | CAP-24 | Runtime settings apply/reset and resynchronization | Missing: edits take effect after restart | C03, S02 |
-| CAP-25 | Named presets, settings import/export, default paths/portable mode | Partial: single-profile file save/load only | C02, C04, R02 |
+| CAP-25 | Named presets, settings import/export, default paths/portable mode | Partial: profile collections, OTD import preview/export reconciliation and CLI selection; full preset/UI workflows remain open | C02, C04, R02 |
 | CAP-26 | Area conversion, aspect locks, usable area locks and numeric validation | Missing beyond raw numeric editing | C05, U02 |
-| CAP-27 | Persistent daemon separate from GUI and control clients | Missing: worker lives in launching process | S01-S02 |
-| CAP-28 | OTD daemon RPC methods, event subscriptions and client reconnect | Missing | S03 |
-| CAP-29 | Console load/save/set/get/list/preset/plugin/update/stdio/edit commands | Partial: run/settings/list/displays/capture/plugin diagnostics only | S04 |
+| CAP-27 | Persistent daemon separate from GUI and control clients | Partial: optional headless daemon owns one worker independently of CLI clients; GUI still owns an in-process worker. Live lifecycle/cleanup evidence pending | S01-S02 |
+| CAP-28 | OTD daemon RPC methods, event subscriptions and client reconnect | Partial project protocol: bounded versioned local status/start/stop/shutdown, request IDs and errors; upstream RPC and subscriptions remain missing | S02-S03 |
+| CAP-29 | Console load/save/set/get/list/preset/plugin/update/stdio/edit commands | Partial: daemon control, profile collection/import/export and existing diagnostics; full command/workflow parity remains open | S04 |
 | CAP-30 | Logs, diagnostics export, tablet debugger, device-string requests | Partial: bounded panel log and console capture | S05, U06 |
 | CAP-31 | Graphical display/tablet area editor with position, size, rotation and monitor selection | Partial: Windows panel has graphical area editors and display selection; upstream conversion/lock behavior and current interactive UI evidence remain open | U01-U02 |
 | CAP-32 | Output, pen, auxiliary, mouse, wheel, filters and tools editors | Partial: Windows panel edits mapping, relative settings, pen thresholds, filters and plugin settings; broader auxiliary, mouse, wheel, binding and tool controls remain open | U03-U04 |
@@ -55,9 +55,9 @@ Baseline: [OTD v0.6.7](https://github.com/OpenTabletDriver/OpenTabletDriver/tree
 | ID | Upstream capability | Current Rust status | Work items |
 | --- | --- | --- | --- |
 | CAP-37 | Existing .NET assembly discovery, dependencies, supported-platform/ignore metadata | Partial: explicit DLL/type loading with narrow discovery | P01-P02 |
-| CAP-38 | Settings defaults/conversion/validation, property and field injection, dependency callbacks | Partial: omitted/null saved properties follow upstream defaults; direct and inherited TabletReference fields/properties are injected before load callbacks in a managed fixture (P02). The bridge receives the chosen pinned database configuration at plugin load; the live driver still chooses the built-in PTH-660 record | P02, P07 |
-| CAP-39 | Full report interfaces, concrete types where needed, raw bytes and report mutations | Partial: reusable position/pressure/eraser adapter; only X/Y returned | P03 |
-| CAP-40 | PreTransform and PostTransform ordering, suppression and multiple emissions | Partial: exactly one synchronous PreTransform output | P04 |
+| CAP-38 | Settings defaults/conversion/validation, property and field injection, dependency callbacks | Partial: omitted/null defaults and direct/inherited TabletReference injection; live selected supported configuration/identifier supplies the reference. Broader services and current live evidence remain open | P02, P07 |
+| CAP-39 | Full report interfaces, concrete types where needed, raw bytes and report mutations | Partial: fresh managed report/raw/button ownership with tilt/proximity for supported pen reports; concrete vendor types and non-position output mutations remain open. Managed per-report allocation needs performance evidence | P03 |
+| CAP-40 | PreTransform and PostTransform ordering, suppression and multiple emissions | Partial: exactly one synchronous positional output per filter, including Pixels/PostTransform after absolute mapping; suppression and multiple emissions remain open | P04 |
 | CAP-41 | Async filters, timers, resampling, plugin-owned threads | Missing | P05 |
 | CAP-42 | Output-mode, binding, state-binding and tool plugins | Missing | P06 |
 | CAP-43 | Report-parser, configuration/provider, device-hub, driver and platform services | Missing | P07 |

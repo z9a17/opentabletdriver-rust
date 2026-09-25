@@ -1,8 +1,8 @@
 # Behavior contracts (F01)
 
-This document freezes the observable behavior of the Windows PTH-660 driver as of 0.7, and compares each stage with OpenTabletDriver 0.6.7 ([`736003e`][otd]). The [golden traces](#golden-traces) replay recorded report sequences through the driver's own pipeline and fail on any output change. Every difference from upstream is listed [at the end](#differences), with the backlog task that resolves it or the reason it stays.
+This document records the observable behavior of the Windows PTH-660 driver through 0.8.0, and compares each stage with OpenTabletDriver 0.6.7 ([`736003e`][otd]). The [golden traces](#golden-traces) replay recorded report sequences through the driver's own pipeline and fail on any output change. Every difference from upstream is listed [at the end](#differences), with the backlog task that resolves it or the reason it stays.
 
-Change this document and the golden traces together, and only for an intended behavior change.
+Historical golden traces describe their recorded paths. The 0.8.0 additions below have no new local test or hardware evidence; updating this contract does not extend those earlier results.
 
 ## Report path and stage order
 
@@ -69,8 +69,8 @@ Rust and upstream normalized coordinates for the same transform result differ by
 ## Session lifecycle, cancellation and ownership
 
 - A session opens the pen collection and ends on the stop event, removal of that device, a read error, or the capture deadline. Ending cancels the pending read with `CancelIoEx` and waits for it to complete before the buffer is reused. Then the session releases buttons and logs its counters and timing. The driver then waits for a PnP arrival or rechecks every 2 s.
-- The session owns and reuses one read buffer. `PenReport` is a copied value and nothing retains it. A native DLL receives a copy of the sample that is valid only during its call. The .NET bridge reuses one managed report object per plugin, so a plugin that keeps a reference sees it change; P03 owns that contract.
-- Configuration is fixed for a session: Apply and Save restart the session with the new profile.
+- The session owns and reuses one read buffer. `PenReport` is a copied value and nothing retains it. A native DLL receives a copy of the sample that is valid only during its call. The .NET bridge gives each filter invocation a fresh managed report, raw byte array and pen-button array so retained references stay stable. This adds managed allocation; performance and unchanged-plugin replay evidence for this path are pending. Native envelopes borrow raw bytes and use bounded inline values; retaining one explicitly creates an owned snapshot.
+- Configuration is fixed for a session: the GUI restarts its worker on Apply/Save. The optional headless daemon accepts a validated native profile at Start and requires Stop before another Start; it does not yet support live settings apply.
 - Upstream disposes the output mode when a device disconnects and has no explicit button release. Its per-tablet lock serializes pen and auxiliary endpoints; the Rust driver reads no auxiliary endpoint yet.
 
 ## Settings import
@@ -78,9 +78,9 @@ Rust and upstream normalized coordinates for the same transform result differ by
 The importer reads the `Wacom PTH-660` profile from OpenTabletDriver's `settings.json`:
 
 - Output mode: Absolute or Relative Mode; anything else is an error.
-- Tip and eraser: only `AdaptiveBinding` with `Tip` or `Eraser` is accepted, otherwise the import fails; a disabled binding never clicks. Thresholds convert as described above.
-- Filters: a `RadialFollow.RadialFollowSmoothingTabletSpace` entry becomes the built-in filter. Its settings are read by name, missing ones default, and values are clamped as in the original. **A disabled entry is enabled anyway**, and the importer counts it. Other enabled filters are skipped and counted; they run only if their DLL is added in the panel.
-- Everything else is ignored: pen and auxiliary buttons, wheels, mouse buttons, pressure and tilt switches, and tools.
+- Tip and eraser: only supported `AdaptiveBinding` actions become native clicks. Unsupported active actions are preserved and diagnosed, and are inactive in the native mapping. A disabled binding never clicks. Thresholds convert as described above.
+- Filters: enabled `RadialFollow.RadialFollowSmoothingTabletSpace` entries become built-in filters. New imports honor `Enable`; the explicit legacy import option can force disabled entries for that import only. Existing native entries from older saved Rust profiles stay active. Other enabled filters remain archived and produce unsupported diagnostics; supported DLLs must be added explicitly. Enabling the same tablet-space Radial Follow natively and through .NET is rejected before execution.
+- The complete original OTD settings text, selected profile index and source revision are preserved in schema-1 native profiles. Other profiles, disabled stores, null/missing values and unknown fields remain archived. Unsupported active features produce diagnostics; preservation does not run pen/auxiliary buttons, wheels, mouse buttons, pressure/tilt output options or tools. Unknown native TOML fields are archived under `preserved_fields` without attaching them to a different filter after reordering.
 
 ## Golden traces
 
@@ -133,7 +133,19 @@ The executables embed OpenTabletDriver's 339 tablet configuration files unchange
 - a file with a new name is added;
 - a later file with the same name is ignored.
 
-`opentabletdriver-rust.exe tablets` shows the result. Device selection and report parsing still use the fixed USB PTH-660 path. The startup check therefore only reports which configuration declares the PTH-660 and whether an override changes it.
+`opentabletdriver-rust.exe tablets` shows the result. Live Windows snapshots now supply report lengths, device strings, attributes and physical identity to the matcher. Execution remains restricted to the PTH-660 parser, pen report length and specifications supported by this runtime; incompatible overrides are rejected. Multiple matching pen endpoints require an explicit `device_path`. Auxiliary pairing is recorded but does not start auxiliary reading. The selected configuration/identifier supplies managed TabletReference initialization.
+
+## New report, action and control foundations
+
+The native report envelope borrows raw transport bytes and distinguishes an absent capability from a present zero/released value. Fixed limits are 64 buttons, 16 analog channels, 8 wheels and 32 touch slots; exceeding them is an error rather than truncation. An IntuosV2 auxiliary decoder exposes button/analog values without modifying pen contact or emitting output. Stateful IntuosV2 touch decoding retains 16 slots across packets; a separate Wacom-driver variant removes its transport prefix while preserving the original bytes. These decoders are not wired to live touch or gesture output. These types do not establish support for additional devices or bindings.
+
+The managed pen adapter supplies owned raw bytes, pressure, eraser, pen buttons, tilt and proximity where the source report carries it. Rotation remains available through raw bytes. Filters still must emit exactly one synchronous positional report; suppression, multiple output reports, async scheduling and applying non-position mutations remain open. Range-loss reports also own their raw bytes. Retained input snapshots remain valid at the cost of per-call managed allocation; identity and mutations across chain nodes still require P04; the native-only report path retains its allocation-free design.
+
+Shared action ownership records `(device generation, binding)` holds in fixed storage. Overlapping owners produce one initial press and one final release. Only successful adapter acceptance advances emitted state; failed transitions and cleanup remain pending. Releases precede new presses, with modifier presses first and modifier releases last. A Windows adapter maps supported USB keyboard usages and five mouse buttons; unsupported usages return errors. This foundation is not yet the complete binding engine, and the existing combined move/tip packet path remains in use.
+
+The optional headless daemon keeps one worker independent of CLI connections. Version-1 JSON requests have nonzero IDs and bounded length-prefixed frames (256 KiB); profiles are limited to 128 KiB and status keeps at most 64 messages of 512 bytes. The SID-qualified local named pipe has a protected current-user/SYSTEM ACL and rejects remote clients. Server identity verification by clients, response acknowledgements and cancellable overlapped I/O keep malformed, slow or disconnected clients out of report processing. A connection has a five-second server budget. Request IDs correlate replies but do not deduplicate commands; after a timeout, query status before retrying. The GUI still uses its own worker.
+
+Selected HID initialization runs indexed strings, delayed feature reports, then output writes. Failure or a partial write aborts the session before cursor output. This differs from upstream's warning-and-continue policy. Stop interrupts delays and pending output writes; synchronous string/feature calls are only cancellable between calls. Device-specific initialization and these IPC paths have not been exercised on hardware or through a live daemon in this development increment.
 
 ## Differences
 
@@ -159,16 +171,17 @@ The executables embed OpenTabletDriver's 339 tablet configuration files unchange
 | BC-16 | `SendInput` failure | ignored | counted, warned; button change retried | Record: avoids a stuck or lost click |
 | BC-17 | Session end | no release | held button released on stop, disconnect or invalid mapping | Record: avoids a stuck click |
 | BC-18 | Relative details | as linked | immediate rebase on loss, carry cleared on reset, `f64` deltas, no zero-motion packets | Record, detailed in [relative mode](../RELATIVE_MODE.md); O01 revisits |
-| BC-19 | Disabled Radial Follow on import | not run | run anyway | C02: known semantic debt |
-| BC-20 | Other enabled filters on import | run | skipped and counted | C02, P02 |
-| BC-21 | Other bindings and output modes | run | import fails | B02, O03, P06 |
+| BC-19 | Disabled Radial Follow on import | not run | new imports honor Enable; explicit legacy option restores the older override, and existing saved native entries stay active | C01 migration; current execution evidence pending |
+| BC-20 | Other enabled filters on import | run | preserved with unsupported diagnostics; add supported DLLs explicitly | C02, P02 |
+| BC-21 | Other bindings and output modes | run | unsupported bindings are preserved/diagnosed and inactive; unsupported output modes prevent runnable import | B02, O03, P06 |
 | BC-22 | Pressure and tilt output | pressure-capable pointers receive remapped pressure | mouse only | O03 |
 | BC-23 | `0x1E` hover distance | read from byte 11, which is also tilt X | not reported | Record: upstream defect with no effect on mouse output |
 | BC-24 | Reader priority | High class, AboveNormal thread (14) | time-critical thread (15), rest of the process normal | Record: see [input latency](../INPUT_LATENCY.md#scheduling) |
 | BC-25 | Configuration file that does not parse | the exception stops detection, so no tablet is found | reported and skipped; the other files still apply | Record: one bad file should not disable every tablet |
 | BC-26 | Configuration file syntax | Newtonsoft.Json also accepts comments, single-quoted strings, unquoted property names, property names in any case and numbers written as strings | strict JSON with OpenTabletDriver's property names; anything else is an error or an unknown-field warning | Open: matters once override files select devices (D02) |
 | BC-27 | Configuration order | built-ins in the assembly's resource order, then files in the file system's order | built-ins by path, then files breadth first in NTFS name order | Record: built-in names are unique, so order only decides between tablets that declare the same interface (D02) |
-| BC-28 | Override of the PTH-660 configuration | used for detection and parsing | reported at startup; the report path keeps the built-in values | D02, D03 |
+| BC-28 | Override of the PTH-660 configuration | used for detection and parsing | predicates and initialization apply; unsupported parser/report-length/specification changes are rejected | D02, D03; hardware evidence pending |
+| BC-29 | Initialization failure | warning and continued initialization | failed or partial initialization aborts the session before output | Record: fail closed on partially initialized hardware; D02 evidence pending |
 
 [otd]: https://github.com/OpenTabletDriver/OpenTabletDriver/tree/736003ed72c8bbb28033b039d5a0bb76c344145c
 [DeviceReader]: https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver/Devices/DeviceReader.cs#L102-L113
