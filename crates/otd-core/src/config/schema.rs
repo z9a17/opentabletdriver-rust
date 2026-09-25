@@ -354,7 +354,7 @@ impl OtdSettingsDocument {
                 let tablet = profile["Tablet"].as_str().unwrap_or("").to_owned();
                 OtdProfileSummary {
                     index,
-                    runtime_tablet_supported: tablet == "Wacom PTH-660",
+                    runtime_tablet_supported: super::runtime_tablet(&tablet).is_ok(),
                     tablet,
                     output_mode: profile["OutputMode"]["Path"]
                         .as_str()
@@ -416,7 +416,13 @@ impl OtdSettingsDocument {
         if !profile.runtime_tablet_supported {
             diagnostics.push(ProfileDiagnostic::unsupported(
                 format!("Profiles[{index}].Tablet"),
-                format!("{} can be stored or exported, but the Windows runtime currently supports only Wacom PTH-660.", profile.tablet),
+                format!(
+                    "{} can be stored or exported, but this driver cannot run it: {}",
+                    profile.tablet,
+                    super::runtime_tablet(&profile.tablet)
+                        .err()
+                        .unwrap_or_default()
+                ),
             ));
         }
         if let Some(error) = &import_error {
@@ -778,8 +784,9 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
             let raw = current_threshold.ok_or(
                 "hardware tip-switch contact cannot be represented as an OTD pressure threshold",
             )?;
-            let percent = (f64::from(raw) - 0.5) * 100.0 / f64::from(crate::protocol::MAX_PRESSURE);
-            if super::activation_raw(percent).ok() != Some(raw) {
+            let max_pressure = profile.tablet.max_pressure;
+            let percent = (f64::from(raw) - 0.5) * 100.0 / f64::from(max_pressure);
+            if super::activation_raw_for(percent, max_pressure).ok() != Some(raw) {
                 return Err(format!(
                     "raw threshold {raw} has no supported OTD percent representation"
                 ));

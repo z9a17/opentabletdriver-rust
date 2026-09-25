@@ -322,7 +322,7 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
 
 pub(super) fn about(window: HWND) {
     let text = format!(
-        "OpenTabletDriver Rust {}\n\nA Windows USB driver for the Wacom PTH-660, written in Rust. This control panel follows the layout of OpenTabletDriver's UX.\n\nLicensed under GPL-3.0-only. The built-in Radial Follow filter is a Rust port of AbstractQbit's RadialFollow 0.3.0.",
+        "OpenTabletDriver Rust {}\n\nA Windows USB tablet driver written in Rust, using OpenTabletDriver's tablet configurations. This control panel follows the layout of OpenTabletDriver's UX.\n\nLicensed under GPL-3.0-only. The built-in Radial Follow filter is a Rust port of AbstractQbit's RadialFollow 0.3.0.",
         env!("CARGO_PKG_VERSION")
     );
     message_box(

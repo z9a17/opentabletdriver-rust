@@ -4,7 +4,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::protocol::{HEIGHT_MM, MAX_X, MAX_Y, WIDTH_MM};
+use crate::spec::TabletSpec;
 
 #[derive(Clone, Copy, Debug)]
 pub struct RelativeSettings {
@@ -15,17 +15,23 @@ pub struct RelativeSettings {
 }
 
 impl RelativeSettings {
+    /// Validates against the PTH-660.
     pub fn validate(self) -> Result<Self, String> {
+        self.validate_for(TabletSpec::PTH_660)
+    }
+
+    pub fn validate_for(self, spec: TabletSpec) -> Result<Self, String> {
         if ![self.sensitivity.0, self.sensitivity.1, self.rotation]
             .into_iter()
             .all(f64::is_finite)
         {
             return Err("relative sensitivity and rotation must be finite".into());
         }
-        let [a, b, c, d] = self.transform();
+        let [a, b, c, d] = self.transform(spec);
         // A full-diagonal movement plus fractional carry must fit a LONG.
-        let max_x = a.abs() * f64::from(MAX_X) + b.abs() * f64::from(MAX_Y);
-        let max_y = c.abs() * f64::from(MAX_X) + d.abs() * f64::from(MAX_Y);
+        let (width, height) = (f64::from(spec.max_x), f64::from(spec.max_y));
+        let max_x = a.abs() * width + b.abs() * height;
+        let max_y = c.abs() * width + d.abs() * height;
         if !max_x.is_finite()
             || !max_y.is_finite()
             || max_x > f64::from(i32::MAX - 1)
@@ -36,10 +42,11 @@ impl RelativeSettings {
         Ok(self)
     }
 
-    fn transform(self) -> [f64; 4] {
+    fn transform(self, spec: TabletSpec) -> [f64; 4] {
         let (sin, cos) = (-(self.rotation % 360.0)).to_radians().sin_cos();
-        let sx = self.sensitivity.0 * (WIDTH_MM / f64::from(MAX_X));
-        let sy = self.sensitivity.1 * (HEIGHT_MM / f64::from(MAX_Y));
+        let (mm_x, mm_y) = spec.mm_per_unit();
+        let sx = self.sensitivity.0 * mm_x;
+        let sy = self.sensitivity.1 * mm_y;
         [cos * sx, -sin * sx, sin * sy, cos * sy]
     }
 }
@@ -57,9 +64,13 @@ pub struct RelativeMapper {
 
 impl RelativeMapper {
     pub fn new(settings: RelativeSettings) -> Result<Self, String> {
-        let settings = settings.validate()?;
+        Self::new_for(settings, TabletSpec::PTH_660)
+    }
+
+    pub fn new_for(settings: RelativeSettings, spec: TabletSpec) -> Result<Self, String> {
+        let settings = settings.validate_for(spec)?;
         Ok(Self {
-            transform: settings.transform(),
+            transform: settings.transform(spec),
             reset_delay: settings.reset_delay,
             last_sample: None,
             last_raw: None,

@@ -39,9 +39,12 @@ impl ReportPipeline {
                 .radial_follow
                 .iter()
                 .copied()
-                .map(RadialFollowSmoothingTabletSpace::new)
+                .map(|settings| RadialFollowSmoothingTabletSpace::new_for(settings, profile.tablet))
                 .collect(),
-            relative: profile.relative.map(RelativeMapper::new).transpose()?,
+            relative: profile
+                .relative
+                .map(|settings| RelativeMapper::new_for(settings, profile.tablet))
+                .transpose()?,
             output: MouseOutput::new(),
             is_eraser: false,
             desired_contact: false,

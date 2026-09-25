@@ -437,7 +437,7 @@ pub(super) fn open(window: HWND) {
         if app.editor.mode() != OutputMode::Absolute {
             return Err("Area conversion is available in Absolute Mode.".into());
         }
-        app.editor.profile.validate_runtime_tablet(TABLET_NAME)?;
+        app.editor.profile.validate_runtime_tablet()?;
         // Do not discard an invalid field while replacing the visible area.
         app.checked_profile()?;
         Ok((app.profile_path.clone(), app.editor.profile.to_toml()?))

@@ -1,4 +1,5 @@
 use crate::protocol::{MAX_X, MAX_Y};
+use crate::spec::TabletSpec;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,11 +90,32 @@ impl Default for Crop {
 }
 
 impl Crop {
+    /// Within the PTH-660's range.
     pub fn valid(self) -> bool {
+        self.valid_for(TabletSpec::PTH_660)
+    }
+
+    pub fn valid_for(self, spec: TabletSpec) -> bool {
         self.width > 0
             && self.height > 0
-            && self.x.checked_add(self.width).is_some_and(|v| v <= MAX_X)
-            && self.y.checked_add(self.height).is_some_and(|v| v <= MAX_Y)
+            && self
+                .x
+                .checked_add(self.width)
+                .is_some_and(|v| v <= spec.max_x)
+            && self
+                .y
+                .checked_add(self.height)
+                .is_some_and(|v| v <= spec.max_y)
+    }
+
+    /// The whole digitizer of a tablet.
+    pub fn full(spec: TabletSpec) -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            width: spec.max_x,
+            height: spec.max_y,
+        }
     }
 }
 
@@ -108,7 +130,23 @@ pub struct Mapper {
 
 impl Mapper {
     pub fn new(crop: Crop, rotation: u16, destination: Rect, virtual_screen: Rect) -> Option<Self> {
-        if !crop.valid()
+        Self::new_for(
+            crop,
+            rotation,
+            destination,
+            virtual_screen,
+            TabletSpec::PTH_660,
+        )
+    }
+
+    pub fn new_for(
+        crop: Crop,
+        rotation: u16,
+        destination: Rect,
+        virtual_screen: Rect,
+        spec: TabletSpec,
+    ) -> Option<Self> {
+        if !crop.valid_for(spec)
             || !matches!(rotation, 0 | 90 | 180 | 270)
             || !destination.valid()
             || !virtual_screen.valid()
@@ -125,12 +163,20 @@ impl Mapper {
     }
 
     pub fn from_otd(settings: OtdMapping, virtual_screen: Rect) -> Option<Self> {
+        Self::from_otd_for(settings, virtual_screen, TabletSpec::PTH_660)
+    }
+
+    /// OpenTabletDriver's absolute area transform for a tablet: areas are in
+    /// millimetres, reports in the tablet's raw units.
+    pub fn from_otd_for(
+        settings: OtdMapping,
+        virtual_screen: Rect,
+        spec: TabletSpec,
+    ) -> Option<Self> {
         if !virtual_screen.valid() || !settings.display.valid() || !settings.tablet.valid() {
             return None;
         }
-        // The PTH-660 reports 44,800 x 29,600 units over 224 x 148 mm.
-        let mm_x = 224.0 / f64::from(MAX_X);
-        let mm_y = 148.0 / f64::from(MAX_Y);
+        let (mm_x, mm_y) = spec.mm_per_unit();
         let angle = (-settings.tablet.rotation).to_radians();
         let (sin, cos) = angle.sin_cos();
         let sx = settings.display.width / settings.tablet.width;

@@ -2123,7 +2123,7 @@ impl App {
     /// Persistence must also work for disconnected displays or other tablets.
     /// Check runtime requirements before stopping an existing worker.
     fn validate_start(&self, profile: &Profile) -> Result<(), String> {
-        profile.validate_runtime_tablet("Wacom PTH-660")?;
+        profile.validate_runtime_tablet()?;
         profile.validate_filter_execution()?;
         if profile.relative.is_none() {
             displays_for_driver(self.process_dpi)?.mapper(profile)?;
@@ -2199,7 +2199,7 @@ impl App {
             );
             return;
         }
-        match Profile::load(None) {
+        match Profile::load_connected(None, &crate::hid::connected_tablets()) {
             Ok(profile) => {
                 let skipped = profile.ignored_filters;
                 self.replace_profile(profile, None, true);
@@ -2268,19 +2268,20 @@ impl App {
     pub(super) fn detect_tablet(&mut self) {
         match crate::hid::enumerate() {
             Ok(devices) => {
-                let pens = devices.iter().filter(|device| device.is_pen()).count();
-                self.tablet_present = Some(pens > 0);
-                if pens == 0 {
-                    self.log(Level::Warning, "Tablet", "No USB PTH-660 was found.");
+                let database = otd_core::tablets::Database::builtin();
+                let pens: Vec<String> = devices
+                    .iter()
+                    .filter_map(|device| crate::hid::identify(device, database))
+                    .filter(|(_, role, supported)| {
+                        *supported && *role == otd_core::tablets::Role::Digitizer
+                    })
+                    .map(|(name, _, _)| name)
+                    .collect();
+                self.tablet_present = Some(!pens.is_empty());
+                if pens.is_empty() {
+                    self.log(Level::Warning, "Tablet", "No supported tablet was found.");
                 } else {
-                    self.log(
-                        Level::Info,
-                        "Tablet",
-                        format!(
-                            "Found {pens} PTH-660 pen collection{}.",
-                            if pens == 1 { "" } else { "s" }
-                        ),
-                    );
+                    self.log(Level::Info, "Tablet", format!("Found {}.", pens.join(", ")));
                 }
             }
             Err(error) => self.log(

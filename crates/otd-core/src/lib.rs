@@ -10,6 +10,7 @@
 pub mod actions;
 pub mod areas;
 pub mod config;
+pub mod decoders;
 pub mod display;
 pub mod endpoint_match;
 pub mod mapping;
@@ -22,6 +23,7 @@ pub mod radial_follow;
 pub mod relative;
 pub mod reports;
 pub mod session;
+pub mod spec;
 pub mod state;
 pub mod storage;
 pub mod tablets;

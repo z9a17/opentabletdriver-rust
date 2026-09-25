@@ -13,7 +13,7 @@
 //! trim packets to select a layout. The complete raw slice is borrowed. These
 //! parsers inspect byte 1 without an ID whitelist and never manufacture eraser,
 //! proximity, or other capabilities absent from the selected source report.
-//! The stateful Deco03 parser is separate and is not implemented by this module.
+//! The stateful Deco03 parser keeps the previous wheel byte.
 //! No device selection, initialization, bindings or live output is enabled.
 
 use super::{
@@ -76,6 +76,52 @@ pub fn parse_xp_pen_dedicated_auxiliary(
             values: auxiliary(raw, 1)?,
         },
     ))
+}
+
+/// `XP_PenDeco03ReportParser`: the base XP-Pen dispatch, plus a 0xF0 wheel
+/// report whose direction depends on the previous wheel byte (byte 7).
+#[derive(Clone, Debug, Default)]
+pub struct Deco03Parser {
+    previous_wheel: u8,
+}
+
+impl Deco03Parser {
+    pub fn reset(&mut self) {
+        self.previous_wheel = 0;
+    }
+
+    pub fn parse<'a>(
+        &mut self,
+        raw: &'a [u8],
+        metadata: ReportMetadata,
+    ) -> Result<(ReportKind, ReportEnvelope<'a>), ReportError> {
+        require_length(raw, 2)?;
+        if raw[1] != 0xf0 {
+            return parse(raw, metadata, Parser::Base);
+        }
+        require_length(raw, 8)?;
+        let wheel = raw[7];
+        let delta = match (self.previous_wheel, wheel) {
+            (0x80, 0x00) | (0x00, 0x40) | (0x40, 0xc0) | (0xc0, 0x80) => 1,
+            (0x40, 0x00) | (0xc0, 0x40) | (0x80, 0xc0) | (0x00, 0x80) => -1,
+            _ => 0,
+        };
+        self.previous_wheel = wheel;
+        Ok((
+            ReportKind::Data,
+            ReportEnvelope {
+                metadata,
+                raw,
+                values: ReportValues {
+                    relative_analog: Some(RelativeAnalogReport {
+                        kind: AnalogKind::Wheel,
+                        deltas: RelativeAnalog::from_slice(&[delta])?,
+                    }),
+                    ..ReportValues::default()
+                },
+            },
+        ))
+    }
 }
 
 enum Parser {
@@ -174,7 +220,7 @@ fn gen2_pen(raw: &[u8]) -> Result<ReportValues, ReportError> {
     Ok(values)
 }
 
-fn auxiliary(raw: &[u8], buttons_at: usize) -> Result<ReportValues, ReportError> {
+pub(super) fn auxiliary(raw: &[u8], buttons_at: usize) -> Result<ReportValues, ReportError> {
     // All supported button offsets (1, 2, 4) end before the wheel byte at 7.
     require_length(raw, 8)?;
     let buttons = u64::from(raw[buttons_at])

@@ -265,10 +265,21 @@ fn list(paths: bool) -> Result<(), String> {
         println!("No HID collections matching known tablet vendor/product IDs found.");
     }
     for (index, device) in devices.iter().enumerate() {
-        let role = match (device.vendor, device.product, device.input_length) {
-            (hid::WACOM_VENDOR, hid::PTH660_USB, hid::PEN_REPORT_LENGTH) => "PTH-660 pen",
-            (hid::WACOM_VENDOR, hid::PTH660_USB, hid::AUX_REPORT_LENGTH) => "PTH-660 auxiliary",
-            _ => "other",
+        let role = match hid::identify(device, Database::builtin()) {
+            Some((name, role, supported)) => format!(
+                "{name} {}{}",
+                if role == Role::Digitizer {
+                    "pen"
+                } else {
+                    "auxiliary"
+                },
+                if supported {
+                    ""
+                } else {
+                    " (unsupported parser)"
+                }
+            ),
+            None => "unmatched collection".into(),
         };
         let openable = device.open_read().is_ok();
         println!(
@@ -303,9 +314,8 @@ fn load_tablets(directory: Option<&Path>) -> Result<(Option<Database>, usize), S
     Ok((database, files.len()))
 }
 
-/// Says which configuration declares the USB PTH-660 pen interface. The
-/// report path still requires the pinned parser/specifications. Endpoint
-/// predicates and initialization declarations are applied by the adapter.
+/// Says which configuration declares the USB PTH-660 pen interface and
+/// whether an override file changes it. Overrides are used as upstream uses them.
 fn report_pth_660(database: &Database) {
     let builtin = Database::builtin()
         .find(hid::WACOM_VENDOR, hid::PTH660_USB)
@@ -341,7 +351,7 @@ fn report_pth_660(database: &Database) {
             );
         } else {
             eprintln!(
-                "Tablet override {} changes {} of {}; endpoint predicates and initialization apply, unsupported parser/specification changes will be rejected",
+                "Tablet override {} changes {} of {}; the override is used",
                 entry.path,
                 changed.join(", "),
                 configuration.name
@@ -416,17 +426,21 @@ fn tablets(list: bool, directory: Option<PathBuf>) -> Result<(), String> {
         has(Severity::Warning)
     );
     let parsers = database.parsers();
-    let decoded: Vec<&str> = parsers
+    let missing: Vec<&str> = parsers
         .keys()
         .copied()
-        .filter(|parser| tablets::parser_support(parser) != ParserSupport::Missing)
+        .filter(|parser| tablets::parser_support(parser) == ParserSupport::Missing)
         .map(|parser| parser.rsplit('.').next().unwrap_or(parser))
         .collect();
     println!(
-        "{} report parsers referenced; partly decoded by this driver: {}; not decoded: {}",
+        "{} report parsers referenced; decoded by this driver: {}; not decoded: {}",
         parsers.len(),
-        decoded.join(", "),
-        parsers.len() - decoded.len()
+        parsers.len() - missing.len(),
+        if missing.is_empty() {
+            "none".to_owned()
+        } else {
+            missing.join(", ")
+        }
     );
     report_pth_660(database);
     for entry in entries {
@@ -523,7 +537,7 @@ fn load_profile(
         } else if std::env::var_os("OTD_RUST_PORTABLE_DIR").is_some() {
             Ok(Profile::default())
         } else {
-            Profile::load(None)
+            Profile::load_connected(None, &hid::connected_tablets())
         }
     }
 }
@@ -558,13 +572,14 @@ fn drive(
     capture_seconds: Option<u64>,
     status: impl Fn(&str),
 ) -> Result<(), String> {
-    profile.validate_runtime_tablet("Wacom PTH-660")?;
+    profile.validate_runtime_tablet()?;
     profile.validate_filter_execution()?;
+    let tablet_name = profile.tablet_name()?;
     if profile.relative.is_none() {
         display::read_snapshot()?.mapper(&profile)?;
     }
     println!(
-        "opentabletdriver-rust {} — Windows 11 USB PTH-660 daemon",
+        "opentabletdriver-rust {} — Windows 11 tablet daemon",
         env!("CARGO_PKG_VERSION")
     );
     profile.print_summary();
@@ -607,12 +622,20 @@ fn drive(
             }
             let devices = hid::enumerate_with_database(database)
                 .map_err(|e| format!("HID discovery failed: {e}"))?;
-            let Some(selected) =
-                hid::select_pth660(&devices, database, profile.device_path.as_deref())?
+            let Some(selected) = hid::select_device(
+                &devices,
+                database,
+                profile.device_path.as_deref(),
+                tablet_name.as_deref(),
+            )?
             else {
                 if !waiting {
-                    eprintln!("Waiting for USB PTH-660.");
-                    status("Waiting for USB PTH-660");
+                    let waiting_for = format!(
+                        "Waiting for {}",
+                        tablet_name.as_deref().unwrap_or("a supported tablet")
+                    );
+                    eprintln!("{waiting_for}.");
+                    status(&waiting_for);
                     waiting = true;
                 }
                 if !session::wait_for_retry(&notification, stop_event)
@@ -633,9 +656,15 @@ fn drive(
             )?;
             plugins.validate_output_mode(profile.relative.is_some())?;
             if selected.auxiliary.is_some() {
-                status("PTH-660 auxiliary collection paired; auxiliary output is not enabled yet");
+                status(&format!(
+                    "{} auxiliary collection paired; auxiliary output is not enabled yet",
+                    selected.configuration.name
+                ));
             }
-            status("PTH-660 found; opening pen input");
+            status(&format!(
+                "{} found; opening pen input",
+                selected.configuration.name
+            ));
             match session::run(
                 &selected,
                 &profile,
@@ -716,7 +745,7 @@ fn main() {
             config,
             otd_settings,
         }) => load_profile(config.as_ref(), otd_settings.as_ref()).and_then(|profile| {
-            profile.validate_runtime_tablet("Wacom PTH-660")?;
+            profile.validate_runtime_tablet()?;
             daemon::call(control::Command::Start {
                 profile_toml: Some(profile.to_toml()?),
             })

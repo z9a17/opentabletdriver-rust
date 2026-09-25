@@ -18,6 +18,8 @@ Parsers: pth660-pen, intuos-v2-aux, intuos-v2-touch,
          xp-pen-offset-pressure, xp-pen-offset-aux, xp-pen-dedicated-aux,
          tablet, auxiliary, skip-byte-tablet, veikk, veikk-a15, veikk-tilt,
          veikk-v1
+or any OpenTabletDriver parser type, such as Wacom.IntuosV1.IntuosV1ReportParser
+or OpenTabletDriver.Plugin.Tablet.TabletReportParser.
 Hex may contain ASCII whitespace or colons. Files contain one packet per line;
 blank lines and lines starting with # are ignored. Limits: 4 MiB, 4096 reports,
 192 bytes per packet. Each output line is one JSON snapshot; a later error does
@@ -41,6 +43,7 @@ enum Decoder {
     Bamboo,
     BambooPad,
     BambooV2Aux,
+    Registry(otd_core::decoders::ReportParser),
 }
 
 impl Decoder {
@@ -82,6 +85,12 @@ impl Decoder {
             Self::BambooV2Aux => parse_bamboo_v2_auxiliary(raw, metadata)
                 .map(Some)
                 .map_err(|e| format!("{e:?}")),
+            Self::Registry(parser) => {
+                return parser
+                    .parse(raw, metadata)
+                    .map(|(kind, report)| (kind, Some(report)))
+                    .map_err(|e| format!("{e:?}"));
+            }
         }?;
         Ok((ReportKind::Data, report))
     }
@@ -137,7 +146,18 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         "veikk-a15" => Decoder::Stateless(parse_veikk_a15),
         "veikk-tilt" => Decoder::Stateless(parse_veikk_tilt),
         "veikk-v1" => Decoder::Prefixed(parse_veikk_v1),
-        _ => return Err(format!("unknown parser {parser:?}\n{USAGE}")),
+        name => {
+            // Any OpenTabletDriver parser type, with or without its namespace.
+            let full = if name.starts_with("OpenTabletDriver.") {
+                name.to_owned()
+            } else {
+                format!("OpenTabletDriver.Configurations.Parsers.{name}")
+            };
+            match otd_core::decoders::ReportParser::for_type(&full) {
+                Some(parser) => Decoder::Registry(parser),
+                None => return Err(format!("unknown parser {parser:?}\n{USAGE}")),
+            }
+        }
     };
     let source = match (hex, input) {
         (Some(hex), None) => hex,

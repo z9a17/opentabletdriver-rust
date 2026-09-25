@@ -157,8 +157,9 @@ fn run(
             .send(notice)
             .map_err(|_| "daemon control owner disconnected".to_owned())
     };
-    profile.validate_runtime_tablet("Wacom PTH-660")?;
+    profile.validate_runtime_tablet()?;
     profile.validate_filter_execution()?;
+    let tablet_name = profile.tablet_name()?;
     // Exercise deterministic pipeline construction before old output pauses.
     // A fresh output/relative pipeline is used on activation and rollback.
     let _ = otd_core::pipeline::ReportPipeline::new(&profile)?;
@@ -175,12 +176,19 @@ fn run(
         }
         let devices = crate::hid::enumerate_with_database(database)
             .map_err(|error| format!("HID discovery failed: {error}"))?;
-        let Some(selected) =
-            crate::hid::select_pth660(&devices, database, profile.device_path.as_deref())?
+        let Some(selected) = crate::hid::select_device(
+            &devices,
+            database,
+            profile.device_path.as_deref(),
+            tablet_name.as_deref(),
+        )?
         else {
             if !waiting {
                 notify(Notice::Waiting)?;
-                log("Waiting for USB PTH-660");
+                log(&format!(
+                    "Waiting for {}",
+                    tablet_name.as_deref().unwrap_or("a supported tablet")
+                ));
                 waiting = true;
             }
             if !crate::session::wait_for_retry(&notification, interrupt)
