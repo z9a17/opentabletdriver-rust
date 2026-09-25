@@ -11,6 +11,9 @@ use crate::protocol::MAX_PRESSURE;
 use crate::radial_follow::{FILTER_NAME, FILTER_PATH, RadialFollowSettings};
 use crate::relative::RelativeSettings;
 
+mod schema;
+pub use schema::{ImportOptions, ImportedOtdSettings, PROFILE_SCHEMA_VERSION, ProfileDiagnostic};
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ContactPolicy {
@@ -33,6 +36,13 @@ impl Default for ContactPolicy {
 
 #[derive(Clone, Debug)]
 pub struct Profile {
+    pub schema_version: u32,
+    pub settings_revision: u64,
+    /// Original settings collection, retained without rewriting JSON values.
+    pub imported_otd: Option<ImportedOtdSettings>,
+    /// Unrecognized native fields are archived by their original JSON-pointer path.
+    pub preserved_fields: std::collections::BTreeMap<String, toml::Value>,
+    pub diagnostics: Vec<ProfileDiagnostic>,
     pub monitor: Option<usize>,
     pub crop: Crop,
     pub rotation: u16,
@@ -50,6 +60,11 @@ pub struct Profile {
 impl Default for Profile {
     fn default() -> Self {
         Self {
+            schema_version: PROFILE_SCHEMA_VERSION,
+            settings_revision: 0,
+            imported_otd: None,
+            preserved_fields: Default::default(),
+            diagnostics: Vec::new(),
             monitor: None,
             crop: Crop::default(),
             rotation: 0,
@@ -69,6 +84,16 @@ impl Default for Profile {
 #[derive(Deserialize, Serialize, Default)]
 #[serde(deny_unknown_fields)]
 struct RawProfile {
+    #[serde(default)]
+    schema_version: u32,
+    #[serde(default)]
+    settings_revision: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    imported_otd: Option<ImportedOtdSettings>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    preserved_fields: std::collections::BTreeMap<String, toml::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    diagnostics: Vec<ProfileDiagnostic>,
     #[serde(skip_serializing_if = "Option::is_none")]
     monitor: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -111,18 +136,18 @@ struct RawCrop {
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct OtdSettings {
-    profiles: Vec<OtdProfile>,
+    profiles: Vec<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct OtdProfile {
-    tablet: String,
     output_mode: OtdStore,
     absolute_mode_settings: Option<OtdAbsolute>,
     relative_mode_settings: Option<OtdRelative>,
+    #[serde(default, deserialize_with = "default_on_null")]
     bindings: OtdBindings,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "default_on_null")]
     filters: Vec<OtdStore>,
 }
 
@@ -197,7 +222,7 @@ fn parse_reset_delay(value: &str) -> Result<Duration, String> {
     })
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct OtdBindings {
     #[serde(default)]
@@ -211,16 +236,27 @@ struct OtdBindings {
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct OtdStore {
+    #[serde(default, deserialize_with = "default_on_null")]
     path: String,
-    enable: bool,
     #[serde(default)]
+    enable: bool,
+    #[serde(default, deserialize_with = "default_on_null")]
     settings: Vec<OtdProperty>,
+}
+
+fn default_on_null<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct OtdProperty {
     property: String,
+    #[serde(default)]
     value: serde_json::Value,
 }
 
@@ -240,6 +276,7 @@ fn binding_enabled(store: Option<&OtdStore>, expected: &str) -> Result<bool, Str
     let selected = store
         .settings
         .iter()
+        .rev()
         .find(|setting| setting.property == "Binding")
         .and_then(|setting| setting.value.as_str());
     if selected != Some(expected) {
@@ -254,11 +291,15 @@ fn radial_property(store: &OtdStore, name: &str, default: f64) -> Result<f64, St
     let Some(value) = store
         .settings
         .iter()
+        .rev()
         .find(|setting| setting.property == name)
         .map(|setting| &setting.value)
     else {
         return Ok(default);
     };
+    if value.is_null() {
+        return Ok(default);
+    }
     value
         .as_f64()
         .filter(|value| value.is_finite())
@@ -330,23 +371,41 @@ impl Profile {
     }
 
     pub fn load_otd(path: &Path) -> Result<Self, String> {
+        Self::load_otd_with_options(path, ImportOptions::default())
+    }
+
+    pub fn load_otd_with_options(path: &Path, options: ImportOptions) -> Result<Self, String> {
         let text = fs::read_to_string(path).map_err(|e| {
             format!(
                 "cannot read OpenTabletDriver settings {}: {e}",
                 path.display()
             )
         })?;
-        Self::from_otd_text(&text, path)
+        Self::from_otd_text_with_options(&text, path, options)
     }
 
-    fn from_otd_text(text: &str, path: &Path) -> Result<Self, String> {
+    pub fn from_otd_text(text: &str, path: &Path) -> Result<Self, String> {
+        Self::from_otd_text_with_options(text, path, ImportOptions::default())
+    }
+
+    pub fn from_otd_text_with_options(
+        text: &str,
+        path: &Path,
+        options: ImportOptions,
+    ) -> Result<Self, String> {
         let settings: OtdSettings = serde_json::from_str(text)
             .map_err(|e| format!("invalid OpenTabletDriver settings {}: {e}", path.display()))?;
-        let selected = settings
+        let selected_index = settings
             .profiles
-            .into_iter()
-            .find(|profile| profile.tablet == "Wacom PTH-660")
+            .iter()
+            .position(|profile| {
+                profile.get("Tablet").and_then(serde_json::Value::as_str) == Some("Wacom PTH-660")
+            })
             .ok_or("OpenTabletDriver settings have no Wacom PTH-660 profile")?;
+        let selected: OtdProfile =
+            serde_json::from_value(settings.profiles[selected_index].clone())
+                .map_err(|e| format!("invalid PTH-660 profile: {e}"))?;
+        let mut diagnostics = schema::import_diagnostics(text, selected_index)?;
         if !selected.output_mode.enable {
             return Err("the PTH-660 output mode is disabled".into());
         }
@@ -388,22 +447,64 @@ impl Profile {
                 ));
             }
         };
-        let tip_enabled = binding_enabled(selected.bindings.tip_button.as_ref(), "Tip")?;
-        let eraser_enabled = binding_enabled(selected.bindings.eraser_button.as_ref(), "Eraser")?;
+        let mut import_binding = |store: Option<&OtdStore>, name| {
+            binding_enabled(store, name).unwrap_or_else(|message| {
+                diagnostics.push(ProfileDiagnostic::unsupported(
+                    format!("Bindings.{name}"),
+                    message,
+                ));
+                false
+            })
+        };
+        let tip_enabled = import_binding(selected.bindings.tip_button.as_ref(), "Tip");
+        let eraser_enabled = import_binding(selected.bindings.eraser_button.as_ref(), "Eraser");
         let mut radial_follow = Vec::new();
         let mut auto_enabled_radial_follow = 0;
         let mut ignored_filters = 0;
         for filter in &selected.filters {
-            if filter.path == FILTER_PATH {
+            if filter.path == FILTER_PATH && (filter.enable || options.legacy_force_radial_follow) {
                 radial_follow.push(radial_settings(filter)?);
+                for setting in &filter.settings {
+                    if !matches!(
+                        setting.property.as_str(),
+                        "OuterRadius"
+                            | "InnerRadius"
+                            | "SmoothingCoefficient"
+                            | "SoftKneeScale"
+                            | "SmoothingLeakCoefficient"
+                    ) {
+                        diagnostics.push(ProfileDiagnostic::unsupported(
+                            format!("Profiles[{selected_index}].Filters.{}", setting.property),
+                            "This native Radial Follow property is preserved but not applied."
+                                .into(),
+                        ));
+                    }
+                }
                 if !filter.enable {
                     auto_enabled_radial_follow += 1;
                 }
             } else if filter.enable {
                 ignored_filters += 1;
+                diagnostics.push(ProfileDiagnostic::unsupported(
+                    format!("Profiles[{selected_index}].Filters"),
+                    format!("Enabled filter {} is preserved in imported_otd.settings_json but is not executed.", filter.path),
+                ));
             }
         }
+        if auto_enabled_radial_follow > 0 {
+            diagnostics.push(ProfileDiagnostic::warning(
+                "legacy_radial_follow",
+                format!("Explicit legacy import option activated {auto_enabled_radial_follow} disabled Radial Follow entries. Future imports honor Enable unless this option is requested again."),
+            ));
+        }
         Ok(Self {
+            imported_otd: Some(ImportedOtdSettings {
+                source_path: path.to_string_lossy().into_owned(),
+                settings_json: text.to_owned(),
+                selected_profile: selected_index,
+                legacy_force_radial_follow: options.legacy_force_radial_follow,
+            }),
+            diagnostics,
             otd_mapping,
             relative,
             contact: ContactPolicy {
@@ -431,8 +532,36 @@ impl Profile {
     }
 
     pub fn from_toml_text(text: &str, path: &Path) -> Result<Self, String> {
-        let raw: RawProfile =
+        let mut document: toml::Value =
             toml::from_str(text).map_err(|e| format!("invalid profile {}: {e}", path.display()))?;
+        let preserved_fields = schema::extract_unknown_fields(&mut document);
+        let raw: RawProfile = document
+            .try_into()
+            .map_err(|e| format!("invalid profile {}: {e}", path.display()))?;
+        if raw.schema_version > PROFILE_SCHEMA_VERSION {
+            return Err(format!(
+                "Profile schema {} is newer than supported schema {PROFILE_SCHEMA_VERSION}; update the driver before loading it.",
+                raw.schema_version
+            ));
+        }
+        if let Some(imported) = &raw.imported_otd {
+            imported.validate()?;
+        }
+        let mut diagnostics = raw.diagnostics;
+        if raw.schema_version == 0 {
+            diagnostics.push(ProfileDiagnostic::warning(
+                "schema_migration",
+                "Loaded an unversioned Rust profile. Existing native Radial Follow entries remain active; saving writes schema 1. New OTD imports honor Enable.".into(),
+            ));
+        }
+        let mut archived = raw.preserved_fields;
+        if !preserved_fields.is_empty() {
+            diagnostics.push(ProfileDiagnostic::warning(
+                "unknown_native_fields",
+                format!("{} unsupported native field(s) were archived under preserved_fields; they are not executed.", preserved_fields.len()),
+            ));
+            archived.extend(preserved_fields);
+        }
         if raw.relative.is_some()
             && (raw.monitor.is_some()
                 || raw.crop.is_some()
@@ -498,6 +627,10 @@ impl Profile {
             })
             .transpose()?;
         let profile = Self {
+            settings_revision: raw.settings_revision,
+            imported_otd: raw.imported_otd,
+            preserved_fields: archived,
+            diagnostics,
             otd_mapping: raw.absolute,
             contact: raw.bindings,
             radial_follow: raw.radial_follow,
@@ -521,12 +654,42 @@ impl Profile {
         if !matches!(profile.rotation, 0 | 90 | 180 | 270) {
             return Err("rotation must be 0, 90, 180, or 270".into());
         }
+        profile.validate_filter_execution()?;
         Ok(profile)
     }
 
+    /// Reject double execution after migrating a native filter to a managed DLL.
+    pub fn validate_filter_execution(&self) -> Result<(), String> {
+        if !self.radial_follow.is_empty()
+            && self.plugins.iter().any(|plugin| {
+                plugin.enabled
+                    && plugin.kind == crate::plugins::PluginKind::Dotnet
+                    && plugin.type_name == FILTER_PATH
+            })
+        {
+            return Err("Radial Follow tablet-space is enabled both natively and as a .NET filter. Remove the native entry before enabling its managed replacement.".into());
+        }
+        Ok(())
+    }
+
+    /// Call once when an edit is committed; serialization itself is stable.
+    pub fn advance_revision(&mut self) -> Result<(), String> {
+        self.settings_revision = self
+            .settings_revision
+            .checked_add(1)
+            .ok_or("profile settings revision exhausted")?;
+        Ok(())
+    }
+
     pub fn to_toml(&self) -> Result<String, String> {
+        self.validate_filter_execution()?;
         let simple = self.otd_mapping.is_none() && self.relative.is_none();
         let raw = RawProfile {
+            schema_version: PROFILE_SCHEMA_VERSION,
+            settings_revision: self.settings_revision,
+            imported_otd: self.imported_otd.clone(),
+            preserved_fields: self.preserved_fields.clone(),
+            diagnostics: self.diagnostics.clone(),
             monitor: if simple { self.monitor } else { None },
             rotation: simple.then_some(self.rotation),
             crop: simple.then_some(RawCrop {
@@ -552,6 +715,12 @@ impl Profile {
 
     pub fn print_summary(&self) {
         println!("Profile: {}", self.source);
+        for diagnostic in &self.diagnostics {
+            println!(
+                "Profile {} [{}]: {}",
+                diagnostic.kind, diagnostic.location, diagnostic.message
+            );
+        }
         for plugin in &self.plugins {
             println!(
                 "Plugin {:?}: {} [{}] enabled={}",
@@ -727,12 +896,11 @@ mod tests {
     }
 
     #[test]
-    fn automatically_enables_saved_radial_follow_when_otd_flag_is_off() {
+    fn honors_disabled_saved_radial_follow_when_otd_flag_is_off() {
         let json = r#"{"Profiles":[{"Tablet":"Wacom PTH-660","OutputMode":{"Path":"OpenTabletDriver.Desktop.Output.AbsoluteMode","Enable":true},"Filters":[{"Path":"RadialFollow.RadialFollowSmoothingTabletSpace","Enable":false,"Settings":[{"Property":"OuterRadius","Value":0.7039}]}],"AbsoluteModeSettings":{"Display":{"Width":2560,"Height":1440,"X":1280,"Y":720,"Rotation":0},"Tablet":{"Width":85,"Height":47.8125,"X":110,"Y":23.90625,"Rotation":0},"EnableClipping":true,"EnableAreaLimiting":false},"Bindings":{}}]}"#;
         let profile = Profile::from_otd_text(json, Path::new("settings.json")).unwrap();
-        assert_eq!(profile.radial_follow.len(), 1);
-        assert_eq!(profile.auto_enabled_radial_follow, 1);
-        assert_eq!(profile.radial_follow[0].outer_radius, 0.7039);
+        assert!(profile.radial_follow.is_empty());
+        assert_eq!(profile.auto_enabled_radial_follow, 0);
     }
 
     fn relative_profile() -> serde_json::Value {
