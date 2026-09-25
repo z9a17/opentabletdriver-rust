@@ -12,7 +12,10 @@ use crate::radial_follow::{FILTER_NAME, FILTER_PATH, RadialFollowSettings};
 use crate::relative::RelativeSettings;
 
 mod schema;
-pub use schema::{ImportOptions, ImportedOtdSettings, PROFILE_SCHEMA_VERSION, ProfileDiagnostic};
+pub use schema::{
+    ImportOptions, ImportedOtdSettings, NamedProfile, NativeProfileCollection, OtdImportPreview,
+    OtdProfileSummary, OtdSettingsDocument, PROFILE_SCHEMA_VERSION, ProfileDiagnostic,
+};
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -222,15 +225,30 @@ fn parse_reset_delay(value: &str) -> Result<Duration, String> {
     })
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct OtdBindings {
-    #[serde(default)]
+    #[serde(default = "default_activation_percent")]
     tip_activation_threshold: f64,
     tip_button: Option<OtdStore>,
-    #[serde(default)]
+    #[serde(default = "default_activation_percent")]
     eraser_activation_threshold: f64,
     eraser_button: Option<OtdStore>,
+}
+
+fn default_activation_percent() -> f64 {
+    1.0
+}
+
+impl Default for OtdBindings {
+    fn default() -> Self {
+        Self {
+            tip_activation_threshold: 1.0,
+            tip_button: None,
+            eraser_activation_threshold: 1.0,
+            eraser_button: None,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -402,12 +420,35 @@ impl Profile {
                 profile.get("Tablet").and_then(serde_json::Value::as_str) == Some("Wacom PTH-660")
             })
             .ok_or("OpenTabletDriver settings have no Wacom PTH-660 profile")?;
-        let selected: OtdProfile =
-            serde_json::from_value(settings.profiles[selected_index].clone())
-                .map_err(|e| format!("invalid PTH-660 profile: {e}"))?;
+        Self::from_otd_profile_text(text, path, selected_index, options)
+    }
+
+    /// Import a chosen profile without claiming that its tablet is supported by
+    /// the active device backend. Call validate_runtime_tablet before execution.
+    pub fn from_otd_profile_text(
+        text: &str,
+        path: &Path,
+        selected_index: usize,
+        options: ImportOptions,
+    ) -> Result<Self, String> {
+        let settings: OtdSettings = serde_json::from_str(text)
+            .map_err(|e| format!("invalid OpenTabletDriver settings {}: {e}", path.display()))?;
+        let selected_value = settings
+            .profiles
+            .get(selected_index)
+            .ok_or_else(|| format!("OTD profile index {selected_index} does not exist"))?;
+        let tablet_name = selected_value
+            .get("Tablet")
+            .and_then(serde_json::Value::as_str)
+            .filter(|name| !name.is_empty())
+            .ok_or("selected OTD profile has no tablet name")?;
+        let selected: OtdProfile = serde_json::from_value(selected_value.clone())
+            .map_err(|e| format!("invalid {tablet_name} profile: {e}"))?;
         let mut diagnostics = schema::import_diagnostics(text, selected_index)?;
         if !selected.output_mode.enable {
-            return Err("the PTH-660 output mode is disabled".into());
+            return Err(format!(
+                "the {tablet_name} output mode is disabled; its settings remain available in the import preview"
+            ));
         }
         let (otd_mapping, relative) = match selected.output_mode.path.as_str() {
             "OpenTabletDriver.Desktop.Output.AbsoluteMode" => {
@@ -442,7 +483,7 @@ impl Profile {
             }
             _ => {
                 return Err(format!(
-                    "unsupported PTH-660 output mode: {}; choose Absolute Mode or Relative Mode",
+                    "unsupported {tablet_name} output mode: {}; choose Absolute Mode or Relative Mode",
                     selected.output_mode.path
                 ));
             }
@@ -534,6 +575,9 @@ impl Profile {
     pub fn from_toml_text(text: &str, path: &Path) -> Result<Self, String> {
         let mut document: toml::Value =
             toml::from_str(text).map_err(|e| format!("invalid profile {}: {e}", path.display()))?;
+        if document.get("format").and_then(toml::Value::as_str) == Some("profile_collection") {
+            return Err("This file is a profile collection. Load it with NativeProfileCollection and select a profile before editing or running it.".into());
+        }
         let preserved_fields = schema::extract_unknown_fields(&mut document);
         let raw: RawProfile = document
             .try_into()
@@ -670,6 +714,39 @@ impl Profile {
             return Err("Radial Follow tablet-space is enabled both natively and as a .NET filter. Remove the native entry before enabling its managed replacement.".into());
         }
         Ok(())
+    }
+
+    pub fn tablet_name(&self) -> Result<Option<String>, String> {
+        let Some(imported) = &self.imported_otd else {
+            return Ok(None);
+        };
+        let document: serde_json::Value = serde_json::from_str(&imported.settings_json)
+            .map_err(|error| format!("invalid preserved OTD settings: {error}"))?;
+        document
+            .get("Profiles")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|profiles| profiles.get(imported.selected_profile))
+            .and_then(|profile| profile.get("Tablet"))
+            .and_then(serde_json::Value::as_str)
+            .map(|name| Some(name.to_owned()))
+            .ok_or_else(|| "preserved OTD profile has no tablet identity".into())
+    }
+
+    pub fn validate_runtime_tablet(&self, supported_tablet: &str) -> Result<(), String> {
+        if let Some(name) = self.tablet_name()?
+            && name != supported_tablet
+        {
+            return Err(format!(
+                "Profile targets {name}; this runtime currently supports {supported_tablet}. The profile can be stored or exported, but cannot be started on this device backend."
+            ));
+        }
+        Ok(())
+    }
+
+    /// Reconcile representable edits into a copy of the complete OTD document.
+    /// Never writes the original settings file.
+    pub fn to_otd_json(&self) -> Result<String, String> {
+        schema::export_otd(self)
     }
 
     /// Call once when an edit is committed; serialization itself is stable.

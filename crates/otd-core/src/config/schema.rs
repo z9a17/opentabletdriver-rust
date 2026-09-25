@@ -2,8 +2,12 @@
 //! Contract: OTD 736003ed72c8bbb28033b039d5a0bb76c344145c,
 //! Desktop/Settings.cs, Profiles/Profile.cs and Reflection/PluginSettingStore.cs.
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+use super::Profile;
 
 pub const PROFILE_SCHEMA_VERSION: u32 = 1;
 
@@ -72,8 +76,17 @@ pub(super) fn import_diagnostics(
     let document: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
     let mut diagnostics = vec![ProfileDiagnostic::warning(
         "imported_otd",
-        "The full original OTD settings collection is preserved as an archive. Only the selected PTH-660 mapping, supported tip/eraser actions and native Radial Follow entries are imported for execution; edits to the Rust profile do not rewrite the archived JSON.".into(),
+        "The full original OTD settings collection is preserved as an archive. Only the selected mapping, supported tip/eraser actions and native Radial Follow entries are imported; tablet execution support is checked separately. Export reconciles supported edits into a copy and never rewrites the archive.".into(),
     )];
+    if let Some(revision) = document.get("Revision").and_then(Value::as_str) {
+        let version = revision.split(['+', '-']).next().unwrap_or(revision);
+        if !matches!(version, "0.6.7" | "0.6.7.0") {
+            diagnostics.push(ProfileDiagnostic::warning(
+                "Revision",
+                format!("Source revision {revision} differs from the pinned OTD 0.6.7 baseline; unsupported settings remain preserved."),
+            ));
+        }
+    }
     if let Some(root) = document.as_object() {
         for (name, value) in root {
             if name != "Profiles" {
@@ -283,4 +296,648 @@ fn extract_table(
             preserved.insert(format!("{path}/{segment}"), value);
         }
     }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct OtdProfileSummary {
+    pub index: usize,
+    pub tablet: String,
+    pub output_mode: String,
+    pub enabled: bool,
+    pub runtime_tablet_supported: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct OtdImportPreview {
+    pub profile: OtdProfileSummary,
+    pub migrated_fields: Vec<String>,
+    pub diagnostics: Vec<ProfileDiagnostic>,
+    pub import_error: Option<String>,
+    pub legacy_force_radial_follow: bool,
+}
+
+/// A complete source document. Previewing/importing does not write files or
+/// resolve/load plugins. Unsupported profiles remain available for later work.
+#[derive(Clone, Debug)]
+pub struct OtdSettingsDocument {
+    source_path: PathBuf,
+    source_json: String,
+    document: Value,
+}
+
+impl OtdSettingsDocument {
+    pub fn load(path: &Path) -> Result<Self, String> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|error| format!("cannot read OTD settings {}: {error}", path.display()))?;
+        Self::from_json(&text, path)
+    }
+
+    pub fn from_json(text: &str, source_path: &Path) -> Result<Self, String> {
+        let document: Value = serde_json::from_str(text).map_err(|error| error.to_string())?;
+        if document.get("Profiles").and_then(Value::as_array).is_none() {
+            return Err("OTD settings require a Profiles array".into());
+        }
+        Ok(Self {
+            source_path: source_path.to_owned(),
+            source_json: text.to_owned(),
+            document,
+        })
+    }
+
+    pub fn profiles(&self) -> Vec<OtdProfileSummary> {
+        self.document["Profiles"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .map(|(index, profile)| {
+                let tablet = profile["Tablet"].as_str().unwrap_or("").to_owned();
+                OtdProfileSummary {
+                    index,
+                    runtime_tablet_supported: tablet == "Wacom PTH-660",
+                    tablet,
+                    output_mode: profile["OutputMode"]["Path"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_owned(),
+                    enabled: profile["OutputMode"]["Enable"].as_bool().unwrap_or(false),
+                }
+            })
+            .collect()
+    }
+
+    pub fn revision(&self) -> Option<&str> {
+        self.document.get("Revision").and_then(Value::as_str)
+    }
+
+    pub fn original_json(&self) -> &str {
+        &self.source_json
+    }
+
+    pub fn preview(
+        &self,
+        index: usize,
+        options: ImportOptions,
+    ) -> Result<OtdImportPreview, String> {
+        let profile = self
+            .profiles()
+            .into_iter()
+            .nth(index)
+            .ok_or_else(|| format!("OTD profile index {index} does not exist"))?;
+        let mut migrated_fields = Vec::new();
+        let (mut diagnostics, import_error) = match self.import(index, options) {
+            Ok(imported) => {
+                migrated_fields.push(
+                    if imported.relative.is_some() {
+                        "RelativeModeSettings"
+                    } else {
+                        "AbsoluteModeSettings"
+                    }
+                    .into(),
+                );
+                migrated_fields.push("Bindings.TipActivationThreshold".into());
+                migrated_fields.push("Bindings.EraserActivationThreshold".into());
+                if imported.contact.tip_enabled {
+                    migrated_fields.push("Bindings.TipButton".into());
+                }
+                if imported.contact.eraser_enabled {
+                    migrated_fields.push("Bindings.EraserButton".into());
+                }
+                if !imported.radial_follow.is_empty() {
+                    migrated_fields.push(format!(
+                        "{} native Radial Follow filter(s)",
+                        imported.radial_follow.len()
+                    ));
+                }
+                (imported.diagnostics, None)
+            }
+            Err(error) => (import_diagnostics(&self.source_json, index)?, Some(error)),
+        };
+        if !profile.runtime_tablet_supported {
+            diagnostics.push(ProfileDiagnostic::unsupported(
+                format!("Profiles[{index}].Tablet"),
+                format!("{} can be stored or exported, but the Windows runtime currently supports only Wacom PTH-660.", profile.tablet),
+            ));
+        }
+        if let Some(error) = &import_error {
+            diagnostics.push(ProfileDiagnostic::unsupported(
+                format!("Profiles[{index}]"),
+                error.clone(),
+            ));
+        }
+        Ok(OtdImportPreview {
+            profile,
+            migrated_fields,
+            diagnostics,
+            import_error,
+            legacy_force_radial_follow: options.legacy_force_radial_follow,
+        })
+    }
+
+    pub fn import(&self, index: usize, options: ImportOptions) -> Result<Profile, String> {
+        Profile::from_otd_profile_text(&self.source_json, &self.source_path, index, options)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct NamedProfile {
+    pub name: String,
+    pub profile: Profile,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct NativeProfileCollection {
+    pub settings_revision: u64,
+    pub selected_profile: usize,
+    pub profiles: Vec<NamedProfile>,
+    pub preserved_fields: BTreeMap<String, toml::Value>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct RawCollection {
+    format: String,
+    schema_version: u32,
+    #[serde(default)]
+    settings_revision: u64,
+    #[serde(default)]
+    selected_profile: usize,
+    profiles: Vec<RawNamedProfile>,
+    #[serde(default, flatten)]
+    preserved_fields: BTreeMap<String, toml::Value>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct RawNamedProfile {
+    name: String,
+    profile: toml::Value,
+    #[serde(default, flatten)]
+    preserved_fields: BTreeMap<String, toml::Value>,
+}
+
+impl NativeProfileCollection {
+    pub fn load(path: &Path) -> Result<Self, String> {
+        let text = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
+        Self::from_toml_text(&text, path)
+    }
+
+    pub fn from_toml_text(text: &str, path: &Path) -> Result<Self, String> {
+        let raw: RawCollection = toml::from_str(text).map_err(|error| error.to_string())?;
+        if raw.format != "profile_collection" || raw.schema_version != PROFILE_SCHEMA_VERSION {
+            return Err("unsupported native profile collection format or schema version".into());
+        }
+        let profiles = raw
+            .profiles
+            .into_iter()
+            .map(|entry| {
+                let text = toml::to_string(&entry.profile).map_err(|error| error.to_string())?;
+                let mut profile = Profile::from_toml_text(&text, path)?;
+                for (key, value) in entry.preserved_fields {
+                    let escaped = key.replace('~', "~0").replace('/', "~1");
+                    profile
+                        .preserved_fields
+                        .insert(format!("/collection_entry/{escaped}"), value);
+                }
+                Ok(NamedProfile {
+                    name: entry.name,
+                    profile,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let collection = Self {
+            settings_revision: raw.settings_revision,
+            selected_profile: raw.selected_profile,
+            profiles,
+            preserved_fields: raw.preserved_fields,
+        };
+        collection.validate()?;
+        Ok(collection)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.profiles.is_empty() || self.selected_profile >= self.profiles.len() {
+            return Err("a profile collection needs at least one profile and a valid selected_profile index".into());
+        }
+        let mut names = std::collections::BTreeSet::new();
+        for entry in &self.profiles {
+            if entry.name.trim().is_empty() || !names.insert(entry.name.as_str()) {
+                return Err("profile collection names must be nonempty and unique".into());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn selected(&self) -> Result<&Profile, String> {
+        self.profiles
+            .get(self.selected_profile)
+            .map(|entry| &entry.profile)
+            .ok_or_else(|| "selected native profile does not exist".into())
+    }
+
+    pub fn select(&mut self, index: usize) -> Result<(), String> {
+        if index >= self.profiles.len() {
+            return Err(format!("native profile index {index} does not exist"));
+        }
+        if self.selected_profile != index {
+            self.settings_revision = self
+                .settings_revision
+                .checked_add(1)
+                .ok_or("settings revision exhausted")?;
+            self.selected_profile = index;
+        }
+        Ok(())
+    }
+
+    pub fn to_toml(&self) -> Result<String, String> {
+        self.validate()?;
+        let profiles = self
+            .profiles
+            .iter()
+            .map(|entry| {
+                let profile: toml::Value =
+                    toml::from_str(&entry.profile.to_toml()?).map_err(|error| error.to_string())?;
+                Ok(RawNamedProfile {
+                    name: entry.name.clone(),
+                    profile,
+                    preserved_fields: BTreeMap::new(),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        toml::to_string_pretty(&RawCollection {
+            format: "profile_collection".into(),
+            schema_version: PROFILE_SCHEMA_VERSION,
+            settings_revision: self.settings_revision,
+            selected_profile: self.selected_profile,
+            profiles,
+            preserved_fields: self.preserved_fields.clone(),
+        })
+        .map_err(|error| error.to_string())
+    }
+}
+
+pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
+    profile.validate_filter_execution()?;
+    let imported = profile.imported_otd.as_ref()
+        .ok_or("OTD export requires an imported source document; a standalone Rust profile has no original tablet/store identities")?;
+    imported.validate()?;
+    if !profile.plugins.is_empty() {
+        return Err("OTD export cannot represent Rust DLL paths or reconcile their order with preserved OTD filters yet. Remove DLL entries from the export copy or keep the Rust TOML profile.".into());
+    }
+    if profile.device_path.is_some()
+        || profile.monitor.is_some()
+        || profile.rotation != 0
+        || profile.crop != crate::mapping::Crop::default()
+    {
+        return Err("Rust device_path/monitor/crop/rotation overrides cannot be represented exactly in an OTD export; use explicit absolute areas or relative settings.".into());
+    }
+    let baseline = Profile::from_otd_profile_text(
+        &imported.settings_json,
+        Path::new(&imported.source_path),
+        imported.selected_profile,
+        ImportOptions {
+            legacy_force_radial_follow: imported.legacy_force_radial_follow,
+        },
+    )?;
+    let original: Value =
+        serde_json::from_str(&imported.settings_json).map_err(|error| error.to_string())?;
+    let mut document = original.clone();
+    let selected = &mut document["Profiles"][imported.selected_profile];
+    let target_mode;
+    if let Some(relative) = profile.relative {
+        if profile.otd_mapping.is_some() {
+            return Err("OTD export requires exactly one output mode".into());
+        }
+        relative.validate()?;
+        target_mode = "OpenTabletDriver.Desktop.Output.RelativeMode";
+        let old = baseline.relative;
+        let settings = &mut selected["RelativeModeSettings"];
+        for (key, current, previous) in [
+            (
+                "XSensitivity",
+                relative.sensitivity.0,
+                old.map(|value| value.sensitivity.0),
+            ),
+            (
+                "YSensitivity",
+                relative.sensitivity.1,
+                old.map(|value| value.sensitivity.1),
+            ),
+            (
+                "RelativeRotation",
+                relative.rotation,
+                old.map(|value| value.rotation),
+            ),
+        ] {
+            if previous != Some(current) {
+                set_field(settings, key, json!(current))?;
+            }
+        }
+        if old.map(|value| value.reset_delay) != Some(relative.reset_delay) {
+            set_field(
+                settings,
+                "RelativeResetDelay",
+                Value::String(timespan(relative.reset_delay)?),
+            )?;
+        }
+    } else if let Some(mapping) = profile.otd_mapping {
+        target_mode = "OpenTabletDriver.Desktop.Output.AbsoluteMode";
+        let settings = &mut selected["AbsoluteModeSettings"];
+        for (name, area, previous) in [
+            (
+                "Display",
+                mapping.display,
+                baseline.otd_mapping.map(|value| value.display),
+            ),
+            (
+                "Tablet",
+                mapping.tablet,
+                baseline.otd_mapping.map(|value| value.tablet),
+            ),
+        ] {
+            if ![area.width, area.height, area.x, area.y, area.rotation]
+                .into_iter()
+                .all(f64::is_finite)
+                || area.width <= 0.0
+                || area.height <= 0.0
+            {
+                return Err(
+                    "OTD export requires finite absolute areas with positive dimensions".into(),
+                );
+            }
+            if previous != Some(area) {
+                ensure_object(settings)?;
+                for (key, current, old) in [
+                    ("Width", area.width, previous.map(|value| value.width)),
+                    ("Height", area.height, previous.map(|value| value.height)),
+                    ("X", area.x, previous.map(|value| value.x)),
+                    ("Y", area.y, previous.map(|value| value.y)),
+                    (
+                        "Rotation",
+                        area.rotation,
+                        previous.map(|value| value.rotation),
+                    ),
+                ] {
+                    if old != Some(current) {
+                        set_field(&mut settings[name], key, json!(current))?;
+                    }
+                }
+            }
+        }
+        for (key, current, old) in [
+            (
+                "EnableClipping",
+                mapping.clipping,
+                baseline.otd_mapping.map(|value| value.clipping),
+            ),
+            (
+                "EnableAreaLimiting",
+                mapping.limiting,
+                baseline.otd_mapping.map(|value| value.limiting),
+            ),
+        ] {
+            if old != Some(current) {
+                set_field(settings, key, json!(current))?;
+            }
+        }
+    } else {
+        return Err("OTD export needs explicit absolute areas or relative settings; simple Rust crops need display/device geometry conversion first".into());
+    }
+    if selected["OutputMode"]["Path"].as_str() != Some(target_mode) {
+        if selected["OutputMode"]["Settings"]
+            .as_array()
+            .is_some_and(|values| !values.is_empty())
+        {
+            return Err(
+                "cannot change output-mode type while preserving type-specific source settings"
+                    .into(),
+            );
+        }
+        set_field(&mut selected["OutputMode"], "Path", json!(target_mode))?;
+    }
+    for (
+        button,
+        threshold,
+        current_enabled,
+        old_enabled,
+        current_threshold,
+        old_threshold,
+        action,
+    ) in [
+        (
+            "TipButton",
+            "TipActivationThreshold",
+            profile.contact.tip_enabled,
+            baseline.contact.tip_enabled,
+            profile.contact.tip_threshold_raw,
+            baseline.contact.tip_threshold_raw,
+            "Tip",
+        ),
+        (
+            "EraserButton",
+            "EraserActivationThreshold",
+            profile.contact.eraser_enabled,
+            baseline.contact.eraser_enabled,
+            profile.contact.eraser_threshold_raw,
+            baseline.contact.eraser_threshold_raw,
+            "Eraser",
+        ),
+    ] {
+        if current_enabled != old_enabled {
+            ensure_object(&mut selected["Bindings"])?;
+            let store = &mut selected["Bindings"][button];
+            if current_enabled {
+                if !store.is_null()
+                    && store["Path"].as_str()
+                        != Some("OpenTabletDriver.Desktop.Binding.AdaptiveBinding")
+                {
+                    return Err(format!(
+                        "cannot replace preserved unsupported {button}; its original binding would be lost"
+                    ));
+                }
+                set_field(
+                    store,
+                    "Path",
+                    json!("OpenTabletDriver.Desktop.Binding.AdaptiveBinding"),
+                )?;
+                set_store_property(store, "Binding", json!(action))?;
+            }
+            set_field(store, "Enable", json!(current_enabled))?;
+        }
+        if current_threshold != old_threshold {
+            let raw = current_threshold.ok_or(
+                "hardware tip-switch contact cannot be represented as an OTD pressure threshold",
+            )?;
+            let percent = (f64::from(raw) - 0.5) * 100.0 / f64::from(crate::protocol::MAX_PRESSURE);
+            if super::activation_raw(percent).ok() != Some(raw) {
+                return Err(format!(
+                    "raw threshold {raw} has no supported OTD percent representation"
+                ));
+            }
+            set_field(&mut selected["Bindings"], threshold, json!(percent))?;
+        }
+    }
+    if profile.radial_follow.len() != baseline.radial_follow.len() {
+        return Err("OTD export cannot infer filter identity/order after adding or removing native Radial Follow entries. Export edits to existing entries or keep the Rust TOML profile.".into());
+    }
+    if !profile.radial_follow.is_empty() {
+        let filters = selected["Filters"]
+            .as_array_mut()
+            .ok_or("source Filters is not an array")?;
+        let mut active = filters.iter_mut().filter(|store| {
+            store["Path"].as_str() == Some(crate::radial_follow::FILTER_PATH)
+                && (store["Enable"].as_bool() == Some(true) || imported.legacy_force_radial_follow)
+        });
+        for (current, old) in profile.radial_follow.iter().zip(&baseline.radial_follow) {
+            let store = active
+                .next()
+                .ok_or("source Radial Follow identities no longer match")?;
+            if imported.legacy_force_radial_follow {
+                set_field(store, "Enable", json!(true))?;
+            }
+            for (key, value, previous) in [
+                ("OuterRadius", current.outer_radius, old.outer_radius),
+                ("InnerRadius", current.inner_radius, old.inner_radius),
+                (
+                    "SmoothingCoefficient",
+                    current.smoothing_coefficient,
+                    old.smoothing_coefficient,
+                ),
+                (
+                    "SoftKneeScale",
+                    current.soft_knee_scale,
+                    old.soft_knee_scale,
+                ),
+                (
+                    "SmoothingLeakCoefficient",
+                    current.smoothing_leak_coefficient,
+                    old.smoothing_leak_coefficient,
+                ),
+            ] {
+                if !value.is_finite() {
+                    return Err(format!("{key} must be finite for OTD export"));
+                }
+                if value != previous {
+                    set_store_property(store, key, json!(value))?;
+                }
+            }
+        }
+    }
+    if document == original {
+        return Ok(imported.settings_json.clone());
+    }
+    reject_precision_loss(&imported.settings_json)?;
+    serde_json::to_string_pretty(&document).map_err(|error| error.to_string())
+}
+
+fn ensure_object(value: &mut Value) -> Result<(), String> {
+    if value.is_null() {
+        *value = json!({});
+    }
+    if !value.is_object() {
+        return Err("cannot reconcile edits into a non-object source setting".into());
+    }
+    Ok(())
+}
+
+fn set_field(value: &mut Value, key: &str, replacement: Value) -> Result<(), String> {
+    ensure_object(value)?;
+    value[key] = replacement;
+    Ok(())
+}
+
+fn set_store_property(store: &mut Value, property: &str, value: Value) -> Result<(), String> {
+    ensure_object(store)?;
+    if store["Settings"].is_null() {
+        store["Settings"] = json!([]);
+    }
+    let settings = store["Settings"]
+        .as_array_mut()
+        .ok_or("source Settings is not an array")?;
+    if let Some(setting) = settings
+        .iter_mut()
+        .rev()
+        .find(|setting| setting["Property"].as_str() == Some(property))
+    {
+        set_field(setting, "Value", value)?;
+    } else {
+        settings.push(json!({"Property": property, "Value": value}));
+    }
+    Ok(())
+}
+
+fn timespan(duration: std::time::Duration) -> Result<String, String> {
+    if duration.as_nanos() % 100 != 0 || duration.as_nanos() / 100 > i64::MAX as u128 {
+        return Err("OTD TimeSpan cannot exactly represent this reset delay; use nonnegative 100-nanosecond ticks within Int64 range".into());
+    }
+    let seconds = duration.as_secs();
+    let days = seconds / 86_400;
+    let prefix = if days == 0 {
+        String::new()
+    } else {
+        format!("{days}.")
+    };
+    Ok(format!(
+        "{prefix}{:02}:{:02}:{:02}.{:07}",
+        (seconds / 3600) % 24,
+        (seconds / 60) % 60,
+        seconds % 60,
+        duration.subsec_nanos() / 100
+    ))
+}
+
+/// The archive is exact. Changed exports use serde_json's numeric storage, so
+/// reject source numbers whose decimal value would change during serialization.
+fn reject_precision_loss(text: &str) -> Result<(), String> {
+    let mut chars = text.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character == '"' {
+            while let Some(inner) = chars.next() {
+                if inner == '\\' {
+                    chars.next();
+                } else if inner == '"' {
+                    break;
+                }
+            }
+        } else if character == '-' || character.is_ascii_digit() {
+            let mut token = String::from(character);
+            while chars.peek().is_some_and(|value| {
+                value.is_ascii_digit() || matches!(value, '.' | 'e' | 'E' | '+' | '-')
+            }) {
+                token.push(chars.next().unwrap());
+            }
+            let value: serde_json::Number =
+                serde_json::from_str(&token).map_err(|error| error.to_string())?;
+            if decimal_identity(&token) != decimal_identity(&value.to_string()) {
+                return Err("OTD export would round a preserved JSON number. Keep the exact imported source or use the Rust TOML archive; arbitrary-precision JSON export is not implemented.".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn decimal_identity(text: &str) -> Option<(bool, String, i64)> {
+    let negative = text.starts_with('-');
+    let unsigned = text.trim_start_matches('-');
+    let (mantissa, exponent) = unsigned
+        .split_once(['e', 'E'])
+        .map_or((unsigned, "0"), |parts| parts);
+    let fractional = mantissa
+        .split_once('.')
+        .map_or(0, |(_, digits)| digits.len());
+    let mut exponent = exponent
+        .parse::<i64>()
+        .ok()?
+        .checked_sub(fractional as i64)?;
+    let digits: String = mantissa
+        .chars()
+        .filter(|character| *character != '.')
+        .collect();
+    let mut digits = digits.trim_start_matches('0').to_owned();
+    if digits.is_empty() {
+        return Some((false, "0".into(), 0));
+    }
+    while digits.ends_with('0') {
+        digits.pop();
+        exponent = exponent.checked_add(1)?;
+    }
+    Some((negative, digits, exponent))
 }
