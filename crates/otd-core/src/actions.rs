@@ -223,7 +223,6 @@ impl<const ACTIONS: usize, const HOLDS: usize> ActionState<ACTIONS, HOLDS> {
     /// Within each group portable action order is stable, independent of slot
     /// reuse and binding update order. This is held-state reconciliation, not a
     /// queue of taps: a press removed before output is accepted is cancelled.
-    #[must_use]
     pub fn next_pending(&mut self) -> Option<PendingTransition<'_, ACTIONS, HOLDS>> {
         let index = self.pending_index()?;
         let entry = self.actions[index]?;
@@ -263,9 +262,10 @@ impl<const ACTIONS: usize, const HOLDS: usize> ActionState<ACTIONS, HOLDS> {
 
     fn remove_hold(&mut self, index: usize) {
         if let Some(hold) = self.holds[index].take() {
-            if let Some(entry) = self.actions[hold.action_index].as_mut() {
-                entry.desired_holds -= 1;
-            }
+            let entry = self.actions[hold.action_index]
+                .as_mut()
+                .expect("a live hold retains its action slot");
+            entry.desired_holds -= 1;
         }
     }
 
@@ -304,9 +304,10 @@ impl<const ACTIONS: usize, const HOLDS: usize> PendingTransition<'_, ACTIONS, HO
 
     /// Call only after the adapter confirms that this exact event was accepted.
     pub fn acknowledge(self) {
-        if let Some(entry) = self.state.actions[self.index].as_mut() {
-            entry.emitted = self.transition.pressed;
-        }
+        let entry = self.state.actions[self.index]
+            .as_mut()
+            .expect("an exclusive pending guard retains its action slot");
+        entry.emitted = self.transition.pressed;
         self.state.reclaim_released();
     }
 }
