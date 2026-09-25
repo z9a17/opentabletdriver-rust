@@ -10,7 +10,9 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Storage::FileSystem::ReadFile;
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
-use windows_sys::Win32::System::Threading::{ResetEvent, WaitForMultipleObjects};
+use windows_sys::Win32::System::Threading::{
+    ResetEvent, WaitForMultipleObjects, WaitForSingleObject,
+};
 
 pub use otd_core::session::Mode;
 use otd_core::session::{Read, ReportSource};
@@ -114,6 +116,14 @@ impl<'a> HidSource<'a> {
         self.pending = false;
     }
 
+    fn stopped(&self) -> io::Result<bool> {
+        match unsafe { WaitForSingleObject(self.stop.raw(), 0) } {
+            WAIT_OBJECT_0 => Ok(true),
+            WAIT_TIMEOUT => Ok(false),
+            _ => Err(io::Error::last_os_error()),
+        }
+    }
+
     fn completed(&self, queued: bool) -> io::Result<Read<'_>> {
         let ready = Instant::now();
         let mut transferred = 0u32;
@@ -125,6 +135,11 @@ impl<'a> HidSource<'a> {
                 return Ok(Read::Ended);
             }
             return Err(error);
+        }
+        // A synchronous ReadFile completion never enters the multi-event wait.
+        // Recheck before exposing it so a queued stream cannot starve Stop.
+        if self.stopped()? {
+            return Ok(Read::Ended);
         }
         if transferred as usize > self.buffer.len() {
             return Err(io::Error::new(
@@ -150,6 +165,10 @@ impl ReportSource for HidSource<'_> {
     }
 
     fn next(&mut self, timeout: Duration) -> io::Result<Read<'_>> {
+        if self.stopped()? {
+            self.cancel();
+            return Ok(Read::Ended);
+        }
         if !self.pending {
             if unsafe { ResetEvent(self.read_event.raw()) } == 0 {
                 return Err(io::Error::last_os_error());
@@ -179,21 +198,22 @@ impl ReportSource for HidSource<'_> {
         }
         let until = Instant::now() + timeout;
         let handles = [
+            self.stop.raw(),
             self.read_event.raw(),
             self.notification.event(),
-            self.stop.raw(),
         ];
         loop {
             // Other devices' notifications do not extend the wait.
             let remaining = until.saturating_duration_since(Instant::now());
             let millis = u32::try_from(remaining.as_millis()).unwrap_or(u32::MAX);
             match wait(&handles, millis) {
-                Ok(Some(0)) => {
+                // Stop takes precedence when both stop and read are signaled.
+                Ok(Some(1)) => {
                     self.pending = false;
                     return self.completed(false);
                 }
                 // Some HID device arrived or left; only this one matters.
-                Ok(Some(1)) if self.candidate.is_present() => {}
+                Ok(Some(2)) if self.candidate.is_present() => {}
                 Ok(Some(_)) => {
                     self.cancel();
                     return Ok(Read::Ended);

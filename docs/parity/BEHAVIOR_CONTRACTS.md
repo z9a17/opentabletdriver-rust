@@ -1,8 +1,8 @@
 # Behavior contracts (F01)
 
-This document records the observable behavior of the Windows PTH-660 driver through 0.8.0, and compares each stage with OpenTabletDriver 0.6.7 ([`736003e`][otd]). The [golden traces](#golden-traces) replay recorded report sequences through the driver's own pipeline and fail on any output change. Every difference from upstream is listed [at the end](#differences), with the backlog task that resolves it or the reason it stays.
+This document records the observable behavior of the Windows PTH-660 driver through 0.9.0, and compares each stage with OpenTabletDriver 0.6.7 ([`736003e`][otd]). The [golden traces](#golden-traces) replay recorded report sequences through the driver's own pipeline and fail on any output change. Every difference from upstream is listed [at the end](#differences), with the backlog task that resolves it or the reason it stays.
 
-Historical golden traces describe their recorded paths. The 0.8.0 additions below have no new local test or hardware evidence; updating this contract does not extend those earlier results.
+Historical golden traces describe their recorded paths. The 0.8.0/0.9.0 additions below have no new local test or hardware evidence; updating this contract does not extend those earlier results.
 
 ## Report path and stage order
 
@@ -11,10 +11,10 @@ The Rust driver handles one device session on one thread, with no queue and no l
 1. An overlapped `ReadFile` returns one report from the 192-byte pen collection. The Windows HID class driver buffers reports that arrive while the thread works.
 2. `protocol::parse` decodes report `0x10` and `0x1E` into a `PenReport`. Other report IDs are ignored; a short report, or a position or pressure outside the digitizer's range, is malformed. Neither produces output nor changes any state.
 3. `ReportPipeline` (`crates/otd-core/src/pipeline.rs`) runs the rest for each decoded report:
-   1. Contact state, from the raw report ([Pen state](#pen-state-hover-and-contact)).
-   2. The built-in Radial Follow filters, then enabled PreTransform DLL filters in profile order.
-   3. Absolute or relative mapping, then enabled Pixels/PostTransform DLL filters in profile order when using absolute output.
-   4. At most one `SendInput` packet. It carries the move and any button change together, so the button event lands at the new position.
+   1. Input/proximity and relative timeout gates, then built-in Radial Follow and enabled PreTransform DLL filters in profile order.
+   2. For each synchronous emitted report, absolute or relative mapping, then enabled Pixels/PostTransform DLL filters in profile order. Zero emissions suppress downstream processing.
+   3. Existing tip/eraser contact policy uses supported post-filter pressure/eraser values. General side-button/auxiliary binding integration remains open.
+   4. At most one combined move/button `SendInput` packet per output emission. Several emissions can produce several packets from one input report.
 
 Upstream runs each endpoint on a [`DeviceReader`][DeviceReader] thread. It parses the report, takes the tablet's [lock][InputDeviceTree], and passes it to the output mode ([`OutputMode.Read`][OutputMode]):
 
@@ -43,13 +43,13 @@ Rust and upstream normalized coordinates for the same transform result differ by
 - **Tip or eraser.** Invert (`0x10`) selects the eraser binding, as upstream's `Eraser` does. Each binding can be disabled; a disabled one never clicks.
 - **Threshold.** With a raw threshold, contact means `pressure >= threshold`. An imported OpenTabletDriver percentage becomes the first raw value with `pressure / 8191 × 100 > percent` in single precision, and 100 % means full pressure; this reproduces [`ThresholdBindingState`][ThresholdBindingState]. For 1 % that is raw 82.
 - **Tip switch.** A Rust TOML profile without a threshold uses the tip switch bit (`0x01`) instead of pressure.
-- Pressure is not rewritten; the driver has no pressure output.
+- Managed filters can alter pressure/eraser before the contact policy; the driver still has no pressure-capable pen output. Without an explicit threshold, native input retains its tip switch; replacement managed reports lacking that switch use nonzero pressure.
 
 ## Filters and time
 
 - The built-in Radial Follow port runs per report in tablet millimetres. It resets to the report when 50 ms or more have passed since the previous one, or when its output is not finite, as the original [`RadialFollowCore`][RadialFollowCore] does (`!(elapsed < 50)`).
 - Time is the moment the report's read completed. The Radial Follow reset, the relative reset delay and the DLL filters' `time_ns` all use it. Upstream measures each element's elapsed time with its own `HPETDeltaStopwatch` when the report reaches it. Neither driver uses device timestamps.
-- DLL filters: native ABI version 1 filters position only. The .NET bridge runs synchronous PreTransform position filters before mapping and Pixels/PostTransform position filters after absolute mapping; it applies only their X/Y. Pixel filters see desktop pixels and cannot run in Relative Mode. DLL filters reset at session start and whenever the pen is not detected. The built-in Radial Follow resets only by its 50 ms rule.
+- Native ABI version 1 filters position only. The managed graph preserves synchronous Emit ordering and the emitted object across downstream nodes; PostTransform sees desktop pixels or relative deltas. Async/off-thread Emit is rejected. The built-in Radial Follow retains its 50 ms reset rule; managed range-loss reports traverse the graph, while physical loss independently releases native held output even if the plugin suppresses that notification.
 
 ## Mapping
 
@@ -60,17 +60,18 @@ Rust and upstream normalized coordinates for the same transform result differ by
 
 ## Output
 
-- At most one `SendInput` per report. The move precedes the button change within the packet.
+- At most one `SendInput` per output emission; one input may emit several reports. The move precedes the button change within the packet.
 - Absolute packets use `MOVE | ABSOLUTE | VIRTUALDESK`. A report that would repeat the last normalized position without a button change sends nothing.
 - The tip and the eraser both press the left button, as upstream's `AdaptiveBinding` does for a mouse pointer.
 - If `SendInput` fails, the driver counts the failure and warns at most every 5 s. Button state is committed only after a successful call, so the next report retries the transition; relative movement from the failed packet is dropped rather than replayed.
 - A held button is released when the pen is not detected, when a display change makes the absolute mapping invalid, and when the session ends.
+- Failed release remains pending and is retried even while reports are paused. A terminal cleanup failure propagates out of the session/supervisor instead of reconnecting or reporting successful stop. Original-driver restoration failures are surfaced to daemon status. These error paths have no current live validation.
 
 ## Session lifecycle, cancellation and ownership
 
 - A session opens the pen collection and ends on the stop event, removal of that device, a read error, or the capture deadline. Ending cancels the pending read with `CancelIoEx` and waits for it to complete before the buffer is reused. Then the session releases buttons and logs its counters and timing. The driver then waits for a PnP arrival or rechecks every 2 s.
-- The session owns and reuses one read buffer. `PenReport` is a copied value and nothing retains it. A native DLL receives a copy of the sample that is valid only during its call. The .NET bridge gives each filter invocation a fresh managed report, raw byte array and pen-button array so retained references stay stable. This adds managed allocation; performance and unchanged-plugin replay evidence for this path are pending. Native envelopes borrow raw bytes and use bounded inline values; retaining one explicitly creates an owned snapshot.
-- Configuration is fixed for a session: the GUI restarts its worker on Apply/Save. The optional headless daemon accepts a validated native profile at Start and requires Stop before another Start; it does not yet support live settings apply.
+- The session owns and reuses one read buffer. `PenReport` is a copied value and nothing retains it. A native DLL receives a copy of the sample that is valid only during its call. The .NET bridge imports an owned managed input report and arrays, then passes each emitted object directly downstream so retained references, identity and mutations remain intact. This adds managed allocation; performance and unchanged-plugin replay evidence for this path are pending. Native envelopes borrow raw bytes and use bounded inline values; retaining one explicitly creates an owned snapshot.
+- Configuration is fixed for a worker: the GUI requests a validated, generation-guarded daemon restart on Apply/Save. Accepted restart waits for old-worker cleanup; a failure cancels the pending replacement. Close detaches the panel without stopping input. C03 transactional hot apply and rollback remain open.
 - Upstream disposes the output mode when a device disconnects and has no explicit button release. Its per-tablet lock serializes pen and auxiliary endpoints; the Rust driver reads no auxiliary endpoint yet.
 
 ## Settings import
@@ -139,13 +140,27 @@ The executables embed OpenTabletDriver's 339 tablet configuration files unchange
 
 The native report envelope borrows raw transport bytes and distinguishes an absent capability from a present zero/released value. Fixed limits are 64 buttons, 16 analog channels, 8 wheels and 32 touch slots; exceeding them is an error rather than truncation. An IntuosV2 auxiliary decoder exposes button/analog values without modifying pen contact or emitting output. Stateful IntuosV2 touch decoding retains 16 slots across packets; a separate Wacom-driver variant removes its transport prefix while preserving the original bytes. These decoders are not wired to live touch or gesture output. These types do not establish support for additional devices or bindings.
 
-The managed pen adapter supplies owned raw bytes, pressure, eraser, pen buttons, tilt and proximity where the source report carries it. Rotation remains available through raw bytes. Filters still must emit exactly one synchronous positional report; suppression, multiple output reports, async scheduling and applying non-position mutations remain open. Range-loss reports also own their raw bytes. Retained input snapshots remain valid at the cost of per-call managed allocation; identity and mutations across chain nodes still require P04; the native-only report path retains its allocation-free design.
+The managed pen adapter supplies owned raw bytes, pressure, eraser, pen buttons, tilt and proximity where available. Rotation remains in raw bytes. Each synchronous Emit immediately traverses downstream filters with the same object, including zero/multiple emission, non-positional reports and supported capability mutations. Managed input vendor concrete types are not emulated. The graph supports at most 32 enabled nodes and the native capability limits above; it does not truncate excess data. Async remains rejected. A failed graph stops the current dispatch without replaying an already accepted output prefix, disables an identified failing node where possible, and attempts held-output cleanup before resuming. Imported snapshots/arrays allocate in managed code; current latency/allocation evidence is pending. The native-only design retains fixed report storage.
 
 Shared action ownership records `(device generation, binding)` holds in fixed storage. Overlapping owners produce one initial press and one final release. Only successful adapter acceptance advances emitted state; failed transitions and cleanup remain pending. Releases precede new presses, with modifier presses first and modifier releases last. A Windows adapter maps supported USB keyboard usages and five mouse buttons; unsupported usages return errors. This foundation is not yet the complete binding engine, and the existing combined move/tip packet path remains in use.
 
-The optional headless daemon keeps one worker independent of CLI connections. Version-1 JSON requests have nonzero IDs and bounded length-prefixed frames (256 KiB); profiles are limited to 128 KiB and status keeps at most 64 messages of 512 bytes. The SID-qualified local named pipe has a protected current-user/SYSTEM ACL and rejects remote clients. Server identity verification by clients, response acknowledgements and cancellable overlapped I/O keep malformed, slow or disconnected clients out of report processing. A connection has a five-second server budget. Request IDs correlate replies but do not deduplicate commands; after a timeout, query status before retrying. The GUI still uses its own worker.
+The optional headless daemon keeps one worker independent of CLI connections. Version-2 JSON requests have nonzero IDs and bounded length-prefixed frames (256 KiB); profiles are limited to 128 KiB and status keeps at most 64 messages of 512 bytes. The SID-qualified local named pipe has a protected current-user/SYSTEM ACL and rejects remote clients. Server identity verification by clients, response acknowledgements and cancellable overlapped I/O keep malformed, slow or disconnected clients out of report processing. A connection has a five-second server budget. Request IDs correlate replies but do not deduplicate commands; after a timeout, query status before retrying. The GUI polls through a separate bounded client thread and deduplicates logs by daemon sequence. Guarded commands carry daemon instance plus worker generation; stale commands fail without stopping a newer worker. Active configuration retrieval updates a clean editor but preserves unsaved edits. Autostart is suppressed once the client has observed an active worker. GUI close cancels only its client. A detected v1 endpoint prevents automatic launch; migration requires stopping/shutting down the old service with its original executable.
 
 Selected HID initialization runs indexed strings, delayed feature reports, then output writes. Failure or a partial write aborts the session before cursor output. This differs from upstream's warning-and-continue policy. Stop interrupts delays and pending output writes; synchronous string/feature calls are only cancellable between calls. Device-specific initialization and these IPC paths have not been exercised on hardware or through a live daemon in this development increment.
+
+## Profile persistence
+
+Core storage stages a sibling file, flushes it, and publishes by rename (Windows write-through) or a no-clobber new-file operation. Cooperating writers hold a `.lock` sidecar; exact loaded bytes are checked again before replacement. External tools ignoring that lock can still race the final check/publication. A crashed writer may leave a lock requiring deliberate removal after confirming no save is running.
+
+`.bak` is a reserved, overwritten sidecar containing the previous destination bytes. Backup rotation can succeed before a later conflict/publication failure; an unsuccessful save does not guarantee the backup stayed unchanged. On Unix, a directory-sync error can be reported after publication already succeeded. Windows ACLs and full metadata are not preserved. These are file-persistence guarantees, not rollback of a running configuration.
+
+The GUI retains a destination revision floor with its loaded-byte snapshot, even when the daemon supplies an older active profile; replacing that same destination increments above both revisions. Loading a new path resets the floor. Save As requires a new destination. Recovery validates a backup and writes a new file, preserving primary and backup. `OTD_RUST_PORTABLE_DIR` chooses an absolute settings directory. Plugin relocation uses relative paths within the destination/portable tree where possible and can canonicalize aliases; API callers must resolve relative plugin paths against their source before relocation.
+
+## Area helpers and diagnostic export
+
+C05 shares area validation, aspect/usable-area helpers and CLI previews for percentage, Wacom/VEIKK, XP-Pen and Gaomon V2 settings. The pinned Gaomon converter explicitly retains the upstream X-for-Y quirk; a separately named corrected converter uses Y. Preview results are millimetres and do not apply settings or activate another tablet.
+
+S05 diagnostic JSON is an explicit static snapshot of build/display information, whitelisted profile fields and optional daemon status. Default redaction omits paths, free-form logs/errors, plugin property values and imported settings archives; `--include-private-details` explicitly adds paths/messages. Export does not open HID, load plugins or subscribe to reports. Current artifact/privacy execution validation remains open.
 
 ## Differences
 
@@ -154,8 +169,8 @@ Selected HID initialization runs indexed strings, delayed feature reports, then 
 | ID | Behavior | Upstream | Rust | Disposition |
 | --- | --- | --- | --- | --- |
 | BC-01 | Filter order | enabled PreTransform filters in profile order | built-in Radial Follow first, then DLL filters in profile order | P04 |
-| BC-02 | Pixel-space filters | PostTransform (`Pixels`) filters run after the transform | synchronous one-output position filters run after absolute mapping; other output modes and emission forms remain open | P04 |
-| BC-03 | Binding input | `BindingHandler` runs after filters and the transform, so a filter can change the pressure it sees | contact comes from the raw report | P04; observable only with a filter that changes pressure |
+| BC-02 | Pixel-space filters | PostTransform (`Pixels`) filters run after the transform | synchronous zero/multiple Emit and PostTransform after absolute or relative mapping implemented; current execution evidence remains open | P04 |
+| BC-03 | Binding input | `BindingHandler` runs after filters and the transform, so a filter can change the pressure it sees | existing tip contact uses supported post-filter pressure/eraser values; broad bindings remain open | P04, B02; current plugin execution evidence pending |
 | BC-04 | Pen barrel buttons | bits `0x02`/`0x04` (`0x1E`: three buttons) drive pen bindings | ignored | B02 |
 | BC-05 | Auxiliary and touch | `0x11` and `0x21`/`0xD2` parsed; auxiliary endpoint opened | auxiliary endpoint not opened; those IDs ignored | D04 |
 | BC-06 | Report validation | any value accepted | out-of-range position or pressure is malformed and ignored | Record: a working tablet never sends them; ignoring one avoids a jump |

@@ -8,14 +8,14 @@ The importer reads `XSensitivity`, `YSensitivity`, `RelativeRotation`, and `Rela
 
 The PTH-660 has 200 raw units per millimetre on both axes. At startup, the mapper combines negative tablet rotation, physical-unit conversion, and independent axis sensitivities into four coefficients. It applies those coefficients to each position difference. A sensitivity of 10 produces 10 mouse counts per mm before Windows pointer adjustments. Zero disables an axis; negative sensitivity reverses it. Nonfinite settings and sensitivities that could overflow a Windows `LONG` on a full-tablet movement are rejected.
 
-The mapper retains fractional counts, truncating each emitted delta toward zero and carrying the signed remainder forward. Small movements therefore accumulate even when one report is less than one count. Consecutive identical nonzero deltas are all emitted; only zero movement without a button transition is suppressed. Movement and contact transitions share one stack-allocated `INPUT` and at most one `SendInput` call per report. There is no per-report heap allocation, queue, trigonometry, or formatting. Relative sessions do not enumerate displays.
+The mapper retains fractional counts, truncating each emitted delta toward zero and carrying the signed remainder forward. Small movements therefore accumulate even when one report is less than one count. Consecutive identical nonzero deltas are all emitted; only zero movement without a button transition is suppressed. Movement and contact transitions share one stack-allocated `INPUT` and at most one `SendInput` call per output emission. Synchronous managed filters may emit several reports from one input; PostTransform receives relative deltas before integer quantization. The native-only design has no per-report heap allocation, queue, trigonometry or formatting; the managed path allocates owned snapshots. Relative sessions do not enumerate displays.
 
 Relative input is subject to [Windows pointer speed and acceleration](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-mouseinput#remarks), just like upstream's Windows relative pointer. The driver does not modify those system preferences.
 
 ## Reset and error behavior
 
 - The first positional report establishes an origin without moving the pointer. Contact changes on that report still work.
-- An input gap strictly greater than the reset delay clears the origin. Repeated stale raw positions are ignored for movement until the position changes; that changed position becomes the new origin. The delay should exceed the normal report interval; zero can reset on every report.
+- An input gap strictly greater than the reset delay clears the origin. Since 0.9.0, repeated stale raw positions suppress the whole graph, including contact changes, until the position changes; that changed position becomes the new origin. The delay should exceed the normal report interval; zero can reset on every report.
 - When the pen is no longer detected (neither In Range nor Sense is set), the origin and fractional carry clear immediately and a held button is released. Reconnection constructs fresh mapping and output state.
 - Fractional motion is also cleared on timeout, preventing leftover movement across separate pen interactions.
 - Failed mouse injection consumes that report's relative movement instead of replaying it later as a burst. Button state is only committed after successful injection, so a subsequent report or session cleanup retries a failed transition.
@@ -30,9 +30,11 @@ The behavioral reference remains the repository's pinned OpenTabletDriver revisi
 
 The relative output implementation was also checked against current `0.6.x` revision `cadb51af69e8a69db1ab8d0a9c960176db1ba65c`; its `RelativeOutputMode.cs` matched the pinned source. No newer protocol layouts were incorporated.
 
-Intentional differences: Rust immediately rebases on explicit proximity loss, clears fractional carry on reset, still processes contact changes on stale duplicate positions, and avoids zero-motion injections. It transforms differences in `f64` instead of subtracting two transformed `f32` positions. This avoids cancellation at low sensitivities but is not a bit-for-bit floating-point emulation of the C# implementation.
+Intentional differences: Rust immediately rebases on explicit proximity loss, clears fractional carry on reset and avoids zero-motion injections. Version 0.9.0 intentionally changes the earlier stale-duplicate behavior: timeout duplicates now skip contact and filters as upstream Read does, rather than processing contact alone. It transforms differences in `f64` instead of subtracting two transformed `f32` positions. This avoids cancellation at low sensitivities but is not a bit-for-bit floating-point emulation of the C# implementation.
 
 ## Verification
+
+The results below are historical and do not validate the 0.9.0 emission graph or stale-timeout change. No local tests, plugin runs or live relative-output checks were performed for that increment.
 
 `cargo test --locked` covers import and invalid settings, TimeSpan boundaries, independent axes, rotation, signed fractional carry, filtering, strict timeout boundaries, stale reports, loss/reentry, and injection failure recovery. The golden trace `tests/golden/relative.toml` replays recorded USB reports through the driver's report pipeline into a simulated output sink; see [behavior contracts](parity/BEHAVIOR_CONTRACTS.md#golden-traces). A thread-local test allocator verifies zero allocations in 10,000 report iterations, both with and without Radial Follow. Tests do not call `SendInput`.
 

@@ -334,7 +334,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Generation-guarded daemon restart is implemented; transactional hot apply, rollback and current runtime evidence remain open."
+      ]
     },
     "CAP-25": {
       "state": "open",
@@ -343,7 +345,7 @@
       "release": null,
       "evidence": [],
       "blockers": [
-        "Profile collection, import preview and export reconciliation foundations exist; complete presets/UI workflows and current end-to-end validation remain open."
+        "Staged backup saves, exact-byte conflict detection, recovery, portable paths and plugin relocation are implemented. Complete preset workflows and current storage/crash/permission execution evidence remain open."
       ]
     },
     "CAP-26": {
@@ -352,7 +354,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Shared area conversions/validation and offline CLI previews are implemented. Full conversion UI, upstream behavioral comparison and current execution evidence remain open."
+      ]
     },
     "CAP-27": {
       "state": "open",
@@ -361,7 +365,7 @@
       "release": null,
       "evidence": [],
       "blockers": [
-        "Headless CLI daemon implemented; GUI remains in-process. Current daemon lifecycle, startup-race and output-cleanup validation remain open."
+        "GUI now attaches/reconnects to the persistent daemon and detaches on close. Protocol-v1 migration is explicit; current lifecycle, startup-race and output-cleanup execution validation remain open."
       ]
     },
     "CAP-28": {
@@ -371,7 +375,7 @@
       "release": null,
       "evidence": [],
       "blockers": [
-        "Project-local versioned control protocol implemented; upstream RPC, subscriptions, GUI reconnect and current IPC/security execution evidence remain open."
+        "Project protocol v2 adds guarded restart/configuration and background GUI reconnect. Upstream RPC/subscriptions and current IPC/security execution evidence remain open."
       ]
     },
     "CAP-29": {
@@ -381,7 +385,7 @@
       "release": null,
       "evidence": [],
       "blockers": [
-        "Daemon/profile CLI increments implemented; full command coverage and current CLI execution evidence remain open."
+        "Daemon/profile/area/diagnostic CLI increments are implemented; full command coverage and current CLI execution evidence remain open."
       ]
     },
     "CAP-30": {
@@ -390,7 +394,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Static diagnostic JSON with conservative redaction is implemented; live debugger, device-string workflows and current privacy/export execution evidence remain open."
+      ]
     },
     "CAP-31": {
       "state": "open",
@@ -574,7 +580,7 @@
       "release": null,
       "evidence": [],
       "blockers": [
-        "Owned managed pen/raw/button data with tilt/proximity implemented; full report interfaces, concrete vendor types and non-position output mutations remain open. Per-call managed allocation has no current performance evidence."
+        "Managed graph retains emitted object identity and supported capability mutations downstream. Concrete input vendor types, general binding output and current managed performance/integration evidence remain open."
       ]
     },
     "CAP-40": {
@@ -583,7 +589,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Synchronous zero/one/multiple Emit graph, post-filter contact and relative PostTransform are implemented. Current suppression/multi-emission/error/plugin execution evidence and general binding integration remain open."
+      ]
     },
     "CAP-41": {
       "state": "open",

@@ -12,9 +12,13 @@ The editor remembers the exact bytes it loaded. Save compares them with the dest
 
 Writers using this implementation coordinate through a `.lock` sidecar. Applications that ignore it can still race the final comparison and rename; this is optimistic conflict detection, not an operating-system compare-and-swap. A crash may leave a stale lock. Remove it only after confirming that no save is running. Staged files are cleaned up only if this writer created them.
 
+The `.bak` name is reserved for the previous primary content. It may already have been replaced when a later conflict or publication failure is reported. Do not keep unrelated files under that name. A Unix directory-sync error can be reported after the new primary has been published; inspect or reload the file before retrying.
+
 Windows publication uses a same-directory write-through rename. Basic filesystem permissions are copied to the staged primary file; existing Windows DACLs, owner metadata and alternate streams are not fully preserved by this implementation. Unix new-file publication requires hard-link support and synchronizes the directory. Read-only destinations and failed backup creation are reported as errors.
 
 ## Recovery
+
+In the panel, **File > Recover backup as unsaved settings** loads the current profile's backup into the editor. A failed Load also offers recovery when a backup exists. Recovery leaves the original and backup files intact, resolves plugin references against the original profile directory, and requires **Save As** to a new filename. It does not apply settings to the daemon.
 
 Recover the backup into a new, validated file:
 
@@ -23,5 +27,7 @@ opentabletdriver-rust.exe profiles recover driver.toml --output recovered.toml
 ```
 
 This reads `driver.toml.bak`, validates the native profile or collection, and writes the recovered copy without overwriting either source. Open the recovered file in the panel to inspect it before applying it.
+
+Relocation operates on resolved plugin paths from loaded profiles. API callers constructing profiles with relative references must first resolve them against their source directory. Existing symlink/junction aliases may be canonicalized to their current targets when saved.
 
 Saving and runtime activation remain separate guarantees. The daemon's current Apply operation validates then stops/restarts a worker; it is not yet a transactional hot swap that retains a prepared pipeline after every plugin or activation failure. Full C03/C04 preset transactions and physical validation remain open.
