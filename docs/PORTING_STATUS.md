@@ -59,6 +59,16 @@ Release 0.9.0 advances five slices, without completing a full-parity gate:
 No local tests, driver/daemon/UI launches, plugin execution or hardware validation were performed for 0.9.0. Rust formatting and strict workspace/all-target Clippy passed during integration, and the C# bridge compiled. Final packaging results are recorded in the release notes. Historical test results are retained as historical evidence only. At that release, C03 hot-apply rollback remained unimplemented; the 0.10.0 implementation below advances it. Broad bindings, live auxiliary/touch input, async plugins, Ink output, broader devices and cross-platform runtime support remain open.
 
 
+Release 0.12.0 adds the panel features OpenTabletDriver users expect:
+- a tablet debugger, also available as the `debug` command;
+- per-tablet settings, with the area editor and thresholds sized for the chosen tablet;
+- a plugin manager for OpenTabletDriver's online plugin catalog, with SHA-256 verification;
+- updates from GitHub releases, with checksum verification and rollback;
+- named presets in the File menu, opt-in start with Windows in the tray, and a log export;
+- `device-strings`, which reads a tablet's USB strings.
+
+Report processing is unchanged, apart from one atomic load per report for the debugger.
+
 Release 0.11.0 runs every tablet in OpenTabletDriver's database whose parser has a Rust port, which is all 52 referenced parsers. It adds the remaining 27 parsers (the Wacom Intuos, IntuosV1, Intuos3/4/Pro, Cintiq, Graphire, PL, PTU and 64-byte aux families, the Wacom-driver variants, the XP-Pen Deco 03, Acepen, Bosto, FlooGoo, Genius, Lifetec, RobotPen, ViewSonic, XENX and XenceLabs). Mapping, relative output, Radial Follow and thresholds take the selected tablet's size and ranges from its configuration. A new fixture, decoded by OpenTabletDriver's own parser classes, checks every parser on 10,400 seeded packets. Only the PTH-660 has been tested on hardware; buttons, wheels and touch on other tablets are decoded but not bound. See [other tablets](parity/BEHAVIOR_CONTRACTS.md#other-tablets).
 
 Release 0.10.0 advances five bounded slices; all parity gates remain open:

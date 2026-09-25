@@ -13,6 +13,23 @@ The panel opens `driver.toml` from `%LOCALAPPDATA%\OpenTabletDriverRust` (or the
 
 **Tablets > Tablet debugger** polls the daemon about 30 times a second with the `debug` control command. While it polls, the report thread copies each packet into one fixed slot, skipping a packet rather than waiting if the slot is busy. When nothing polls for about 2,000 packets the copy stops, and the report thread then does one atomic load per packet. The daemon decodes the latest packet with the session's parser for display. A fresh parser decodes each snapshot, so stateful parsers show only what one packet carries. **Tablets > Settings for tablet** lists the connected supported tablets and saves the choice as `tablet = "Name"` in the profile. A profile without it runs on whichever supported tablet is connected. Choosing a tablet keeps the tablet area inside that tablet and caps pressure thresholds at its range.
 
+**Plugin manager.** The plugin manager downloads OpenTabletDriver's Plugin-Repository catalog and shows each plugin's newest version that declares support for OpenTabletDriver 0.6.7. Installing works as follows:
+- the download must match the catalog's SHA-256, and a plugin without a declared hash is refused;
+- the archive is extracted to `%LOCALAPPDATA%\OpenTabletDriverRust\Plugins\<name>`, with a copy of its metadata;
+- an installed version is renamed aside first and restored if installation fails.
+
+**Add to settings** inspects the plugin's DLLs, running their code as **Add .NET plugin** does, and adds every exported position filter. Plugins that only provide bindings, tools or output modes install but add nothing, because the driver cannot run those yet. **Remove** deletes the folder. A plugin loaded by the running driver can't be removed until the driver stops.
+
+**Updates.** The panel checks the latest GitHub release when it opens (Help menu toggle) and on **Help > Check for updates**:
+1. `curl.exe` downloads the release ZIP and its SHA-256 file.
+2. Windows CNG verifies the hash, and `tar.exe` extracts the ZIP.
+3. Every installed file is renamed aside before its replacement is copied, so running executables and loaded DLLs keep working. If any step fails, every file is restored.
+4. **Restart** stops the daemon, starts the new panel and closes the old one.
+
+The renamed files are removed at the next start. For a private repository the updater needs `GH_TOKEN`, `GITHUB_TOKEN` or a logged-in GitHub CLI. It passes the token to curl in a temporary header file and deletes the file after the request.
+
+**Startup and presets.** **Tablets > Start with Windows** writes one `OpenTabletDriverRust` value under the current user's `Run` key, and turning it off removes only that value. The value opens the panel with `ui --tray`. **File > Presets** lists the presets in `%LOCALAPPDATA%\OpenTabletDriverRust\presets`. Choosing one loads it as unsaved settings. **Save settings as preset** saves in that folder and asks before replacing a preset.
+
 As in OpenTabletDriver, the panel keeps an icon in the notification area while it runs. Minimizing the panel hides it there and removes its taskbar button; clicking the icon, or **Show Window** in its menu, brings the panel back. The icon's tooltip shows the driver state. Its menu also has **Start driver** / **Stop driver**, which upstream's lacks, and **Close**, which closes the panel while daemon input continues. Opening the panel again while it runs brings the running panel forward instead of starting a second one. A shortcut set to run minimized starts the panel in the tray.
 
 Profiles that use the older crop/monitor keys appear as the equivalent areas; the file keeps that form until you edit an area. `device_path` has no editor and is preserved.

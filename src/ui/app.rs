@@ -222,6 +222,7 @@ impl App {
             driver: DriverState::Stopped,
             tablet_present: None,
             tablet_choices: Vec::new(),
+            preset_choices: Vec::new(),
             status: String::new(),
             status_level: Level::Info,
             validation_status: false,
@@ -2596,6 +2597,18 @@ impl App {
         true
     }
     // ----- Console -------------------------------------------------------------------
+
+    /// Every console line, as Copy All copies them.
+    pub(super) fn log_text(&self) -> String {
+        with_look(|look| {
+            look.log
+                .iter()
+                .map(|e| format!("{} [{}:{}] {}", e.time, e.level.label(), e.group, e.message))
+                .collect::<Vec<_>>()
+                .join("\r\n")
+        })
+        .unwrap_or_default()
+    }
 
     pub(super) fn copy_log(&mut self, all: bool) {
         let indices: Vec<usize> = if all {

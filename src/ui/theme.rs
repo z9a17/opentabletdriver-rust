@@ -397,6 +397,8 @@ pub struct UiPrefs {
     /// Start the driver when the panel opens, as OpenTabletDriver's UX
     /// starts its daemon.
     pub start_driver_on_launch: bool,
+    /// Check GitHub for a newer release when the panel opens.
+    pub check_for_updates: bool,
 }
 
 impl Default for UiPrefs {
@@ -409,6 +411,7 @@ impl Default for UiPrefs {
             window_size: None,
             maximized: false,
             start_driver_on_launch: true,
+            check_for_updates: true,
         }
     }
 }

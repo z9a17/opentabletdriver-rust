@@ -9,6 +9,7 @@ mod dotnet;
 mod hid;
 mod original_driver;
 mod output;
+mod plugin_catalog;
 mod plugins;
 mod preset_cli;
 mod priority;
@@ -16,6 +17,7 @@ mod profile_cli;
 mod runtime;
 mod session;
 mod ui;
+mod update;
 
 // The portable core, at the crate paths the Windows modules use.
 use otd_core::tablets::{self, Database, Origin, ParserSupport, Role, Severity};
@@ -36,7 +38,7 @@ use crate::session::Mode;
 fn usage() -> &'static str {
     "Usage:
   opentabletdriver-rust-ui.exe              Open the native control panel
-  opentabletdriver-rust.exe ui              Open the same control panel
+  opentabletdriver-rust.exe ui [--tray]     Open the same control panel (--tray: in the tray)
   opentabletdriver-rust.exe                 Start the visible cursor daemon
   opentabletdriver-rust.exe run [--config driver.toml | --otd-settings settings.json]
   opentabletdriver-rust.exe daemon [--background]
@@ -56,6 +58,9 @@ fn usage() -> &'static str {
   opentabletdriver-rust.exe displays
   opentabletdriver-rust.exe tablets [--list] [--configurations DIRECTORY]
   opentabletdriver-rust.exe capture [--config driver.toml | --otd-settings settings.json] [--seconds 1..60]
+  opentabletdriver-rust.exe plugins catalog|installed|install NAME|remove NAME
+  opentabletdriver-rust.exe device-strings VID PID [INDEX ...]
+  opentabletdriver-rust.exe update [--check]
   opentabletdriver-rust.exe --version
 
 Without a profile argument, use the saved Rust driver.toml, then OTD settings if present.
@@ -83,6 +88,11 @@ enum Command {
         otd_settings: Option<PathBuf>,
     },
     Ui,
+    Plugins(Vec<String>),
+    DeviceStrings(Vec<String>),
+    Update {
+        check: bool,
+    },
     Version,
     InspectPlugin(PathBuf),
     CheckPlugins(PathBuf),
@@ -125,6 +135,8 @@ fn parse_args() -> Result<Command, String> {
     match command.as_str() {
         "diagnostics" => Ok(Command::Diagnostics(args.collect())),
         "decode" => Ok(Command::Decode(args.collect())),
+        "plugins" => Ok(Command::Plugins(args.collect())),
+        "device-strings" => Ok(Command::DeviceStrings(args.collect())),
         "area" => Ok(Command::Area(args.collect())),
         "configuration" if args.next().is_none() => Ok(Command::Configuration),
         "profiles" => Ok(Command::Profiles(args.collect())),
@@ -151,7 +163,19 @@ fn parse_args() -> Result<Command, String> {
                 _ => control::Command::Shutdown,
             }))
         }
-        "ui" if args.next().is_none() => Ok(Command::Ui),
+        "ui" => match (args.next().as_deref(), args.next()) {
+            (None, _) => Ok(Command::Ui),
+            (Some("--tray"), None) => {
+                ui::START_IN_TRAY.store(true, std::sync::atomic::Ordering::Relaxed);
+                Ok(Command::Ui)
+            }
+            _ => Err(usage().into()),
+        },
+        "update" => match (args.next().as_deref(), args.next()) {
+            (None, _) => Ok(Command::Update { check: false }),
+            (Some("--check"), None) => Ok(Command::Update { check: true }),
+            _ => Err(usage().into()),
+        },
         "--version" | "version" => Ok(Command::Version),
         "inspect-plugin" | "check-plugins" => {
             let path = PathBuf::from(args.next().ok_or("command needs a file path")?);
@@ -258,6 +282,56 @@ fn parse_args() -> Result<Command, String> {
         }
         _ => Err(usage().into()),
     }
+}
+
+/// `device-strings VID PID [INDEX ...]`: USB strings of a device's HID
+/// collections, for writing a configuration for an unsupported tablet. IDs
+/// are hexadecimal (with or without 0x); indices default to 1 through 10.
+fn device_strings(args: Vec<String>) -> Result<(), String> {
+    let usage = "Usage: device-strings VID PID [INDEX ...]  (IDs in hex, e.g. 056a 0357)";
+    let hex = |text: &str| {
+        u16::from_str_radix(text.trim_start_matches("0x").trim_start_matches("0X"), 16).map_err(
+            |_| {
+                format!(
+                    "{text} is not a hexadecimal ID
+{usage}"
+                )
+            },
+        )
+    };
+    let (vendor, product) = match args.as_slice() {
+        [vendor, product, ..] => (hex(vendor)?, hex(product)?),
+        _ => return Err(usage.into()),
+    };
+    let indices = if args.len() > 2 {
+        args[2..]
+            .iter()
+            .map(|index| {
+                index
+                    .parse::<u8>()
+                    .map_err(|_| format!("{index} is not a string index 0-255"))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        (1..=10).collect()
+    };
+    let collections = hid::read_strings(vendor, product, &indices)
+        .map_err(|e| format!("HID discovery failed: {e}"))?;
+    if collections.is_empty() {
+        return Err(format!(
+            "no HID collection with ID {vendor:04x}:{product:04x} is connected"
+        ));
+    }
+    for (path, strings) in collections {
+        println!("{path}");
+        for (index, value) in strings {
+            match value {
+                Ok(text) => println!("  {index}: {text:?}"),
+                Err(error) => println!("  {index}: (none: {error})"),
+            }
+        }
+    }
+    Ok(())
 }
 
 fn list(paths: bool) -> Result<(), String> {
@@ -708,8 +782,11 @@ fn drive(
 }
 
 fn main() {
+    update::remove_leftovers();
     let result = match parse_args() {
         Ok(Command::Decode(args)) => decode_cli::run(args),
+        Ok(Command::Plugins(args)) => plugin_catalog::run(args),
+        Ok(Command::DeviceStrings(args)) => device_strings(args),
         Ok(Command::Diagnostics(args)) => diagnostics::run(args),
         Ok(Command::Area(args)) => area_cli::run(args),
         Ok(Command::Profiles(args)) => profile_cli::run(args),
@@ -753,6 +830,7 @@ fn main() {
             .and_then(|reply| daemon::print_reply(&reply))
         }),
         Ok(Command::Ui) => ui::run(),
+        Ok(Command::Update { check }) => update::run(check),
         Ok(Command::Version) => {
             println!("opentabletdriver-rust {}", env!("CARGO_PKG_VERSION"));
             Ok(())
