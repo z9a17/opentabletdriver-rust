@@ -14,7 +14,10 @@ const USAGE: &str = "Offline report decoding:
 Parsers: pth660-pen, intuos-v2-aux, intuos-v2-touch,
          wacom-driver-intuos-v2-touch, intuos-v3, bamboo, bamboo-pad,
          bamboo-v2-aux, uc-logic, uc-logic-tilt, uc-logic-v1, uc-logic-v2,
-         huion-tilt
+         huion-tilt, huion-giano, huion-inspiroy, xp-pen, xp-pen-gen2,
+         xp-pen-offset-pressure, xp-pen-offset-aux, xp-pen-dedicated-aux,
+         tablet, auxiliary, skip-byte-tablet, veikk, veikk-a15, veikk-tilt,
+         veikk-v1
 Hex may contain ASCII whitespace or colons. Files contain one packet per line;
 blank lines and lines starting with # are ignored. Limits: 4 MiB, 4096 reports,
 192 bytes per packet. Each output line is one JSON snapshot; a later error does
@@ -24,8 +27,12 @@ This command never opens a tablet, loads a plugin, or injects input.";
 type StatelessParser =
     for<'a> fn(&'a [u8], ReportMetadata) -> Result<(ReportKind, ReportEnvelope<'a>), ReportError>;
 
+type PrefixedParser =
+    for<'a> fn(&'a [u8], ReportMetadata) -> Result<(ReportKind, TransportReport<'a>), ReportError>;
+
 enum Decoder {
     Stateless(StatelessParser),
+    Prefixed(PrefixedParser),
     Pen,
     Aux,
     Touch(IntuosV2TouchParser),
@@ -43,6 +50,11 @@ impl Decoder {
         metadata: ReportMetadata,
     ) -> Result<(ReportKind, Option<ReportEnvelope<'a>>), String> {
         let report = match self {
+            Self::Prefixed(parser) => {
+                return parser(raw, metadata)
+                    .map(|(kind, report)| (kind, Some(report.report)))
+                    .map_err(|e| format!("{e:?}"));
+            }
             Self::Stateless(parser) => {
                 return parser(raw, metadata)
                     .map(|(kind, report)| (kind, Some(report)))
@@ -111,6 +123,20 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         "uc-logic-v1" => Decoder::Stateless(parse_uc_logic_v1),
         "uc-logic-v2" => Decoder::Stateless(parse_uc_logic_v2),
         "huion-tilt" => Decoder::Stateless(parse_huion_tilt),
+        "huion-giano" => Decoder::Stateless(parse_huion_giano),
+        "huion-inspiroy" => Decoder::Stateless(parse_huion_inspiroy),
+        "xp-pen" => Decoder::Stateless(parse_xp_pen),
+        "xp-pen-gen2" => Decoder::Stateless(parse_xp_pen_gen2),
+        "xp-pen-offset-pressure" => Decoder::Stateless(parse_xp_pen_offset_pressure),
+        "xp-pen-offset-aux" => Decoder::Stateless(parse_xp_pen_offset_auxiliary),
+        "xp-pen-dedicated-aux" => Decoder::Stateless(parse_xp_pen_dedicated_auxiliary),
+        "tablet" => Decoder::Stateless(parse_tablet),
+        "auxiliary" => Decoder::Stateless(parse_auxiliary),
+        "skip-byte-tablet" => Decoder::Prefixed(parse_skip_byte_tablet),
+        "veikk" => Decoder::Stateless(parse_veikk),
+        "veikk-a15" => Decoder::Stateless(parse_veikk_a15),
+        "veikk-tilt" => Decoder::Stateless(parse_veikk_tilt),
+        "veikk-v1" => Decoder::Prefixed(parse_veikk_v1),
         _ => return Err(format!("unknown parser {parser:?}\n{USAGE}")),
     };
     let source = match (hex, input) {

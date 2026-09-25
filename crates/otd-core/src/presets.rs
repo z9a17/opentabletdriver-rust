@@ -269,9 +269,24 @@ impl PresetStore {
 
     pub fn export(&self, name: &PresetName, output: &Path) -> Result<FileSnapshot, String> {
         let loaded = self.load(name)?;
+        let output = std::path::absolute(output).map_err(|error| error.to_string())?;
+        let directory = self
+            .directory
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        if let Some(parent) = output.parent() {
+            match parent.canonicalize() {
+                Ok(parent) if parent == directory => return Err(
+                    "export cannot create files in the preset directory; use presets save to enforce name and collision rules".into(),
+                ),
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("cannot resolve export directory: {error}")),
+            }
+        }
         storage::save(
-            output,
-            loaded.profile.to_toml_at(output)?.as_bytes(),
+            &output,
+            loaded.profile.to_toml_at(&output)?.as_bytes(),
             SaveMode::CreateNew,
         )
     }

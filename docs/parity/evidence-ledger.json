@@ -12,7 +12,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "The registry identifies 25 Partial parser types, including 23 new stateless dispatchers. Live execution remains PTH-660; remaining parser coverage and current execution evidence are open."
+      ]
     },
     "CAP-02": {
       "state": "open",
@@ -129,7 +131,7 @@
       "release": null,
       "evidence": [],
       "blockers": [
-        "Native capability values and an IntuosV2 auxiliary decoder are foundations only; auxiliary endpoint reading and full report routing/output remain open."
+        "Bounded report values and offline auxiliary/mouse/wheel/touch decoders are implemented. Live auxiliary reading, routing/output and current report/hardware evidence remain open."
       ]
     },
     "CAP-10": {
@@ -153,7 +155,9 @@
           "command": "cargo test --locked -p otd-core properties"
         }
       ],
-      "blockers": []
+      "blockers": [
+        "23 additional stateless dispatchers and 27 offline decoder names are implemented. New differential, malformed-input, captured-report and hardware evidence remain open; historical IntuosV2 checks do not cover these paths."
+      ]
     },
     "CAP-11": {
       "state": "open",
@@ -335,7 +339,7 @@
       "release": null,
       "evidence": [],
       "blockers": [
-        "Generation-guarded daemon restart is implemented; transactional hot apply, rollback and current runtime evidence remain open."
+        "Candidate preparation, quiesce, first-read commit and pre-commit rollback are implemented. Broader upstream apply/reset semantics and current runtime/cancellation/rollback execution evidence remain open; hardware writes and trusted plugin side effects are not undone."
       ]
     },
     "CAP-25": {
@@ -345,7 +349,7 @@
       "release": null,
       "evidence": [],
       "blockers": [
-        "Staged backup saves, exact-byte conflict detection, recovery, portable paths and plugin relocation are implemented. Complete preset workflows and current storage/crash/permission execution evidence remain open."
+        "Backup/conflict/recovery/portable relocation and offline named preset list/show/save/export are implemented. GUI selection, preset activation/bindings and current storage/crash/permission execution evidence remain open."
       ]
     },
     "CAP-26": {
@@ -355,7 +359,7 @@
       "release": null,
       "evidence": [],
       "blockers": [
-        "Shared area conversions/validation and offline CLI previews are implemented. Full conversion UI, upstream behavioral comparison and current execution evidence remain open."
+        "Shared conversions/validation, CLI previews and a graphical preview/unsaved-area conversion dialog are implemented. Upstream behavioral comparison, interactive/DPI and current execution evidence remain open."
       ]
     },
     "CAP-27": {

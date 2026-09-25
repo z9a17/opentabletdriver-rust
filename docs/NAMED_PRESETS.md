@@ -24,4 +24,6 @@ Cooperating preset writers also hold `presets/.presets.lock`, so simultaneous cr
 
 The core API accepts source-resolved `Profile` values and rejects unresolved relative plugin paths. Replacing a preset requires the immutable `LoadedPreset` returned by that store's load operation; a snapshot from another name/directory cannot replace it.
 
-This slice was source-reviewed and formatted. No local tests, preset CLI runs, plugin execution, GUI or device validation were performed; compilation belongs to integration. C03 runtime transactions and broader C04/UI acceptance remain open.
+Export cannot write directly into the preset directory, including through a directory alias. Use `presets save` to create another named preset so name validation and case-collision locking still apply.
+
+This slice was source-reviewed and compiled with strict workspace/all-target Clippy during 0.10.0 integration. No local tests, preset CLI runs, plugin execution, GUI or device validation were performed. The daemon's separate C03 replacement transaction does not add preset selection/activation to these offline commands; broader C04/UI acceptance remains open.

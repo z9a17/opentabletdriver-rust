@@ -33,4 +33,4 @@ In Absolute Mode, right-click the tablet area and choose **Convert area from...*
 
 The graphical editor currently uses pinned PTH-660 specifications and rejects other stored tablet profiles explicitly. The offline CLI can preview other configured tablets; conversion does not imply runtime support. No dependencies, device opens or automatic saves are introduced by this workflow.
 
-The graphical slice has been source-reviewed and formatted, without local tests, UI or hardware execution. Compilation is delegated to integration; interactive accessibility, DPI/layout and conversion/runtime evidence remain open. Earlier shared-service compilation does not validate this dialog.
+The graphical slice has been source-reviewed and compiled with strict Clippy, without local tests, UI or hardware execution. Interactive accessibility, DPI/layout and conversion/runtime evidence remain open. Panel Save follows its normal behavior: after saving, it also applies settings when a worker is attached.
