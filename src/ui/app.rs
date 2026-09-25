@@ -2097,12 +2097,18 @@ impl App {
         if !self.invalid.is_empty() || self.json_error.is_some() {
             return Err("Correct invalid editor values before saving or applying settings.".into());
         }
-        let profile = model::validated(&self.editor.profile, &self.profile_path)?;
+        model::validated(&self.editor.profile, &self.profile_path)
+    }
+
+    /// Persistence must also work for disconnected displays or other tablets.
+    /// Check runtime requirements before stopping an existing worker.
+    fn validate_start(&self, profile: &Profile) -> Result<(), String> {
         profile.validate_runtime_tablet("Wacom PTH-660")?;
+        profile.validate_filter_execution()?;
         if profile.relative.is_none() {
-            displays_for_driver(self.process_dpi)?.mapper(&profile)?;
+            displays_for_driver(self.process_dpi)?.mapper(profile)?;
         }
-        Ok(profile)
+        Ok(())
     }
 
     pub(super) fn load_file(&mut self, path: PathBuf) {
@@ -2276,6 +2282,10 @@ impl App {
     }
 
     pub(super) fn start_with(&mut self, profile: Profile) {
+        if let Err(error) = self.validate_start(&profile) {
+            self.log(Level::Error, "Settings", error);
+            return;
+        }
         let spawned = (|| -> Result<Running, String> {
             let stop = Event::create(true).map_err(|e| e.to_string())?;
             let worker_stop = stop.duplicate().map_err(|e| e.to_string())?;
@@ -2359,6 +2369,10 @@ impl App {
 
     /// Stops the running driver and starts it again with `profile`.
     pub(super) fn restart_with(&mut self, profile: Profile) {
+        if let Err(error) = self.validate_start(&profile) {
+            self.log(Level::Error, "Settings", error);
+            return;
+        }
         let stopping = self.driver == DriverState::Stopping;
         self.restart = Some(profile);
         if !stopping {
