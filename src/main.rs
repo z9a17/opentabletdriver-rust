@@ -1,5 +1,6 @@
 pub mod action_output;
 mod area_cli;
+mod companions;
 mod control;
 mod daemon;
 mod decode_cli;
@@ -684,6 +685,19 @@ fn drive(
     } else {
         None
     };
+    // Other connected tablets run beside the primary one.
+    let primary: companions::Primary = Default::default();
+    let _companions = if capture_seconds.is_none() {
+        Some(companions::Companions::start(
+            profile.clone(),
+            database.clone(),
+            primary.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            |line| eprintln!("{line}"),
+        )?)
+    } else {
+        None
+    };
     let outcome = (|| {
         let mut waiting = false;
         loop {
@@ -740,7 +754,10 @@ fn drive(
                 "{} found; opening pen input",
                 selected.configuration.name
             ));
-            match session::run(
+            if let Ok(mut path) = primary.lock() {
+                *path = Some(selected.pen.path_text());
+            }
+            let result = session::run(
                 &selected,
                 &profile,
                 &notification,
@@ -748,7 +765,11 @@ fn drive(
                 mode,
                 &mut plugins,
                 &status,
-            ) {
+            );
+            if let Ok(mut path) = primary.lock() {
+                *path = None;
+            }
+            match result {
                 Ok(()) => {}
                 Err(error) => {
                     eprintln!("device session stopped: {error}");

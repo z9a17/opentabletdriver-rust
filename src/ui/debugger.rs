@@ -390,9 +390,22 @@ fn show(value: &serde_json::Value) -> String {
 }
 
 /// "a1b2c3" as "a1 b2 c3".
+/// Trailing zero bytes are summarized: most packets are padded to the
+/// collection's report length.
 fn spaced_hex(hex: &str) -> String {
     let bytes: Vec<&str> = (0..hex.len() / 2).map(|i| &hex[i * 2..i * 2 + 2]).collect();
-    bytes.join(" ")
+    let used = bytes
+        .iter()
+        .rposition(|byte| *byte != "00")
+        .map_or(0, |last| last + 1);
+    let zeros = bytes.len() - used;
+    if zeros > 4 {
+        format!("{} (+{zeros} zero bytes)", bytes[..used].join(" "))
+            .trim_start()
+            .to_owned()
+    } else {
+        bytes.join(" ")
+    }
 }
 
 unsafe extern "system" fn window_proc(
@@ -443,6 +456,8 @@ mod tests {
     #[test]
     fn hex_is_spaced_by_byte() {
         assert_eq!(spaced_hex("0a1bff"), "0a 1b ff");
+        assert_eq!(spaced_hex("1364000000000000"), "13 64 (+6 zero bytes)");
+        assert_eq!(spaced_hex("0a0000"), "0a 00 00");
         assert_eq!(label("near_proximity"), "Near proximity");
         assert_eq!(show(&serde_json::json!([25981.0, 3939.5])), "25981, 3939.5");
         assert_eq!(spaced_hex(""), "");
