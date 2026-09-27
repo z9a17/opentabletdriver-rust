@@ -270,9 +270,6 @@ pub struct PluginChain {
     has_pixels: bool,
     epoch: Instant,
     failure: Option<usize>,
-    raw: [u8; crate::hid::PEN_REPORT_LENGTH as usize],
-    raw_length: usize,
-    prepared_pen: Option<crate::protocol::PenReport>,
 }
 
 /// The profile's enabled tools, running until dropped. As upstream's
@@ -336,35 +333,7 @@ impl PluginChain {
             has_pixels,
             epoch: Instant::now(),
             failure: None,
-            raw: [0; crate::hid::PEN_REPORT_LENGTH as usize],
-            raw_length: 0,
-            prepared_pen: None,
         })
-    }
-
-    /// Reuses setup-owned native storage. No prepared raw bytes are fabricated
-    /// for synthetic callers; managed dispatch fails explicitly if absent.
-    pub fn prepare_report(&mut self, pen: crate::protocol::PenReport, raw: &[u8]) {
-        self.prepared_pen = None;
-        self.raw_length = 0;
-        if !self
-            .plugins
-            .iter()
-            .any(|plugin| plugin.managed && !plugin.disabled)
-        {
-            return;
-        }
-        let minimum = match pen.id {
-            0x10 => 17,
-            0x1e => 13,
-            _ => return,
-        };
-        if raw.first() != Some(&pen.id) || raw.len() < minimum || raw.len() > self.raw.len() {
-            return;
-        }
-        self.raw[..raw.len()].copy_from_slice(raw);
-        self.raw_length = raw.len();
-        self.prepared_pen = Some(pen);
     }
 
     pub fn process_pre(
@@ -414,8 +383,7 @@ impl PluginChain {
             if plugin.stage != stage {
                 continue;
             }
-            let raw = (self.prepared_pen == Some(pen)).then_some(&self.raw[..self.raw_length]);
-            if !plugin.process_report(&mut sample, pen, raw) {
+            if !plugin.process_report(&mut sample, pen, None) {
                 self.failure = Some(index);
                 eprintln!(
                     "Disabled failing plugin: {} (error or nonfinite position)",
@@ -427,23 +395,13 @@ impl PluginChain {
     }
 
     pub fn reset(&mut self) {
-        // Only a prepared range-loss packet belongs to this reset. Explicit
-        // resets between reads must not relabel an earlier in-range packet.
-        let raw = if self
-            .prepared_pen
-            .is_some_and(|pen| !pen.in_range && !pen.sense)
-        {
-            &self.raw[..self.raw_length]
-        } else {
-            &[]
-        };
+        // Explicit resets between reads have no transport packet. Physical
+        // range-loss reports carry their canonical raw bytes through dispatch.
         for (index, plugin) in self.plugins.iter_mut().enumerate() {
-            if !plugin.reset_report(raw) {
+            if !plugin.reset_report(&[]) {
                 self.failure = Some(index);
             }
         }
-        self.prepared_pen = None;
-        self.raw_length = 0;
     }
     pub fn validate_output_mode(&self, _relative: bool) -> Result<(), String> {
         // PostTransform sees desktop pixels in absolute mode and motion deltas
@@ -468,9 +426,6 @@ impl otd_core::plugins::Filters for PluginChain {
         runtime: &mut dyn otd_core::plugins::PipelineRuntime,
     ) -> std::io::Result<()> {
         self.dispatch_graph(input, runtime)
-    }
-    fn prepare_report(&mut self, pen: crate::protocol::PenReport, raw: &[u8]) {
-        PluginChain::prepare_report(self, pen, raw);
     }
     fn next_tick(&mut self) -> Option<std::time::Duration> {
         self.next_tick_graph()
@@ -590,9 +545,6 @@ mod tests {
             has_pixels: true,
             epoch: Instant::now(),
             failure: None,
-            raw: [0; crate::hid::PEN_REPORT_LENGTH as usize],
-            raw_length: 0,
-            prepared_pen: None,
         };
         let desktop = Rect {
             left: -1920,

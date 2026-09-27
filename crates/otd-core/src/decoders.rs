@@ -307,16 +307,19 @@ pub enum DecodeError {
     Report(ReportError),
 }
 
+/// One decoded pen and the parser's payload, borrowed from the same input.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DecodedPen<'a> {
+    pub pen: PenReport,
+    pub raw: &'a [u8],
+    pub buttons: Option<Buttons>,
+}
+
 /// Turns device packets into pen reports for the report pipeline.
 pub trait PenDecoder {
     /// `Ok(None)` for packets that carry no pen position (auxiliary, touch,
     /// status and unknown reports), which the session ignores.
-    fn decode(&mut self, raw: &[u8]) -> Result<Option<PenReport>, DecodeError>;
-    /// The pen buttons of the report `decode` just returned, in the parser's
-    /// upstream order, for managed filters' `ITabletReport.PenButtons`.
-    fn pen_buttons(&self, _raw: &[u8]) -> Option<Buttons> {
-        None
-    }
+    fn decode<'a>(&mut self, raw: &'a [u8]) -> Result<Option<DecodedPen<'a>>, DecodeError>;
     /// Clears parser state when a session ends.
     fn reset(&mut self) {}
 }
@@ -343,8 +346,6 @@ pub enum TabletDecoder {
     Values {
         parser: Box<ReportParser>,
         spec: TabletSpec,
-        /// The last decoded report's pen buttons.
-        buttons: Option<Buttons>,
     },
 }
 
@@ -371,7 +372,6 @@ impl TabletDecoder {
             _ => ReportParser::for_type(type_name).map(|parser| Self::Values {
                 parser: Box::new(parser),
                 spec,
-                buttons: None,
             }),
         }
     }
@@ -387,7 +387,7 @@ const SESSION_METADATA: ReportMetadata = ReportMetadata {
 
 impl PenDecoder for TabletDecoder {
     #[inline]
-    fn decode(&mut self, raw: &[u8]) -> Result<Option<PenReport>, DecodeError> {
+    fn decode<'a>(&mut self, raw: &'a [u8]) -> Result<Option<DecodedPen<'a>>, DecodeError> {
         match self {
             Self::IntuosV2 { spec, prefixed } => {
                 let payload = if *prefixed {
@@ -396,28 +396,29 @@ impl PenDecoder for TabletDecoder {
                     raw
                 };
                 protocol::parse_within(payload, spec.max_x, spec.max_y, spec.max_pressure)
+                    .map(|pen| {
+                        pen.map(|pen| DecodedPen {
+                            pen,
+                            raw: payload,
+                            buttons: intuos_v2_pen_buttons(payload),
+                        })
+                    })
                     .map_err(DecodeError::Pen)
             }
-            Self::Values {
-                parser,
-                spec,
-                buttons,
-            } => {
+            Self::Values { parser, spec } => {
                 let (kind, report) = parser
                     .parse(raw, SESSION_METADATA)
                     .map_err(DecodeError::Report)?;
-                *buttons = report.values.pen_buttons;
-                Ok(pen_from_values(kind, &report.values, report.raw, *spec))
+                Ok(
+                    pen_from_values(kind, &report.values, report.raw, *spec).map(|pen| {
+                        DecodedPen {
+                            pen,
+                            raw: report.raw,
+                            buttons: report.values.pen_buttons,
+                        }
+                    }),
+                )
             }
-        }
-    }
-
-    fn pen_buttons(&self, raw: &[u8]) -> Option<Buttons> {
-        match self {
-            Self::IntuosV2 { prefixed, .. } => {
-                intuos_v2_pen_buttons(if *prefixed { raw.get(1..)? } else { raw })
-            }
-            Self::Values { buttons, .. } => *buttons,
         }
     }
 
@@ -521,7 +522,9 @@ mod tests {
         report[8] = 0x80;
         let mut decoder = TabletDecoder::pth_660();
         assert_eq!(
-            decoder.decode(&report),
+            decoder
+                .decode(&report)
+                .map(|decoded| decoded.map(|decoded| decoded.pen)),
             protocol::parse(&report).map_err(DecodeError::Pen)
         );
         report[2..5].copy_from_slice(&[0, 0, 1]);
@@ -533,7 +536,7 @@ mod tests {
             },
             prefixed: false,
         };
-        assert_eq!(larger.decode(&report).unwrap().unwrap().x, 0x10000);
+        assert_eq!(larger.decode(&report).unwrap().unwrap().pen.x, 0x10000);
     }
 
     #[test]
@@ -554,10 +557,11 @@ mod tests {
         let pen = decoder
             .decode(&[2, 0x80, 50, 0, 200, 0, 0xd0, 0x07])
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .pen;
         assert_eq!((pen.x, pen.y, pen.pressure), (50, 100, 1023));
         assert!(pen.sense && pen.tip_switch);
-        let gone = decoder.decode(&[2, 0xc0]).unwrap().unwrap();
+        let gone = decoder.decode(&[2, 0xc0]).unwrap().unwrap().pen;
         assert!(!gone.sense && !gone.in_range);
         // An auxiliary report has no position.
         assert_eq!(decoder.decode(&[2, 0xf0, 1, 0, 0, 0, 0, 0]).unwrap(), None);

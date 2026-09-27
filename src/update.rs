@@ -2,9 +2,9 @@
 //! command check the latest release, download its Windows package and its
 //! SHA-256 file over HTTPS with Windows' curl.exe, verify the hash with the
 //! Windows crypto API, extract with tar.exe and replace the installed files.
-//! Running executables and loaded DLLs are renamed aside, not overwritten, so
-//! a failed update restores every file and the running driver keeps working.
-//! The renamed files are removed the next time either executable starts.
+//! Replacement is serialized and journaled: incomplete updates roll back on
+//! the next startup. Recovery failures preserve backups and stop startup.
+//! Committed backups are removed once running processes release their DLLs.
 //!
 //! A private repository needs a GitHub token: `GH_TOKEN`, `GITHUB_TOKEN` or
 //! the logged-in GitHub CLI's (`gh auth token`). curl reads it from a
@@ -13,11 +13,13 @@
 
 use std::fs;
 use std::io;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+pub(crate) mod transaction;
 
 pub const REPOSITORY: &str = "z9a17/opentabletdriver-rust";
-const OLD_SUFFIX: &str = ".old-update";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Release {
@@ -42,7 +44,11 @@ fn token() -> Option<String> {
                 .filter(|token| !token.trim().is_empty())
         })
         .or_else(|| {
-            let output = Command::new("gh").args(["auth", "token"]).output().ok()?;
+            let output = Command::new("gh")
+                .creation_flags(CREATE_NO_WINDOW)
+                .args(["auth", "token"])
+                .output()
+                .ok()?;
             let token = String::from_utf8(output.stdout).ok()?.trim().to_owned();
             (output.status.success() && !token.is_empty()).then_some(token)
         })
@@ -79,6 +85,7 @@ fn system_tool(name: &str) -> PathBuf {
 
 fn curl(arguments: &[&str], token: Option<&str>) -> Result<Vec<u8>, String> {
     let mut command = Command::new(system_tool("curl.exe"));
+    command.creation_flags(CREATE_NO_WINDOW);
     let _header = match token {
         Some(token) => {
             let path = std::env::temp_dir().join(format!(
@@ -238,125 +245,100 @@ fn files(root: &Path, directory: &Path, found: &mut Vec<PathBuf>) -> io::Result<
     Ok(())
 }
 
-fn aside(path: &Path) -> PathBuf {
-    let mut name = path.as_os_str().to_owned();
-    name.push(OLD_SUFFIX);
-    PathBuf::from(name)
-}
-
 /// Downloads, verifies and installs `release` into `install`, reporting each
-/// step. On failure every replaced file is restored.
+/// step. Failures attempt rollback; blocked recovery preserves the journal
+/// and its backups for the next startup.
 pub fn install(release: &Release, install: &Path, progress: &dyn Fn(&str)) -> Result<(), String> {
-    let work = std::env::temp_dir().join(format!("opentabletdriver-rust-update-{}", release.tag));
-    let _ = fs::remove_dir_all(&work);
-    fs::create_dir_all(&work).map_err(|error| format!("{}: {error}", work.display()))?;
-    let package = work.join(&release.package_name);
-    progress(&format!("Downloading {}...", release.package_name));
-    download(
-        &release.package_url,
-        &release.package_api_url,
-        Some(&package),
-    )?;
-    let expected = String::from_utf8(download(
-        &release.checksum_url,
-        &release.checksum_api_url,
-        None,
-    )?)
-    .map_err(|_| "the checksum file is not text")?;
-    let expected = expected
-        .split_whitespace()
-        .next()
-        .ok_or("the checksum file is empty")?
-        .to_ascii_lowercase();
-    let actual = sha256(&package)?;
-    if actual != expected {
-        return Err(format!(
-            "the download's SHA-256 {actual} does not match the published {expected}; nothing was installed"
-        ));
-    }
-    progress("Checksum verified. Extracting...");
-    let extracted = work.join("extracted");
-    fs::create_dir_all(&extracted).map_err(|error| error.to_string())?;
-    let status = Command::new(system_tool("tar.exe"))
-        .arg("-xf")
-        .arg(&package)
-        .arg("-C")
-        .arg(&extracted)
-        .status()
-        .map_err(|error| format!("cannot run tar.exe: {error}"))?;
-    if !status.success() {
-        return Err("the package could not be extracted".into());
-    }
-    let root = extracted.join(release.package_name.trim_end_matches(".zip"));
-    let root = if root.is_dir() { root } else { extracted };
-    if !root.join("opentabletdriver-rust.exe").is_file() {
-        return Err("the package does not contain opentabletdriver-rust.exe".into());
-    }
-    let mut new_files = Vec::new();
-    files(&root, &root, &mut new_files).map_err(|error| error.to_string())?;
-    progress(&format!("Installing {} files...", new_files.len()));
-    replace(&root, install, &new_files)?;
-    let _ = fs::remove_dir_all(&work);
-    progress(&format!(
-        "{} is installed. Restart the driver and panel to use it.",
-        release.tag
-    ));
-    Ok(())
-}
-
-/// Replaces files one by one, renaming each existing file aside first.
-fn replace(source: &Path, install: &Path, relative: &[PathBuf]) -> Result<(), String> {
-    let mut done: Vec<(PathBuf, bool)> = Vec::new();
-    let result = (|| -> Result<(), String> {
-        for file in relative {
-            let target = install.join(file);
-            if let Some(parent) = target.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|error| format!("{}: {error}", parent.display()))?;
-            }
-            let existed = target.exists();
-            if existed {
-                let old = aside(&target);
-                let _ = fs::remove_file(&old);
-                fs::rename(&target, &old)
-                    .map_err(|error| format!("cannot move {} aside: {error}", target.display()))?;
-            }
-            done.push((target.clone(), existed));
-            fs::copy(source.join(file), &target)
-                .map_err(|error| format!("cannot write {}: {error}", target.display()))?;
+    let work = temporary_work("otd-update")?;
+    let result = (|| {
+        let package = work.join(&release.package_name);
+        progress(&format!("Downloading {}...", release.package_name));
+        download(
+            &release.package_url,
+            &release.package_api_url,
+            Some(&package),
+        )?;
+        let expected = String::from_utf8(download(
+            &release.checksum_url,
+            &release.checksum_api_url,
+            None,
+        )?)
+        .map_err(|_| "the checksum file is not text")?;
+        let expected = expected
+            .split_whitespace()
+            .next()
+            .ok_or("the checksum file is empty")?
+            .to_ascii_lowercase();
+        let actual = sha256(&package)?;
+        if actual != expected {
+            return Err(format!(
+                "the download's SHA-256 {actual} does not match the published {expected}; nothing was installed"
+            ));
         }
+        progress("Checksum verified. Extracting...");
+        let extracted = work.join("extracted");
+        fs::create_dir_all(&extracted).map_err(|error| error.to_string())?;
+        let status = Command::new(system_tool("tar.exe"))
+            .creation_flags(CREATE_NO_WINDOW)
+            .arg("-xf")
+            .arg(&package)
+            .arg("-C")
+            .arg(&extracted)
+            .status()
+            .map_err(|error| format!("cannot run tar.exe: {error}"))?;
+        if !status.success() {
+            return Err("the package could not be extracted".into());
+        }
+        let root = extracted.join(release.package_name.trim_end_matches(".zip"));
+        let root = if root.is_dir() { root } else { extracted };
+        if !root.join("opentabletdriver-rust.exe").is_file() {
+            return Err("the package does not contain opentabletdriver-rust.exe".into());
+        }
+        let mut new_files = Vec::new();
+        files(&root, &root, &mut new_files).map_err(|error| error.to_string())?;
+        progress(&format!("Installing {} files...", new_files.len()));
+        replace(&root, install, &new_files)?;
+        progress(&format!(
+            "{} is installed. Restart the driver and panel to use it.",
+            release.tag
+        ));
         Ok(())
     })();
-    if result.is_err() {
-        for (target, existed) in done.iter().rev() {
-            let _ = fs::remove_file(target);
-            if *existed {
-                let _ = fs::rename(aside(target), target);
-            }
-        }
-    }
+    let _ = fs::remove_dir_all(&work);
     result
 }
 
-/// Deletes files a previous update renamed aside. Files still in use stay
-/// until a later start.
-pub fn remove_leftovers() {
-    let Some(directory) = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(Path::to_path_buf))
-    else {
-        return;
-    };
-    let mut found = Vec::new();
-    if files(&directory, &directory, &mut found).is_ok() {
-        for file in found {
-            if file.to_string_lossy().ends_with(OLD_SUFFIX) {
-                let _ = fs::remove_file(directory.join(file));
-            }
-        }
-    }
+fn replace(source: &Path, install: &Path, relative: &[PathBuf]) -> Result<(), String> {
+    transaction::replace(source, install, relative)
 }
 
+/// Recovers an interrupted transaction before loading any installed bridge.
+/// Active transactions are locked; unjournaled legacy backups are preserved.
+pub fn remove_leftovers() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+    let directory = exe.parent().ok_or("cannot find install directory")?;
+    if transaction::startup(directory)? {
+        return Err("An interrupted update was recovered. Start the driver or panel again to use the restored files.".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn temporary_work(prefix: &str) -> Result<PathBuf, String> {
+    unique_directory(&std::env::temp_dir(), prefix)
+}
+
+pub(crate) fn unique_directory(root: &Path, prefix: &str) -> Result<PathBuf, String> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    fs::create_dir_all(root).map_err(|error| error.to_string())?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = root.join(format!("{prefix}-{}-{stamp}-{id}", std::process::id()));
+    fs::create_dir(&path).map_err(|error| error.to_string())?;
+    Ok(path)
+}
 /// `update [--check]`: prints whether a newer release exists and installs it.
 pub fn run(check_only: bool) -> Result<(), String> {
     let release = latest()?;
@@ -445,11 +427,14 @@ mod tests {
         let broken = [PathBuf::from("a.exe"), PathBuf::from("compat/missing.dll")];
         assert!(replace(&source, &install, &broken).is_err());
         assert_eq!(fs::read(install.join("a.exe")).unwrap(), b"old a");
-        assert!(!aside(&install.join("a.exe")).exists());
+        assert!(!install.join(".otd-update/backup/a.exe").exists());
         let files = [PathBuf::from("a.exe"), PathBuf::from("compat/b.dll")];
         replace(&source, &install, &files).unwrap();
         assert_eq!(fs::read(install.join("compat/b.dll")).unwrap(), b"new b");
-        assert_eq!(fs::read(aside(&install.join("a.exe"))).unwrap(), b"old a");
+        assert_eq!(
+            fs::read(install.join(".otd-update/backup/a.exe")).unwrap(),
+            b"old a"
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 }
@@ -476,7 +461,7 @@ mod live {
         );
         assert!(folder.join("compat").is_dir());
         assert_eq!(
-            fs::read(aside(&folder.join("opentabletdriver-rust.exe"))).unwrap(),
+            fs::read(folder.join(".otd-update/backup/opentabletdriver-rust.exe")).unwrap(),
             b"previous"
         );
         fs::remove_dir_all(&folder).unwrap();

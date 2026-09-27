@@ -7,8 +7,8 @@
 //! detected tablet the same way, each with its own profile.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use crate::config::Profile;
@@ -17,42 +17,37 @@ use crate::plugins::PluginChain;
 use crate::session::{self, Mode};
 use otd_core::tablets::Database;
 
-/// Runs companion sessions until dropped.
+/// One active generation. The primary path is reserved before this is created.
 pub struct Companions {
     stop: Arc<AtomicBool>,
     wake: Event,
-    thread: Option<JoinHandle<()>>,
+    thread: Option<JoinHandle<Result<(), String>>>,
 }
 
-/// The primary session's device path, which companions leave alone.
-pub type Primary = Arc<Mutex<Option<String>>>;
-
 impl Companions {
-    /// `active` gates the companions: they run only while it is true.
     pub fn start(
         profile: Profile,
         database: Database,
-        primary: Primary,
-        active: Arc<AtomicBool>,
+        primary: String,
+        primary_interrupt: &Event,
         log: impl Fn(&str) + Send + Sync + 'static,
     ) -> Result<Self, String> {
         let stop = Arc::new(AtomicBool::new(false));
         let wake = Event::create(true).map_err(|error| error.to_string())?;
         let thread_wake = wake.duplicate().map_err(|error| error.to_string())?;
+        let interrupt = primary_interrupt
+            .duplicate()
+            .map_err(|error| error.to_string())?;
         let thread_stop = Arc::clone(&stop);
         let log = Arc::new(log);
         let thread = std::thread::Builder::new()
             .name("tablet-companions".into())
             .spawn(move || {
-                supervise(
-                    profile,
-                    database,
-                    primary,
-                    active,
-                    thread_stop,
-                    thread_wake,
-                    log,
-                )
+                let result = supervise(profile, database, primary, thread_stop, thread_wake, log);
+                if result.is_err() {
+                    let _ = interrupt.signal();
+                }
+                result
             })
             .map_err(|error| error.to_string())?;
         Ok(Self {
@@ -61,81 +56,131 @@ impl Companions {
             thread: Some(thread),
         })
     }
-}
 
+    /// Returns only after every companion has stopped and reported cleanup.
+    pub fn finish(&mut self) -> Result<(), String> {
+        self.stop.store(true, Ordering::Release);
+        let signalled = self.wake.signal().map_err(|error| error.to_string());
+        let joined = self.thread.take().map_or(Ok(()), |thread| {
+            thread
+                .join()
+                .unwrap_or_else(|_| Err("companion supervisor panicked".into()))
+        });
+        joined.and(signalled)
+    }
+}
 impl Drop for Companions {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        let _ = self.wake.signal();
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+        if let Err(error) = self.finish() {
+            eprintln!("Companion cleanup failed: {error}");
         }
     }
 }
 
 struct Running {
     stop: Event,
-    thread: JoinHandle<()>,
+    thread: JoinHandle<std::io::Result<()>>,
 }
 
 fn supervise(
     profile: Profile,
     database: Database,
-    primary: Primary,
-    active: Arc<AtomicBool>,
+    primary: String,
     stop: Arc<AtomicBool>,
     wake: Event,
     log: Arc<dyn Fn(&str) + Send + Sync>,
-) {
-    let Ok(notification) = Notification::register() else {
-        log("Companion tablets are unavailable: device notifications failed.");
-        return;
+) -> Result<(), String> {
+    let notification = match Notification::register() {
+        Ok(notification) => notification,
+        Err(error) => {
+            log(&format!("Companion tablets are unavailable: {error}"));
+            return Ok(());
+        }
     };
     let named = profile.tablet_name().ok().flatten();
     let mut running: BTreeMap<String, Running> = BTreeMap::new();
-    while !stop.load(Ordering::Acquire) {
-        running.retain(|_, session| !session.thread.is_finished());
-        if active.load(Ordering::Acquire) {
-            let primary_path = primary.lock().ok().and_then(|path| path.clone());
-            for (path, name) in candidates(&database) {
-                if running.contains_key(&path)
-                    || primary_path
-                        .as_deref()
-                        .is_some_and(|p| p.eq_ignore_ascii_case(&path))
-                {
+    let mut known = Vec::new();
+    let mut rescan = true;
+    let mut scanned = std::time::Instant::now();
+    let outcome = (|| {
+        while !stop.load(Ordering::Acquire) {
+            let finished: Vec<_> = running
+                .iter()
+                .filter(|(_, session)| session.thread.is_finished())
+                .map(|(path, _)| path.clone())
+                .collect();
+            for path in finished {
+                if let Some(session) = running.remove(&path) {
+                    match session.thread.join() {
+                        Ok(Err(error)) if otd_core::session::is_cleanup_failure(&error) => {
+                            return Err(error.to_string());
+                        }
+                        Ok(Err(error)) => log(&format!("Companion disconnected: {error}")),
+                        Err(_) => return Err("companion report worker panicked".into()),
+                        Ok(Ok(())) => {}
+                    }
+                }
+            }
+            // PnP changes drive discovery. A slow fallback repairs missed notifications.
+            if rescan || scanned.elapsed() >= std::time::Duration::from_secs(60) {
+                known = candidates(&database);
+                scanned = std::time::Instant::now();
+            }
+            for (path, name) in &known {
+                if stop.load(Ordering::Acquire) {
+                    break;
+                }
+                if running.contains_key(path) || path.eq_ignore_ascii_case(&primary) {
                     continue;
                 }
-                let profile = companion_profile(&profile, named.as_deref(), &name, import_otd);
-                match spawn(
-                    path.clone(),
-                    name.clone(),
-                    profile,
-                    database.clone(),
-                    Arc::clone(&log),
-                ) {
+                let profile = companion_profile(&profile, named.as_deref(), name, import_otd);
+                match spawn(path.clone(), name.clone(), profile, database.clone()) {
                     Ok(session) => {
                         log(&format!("Also running {name} (a second tablet)."));
-                        running.insert(path, session);
+                        running.insert(path.clone(), session);
                     }
                     Err(error) => log(&format!("Could not start {name}: {error}")),
                 }
             }
-        } else if !running.is_empty() {
-            stop_all(&mut running);
+            rescan = match session::companion_wake(&notification, &wake) {
+                Ok(changed) => changed,
+                Err(error) => {
+                    log(&format!("Companion discovery stopped: {error}"));
+                    break;
+                }
+            };
         }
-        // Wake on device changes, a stop, or every two seconds.
-        let _ = session::wait_for_retry(&notification, &wake);
-    }
-    stop_all(&mut running);
+        Ok(())
+    })();
+    let cleanup = stop_all(&mut running);
+    cleanup.and(outcome)
 }
 
-fn stop_all(running: &mut BTreeMap<String, Running>) {
-    for (_, session) in std::mem::take(running) {
-        let _ = session.stop.signal();
-        let _ = session.thread.join();
+fn stop_all(running: &mut BTreeMap<String, Running>) -> Result<(), String> {
+    let sessions = std::mem::take(running);
+    let mut errors = Vec::new();
+    // Signal everyone before waiting for any one session.
+    for session in sessions.values() {
+        if let Err(error) = session.stop.signal() {
+            errors.push(error.to_string());
+        }
+    }
+    for (_, session) in sessions {
+        match session.thread.join() {
+            Ok(Err(error)) if otd_core::session::is_cleanup_failure(&error) => {
+                errors.push(error.to_string())
+            }
+            Ok(Err(error)) => eprintln!("Companion disconnected during shutdown: {error}"),
+            Err(_) => errors.push("companion worker panicked".into()),
+            Ok(Ok(())) => {}
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
     }
 }
-
 /// Every connected pen interface with a supported configuration, by path.
 fn candidates(database: &Database) -> Vec<(String, String)> {
     let Ok(devices) = hid::enumerate_with_database(database) else {
@@ -183,17 +228,12 @@ fn spawn(
     name: String,
     profile: Profile,
     database: Database,
-    log: Arc<dyn Fn(&str) + Send + Sync>,
 ) -> Result<Running, String> {
     let stop = Event::create(true).map_err(|error| error.to_string())?;
     let thread_stop = stop.duplicate().map_err(|error| error.to_string())?;
     let thread = std::thread::Builder::new()
         .name(format!("tablet-{name}"))
-        .spawn(move || {
-            if let Err(error) = run_companion(&path, &name, &profile, &database, &thread_stop) {
-                log(&format!("{name} stopped: {error}"));
-            }
-        })
+        .spawn(move || run_companion(&path, &name, &profile, &database, &thread_stop))
         .map_err(|error| error.to_string())?;
     Ok(Running { stop, thread })
 }
@@ -204,13 +244,17 @@ fn run_companion(
     profile: &Profile,
     database: &Database,
     stop: &Event,
-) -> Result<(), String> {
-    let notification = Notification::register().map_err(|error| error.to_string())?;
-    let devices = hid::enumerate_with_database(database).map_err(|error| error.to_string())?;
-    let selected = hid::select_device(&devices, database, Some(path), Some(name))?
-        .ok_or("the tablet is no longer connected")?;
-    let mut plugins = PluginChain::load_with_tablet(&profile.plugins, &selected.configuration)?;
-    plugins.validate_output_mode(profile.relative.is_some())?;
+) -> std::io::Result<()> {
+    let notification = Notification::register()?;
+    let devices = hid::enumerate_with_database(database)?;
+    let selected = hid::select_device(&devices, database, Some(path), Some(name))
+        .map_err(std::io::Error::other)?
+        .ok_or_else(|| std::io::Error::other("the tablet is no longer connected"))?;
+    let mut plugins = PluginChain::load_with_tablet(&profile.plugins, &selected.configuration)
+        .map_err(std::io::Error::other)?;
+    plugins
+        .validate_output_mode(profile.relative.is_some())
+        .map_err(std::io::Error::other)?;
     session::run(
         &selected,
         profile,
@@ -220,12 +264,50 @@ fn run_companion(
         &mut plugins,
         &|_| {},
     )
-    .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shutdown_signals_every_companion_and_preserves_cleanup_errors() {
+        use windows_sys::Win32::{
+            Foundation::WAIT_OBJECT_0, System::Threading::WaitForMultipleObjects,
+        };
+        let a = Event::create(true).unwrap();
+        let b = Event::create(true).unwrap();
+        let mut running = BTreeMap::new();
+        let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        for (name, stop, failure) in [
+            ("a", a.duplicate().unwrap(), true),
+            ("b", b.duplicate().unwrap(), false),
+        ] {
+            let first = a.duplicate().unwrap();
+            let second = b.duplicate().unwrap();
+            let completed = completed.clone();
+            let thread = std::thread::spawn(move || {
+                let handles = [first.raw(), second.raw()];
+                assert_eq!(
+                    unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 1, 2000) },
+                    WAIT_OBJECT_0
+                );
+                completed.fetch_add(1, Ordering::SeqCst);
+                if failure {
+                    Err(otd_core::session::cleanup_failure(std::io::Error::other(
+                        "unreleased contact",
+                    )))
+                } else {
+                    Ok(())
+                }
+            });
+            running.insert(name.into(), Running { stop, thread });
+        }
+        let error = stop_all(&mut running).unwrap_err();
+        assert!(error.contains("unreleased contact"), "{error}");
+        assert_eq!(completed.load(Ordering::SeqCst), 2);
+        assert!(running.is_empty());
+    }
 
     #[test]
     fn companions_use_the_shared_profile_or_their_own() {

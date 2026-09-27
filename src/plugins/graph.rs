@@ -192,18 +192,13 @@ impl PluginChain {
         runtime: &mut dyn PipelineRuntime,
     ) -> io::Result<()> {
         let mut values = input.values;
-        let mut raw = input.raw;
+        let raw = input.raw;
         let time_ns = input
             .now
             .saturating_duration_since(self.epoch)
             .as_nanos()
             .min(u128::from(u64::MAX)) as u64;
         if let Some(graph) = &self.graph {
-            // Legacy synthetic callers prepare their actual raw bytes before
-            // process(). Production dispatch passes the transport borrow directly.
-            if raw.is_empty() && input.pen.is_some() && self.prepared_pen == input.pen {
-                raw = &self.raw[..self.raw_length];
-            }
             // Any tablet's packet: the decoder supplies its parser's pen
             // buttons; IntuosV2 packets without them are read as before.
             if input.pen.is_some() {

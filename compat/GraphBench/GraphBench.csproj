@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Compile the actual bridge implementation into this offline harness. -->
+    <Compile Include="../OtdCompat/*.cs" Link="Bridge/%(Filename)%(Extension)" />
+    <PackageReference Include="OpenTabletDriver.Plugin" Version="0.6.7" />
+  </ItemGroup>
+</Project>

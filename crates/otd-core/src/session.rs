@@ -61,6 +61,9 @@ pub enum Read<'a> {
 
 /// A device endpoint that delivers input reports.
 pub trait ReportSource {
+    fn shared_output(&self) -> bool {
+        false
+    }
     /// Describes the endpoint for the log.
     fn label(&self) -> &str;
     /// The clock `Read::Report::ready` is measured on.
@@ -91,7 +94,7 @@ struct Counters {
 /// means the loop fell behind the tablet. Fixed-size; recording does not
 /// allocate. The last bucket holds everything from 1 ms up.
 struct Timing {
-    micros: Box<[u32; Timing::BUCKETS]>,
+    micros: Box<[u64; Timing::BUCKETS]>,
     reports: u64,
     max: Duration,
     queued: u64,
@@ -121,7 +124,7 @@ impl Timing {
         let target = ((self.reports as f64 * fraction).ceil() as u64).max(1);
         let mut seen = 0;
         for (micros, count) in self.micros.iter().enumerate() {
-            seen += u64::from(*count);
+            seen += *count;
             if seen >= target {
                 return if micros == Self::BUCKETS - 1 {
                     "1 ms or more".to_owned()
@@ -130,7 +133,7 @@ impl Timing {
                 };
             }
         }
-        unreachable!("the buckets hold every report")
+        "unavailable".to_owned()
     }
 
     fn summary(&self) -> Option<String> {
@@ -225,10 +228,11 @@ impl Layout {
             // Relative mouse motion is independent of the monitor topology.
             return;
         };
-        self.fingerprint = displays.fingerprint();
+        let fingerprint = displays.fingerprint();
         let Ok(current) = displays.snapshot() else {
             return;
         };
+        self.fingerprint = fingerprint;
         if current == *snapshot {
             return;
         }
@@ -260,10 +264,44 @@ pub fn run(
     mode: Mode,
     decoder: &mut impl PenDecoder,
     filters: &mut impl Filters,
-    mut send: impl FnMut(MousePacket) -> io::Result<()>,
+    send: impl FnMut(MousePacket) -> io::Result<()>,
     status: &impl Fn(&str),
 ) -> io::Result<()> {
+    run_gated(
+        source,
+        displays,
+        profile,
+        mode,
+        decoder,
+        filters,
+        send,
+        status,
+        || Ok(true),
+    )
+}
+
+pub fn cleanup_failure(error: io::Error) -> io::Error {
+    io::Error::other(OutputCleanupError(error))
+}
+
+/// Validates mapping and pipeline setup before activation, then gates all
+/// report and timer callbacks together, including the first overdue tick.
+#[allow(clippy::too_many_arguments)]
+pub fn run_gated(
+    source: &mut impl ReportSource,
+    displays: &mut impl Displays,
+    profile: &Profile,
+    mode: Mode,
+    decoder: &mut impl PenDecoder,
+    filters: &mut impl Filters,
+    mut send: impl FnMut(MousePacket) -> io::Result<()>,
+    status: &impl Fn(&str),
+    gate: impl FnOnce() -> io::Result<bool>,
+) -> io::Result<()> {
     let mut pipeline = ReportPipeline::new(profile).map_err(io::Error::other)?;
+    if source.shared_output() {
+        pipeline.share_output();
+    }
     let snapshot = if pipeline.is_relative() {
         None
     } else {
@@ -286,24 +324,35 @@ pub fn run(
     let mut timing = Timing::new();
     let mut capture_trace = CaptureTrace::default();
 
+    if !gate()? {
+        return Ok(());
+    }
+
     eprintln!("Tablet connected: {}", source.label());
     status("Tablet connected; receiving pen input");
     let outcome = (|| -> io::Result<()> {
         loop {
             // Timer-driven filters tick on this thread, between reads.
             let tick = match mode {
-                Mode::Driver => filters.next_tick(),
+                Mode::Driver if pipeline.is_relative() || layout.mapper.is_some() => {
+                    filters.next_tick()
+                }
+                Mode::Driver => None,
                 Mode::Capture { .. } => None,
             };
-            if tick.is_some_and(|wait| wait.is_zero())
-                && (pipeline.is_relative() || layout.mapper.is_some())
-            {
-                let ticked =
-                    pipeline.process_tick(source.now(), layout.mapper, filters, |packet| {
-                        send(packet)?;
-                        counters.injected += 1;
-                        Ok(())
-                    });
+            if pipeline.needs_cleanup() || tick.is_some_and(|wait| wait.is_zero()) {
+                let mut output = |packet| {
+                    send(packet)?;
+                    counters.injected += 1;
+                    Ok(())
+                };
+                let ticked = if pipeline.needs_cleanup() {
+                    pipeline.release_all(&mut output).map(|_| ())
+                } else {
+                    pipeline
+                        .process_tick(source.now(), layout.mapper, filters, output)
+                        .map(|_| ())
+                };
                 if let Some(name) = filters.take_failure() {
                     status(&format!(
                         "Disabled failing plugin: {name}. Restart to retry."
@@ -317,7 +366,8 @@ pub fn run(
                         last_output_warning = Some(now);
                     }
                 }
-                continue;
+                // Always reach the input/stop poll after one tick, even if a
+                // slow or failed timer still reports an overdue deadline.
             }
             let timeout = match mode {
                 Mode::Capture { deadline, limit } => {
@@ -329,6 +379,9 @@ pub fn run(
                         .saturating_duration_since(now)
                         .min(Duration::from_secs(1))
                 }
+                // Input can wake this early, but a locked desktop must not
+                // turn an idle failed release into a 1 kHz polling loop.
+                Mode::Driver if pipeline.needs_cleanup() => Duration::from_millis(50),
                 Mode::Driver => tick.map_or(Duration::from_secs(1), |wait| {
                     wait.min(Duration::from_secs(1))
                 }),
@@ -359,24 +412,20 @@ pub fn run(
             counters.read += 1;
             crate::debug::record(bytes);
             match decoder.decode(bytes) {
-                Ok(Some(pen)) => {
+                Ok(Some(decoded)) => {
+                    let pen = decoded.pen;
                     counters.accepted += 1;
                     if let Mode::Capture { .. } = mode {
                         capture_trace.pen(bytes, pen);
                     } else {
                         // Paused mappings still enter the pipeline's cleanup
                         // gate, which retries failed releases without filters.
-                        if pipeline.is_relative() || layout.mapper.is_some() {
-                            filters.prepare_report(pen, bytes);
-                        }
                         let emitted = pipeline.process_pen(
                             pen,
-                            bytes,
+                            decoded.raw,
                             // Upstream pen reports always carry a button
                             // array; a parser without buttons has an empty one.
-                            decoder
-                                .pen_buttons(bytes)
-                                .or(Some(crate::reports::Buttons::default())),
+                            decoded.buttons.or(Some(crate::reports::Buttons::default())),
                             ready,
                             layout.mapper,
                             filters,
@@ -487,6 +536,17 @@ mod tests {
         let mut slow = Timing::new();
         slow.record(Duration::from_millis(2));
         assert_eq!(slow.percentile(0.5), "1 ms or more");
+    }
+
+    #[test]
+    fn timing_bucket_survives_more_than_u32_max_reports() {
+        let mut timing = Timing::new();
+        timing.micros[0] = u64::from(u32::MAX);
+        timing.reports = u64::from(u32::MAX);
+        timing.record(Duration::ZERO);
+        assert_eq!(timing.micros[0], 4_294_967_296);
+        assert_eq!(timing.percentile(0.99), "0 us");
+        assert!(timing.summary().unwrap().contains("4294967296 reports"));
     }
 
     // Captured report prefixes: hover and contact at nearly the same place.
@@ -904,8 +964,10 @@ mod tests {
             vec![(0, monitors(&[1920]))],
             &mut timed,
         );
-        assert_eq!(timed.0, 3);
-        // The first tick moves the cursor; the report moves it again.
+        // The source ends on its second read. Due timers cannot postpone that
+        // shutdown, and the pre-input tick must not move a stale cursor.
+        assert_eq!(timed.0, 2);
+        // The physical report moves the cursor, then its between-read tick.
         assert_eq!(packets.len(), 2, "{packets:?}");
     }
 

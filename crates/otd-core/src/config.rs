@@ -722,17 +722,6 @@ impl Profile {
                 "absolute areas cannot be mixed with monitor/crop/top-level rotation".into(),
             );
         }
-        for threshold in [
-            raw.bindings.tip_threshold_raw,
-            raw.bindings.eraser_threshold_raw,
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if threshold > MAX_PRESSURE {
-                return Err("binding threshold exceeds tablet pressure range".into());
-            }
-        }
         let base = path.parent().unwrap_or_else(|| Path::new("."));
         for filter in &raw.radial_follow {
             if ![
@@ -798,6 +787,17 @@ impl Profile {
         profile.tablet = profile
             .tablet_name()?
             .map_or(TabletSpec::PTH_660, |name| spec_for_tablet(&name));
+        for threshold in [
+            profile.contact.tip_threshold_raw,
+            profile.contact.eraser_threshold_raw,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if threshold > profile.tablet.max_pressure {
+                return Err("binding threshold exceeds tablet pressure range".into());
+            }
+        }
         // The default crop means the whole digitizer of any tablet.
         if profile.crop != Crop::default() && !profile.crop.valid_for(profile.tablet) {
             return Err(format!(

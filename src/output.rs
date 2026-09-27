@@ -7,7 +7,55 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_MOVE, MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT, SendInput,
 };
 
+use otd_core::output::owners::{OutputOwners, Owner};
 use otd_core::output::{MousePacket, flags};
+use std::{io, sync::Mutex};
+
+static OWNERS: Mutex<OutputOwners> = Mutex::new(OutputOwners::new());
+
+pub struct SessionOutput {
+    owner: Option<Owner>,
+}
+
+impl SessionOutput {
+    pub fn new() -> io::Result<Self> {
+        let mut owners = OWNERS
+            .lock()
+            .map_err(|_| io::Error::other("output ownership lock poisoned"))?;
+        Ok(Self {
+            owner: Some(owners.register()),
+        })
+    }
+    pub fn send(&self, packet: MousePacket) -> io::Result<()> {
+        let owner = self
+            .owner
+            .ok_or_else(|| io::Error::other("output session ended"))?;
+        let mut owners = OWNERS
+            .lock()
+            .map_err(|_| io::Error::other("output ownership lock poisoned"))?;
+        owners.recover(send_input)?;
+        owners.send(owner, packet, send_input)
+    }
+    pub fn finish(&mut self) -> io::Result<()> {
+        if let Some(owner) = self.owner {
+            OWNERS
+                .lock()
+                .map_err(|_| io::Error::other("output ownership lock poisoned"))?
+                .release(owner, send_input)?;
+            self.owner = None;
+        }
+        Ok(())
+    }
+}
+impl Drop for SessionOutput {
+    fn drop(&mut self) {
+        if let Some(owner) = self.owner
+            && let Ok(mut owners) = OWNERS.lock()
+        {
+            owners.abandon(owner);
+        }
+    }
+}
 
 // The core uses Windows' own flag values, so packets pass through unchanged.
 const _: () = assert!(

@@ -28,6 +28,7 @@ pub struct ReportPipeline {
     is_eraser: bool,
     desired_contact: bool,
     faulted: bool,
+    physical_present: bool,
 }
 
 impl ReportPipeline {
@@ -49,11 +50,20 @@ impl ReportPipeline {
             is_eraser: false,
             desired_contact: false,
             faulted: false,
+            physical_present: false,
         })
     }
 
     pub fn is_relative(&self) -> bool {
         self.relative.is_some()
+    }
+
+    pub fn needs_cleanup(&self) -> bool {
+        self.faulted
+    }
+
+    pub fn share_output(&mut self) {
+        self.output.share_position();
     }
 
     /// Compatibility wrapper for callers interested only in whether any packet
@@ -145,6 +155,14 @@ impl ReportPipeline {
         mut send: impl FnMut(MousePacket) -> io::Result<()>,
     ) -> io::Result<DispatchStats> {
         let mut initial_stats = DispatchStats::default();
+        // Transport state must advance even while cleanup or mapping pauses
+        // dispatch. A retained timer report cannot resurrect a lost pen.
+        let physical_loss = input.kind == ReportKind::OutOfRange;
+        if physical_loss {
+            self.physical_present = false;
+        } else if input.values.position.is_some() {
+            self.physical_present = true;
+        }
         let mapping_paused = self.relative.is_none() && mapper.is_none();
         if self.faulted || mapping_paused {
             // Pausing the graph must also revoke held output, including when
@@ -166,7 +184,6 @@ impl ReportPipeline {
         // An incoming loss is a transport notification even when it came from
         // a general report source without the legacy PenReport adapter. Loss
         // emitted by a plugin reaches Runtime::output instead of this entry.
-        let physical_loss = input.kind == ReportKind::OutOfRange;
         let preserve_precision = !plugins.uses_managed_graph() && !plugins.has_pixels();
         let unfiltered_raw = if preserve_precision && !plugins.has_pre() && self.filters.is_empty()
         {
@@ -187,6 +204,7 @@ impl ReportPipeline {
             shown_position: None,
             preserve_precision,
             unfiltered_raw,
+            timer: false,
         };
         let result = plugins.dispatch(input, &mut runtime);
         let mut stats = runtime.stats;
@@ -223,19 +241,24 @@ impl ReportPipeline {
         plugins: &mut impl Filters,
         mut send: impl FnMut(MousePacket) -> io::Result<()>,
     ) -> io::Result<DispatchStats> {
-        if self.faulted || (self.relative.is_none() && mapper.is_none()) {
-            return Ok(DispatchStats::default());
+        let mut stats = DispatchStats::default();
+        if self.faulted {
+            stats.packets += u64::from(self.release_all(&mut send)?);
+        }
+        if self.relative.is_none() && mapper.is_none() {
+            return Ok(stats);
         }
         let mut runtime = Runtime {
             pipeline: self,
             mapper,
             now,
             send: &mut send,
-            stats: DispatchStats::default(),
+            stats,
             exact_position: None,
             shown_position: None,
             preserve_precision: false,
             unfiltered_raw: None,
+            timer: true,
         };
         let result = plugins.tick(now, &mut runtime);
         let stats = runtime.stats;
@@ -272,6 +295,7 @@ struct Runtime<'a, F> {
     shown_position: Option<[f32; 2]>,
     preserve_precision: bool,
     unfiltered_raw: Option<(u32, u32)>,
+    timer: bool,
 }
 
 impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F> {
@@ -321,6 +345,11 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
     }
 
     fn output(&mut self, kind: ReportKind, values: &ReportValues, _raw: &[u8]) -> io::Result<()> {
+        // A plugin may retain a contact report after transport range loss.
+        // Timers still advance, but cannot revive that output without new input.
+        if self.timer && !self.pipeline.physical_present && kind != ReportKind::OutOfRange {
+            return Ok(());
+        }
         self.stats.reports += 1;
         if let Some(eraser) = values.eraser {
             self.pipeline.is_eraser = eraser;

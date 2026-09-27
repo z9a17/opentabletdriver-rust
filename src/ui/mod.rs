@@ -15,6 +15,7 @@
 //! while an `App` handler runs still get the right colors.
 mod app;
 mod area;
+mod background;
 mod canvas;
 mod client;
 mod commands;
@@ -176,6 +177,7 @@ const WM_AUTOSTART: u32 = WM_APP + 4;
 /// Posted by a second launch of the panel.
 const WM_SHOW_PANEL: u32 = WM_APP + 5;
 const WM_TRAY: u32 = WM_APP + 6;
+const WM_BACKGROUND: u32 = WM_APP + 7;
 
 const PANEL_CLASS: &str = "OpenTabletDriverRustControlPanel";
 const PANEL_MUTEX: &str = "Local\\OpenTabletDriverRustPanel";
@@ -678,6 +680,29 @@ struct Controls {
     apply: HWND,
 }
 
+enum BackgroundResult {
+    Metadata {
+        generation: u64,
+        path: PathBuf,
+        result: Result<Vec<crate::dotnet::InspectedFilter>, String>,
+    },
+    Devices {
+        announce: bool,
+        result: Result<Vec<String>, String>,
+    },
+    PluginFolder {
+        generation: u64,
+        folder: PathBuf,
+        name: String,
+        entries: Vec<crate::dotnet::InspectedFilter>,
+    },
+    Import {
+        generation: u64,
+        edit_revision: u64,
+        result: Result<Box<Profile>, String>,
+    },
+    Strings(String),
+}
 struct App {
     hwnd: HWND,
     dpi: u32,
@@ -704,6 +729,15 @@ struct App {
     properties: Vec<PropertyRow>,
     /// Discovery results are UI-only; they are never written into profiles.
     plugin_metadata: HashMap<PathBuf, Result<Vec<FilterMetadata>, String>>,
+    metadata_pending: HashMap<PathBuf, bool>,
+    metadata_generation: u64,
+    edit_revision: u64,
+    background_tx: std::sync::mpsc::Sender<BackgroundResult>,
+    background_rx: std::sync::mpsc::Receiver<BackgroundResult>,
+    device_scan_pending: bool,
+    device_strings_pending: bool,
+    import_pending: bool,
+    connected_tablets: Vec<String>,
     /// Label controls keyed by the control they name.
     labels: HashMap<isize, HWND>,
     json_visible: bool,
@@ -1074,8 +1108,19 @@ unsafe extern "system" fn window_proc(
             with_app(App::driver_status);
             0
         }
+        WM_BACKGROUND => {
+            if let Some(text) = with_app(App::background_results).flatten() {
+                // Modal dialogs pump messages; release the App borrow first.
+                commands::message_box(window, &text, "Device strings", MB_OK | MB_ICONINFORMATION);
+            }
+            0
+        }
         WM_DETECT => {
             with_app(App::detect_tablet);
+            0
+        }
+        WM_DEVICECHANGE => {
+            with_app(|app| app.refresh_tablets(false));
             0
         }
         WM_AUTOSTART => {

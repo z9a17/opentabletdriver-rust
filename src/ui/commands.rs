@@ -263,7 +263,8 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                 // The profile's tablet: whichever is connected, a connected
                 // tablet, or the one it already names.
                 let target = app.editor.profile.target_tablet.clone();
-                let mut choices = crate::hid::connected_tablets();
+                app.refresh_tablets(false);
+                let mut choices = app.connected_tablets.clone();
                 if let Some(name) = &target
                     && !choices.contains(name)
                 {
@@ -277,6 +278,14 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                     CMD_TABLET_ANY,
                     "Any connected tablet",
                 );
+                if app.device_scan_pending && app.connected_tablets.is_empty() {
+                    append(
+                        tablets,
+                        MF_GRAYED,
+                        0,
+                        "Detecting tablets… reopen this menu shortly",
+                    );
+                }
                 for (index, name) in choices.iter().enumerate() {
                     append(
                         tablets,
@@ -765,14 +774,7 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
             });
         }
         CMD_DEVICE_STRINGS => {
-            let text = device_string_report();
-            with_app(|app| app.log(Level::Info, "Device strings", text.clone()));
-            message_box(
-                window,
-                &text,
-                "Device string reader",
-                MB_OK | MB_ICONINFORMATION,
-            );
+            with_app(App::read_device_strings);
         }
         ID_MODE => {
             let mode = with_app(|app| app.editor.mode());
@@ -880,7 +882,7 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
 /// Upstream's Device string reader asks for IDs and one index; this reads
 /// strings 1-10 of every connected tablet, which is what writing a
 /// configuration needs. `device-strings` reads any IDs and indices.
-fn device_string_report() -> String {
+pub(super) fn device_string_report() -> String {
     let database = otd_core::tablets::Database::builtin();
     let mut tablets: Vec<(u16, u16, String)> = Vec::new();
     for device in crate::hid::enumerate().unwrap_or_default() {

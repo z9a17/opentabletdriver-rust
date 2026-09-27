@@ -1,5 +1,6 @@
 using System.Numerics;
 using OpenTabletDriver.Plugin.Attributes;
+using OpenTabletDriver.Plugin.DependencyInjection;
 using OpenTabletDriver.Plugin.Output;
 using OpenTabletDriver.Plugin.Tablet;
 
@@ -34,4 +35,41 @@ public sealed class AsyncFixtureFilter : AsyncPositionedPipelineElement<IDeviceR
             OnEmit();
         }
     }
+}
+
+/// No enabled timer exists at graph construction. Consume starts it later.
+[PluginName("Late timer fixture")]
+public sealed class LateTimerFilter : BaseFilter, IDisposable
+{
+    [Resolved]
+    public OpenTabletDriver.Plugin.Timers.ITimer Scheduler { get; set; }
+    [Property("Offset")]
+    public float Offset { get; set; } = 1000;
+    private IDeviceReport retained;
+    private Vector2 last;
+
+    [OnDependencyLoad]
+    public void Initialize()
+    {
+        Scheduler.Interval = 1;
+        Scheduler.Elapsed += Tick;
+    }
+
+    public override void Consume(IDeviceReport report)
+    {
+        retained = report;
+        if (report is IAbsolutePositionReport positioned) last = positioned.Position;
+        Scheduler.Start();
+    }
+
+    private void Tick()
+    {
+        if (retained is IAbsolutePositionReport positioned)
+        {
+            positioned.Position = last + new Vector2(Offset, 0);
+            Publish(retained);
+        }
+    }
+
+    public void Dispose() { Scheduler.Stop(); Scheduler.Elapsed -= Tick; }
 }

@@ -422,6 +422,8 @@ sealed class SessionTimer : OpenTabletDriver.Plugin.Timers.ITimer
         due += Period;
         if (due <= now) due = now + Period;
         Elapsed?.Invoke();
+        long finished = Stopwatch.GetTimestamp();
+        if (Enabled && due <= finished) due = finished + Period;
     }
 
     public void Dispose()

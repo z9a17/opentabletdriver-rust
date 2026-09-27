@@ -1,41 +1,36 @@
-//! The tablet debugger's view of the report thread. While a debugger polls,
-//! the session loop copies each packet into one fixed slot; otherwise it
-//! only reads one atomic. The slot is never locked by the report thread in a
-//! way that can block: a busy slot skips that packet.
+//! Nonblocking debugger tap for one selected session. Metadata and packet
+//! bytes are read under the same lock; other sessions cannot overwrite them.
+use std::cell::Cell;
+use std::sync::{
+    Mutex,
+    atomic::{AtomicU32, AtomicU64, Ordering},
+};
 
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-
-/// Largest packet kept. Longer packets are truncated in the snapshot only.
 pub const MAX_BYTES: usize = 512;
-
-/// How many packets one poll keeps the tap armed for (about two seconds at
-/// 1 kHz), so the tap turns itself off when the debugger closes.
 pub const ARM_REPORTS: u32 = 2_000;
+static ARMED: AtomicU32 = AtomicU32::new(0);
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+static SELECTED: AtomicU64 = AtomicU64::new(0);
+thread_local! { static SESSION: Cell<u64> = const { Cell::new(0) }; }
 
-struct Slot {
+struct Capture {
     bytes: [u8; MAX_BYTES],
     length: usize,
     sequence: u64,
+    devices: Vec<(u64, Device)>,
 }
-
-static ARMED: AtomicU32 = AtomicU32::new(0);
-static RECORDED: AtomicU64 = AtomicU64::new(0);
-static SLOT: Mutex<Slot> = Mutex::new(Slot {
+static CAPTURE: Mutex<Capture> = Mutex::new(Capture {
     bytes: [0; MAX_BYTES],
     length: 0,
     sequence: 0,
+    devices: Vec::new(),
 });
-static DEVICE: Mutex<Option<Device>> = Mutex::new(None);
 
-/// The tablet the running session reads.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Device {
     pub name: String,
     pub parser: String,
 }
-
-/// The latest packet and how many packets were recorded since the daemon started.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub device: Option<Device>,
@@ -43,75 +38,128 @@ pub struct Snapshot {
     pub bytes: Vec<u8>,
 }
 
-/// Called by the session loop for every packet.
+/// Thread-bound registration. The first live session owns the tap; when it
+/// ends, the next registered session becomes selected and its counters reset.
+pub struct Registration {
+    id: u64,
+    previous: u64,
+    _thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+impl Registration {
+    pub fn new(device: Device) -> Self {
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let previous = SESSION.replace(id);
+        if let Ok(mut capture) = CAPTURE.lock() {
+            capture.devices.push((id, device));
+            if SELECTED.load(Ordering::Relaxed) == 0 {
+                capture.length = 0;
+                capture.sequence = 0;
+                SELECTED.store(id, Ordering::Release);
+            }
+        }
+        Self {
+            id,
+            previous,
+            _thread_bound: std::marker::PhantomData,
+        }
+    }
+}
+impl Drop for Registration {
+    fn drop(&mut self) {
+        SESSION.set(self.previous);
+        if let Ok(mut capture) = CAPTURE.lock() {
+            capture.devices.retain(|(id, _)| *id != self.id);
+            if SELECTED.load(Ordering::Relaxed) == self.id {
+                capture.length = 0;
+                capture.sequence = 0;
+                SELECTED.store(
+                    capture.devices.first().map_or(0, |(id, _)| *id),
+                    Ordering::Release,
+                );
+            }
+        }
+    }
+}
+
 #[inline]
 pub fn record(bytes: &[u8]) {
     if ARMED.load(Ordering::Relaxed) != 0 {
-        record_armed(bytes);
+        let id = SESSION.get();
+        if id != 0 && SELECTED.load(Ordering::Acquire) == id {
+            record_for(id, bytes);
+        }
     }
 }
-
 #[cold]
-fn record_armed(bytes: &[u8]) {
-    let _ = ARMED.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |armed| {
-        armed.checked_sub(1)
-    });
-    let sequence = RECORDED.fetch_add(1, Ordering::Relaxed) + 1;
-    if let Ok(mut slot) = SLOT.try_lock() {
+fn record_for(id: u64, bytes: &[u8]) {
+    if let Ok(mut capture) = CAPTURE.try_lock() {
+        if SELECTED.load(Ordering::Relaxed) != id {
+            return;
+        }
+        if ARMED
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |armed| {
+                armed.checked_sub(1)
+            })
+            .is_err()
+        {
+            return;
+        }
         let length = bytes.len().min(MAX_BYTES);
-        slot.bytes[..length].copy_from_slice(&bytes[..length]);
-        slot.length = length;
-        slot.sequence = sequence;
+        capture.bytes[..length].copy_from_slice(&bytes[..length]);
+        capture.length = length;
+        capture.sequence = capture.sequence.saturating_add(1);
     }
 }
 
-/// Arms the tap and returns the latest recorded packet, if any.
 pub fn poll() -> Snapshot {
     ARMED.store(ARM_REPORTS, Ordering::Relaxed);
-    let device = DEVICE.lock().ok().and_then(|device| device.clone());
-    let slot = SLOT.lock();
-    let (sequence, bytes) = match &slot {
-        Ok(slot) => (slot.sequence, slot.bytes[..slot.length].to_vec()),
-        Err(_) => (0, Vec::new()),
-    };
-    Snapshot {
-        device,
-        sequence,
-        bytes,
-    }
-}
-
-/// Records which tablet the session reads; `None` when it ends.
-pub fn set_device(device: Option<Device>) {
-    if let Ok(mut slot) = DEVICE.lock() {
-        *slot = device;
-    }
-    if let Ok(mut slot) = SLOT.lock() {
-        slot.length = 0;
+    match CAPTURE.lock() {
+        Ok(capture) => {
+            let selected = SELECTED.load(Ordering::Relaxed);
+            Snapshot {
+                device: capture
+                    .devices
+                    .iter()
+                    .find(|(id, _)| *id == selected)
+                    .map(|(_, device)| device.clone()),
+                sequence: capture.sequence,
+                bytes: capture.bytes[..capture.length].to_vec(),
+            }
+        }
+        Err(_) => Snapshot {
+            device: None,
+            sequence: 0,
+            bytes: Vec::new(),
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn records_only_while_armed() {
-        set_device(Some(Device {
-            name: "Tablet".into(),
-            parser: "Parser".into(),
-        }));
+    fn packets_labels_and_lifetimes_belong_to_one_session() {
+        let first = Registration::new(Device {
+            name: "A".into(),
+            parser: "ParserA".into(),
+        });
         ARMED.store(0, Ordering::Relaxed);
-        record(&[1, 2, 3]);
-        assert!(poll().bytes.is_empty(), "disarmed packets are not kept");
-        record(&[4, 5]);
+        record(&[1]);
+        assert!(poll().bytes.is_empty());
+        record(&[2]);
+        let second = Registration::new(Device {
+            name: "B".into(),
+            parser: "ParserB".into(),
+        });
+        record(&[3]);
         let snapshot = poll();
-        assert_eq!(snapshot.bytes, [4, 5]);
-        assert_eq!(snapshot.device.unwrap().name, "Tablet");
-        ARMED.store(1, Ordering::Relaxed);
-        record(&[6]);
-        record(&[7]);
-        assert_eq!(ARMED.load(Ordering::Relaxed), 0);
-        set_device(None);
+        assert_eq!(snapshot.device.unwrap().name, "A");
+        assert_eq!(snapshot.bytes, [2]);
+        assert_eq!(snapshot.sequence, 1);
+        drop(second);
+        assert_eq!(poll().device.unwrap().name, "A");
+        drop(first);
+        assert_eq!(poll().device, None);
+        assert!(poll().bytes.is_empty());
     }
 }
