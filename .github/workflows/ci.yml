@@ -82,5 +82,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: cargo clippy --locked -p otd-core --all-targets -- -D warnings
-      - run: cargo test --locked -p otd-core
+      - run: cargo clippy --locked -p otd-core -p otd-linux --all-targets -- -D warnings
+      - run: cargo test --locked -p otd-core -p otd-linux
+      - run: cargo build --locked -p otd-linux --release
+      - uses: actions/upload-artifact@v7
+        with:
+          name: opentabletdriver-rust-linux-x64
+          path: target/release/opentabletdriver-rust-linux
+
+  portable-macos:
+    # The portable core must also build and pass on macOS.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --locked -p otd-core -p otd-linux

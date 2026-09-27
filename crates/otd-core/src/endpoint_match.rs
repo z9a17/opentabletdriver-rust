@@ -124,7 +124,10 @@ pub fn matches(endpoint: &Endpoint, candidate: &Match<'_>) -> Result<(), Rejecti
                     .and_then(|map| map.get(key))
             })
     };
-    if let Some(usage) = attribute("WinUsage") {
+    // Upstream checks this Windows-only attribute on Windows only.
+    if cfg!(target_os = "windows")
+        && let Some(usage) = attribute("WinUsage")
+    {
         let pattern = format!("&col{usage}");
         let regex = Regex::new(&pattern).map_err(|_| Rejection::InvalidPattern(pattern))?;
         if !regex.is_match(&endpoint.path) {

@@ -161,6 +161,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "otd-linux"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "otd-core",
+]
+
+[[package]]
 name = "otd-plugin-api"
 version = "0.1.0"
 
