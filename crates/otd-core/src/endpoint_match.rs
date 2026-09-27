@@ -317,7 +317,13 @@ mod tests {
             .unwrap();
         assert_eq!(matches(&ep, &candidate), Ok(()));
         ep.path = "device&col02".into();
-        assert_eq!(matches(&ep, &candidate), Err(Rejection::WrongCollection));
+        // Upstream applies WinUsage on Windows only.
+        let expected = if cfg!(target_os = "windows") {
+            Err(Rejection::WrongCollection)
+        } else {
+            Ok(())
+        };
+        assert_eq!(matches(&ep, &candidate), expected);
         ep.path = "device&col01".into();
         ep.attributes.as_mut().unwrap().clear();
         assert_eq!(matches(&ep, &candidate), Err(Rejection::WrongInterface));
