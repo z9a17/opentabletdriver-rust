@@ -59,6 +59,8 @@ Release 0.9.0 advances five slices, without completing a full-parity gate:
 No local tests, driver/daemon/UI launches, plugin execution or hardware validation were performed for 0.9.0. Rust formatting and strict workspace/all-target Clippy passed during integration, and the C# bridge compiled. Final packaging results are recorded in the release notes. Historical test results are retained as historical evidence only. At that release, C03 hot-apply rollback remained unimplemented; the 0.10.0 implementation below advances it. Broad bindings, live auxiliary/touch input, async plugins, Ink output, broader devices and cross-platform runtime support remain open.
 
 
+Release 0.13.1 fixes the runtime, latency and recovery issues documented in [the audit fixes](AUDIT_FIXES_0.13.1.md). It adds offline regression and allocation evidence without new hardware-validation or full-parity claims.
+
 Release 0.13.0 adds these slices:
 
 - **D05 (first slice):** every connected supported tablet runs at once. The tablet the panel's settings are for keeps the existing worker; each other tablet gets a companion session on its own thread with its OpenTabletDriver profile, or its full area when there is none. Companions stop and start with the driver and are rescanned on device changes. Only one tablet was connected during testing, so two tablets at once has not been run.

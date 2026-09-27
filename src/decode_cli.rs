@@ -332,11 +332,11 @@ mod tests {
 
     #[test]
     fn debug_report_decodes_the_latest_packet_with_the_session_parser() {
-        otd_core::debug::set_device(Some(otd_core::debug::Device {
+        let registration = otd_core::debug::Registration::new(otd_core::debug::Device {
             name: "Wacom PTH-660".into(),
             parser: "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV2.IntuosV2ReportParser"
                 .into(),
-        }));
+        });
         // The first poll arms the tap; the report thread then keeps packets.
         let _ = debug_report();
         let mut packet = [0u8; 17];
@@ -346,7 +346,7 @@ mod tests {
         packet[8] = 0x20;
         otd_core::debug::record(&packet);
         let report = debug_report();
-        otd_core::debug::set_device(None);
+        drop(registration);
         assert_eq!(report.tablet.as_deref(), Some("Wacom PTH-660"));
         assert!(report.raw_hex.starts_with("106110"), "{}", report.raw_hex);
         assert_eq!(report.values["values"]["position"][0], 16.0);

@@ -192,6 +192,12 @@ mod app {
         install_stop_handler()?;
         let profile = Profile::load(profile_path.as_deref())?;
         profile.validate_runtime_tablet()?;
+        if profile.plugins.iter().any(|plugin| plugin.enabled) {
+            return Err(
+                "external plugins are not supported by the Linux runtime; disable them explicitly"
+                    .into(),
+            );
+        }
         let tablet = tablet.or(profile.tablet_name()?);
         let screen = Rect {
             left: 0,

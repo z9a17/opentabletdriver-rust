@@ -42,6 +42,7 @@ use windows_sys::core::GUID;
 
 pub const WACOM_VENDOR: u16 = 0x056a;
 pub const PTH660_USB: u16 = 0x0357;
+#[cfg(test)]
 pub const PEN_REPORT_LENGTH: u16 = 192;
 #[cfg(test)]
 pub const AUX_REPORT_LENGTH: u16 = 44;

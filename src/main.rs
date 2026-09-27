@@ -685,19 +685,6 @@ fn drive(
     } else {
         None
     };
-    // Other connected tablets run beside the primary one.
-    let primary: companions::Primary = Default::default();
-    let _companions = if capture_seconds.is_none() {
-        Some(companions::Companions::start(
-            profile.clone(),
-            database.clone(),
-            primary.clone(),
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            |line| eprintln!("{line}"),
-        )?)
-    } else {
-        None
-    };
     let _tools = capture_seconds
         .is_none()
         .then(|| plugins::Tools::start(&profile.plugins, |line| eprintln!("{line}")));
@@ -757,9 +744,17 @@ fn drive(
                 "{} found; opening pen input",
                 selected.configuration.name
             ));
-            if let Ok(mut path) = primary.lock() {
-                *path = Some(selected.pen.path_text());
-            }
+            let mut companions = if capture_seconds.is_none() {
+                Some(companions::Companions::start(
+                    profile.clone(),
+                    database.clone(),
+                    selected.pen.path_text(),
+                    stop_event,
+                    |line| eprintln!("{line}"),
+                )?)
+            } else {
+                None
+            };
             let result = session::run(
                 &selected,
                 &profile,
@@ -769,8 +764,8 @@ fn drive(
                 &mut plugins,
                 &status,
             );
-            if let Ok(mut path) = primary.lock() {
-                *path = None;
+            if let Some(companions) = &mut companions {
+                companions.finish()?;
             }
             match result {
                 Ok(()) => {}
@@ -793,6 +788,7 @@ fn drive(
         }
         Ok(())
     })();
+    drop(_tools);
     let restoration = original_driver.as_mut().map_or(Ok(()), |guard| {
         guard
             .restore()
@@ -806,7 +802,10 @@ fn drive(
 }
 
 fn main() {
-    update::remove_leftovers();
+    if let Err(error) = update::remove_leftovers() {
+        eprintln!("Update recovery failed: {error}");
+        std::process::exit(1);
+    }
     let result = match parse_args() {
         Ok(Command::Decode(args)) => decode_cli::run(args),
         Ok(Command::Plugins(args)) => plugin_catalog::run(args),

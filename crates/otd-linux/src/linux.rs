@@ -198,6 +198,11 @@ pub fn initialize(
         })
         .transpose()?
         .unwrap_or(0);
+    if delay == u32::MAX {
+        return Err(io::Error::other(
+            "infinite feature initialization delay is unsupported",
+        ));
+    }
     for &index in identifier
         .initialization_strings
         .as_deref()
@@ -222,7 +227,13 @@ pub fn initialize(
         .filter(|report| !report.0.is_empty())
     {
         cancelled()?;
-        std::thread::sleep(Duration::from_millis(u64::from(delay)));
+        let mut remaining = Duration::from_millis(u64::from(delay));
+        while !remaining.is_zero() {
+            cancelled()?;
+            let step = remaining.min(Duration::from_millis(10));
+            std::thread::sleep(step);
+            remaining -= step;
+        }
         cancelled()?;
         let mut data = padded(&report.0, device.endpoint.feature_length)?;
         let request = ioc(READ_WRITE, b'H', 0x06, data.len()); // HIDIOCSFEATURE

@@ -437,7 +437,7 @@ mod tests {
 
     // Existing synthetic pipeline fixtures now supply the raw context required
     // by managed dispatch, just as the transport session does.
-    fn prepare_synthetic_pen(chain: &mut PluginChain, pen: PenReport) {
+    fn synthetic_pen_raw(pen: PenReport) -> [u8; 192] {
         let mut raw = [0u8; 192];
         raw[0] = pen.id;
         raw[1] = u8::from(pen.tip_switch)
@@ -451,7 +451,7 @@ mod tests {
         raw[11] = pen.tilt[1] as u8;
         raw[12..14].copy_from_slice(&pen.rotation.unwrap_or(0).to_le_bytes());
         raw[16] = pen.hover_distance.unwrap_or(0);
-        chain.prepare_report(pen, &raw);
+        raw
     }
 
     #[test]
@@ -705,89 +705,103 @@ mod tests {
     #[ignore = "requires bridge and SettingsFixture DLL; set OTD_COMPAT_DIR and OTD_TEST_SETTINGS_PLUGIN"]
     fn dotnet_timer_filters_emit_between_reports() {
         use otd_core::plugins::Filters;
-        let path: PathBuf = std::env::var_os("OTD_TEST_SETTINGS_PLUGIN")
-            .expect("set OTD_TEST_SETTINGS_PLUGIN")
-            .into();
-        let config = PluginConfig {
-            path,
-            kind: PluginKind::Dotnet,
-            enabled: true,
-            type_name: "SettingsFixture.AsyncFixtureFilter".into(),
-            settings_json: r#"{"Frequency":1000.0,"Offset":1000.0}"#.into(),
-        };
-        let mut chain = PluginChain::load(&[config]).unwrap();
-        // Frequency 1000 Hz: the Scheduler was injected before settings.
-        let first = chain.next_tick().expect("the async filter has a timer");
-        assert!(first <= Duration::from_millis(2), "{first:?}");
-        let desktop = Rect {
-            left: 0,
-            top: 0,
-            right: 1920,
-            bottom: 1080,
-        };
-        let mapper = Mapper::new(Crop::default(), 0, desktop, desktop).unwrap();
-        let raw = [
-            0x10, 0x60, 0x14, 0x56, 0x00, 0xa3, 0x16, 0x00, 0x00, 0x00, 0x07, 0x04, 0, 0, 0, 0,
-            0x28,
-        ];
-        let pen = crate::protocol::parse(&raw).unwrap().unwrap();
-        let mut pipeline = ReportPipeline::new(&Profile::default()).unwrap();
-        let mut direct = Vec::new();
-        pipeline
-            .process_with_raw(
-                pen,
-                &raw,
-                Instant::now(),
-                Some(mapper),
-                &mut chain,
-                |packet| {
-                    direct.push(packet);
-                    Ok(())
-                },
-            )
-            .unwrap();
-        assert!(
-            direct.is_empty(),
-            "the async filter holds reports for its timer"
-        );
-        let (mut reports, mut packets) = (0, Vec::new());
-        let start = Instant::now();
-        while start.elapsed() < Duration::from_millis(30) {
-            if chain.next_tick() == Some(Duration::ZERO) {
-                let stats = pipeline
-                    .process_tick(Instant::now(), Some(mapper), &mut chain, |packet| {
-                        packets.push(packet);
-                        Ok(())
-                    })
-                    .unwrap();
-                reports += stats.reports;
+        for (type_name, late) in [
+            ("SettingsFixture.AsyncFixtureFilter", false),
+            ("SettingsFixture.LateTimerFilter", true),
+        ] {
+            let path: PathBuf = std::env::var_os("OTD_TEST_SETTINGS_PLUGIN")
+                .expect("set OTD_TEST_SETTINGS_PLUGIN")
+                .into();
+            let config = PluginConfig {
+                path,
+                kind: PluginKind::Dotnet,
+                enabled: true,
+                type_name: type_name.into(),
+                settings_json: if late {
+                    r#"{"Offset":1000.0}"#
+                } else {
+                    r#"{"Frequency":1000.0,"Offset":1000.0}"#
+                }
+                .into(),
+            };
+            let mut chain = PluginChain::load(&[config]).unwrap();
+            // Frequency 1000 Hz: the Scheduler was injected before settings.
+            if late {
+                assert_eq!(chain.next_tick(), None, "timer starts on the first report");
             } else {
-                std::thread::sleep(Duration::from_micros(200));
+                let first = chain.next_tick().expect("the async filter has a timer");
+                assert!(first <= Duration::from_millis(2), "{first:?}");
             }
+            let desktop = Rect {
+                left: 0,
+                top: 0,
+                right: 1920,
+                bottom: 1080,
+            };
+            let mapper = Mapper::new(Crop::default(), 0, desktop, desktop).unwrap();
+            let raw = [
+                0x10, 0x60, 0x14, 0x56, 0x00, 0xa3, 0x16, 0x00, 0x00, 0x00, 0x07, 0x04, 0, 0, 0, 0,
+                0x28,
+            ];
+            let pen = crate::protocol::parse(&raw).unwrap().unwrap();
+            let mut pipeline = ReportPipeline::new(&Profile::default()).unwrap();
+            let mut direct = Vec::new();
+            pipeline
+                .process_with_raw(
+                    pen,
+                    &raw,
+                    Instant::now(),
+                    Some(mapper),
+                    &mut chain,
+                    |packet| {
+                        direct.push(packet);
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            assert!(
+                direct.is_empty(),
+                "the async filter holds reports for its timer"
+            );
+            let (mut reports, mut packets) = (0, Vec::new());
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_millis(30) {
+                if chain.next_tick() == Some(Duration::ZERO) {
+                    let stats = pipeline
+                        .process_tick(Instant::now(), Some(mapper), &mut chain, |packet| {
+                            packets.push(packet);
+                            Ok(())
+                        })
+                        .unwrap();
+                    reports += stats.reports;
+                } else {
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+            }
+            assert_eq!(chain.take_failure(), None);
+            assert!(reports >= 5, "only {reports} timer emissions in 30 ms");
+            // The first tick moves the cursor; repeats at the same spot send nothing.
+            assert_eq!(packets.len(), 1, "{packets:?}");
+            let mut plain = ReportPipeline::new(&Profile::default()).unwrap();
+            let mut unfiltered = Vec::new();
+            plain
+                .process_with_raw(
+                    pen,
+                    &raw,
+                    Instant::now(),
+                    Some(mapper),
+                    &mut PluginChain::load(&[]).unwrap(),
+                    |packet| {
+                        unfiltered.push(packet);
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            assert!(
+                packets[0].dx > unfiltered[0].dx,
+                "{packets:?} {unfiltered:?}"
+            );
         }
-        assert_eq!(chain.take_failure(), None);
-        assert!(reports >= 5, "only {reports} timer emissions in 30 ms");
-        // The first tick moves the cursor; repeats at the same spot send nothing.
-        assert_eq!(packets.len(), 1, "{packets:?}");
-        let mut plain = ReportPipeline::new(&Profile::default()).unwrap();
-        let mut unfiltered = Vec::new();
-        plain
-            .process_with_raw(
-                pen,
-                &raw,
-                Instant::now(),
-                Some(mapper),
-                &mut PluginChain::load(&[]).unwrap(),
-                |packet| {
-                    unfiltered.push(packet);
-                    Ok(())
-                },
-            )
-            .unwrap();
-        assert!(
-            packets[0].dx > unfiltered[0].dx,
-            "{packets:?} {unfiltered:?}"
-        );
     }
 
     #[test]
@@ -982,26 +996,44 @@ mod tests {
         };
         std::thread::sleep(Duration::from_millis(55));
         let mut first = None;
-        prepare_synthetic_pen(&mut chain, pen);
+        let raw = synthetic_pen_raw(pen);
         assert!(
             pipeline
-                .process(pen, Instant::now(), Some(mapper), &mut chain, |packet| {
-                    first = Some(packet);
-                    Ok(())
-                })
+                .process_with_raw(
+                    pen,
+                    &raw,
+                    Instant::now(),
+                    Some(mapper),
+                    &mut chain,
+                    |packet| {
+                        first = Some(packet);
+                        Ok(())
+                    }
+                )
                 .unwrap()
+                .packets
+                > 0
         );
         assert!(first.is_some());
         pen.x += 20; // Under one screen pixel, inside the configured 5 px dead zone.
         let mut second = None;
-        prepare_synthetic_pen(&mut chain, pen);
+        let raw = synthetic_pen_raw(pen);
         assert!(
-            !pipeline
-                .process(pen, Instant::now(), Some(mapper), &mut chain, |packet| {
-                    second = Some(packet);
-                    Ok(())
-                })
+            pipeline
+                .process_with_raw(
+                    pen,
+                    &raw,
+                    Instant::now(),
+                    Some(mapper),
+                    &mut chain,
+                    |packet| {
+                        second = Some(packet);
+                        Ok(())
+                    }
+                )
                 .unwrap()
+                .packets
+                == 0
         );
         assert!(
             second.is_none(),
@@ -1060,12 +1092,19 @@ mod tests {
             let mut run = |reports: u32| {
                 for index in 0..reports {
                     pen.x = 20_000 + index % 1_000;
-                    prepare_synthetic_pen(&mut chain, pen);
+                    let raw = synthetic_pen_raw(pen);
                     pipeline
-                        .process(pen, Instant::now(), Some(mapper), &mut chain, |packet| {
-                            black_box(packet);
-                            Ok(())
-                        })
+                        .process_with_raw(
+                            pen,
+                            &raw,
+                            Instant::now(),
+                            Some(mapper),
+                            &mut chain,
+                            |packet| {
+                                black_box(packet);
+                                Ok(())
+                            },
+                        )
                         .unwrap();
                 }
             };

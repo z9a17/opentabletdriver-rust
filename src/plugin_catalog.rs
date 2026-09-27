@@ -8,8 +8,10 @@
 //! PluginMetadataCollection}.cs and DesktopPluginManager.cs at 736003e.
 
 use std::fs;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
 use serde::{Deserialize, Serialize};
 
@@ -98,6 +100,7 @@ fn system_tool(name: &str) -> PathBuf {
 
 fn curl(url: &str, output: &Path) -> Result<(), String> {
     let status = Command::new(system_tool("curl.exe"))
+        .creation_flags(CREATE_NO_WINDOW)
         .args([
             "--silent",
             "--show-error",
@@ -122,6 +125,7 @@ fn curl(url: &str, output: &Path) -> Result<(), String> {
 fn extract(archive: &Path, into: &Path) -> Result<(), String> {
     fs::create_dir_all(into).map_err(|error| error.to_string())?;
     let status = Command::new(system_tool("tar.exe"))
+        .creation_flags(CREATE_NO_WINDOW)
         .arg("-xf")
         .arg(archive)
         .arg("-C")
@@ -152,9 +156,7 @@ fn json_files(directory: &Path, found: &mut Vec<PathBuf>) {
 /// Every catalog entry that supports OpenTabletDriver 0.6.7, newest version
 /// per name and owner, sorted by name.
 pub fn fetch() -> Result<Vec<PluginMetadata>, String> {
-    let work = std::env::temp_dir().join(format!("otd-rust-catalog-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&work);
-    fs::create_dir_all(&work).map_err(|error| error.to_string())?;
+    let work = crate::update::temporary_work("otd-rust-catalog")?;
     let archive = work.join("catalog.tar.gz");
     let result = curl(CATALOG, &archive)
         .and_then(|()| extract(&archive, &work.join("catalog")))
@@ -215,8 +217,7 @@ pub fn install(entry: &PluginMetadata) -> Result<PathBuf, String> {
         .as_deref()
         .filter(|url| url.starts_with("https://"))
         .ok_or_else(|| format!("{} has no HTTPS download", entry.name))?;
-    let work = std::env::temp_dir().join(format!("otd-rust-plugin-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&work);
+    let work = crate::update::temporary_work("otd-plugin")?;
     fs::create_dir_all(&work).map_err(|error| error.to_string())?;
     let archive = work.join("download");
     let result = curl(url, &archive)
@@ -272,8 +273,7 @@ fn install_archive(
 /// plugin manager accepts, or a single DLL. There is no catalog hash to
 /// check, so the user vouches for the file.
 pub fn install_file(file: &Path) -> Result<PathBuf, String> {
-    let work = std::env::temp_dir().join(format!("otd-rust-plugin-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&work);
+    let work = crate::update::temporary_work("otd-plugin")?;
     let result = install_file_into(file, &plugins_directory()?, &work);
     let _ = fs::remove_dir_all(&work);
     result
@@ -324,33 +324,67 @@ fn install_file_into(file: &Path, root: &Path, work: &Path) -> Result<PathBuf, S
 
 /// Moves a staged plugin folder to `root/<plugin name>` with its metadata.
 fn place(entry: &PluginMetadata, staged: &Path, root: &Path) -> Result<PathBuf, String> {
-    let folder_name = entry.folder();
-    fs::write(
-        staged.join("metadata.json"),
-        serde_json::to_vec_pretty(entry).map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
-    fs::create_dir_all(root).map_err(|error| error.to_string())?;
-    let target = root.join(&folder_name);
-    let previous = root.join(format!("{folder_name}.old-update"));
-    let _ = fs::remove_dir_all(&previous);
-    if target.exists() {
-        fs::rename(&target, &previous)
-            .map_err(|error| format!("cannot replace {}: {error}", target.display()))?;
-    }
-    if let Err(error) = fs::rename(staged, &target) {
+    let _lock = crate::update::transaction::InstallLock::acquire(root, ".otd-plugins.lock")?;
+    let local = crate::update::unique_directory(root, ".otd-plugin-stage")?;
+    let result = (|| {
+        copy_tree(staged, &local)?;
+        fs::write(
+            local.join("metadata.json"),
+            serde_json::to_vec_pretty(entry).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        let target = root.join(entry.folder());
+        let previous = root.join(format!("{}.old-update", entry.folder()));
         if previous.exists() {
-            let _ = fs::rename(&previous, &target);
+            if !target.exists() {
+                fs::rename(&previous, &target).map_err(|error| error.to_string())?;
+            } else {
+                fs::remove_dir_all(&previous)
+                    .map_err(|error| format!("previous plugin backup is still in use: {error}"))?;
+            }
         }
-        return Err(format!("cannot install into {}: {error}", target.display()));
-    }
-    let _ = fs::remove_dir_all(&previous);
-    Ok(target)
+        if target.exists() {
+            fs::rename(&target, &previous)
+                .map_err(|error| format!("cannot replace {}: {error}", target.display()))?;
+        }
+        if let Err(error) = fs::rename(&local, &target) {
+            if previous.exists() {
+                fs::rename(&previous, &target).map_err(|restore| {
+                    format!(
+                        "install failed: {error}; restoring {} failed: {restore}; backup preserved",
+                        target.display()
+                    )
+                })?;
+            }
+            return Err(format!("cannot install into {}: {error}", target.display()));
+        }
+        let _ = fs::remove_dir_all(&previous);
+        Ok(target)
+    })();
+    let _ = fs::remove_dir_all(&local);
+    result
 }
 
+fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
+    fs::create_dir_all(destination).map_err(|error| error.to_string())?;
+    for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let kind = entry.file_type().map_err(|error| error.to_string())?;
+        let target = destination.join(entry.file_name());
+        if kind.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else if kind.is_file() {
+            fs::copy(entry.path(), target).map_err(|error| error.to_string())?;
+        } else {
+            return Err("plugin packages cannot contain filesystem links".into());
+        }
+    }
+    Ok(())
+}
 /// Removes an installed plugin's folder.
 pub fn uninstall(folder: &Path) -> Result<(), String> {
     let root = plugins_directory()?;
+    let _lock = crate::update::transaction::InstallLock::acquire(&root, ".otd-plugins.lock")?;
     if folder.parent() != Some(root.as_path()) {
         return Err("only plugins in the plugin folder can be removed".into());
     }
@@ -524,6 +558,7 @@ mod tests {
         fs::write(source.join("Filter.dll"), b"dll").unwrap();
         let archive = root.join("plugin.zip");
         let status = Command::new(system_tool("tar.exe"))
+            .creation_flags(CREATE_NO_WINDOW)
             .arg("-a")
             .arg("-cf")
             .arg(&archive)
@@ -570,6 +605,7 @@ mod tests {
         assert_eq!(saved.owner, "Local file");
         let archive = root.join("Packed.zip");
         let status = Command::new(system_tool("tar.exe"))
+            .creation_flags(CREATE_NO_WINDOW)
             .arg("-a")
             .arg("-cf")
             .arg(&archive)
@@ -585,6 +621,31 @@ mod tests {
         fs::write(&text, b"x").unwrap();
         assert!(install_file_into(&text, &plugins, &work).is_err());
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn plugin_staging_can_live_on_a_different_volume() {
+        // Set this to a scratch directory on a second drive for the actual
+        // cross-volume check. Without it, still check copy/replace behavior.
+        let source_root = std::env::var_os("OTD_TEST_PLUGIN_SOURCE_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        let source = crate::update::unique_directory(&source_root, "otd-cross-source").unwrap();
+        let destination = crate::update::temporary_work("otd-cross-destination").unwrap();
+        fs::create_dir(source.join("nested")).unwrap();
+        fs::write(source.join("nested/Filter.dll"), b"fixture only").unwrap();
+        let plugin = entry("1.0.0.0", "0.6.0.0", None);
+        let installed = place(&plugin, &source, &destination).unwrap();
+        assert_eq!(
+            fs::read(installed.join("nested/Filter.dll")).unwrap(),
+            b"fixture only"
+        );
+        assert_eq!(
+            fs::read(source.join("nested/Filter.dll")).unwrap(),
+            b"fixture only"
+        );
+        fs::remove_dir_all(&source).unwrap();
+        fs::remove_dir_all(&destination).unwrap();
     }
 
     #[test]

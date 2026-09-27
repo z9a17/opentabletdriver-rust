@@ -5,6 +5,7 @@
 
 use crate::mapping::Mapper;
 use crate::state::Frame;
+pub mod owners;
 
 /// `MOUSEINPUT` flag values. They equal Windows' `MOUSEEVENTF_*` constants,
 /// so the Windows adapter passes them through; other platforms translate.
@@ -25,6 +26,7 @@ use flags::{
 pub struct MouseOutput {
     emitted_contact: bool,
     last_position: Option<(i32, i32)>,
+    shared_position: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -54,6 +56,11 @@ fn contact_flag(desired: bool, emitted: bool) -> u32 {
 impl MouseOutput {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A shared sink deduplicates absolute positions across all device owners.
+    pub fn share_position(&mut self) {
+        self.shared_position = true;
     }
 
     pub fn emit_filtered(
@@ -126,7 +133,9 @@ impl MouseOutput {
     ) -> Result<bool, std::io::Error> {
         let mut flags = 0;
         let (dx, dy) = match motion {
-            Motion::Absolute(Some(pos)) if Some(pos) != self.last_position => {
+            Motion::Absolute(Some(pos))
+                if self.shared_position || Some(pos) != self.last_position =>
+            {
                 flags |= MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
                 pos
             }

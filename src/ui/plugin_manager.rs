@@ -581,22 +581,7 @@ fn log(level: Level, message: String) {
 /// settings, as Plugins > Add .NET plugin does for one DLL. Inspecting a DLL
 /// runs its code, as that command does.
 fn add_to_settings(folder: &Path, name: &str) {
-    let dlls: Vec<PathBuf> = plugin_catalog::dlls(folder)
-        .into_iter()
-        .filter(|dll| crate::dotnet::inspect_details(dll).is_ok_and(|entries| !entries.is_empty()))
-        .collect();
-    if dlls.is_empty() {
-        log(
-            Level::Warning,
-            format!(
-                "{name} exports no position filters or tools this driver can run; it may provide bindings or output modes."
-            ),
-        );
-        return;
-    }
-    for dll in dlls {
-        with_app(|app| app.add_plugin(dll, true));
-    }
+    with_app(|app| app.add_plugin_folder(folder.to_owned(), name.to_owned()));
 }
 
 unsafe extern "system" fn window_proc(

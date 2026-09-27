@@ -149,6 +149,7 @@ impl App {
         let accelerators = accelerator_table();
         let displays = displays_for_driver(process_dpi).unwrap_or_else(|_| fallback_displays());
         let null = ptr::null_mut();
+        let (background_tx, background_rx) = std::sync::mpsc::channel();
         let mut app = Self {
             hwnd,
             dpi,
@@ -205,6 +206,15 @@ impl App {
             selected_filter: 0,
             properties: Vec::new(),
             plugin_metadata: HashMap::new(),
+            metadata_pending: HashMap::new(),
+            metadata_generation: 0,
+            edit_revision: 0,
+            background_tx,
+            background_rx,
+            device_scan_pending: false,
+            device_strings_pending: false,
+            import_pending: false,
+            connected_tablets: Vec::new(),
             labels: HashMap::new(),
             json_visible: false,
             json_mode: false,
@@ -682,16 +692,7 @@ impl App {
             if self.plugin_metadata.contains_key(&path) {
                 continue;
             }
-            let result = crate::dotnet::inspect_details(&path)
-                .map(|entries| entries.into_iter().map(|entry| entry.metadata).collect());
-            if let Err(error) = &result {
-                self.log(
-                    Level::Warning,
-                    "Plugins",
-                    format!("Could not read metadata from {}: {error}", path.display()),
-                );
-            }
-            self.plugin_metadata.insert(path, result);
+            self.inspect_plugin(path, false);
         }
     }
 
@@ -705,6 +706,11 @@ impl App {
     }
 
     pub(super) fn refresh_filters(&mut self) {
+        self.refresh_filter_list();
+        self.rebuild_properties();
+    }
+
+    pub(super) fn refresh_filter_list(&mut self) {
         if self.tab == Tab::Filters {
             self.ensure_plugin_metadata();
         }
@@ -737,7 +743,17 @@ impl App {
             }
             SendMessageW(self.c.filter_list, LB_SETCURSEL, self.selected_filter, 0);
         }
-        self.rebuild_properties();
+    }
+
+    pub(super) fn editing_controls(&self) -> bool {
+        let focus = unsafe { GetFocus() };
+        !self.invalid.is_empty()
+            || self.drag.is_some()
+            || [self.c.filter_json, self.c.tip_field, self.c.eraser_field].contains(&focus)
+            || self.c.display.contains(&focus)
+            || self.c.tablet.contains(&focus)
+            || self.c.relative.contains(&focus)
+            || self.properties.iter().any(|row| row.hwnd == focus)
     }
 
     pub(super) fn selected_target(&self) -> Option<FilterRef> {
@@ -1094,6 +1110,7 @@ impl App {
     }
 
     pub(super) fn mark_dirty(&mut self) {
+        self.edit_revision = self.edit_revision.wrapping_add(1);
         if !self.dirty {
             self.dirty = true;
             self.update_title();
@@ -1137,6 +1154,8 @@ impl App {
     }
 
     pub(super) fn field_changed(&mut self, hwnd: HWND) {
+        // Count drafts too; invalid text is still a newer user edit.
+        self.edit_revision = self.edit_revision.wrapping_add(1);
         let value = text(hwnd);
         if let Some(index) = self.c.display.iter().position(|h| *h == hwnd) {
             self.edit_area(AreaKind::Display, index, hwnd, &value);
@@ -1632,76 +1651,6 @@ impl App {
         }
     }
 
-    pub(super) fn add_plugin(&mut self, path: PathBuf, dotnet: bool) {
-        let (entries, metadata) = if dotnet {
-            match crate::dotnet::inspect_details(&path) {
-                Ok(entries) if entries.is_empty() => {
-                    self.log(
-                        Level::Error,
-                        "Plugins",
-                        "This assembly exports no OpenTabletDriver position filters or tools.",
-                    );
-                    return;
-                }
-                // Keep the path as chosen rather than the \\?\ form inspection
-                // resolves; loading canonicalizes it again.
-                Ok(entries) => {
-                    let metadata = entries.iter().map(|entry| entry.metadata.clone()).collect();
-                    let configs = entries
-                        .into_iter()
-                        .map(|entry| PluginConfig {
-                            path: path.clone(),
-                            ..entry.config
-                        })
-                        .collect();
-                    (configs, Some(metadata))
-                }
-                Err(error) => {
-                    self.log(
-                        Level::Error,
-                        "Plugins",
-                        format!("Could not inspect {}: {error}", path.display()),
-                    );
-                    return;
-                }
-            }
-        } else {
-            (
-                vec![PluginConfig {
-                    path: path.clone(),
-                    kind: PluginKind::Native,
-                    enabled: false,
-                    type_name: String::new(),
-                    settings_json: "{}".into(),
-                }],
-                None,
-            )
-        };
-        if self.editor.profile.plugins.len() + entries.len() > 32 {
-            self.log(
-                Level::Error,
-                "Plugins",
-                "At most 32 plugin entries are supported.",
-            );
-            return;
-        }
-        if let Some(metadata) = metadata {
-            self.plugin_metadata.insert(path, Ok(metadata));
-        }
-        let first = self.editor.filters().len();
-        let count = entries.len();
-        self.editor.profile.plugins.extend(entries);
-        self.mark_dirty();
-        self.selected_filter = first;
-        self.refresh_filters();
-        if self.tab == Tab::Filters {
-            self.layout();
-        } else {
-            self.select_tab(Tab::Filters);
-        }
-        self.log(Level::Info, "Plugins", format!("Added {count} filter entr{} disabled. Select one, check its settings, then enable it.", if count == 1 { "y" } else { "ies" }));
-    }
-
     pub(super) fn set_output_mode(&mut self, mode: OutputMode) {
         if self.editor.mode() != mode {
             self.editor.set_mode(mode, &self.displays);
@@ -2118,6 +2067,9 @@ impl App {
     pub(super) fn replace_profile(&mut self, profile: Profile, path: Option<PathBuf>, dirty: bool) {
         self.editor = Editor::new(profile);
         self.plugin_metadata.clear();
+        self.metadata_pending.clear();
+        self.metadata_generation = self.metadata_generation.wrapping_add(1);
+        self.import_pending = false;
         if let Some(path) = path {
             self.profile_path = path;
             self.profile_snapshot = None;
@@ -2228,19 +2180,19 @@ impl App {
             );
             return;
         }
-        match Profile::load_connected(None, &crate::hid::connected_tablets()) {
-            Ok(profile) => {
-                let skipped = profile.ignored_filters;
-                self.replace_profile(profile, None, true);
-                self.log(Level::Info, "Settings", "Imported the active OpenTabletDriver mapping and built-in filters. OpenTabletDriver's own files were not changed.");
-                if skipped > 0 {
-                    self.log(Level::Warning, "Settings", format!("Skipped {skipped} enabled OpenTabletDriver filter(s). Add their DLLs with Plugins > Add .NET plugin."));
-                }
-            }
-            Err(error) => self.log(Level::Error, "Settings", error),
+        if self.import_pending {
+            return;
         }
+        let generation = self.metadata_generation;
+        let edit_revision = self.edit_revision;
+        self.import_pending =
+            self.background("settings-import", move || BackgroundResult::Import {
+                generation,
+                edit_revision,
+                result: Profile::load_connected(None, &crate::hid::connected_tablets())
+                    .map(Box::new),
+            });
     }
-
     pub(super) fn save_to(&mut self, path: PathBuf) {
         self.save_to_mode(path, false);
     }
@@ -2291,33 +2243,6 @@ impl App {
                 }
             }
             Err(error) => self.log(Level::Error, "Settings", format!("Could not save: {error}")),
-        }
-    }
-
-    pub(super) fn detect_tablet(&mut self) {
-        match crate::hid::enumerate() {
-            Ok(devices) => {
-                let database = otd_core::tablets::Database::builtin();
-                let pens: Vec<String> = devices
-                    .iter()
-                    .filter_map(|device| crate::hid::identify(device, database))
-                    .filter(|(_, role, supported)| {
-                        *supported && *role == otd_core::tablets::Role::Digitizer
-                    })
-                    .map(|(name, _, _)| name)
-                    .collect();
-                self.tablet_present = Some(!pens.is_empty());
-                if pens.is_empty() {
-                    self.log(Level::Warning, "Tablet", "No supported tablet was found.");
-                } else {
-                    self.log(Level::Info, "Tablet", format!("Found {}.", pens.join(", ")));
-                }
-            }
-            Err(error) => self.log(
-                Level::Error,
-                "Tablet",
-                format!("HID discovery failed: {error}"),
-            ),
         }
     }
 

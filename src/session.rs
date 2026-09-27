@@ -25,7 +25,7 @@ use otd_core::session::{Read, ReportSource};
 use crate::config::Profile;
 use crate::display::WindowsDisplays;
 use crate::hid::{self, Candidate, Event, Notification, OwnedHandle, SelectedDevice};
-use crate::output::send_input;
+use crate::output::SessionOutput;
 use crate::plugins::PluginChain;
 use crate::priority::ReaderPriority;
 
@@ -182,6 +182,10 @@ impl<'a> HidSource<'a> {
 }
 
 impl ReportSource for HidSource<'_> {
+    fn shared_output(&self) -> bool {
+        true
+    }
+
     fn label(&self) -> &str {
         &self.label
     }
@@ -304,37 +308,43 @@ pub fn run(
     let mut decoder = selected.decoder()?;
     let _debug = DebugDevice::set(selected);
     let _priority = ReaderPriority::raise();
-    otd_core::session::run(
+    let mut output = if matches!(mode, Mode::Driver) {
+        Some(SessionOutput::new()?)
+    } else {
+        None
+    };
+    let result = otd_core::session::run(
         &mut source,
         &mut WindowsDisplays,
         &profile,
         mode,
         &mut decoder,
         plugins,
-        send_input,
+        |packet| output.as_ref().map_or(Ok(()), |output| output.send(packet)),
         status,
-    )
+    );
+    if let Some(output) = &mut output {
+        output
+            .finish()
+            .map_err(otd_core::session::cleanup_failure)?;
+    }
+    result
 }
 
 /// Names the session's tablet for the tablet debugger while it runs.
-struct DebugDevice;
-
+struct DebugDevice {
+    _registration: otd_core::debug::Registration,
+}
 impl DebugDevice {
     fn set(selected: &SelectedDevice<'_>) -> Self {
-        otd_core::debug::set_device(Some(otd_core::debug::Device {
-            name: selected.configuration.name.clone(),
-            parser: selected.identifier.parser().to_owned(),
-        }));
-        Self
+        Self {
+            _registration: otd_core::debug::Registration::new(otd_core::debug::Device {
+                name: selected.configuration.name.clone(),
+                parser: selected.identifier.parser().to_owned(),
+            }),
+        }
     }
 }
-
-impl Drop for DebugDevice {
-    fn drop(&mut self) {
-        otd_core::debug::set_device(None);
-    }
-}
-
 /// A candidate owns its handle, event and read buffer before the old worker
 /// pauses. Preparation never initializes the tablet or issues a read.
 pub(crate) struct PreparedSession<'a> {
@@ -421,8 +431,8 @@ impl<'a> PreparedSession<'a> {
         Ok(())
     }
 
-    /// The first-read gate runs after the portable session has constructed its
-    /// mapping/pipeline. No report reaches a plugin/output before gate success.
+    /// Activation runs after portable mapping/pipeline setup. Neither reports
+    /// nor timer callbacks reach plugins/output before gate success.
     pub fn run(
         self,
         profile: &Profile,
@@ -435,42 +445,24 @@ impl<'a> PreparedSession<'a> {
             .map_err(io::Error::other)?;
         let mut decoder = self.selected.decoder()?;
         let _debug = DebugDevice::set(self.selected);
-        let mut source = GatedSource {
-            source: self.source,
-            gate: Some(gate),
-        };
+        let mut source = self.source;
         let _priority = ReaderPriority::raise();
-        otd_core::session::run(
+        let mut output = SessionOutput::new()?;
+        let result = otd_core::session::run_gated(
             &mut source,
             &mut WindowsDisplays,
             &profile,
             Mode::Driver,
             &mut decoder,
             plugins,
-            send_input,
+            |packet| output.send(packet),
             status,
-        )
-    }
-}
-
-struct GatedSource<'a, G> {
-    source: HidSource<'a>,
-    gate: Option<G>,
-}
-impl<G: FnOnce() -> io::Result<bool>> ReportSource for GatedSource<'_, G> {
-    fn label(&self) -> &str {
-        self.source.label()
-    }
-    fn now(&self) -> Instant {
-        self.source.now()
-    }
-    fn next(&mut self, timeout: Duration) -> io::Result<Read<'_>> {
-        if let Some(gate) = self.gate.take()
-            && !gate()?
-        {
-            return Ok(Read::Ended);
-        }
-        self.source.next(timeout)
+            gate,
+        );
+        output
+            .finish()
+            .map_err(otd_core::session::cleanup_failure)?;
+        result
     }
 }
 
@@ -479,4 +471,10 @@ pub fn wait_for_retry(notification: &Notification, stop_event: &Event) -> io::Re
         Some(1) => Ok(false),
         _ => Ok(true),
     }
+}
+
+/// True only for a device notification. Stop wakes immediately; the owner
+/// checks its stop flag before its next pass. Timeouts only reap finished jobs.
+pub fn companion_wake(notification: &Notification, stop_event: &Event) -> io::Result<bool> {
+    Ok(wait(&[stop_event.raw(), notification.event()], 2_000)? == Some(1))
 }

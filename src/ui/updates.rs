@@ -93,9 +93,7 @@ pub(super) fn on_message(window: HWND) {
                 log(Level::Error, format!("Update failed: {error}"));
                 message_box(
                     window,
-                    &format!(
-                        "The update could not be installed; the current version is unchanged.\n\n{error}"
-                    ),
+                    &format!("The update did not complete.\n\n{error}"),
                     "Update failed",
                     MB_OK | MB_ICONERROR,
                 );

@@ -363,9 +363,7 @@ impl GraphReport {
 
 pub struct Graph {
     context: *mut c_void,
-    /// A filter has an `ITimer`; timers are injected at construction and
-    /// started by upstream's Scheduler setter, so this is known up front.
-    timers: bool,
+    timer_capability: bool,
 }
 impl Graph {
     pub fn new(nodes: &[GraphNode]) -> Result<Self, String> {
@@ -377,17 +375,20 @@ impl Graph {
         if context.is_null() {
             return Err(super::last_error());
         }
-        let mut graph = Self {
+        // -2 means no injected timers exist. -1 merely means stopped, and
+        // must still be polled after a plugin starts its timer in Consume.
+        let timer_capability = super::bridge()?
+            .graph_next_tick
+            .is_some_and(|query| unsafe { query(context) } != -2);
+        Ok(Self {
             context,
-            timers: true,
-        };
-        graph.timers = graph.next_tick().is_some();
-        Ok(graph)
+            timer_capability,
+        })
     }
 
     /// Time until the next filter timer tick, or `None` without timers.
     pub fn next_tick(&self) -> Option<std::time::Duration> {
-        if !self.timers {
+        if !self.timer_capability {
             return None;
         }
         let next = super::bridge().ok()?.graph_next_tick?;
