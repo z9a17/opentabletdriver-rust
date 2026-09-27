@@ -14,6 +14,8 @@ For the GUI, extract the complete release ZIP and open **opentabletdriver-rust-u
 
 - **Plugins > Plugin manager** lists OpenTabletDriver's plugin catalog for version 0.6.7. It installs, updates and removes plugins after checking each download against the catalog's SHA-256, and **Add to settings** adds a plugin's filters and tools. **From file...** installs a plugin zip or DLL you downloaded yourself; it has no catalog hash, so install only files you trust.
 - OpenTabletDriver **tools** (`ITool` plugins, such as tray or overlay helpers) start while the driver runs and stop with it. They appear in the Filters list like filters.
+- .NET filters run on every supported tablet, including **timer-driven filters** such as interpolators, which tick on the report thread at their Frequency setting.
+- **Tablets > Device string reader** shows the connected tablets' USB strings, and **Help > Export diagnostics** saves or copies a redacted diagnostic report.
 - When several supported tablets are connected, the driver runs all of them, as OpenTabletDriver does. The chosen tablet keeps the panel's settings; each other tablet uses its OpenTabletDriver profile, or its full area when it has none.
 - **File > Presets** loads and saves named settings, and **File > Save console log** writes the Console to a file.
 - **Tablets > Start with Windows** opens the panel in the tray when you sign in.

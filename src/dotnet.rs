@@ -288,6 +288,22 @@ pub struct PropertyMetadata {
     pub enum_underlying_type: Option<String>,
     #[serde(default)]
     pub enum_choices: Vec<EnumChoice>,
+    /// A `[PropertyValidated]` string's allowed values.
+    #[serde(default)]
+    pub valid_values: Option<Vec<String>>,
+    #[serde(default)]
+    pub slider: Option<Slider>,
+    /// A `[BooleanProperty]`'s description.
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// `[SliderProperty]`: upstream shows the range as a tool tip.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+pub struct Slider {
+    pub min: f32,
+    pub max: f32,
+    pub default_value: f32,
 }
 
 fn property_writable() -> bool {
@@ -642,6 +658,47 @@ mod tests {
             (filtered[0].dy - unfiltered[0].dy).abs() < 64,
             "{filtered:?} {unfiltered:?}"
         );
+    }
+
+    #[test]
+    #[ignore = "requires bridge and SettingsFixture DLL; set OTD_COMPAT_DIR and OTD_TEST_SETTINGS_PLUGIN"]
+    fn dotnet_inspection_reports_generated_control_attributes() {
+        let path: PathBuf = std::env::var_os("OTD_TEST_SETTINGS_PLUGIN")
+            .expect("set OTD_TEST_SETTINGS_PLUGIN")
+            .into();
+        let entries = inspect_details(&path).unwrap();
+        let entry = entries
+            .iter()
+            .find(|entry| entry.config.type_name == "SettingsFixture.ControlsFilter")
+            .unwrap();
+        let property = |name: &str| {
+            entry
+                .metadata
+                .properties
+                .iter()
+                .find(|property| property.name == name)
+                .unwrap()
+        };
+        assert_eq!(
+            property("Mode").valid_values.as_deref(),
+            Some(&["Linear".to_owned(), "Smooth".to_owned()][..])
+        );
+        assert_eq!(
+            property("Strength").slider,
+            Some(Slider {
+                min: 0.0,
+                max: 2.0,
+                default_value: 0.5
+            })
+        );
+        assert_eq!(
+            property("Snap").description.as_deref(),
+            Some("Snap to the grid")
+        );
+        // A slider without DefaultPropertyValue saves its DefaultValue.
+        let defaults: serde_json::Value =
+            serde_json::from_str(&entry.config.settings_json).unwrap();
+        assert_eq!(defaults, serde_json::json!({"Strength": 0.5}));
     }
 
     #[test]

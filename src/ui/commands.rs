@@ -254,6 +254,12 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
             1 => {
                 append(menu, MF_STRING, CMD_DETECT, "Detect tablet\tCtrl+D");
                 append(menu, MF_STRING, CMD_DEBUGGER, "Tablet debugger...");
+                append(
+                    menu,
+                    MF_STRING,
+                    CMD_DEVICE_STRINGS,
+                    "Device string reader...",
+                );
                 // The profile's tablet: whichever is connected, a connected
                 // tablet, or the one it already names.
                 let target = app.editor.profile.target_tablet.clone();
@@ -367,6 +373,20 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                     CMD_UPDATE_ON_OPEN,
                     "Check for updates when the panel opens",
                 );
+                append(menu, MF_SEPARATOR, 0, "");
+                append(
+                    menu,
+                    MF_STRING,
+                    CMD_EXPORT_DIAGNOSTICS,
+                    "Export diagnostics...",
+                );
+                append(
+                    menu,
+                    MF_STRING,
+                    CMD_COPY_DIAGNOSTICS,
+                    "Export diagnostics to clipboard",
+                );
+                append(menu, MF_SEPARATOR, 0, "");
                 append(menu, MF_STRING, CMD_ABOUT, "About...\tF1");
             }
         }
@@ -687,6 +707,73 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         CMD_CLEAR_LOG => {
             with_app(App::clear_log);
         }
+        CMD_EXPORT_DIAGNOSTICS => {
+            match text_save_dialog(
+                window,
+                "Export diagnostics",
+                "opentabletdriver-rust-diagnostics.json",
+            ) {
+                Ok(Some(path)) => with_app(|app| {
+                    let written = crate::diagnostics::bundle(Some(&app.editor.profile), false)
+                        .and_then(|bundle| {
+                            serde_json::to_vec_pretty(&bundle).map_err(|error| error.to_string())
+                        })
+                        .and_then(|bytes| {
+                            std::fs::write(&path, bytes).map_err(|error| error.to_string())
+                        });
+                    match written {
+                        Ok(()) => app.log(
+                            Level::Info,
+                            "UI",
+                            format!(
+                                "Saved diagnostics to {}. Paths, plugin settings and log text are left out.",
+                                path.display()
+                            ),
+                        ),
+                        Err(error) => app.log(
+                            Level::Error,
+                            "UI",
+                            format!("Cannot export diagnostics: {error}"),
+                        ),
+                    }
+                })
+                .unwrap_or(()),
+                Ok(None) => {}
+                Err(error) => {
+                    with_app(|app| app.log(Level::Error, "UI", error));
+                }
+            }
+        }
+        CMD_COPY_DIAGNOSTICS => {
+            with_app(|app| {
+                let text = crate::diagnostics::bundle(Some(&app.editor.profile), false).and_then(
+                    |bundle| serde_json::to_string_pretty(&bundle).map_err(|e| e.to_string()),
+                );
+                match text {
+                    Ok(text) if copy_to_clipboard(window, &text) => app.log(
+                        Level::Info,
+                        "UI",
+                        "Copied diagnostics to the clipboard. Paths, plugin settings and log text are left out.",
+                    ),
+                    Ok(_) => app.log(Level::Error, "UI", "Cannot open the clipboard."),
+                    Err(error) => app.log(
+                        Level::Error,
+                        "UI",
+                        format!("Cannot export diagnostics: {error}"),
+                    ),
+                }
+            });
+        }
+        CMD_DEVICE_STRINGS => {
+            let text = device_string_report();
+            with_app(|app| app.log(Level::Info, "Device strings", text.clone()));
+            message_box(
+                window,
+                &text,
+                "Device string reader",
+                MB_OK | MB_ICONINFORMATION,
+            );
+        }
         ID_MODE => {
             let mode = with_app(|app| app.editor.mode());
             let menu = unsafe { CreatePopupMenu() };
@@ -790,6 +877,43 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
 }
 
 /// A save dialog for a text file, asking before replacing one.
+/// Upstream's Device string reader asks for IDs and one index; this reads
+/// strings 1-10 of every connected tablet, which is what writing a
+/// configuration needs. `device-strings` reads any IDs and indices.
+fn device_string_report() -> String {
+    let database = otd_core::tablets::Database::builtin();
+    let mut tablets: Vec<(u16, u16, String)> = Vec::new();
+    for device in crate::hid::enumerate().unwrap_or_default() {
+        if let Some((name, _, _)) = crate::hid::identify(&device, database)
+            && !tablets
+                .iter()
+                .any(|(vendor, product, _)| (*vendor, *product) == (device.vendor, device.product))
+        {
+            tablets.push((device.vendor, device.product, name));
+        }
+    }
+    if tablets.is_empty() {
+        return "No tablet from OpenTabletDriver's database is connected. For other devices, run: opentabletdriver-rust.exe device-strings VID PID".into();
+    }
+    let indices: Vec<u8> = (1..=10).collect();
+    let mut report = String::new();
+    for (vendor, product, name) in tablets {
+        report.push_str(&format!("{name} ({vendor:04x}:{product:04x})\n"));
+        let collections = crate::hid::read_strings(vendor, product, &indices).unwrap_or_default();
+        // Every collection of one device reports the same strings.
+        if let Some((_, strings)) = collections.first() {
+            for (index, value) in strings {
+                if let Ok(text) = value
+                    && !text.is_empty()
+                {
+                    report.push_str(&format!("  {index}: {text}\n"));
+                }
+            }
+        }
+    }
+    report.trim_end().to_owned()
+}
+
 pub(super) fn text_save_dialog(
     window: HWND,
     title: &str,
@@ -799,8 +923,12 @@ pub(super) fn text_save_dialog(
     for (slot, unit) in buffer.iter_mut().zip(name.encode_utf16()) {
         *slot = unit;
     }
-    let filter = wide("Text file (*.txt)\0*.txt\0All files\0*.*\0\0");
-    let extension = wide("txt");
+    let (filter, extension) = if name.ends_with(".json") {
+        ("JSON file (*.json)\0*.json\0All files\0*.*\0\0", "json")
+    } else {
+        ("Text file (*.txt)\0*.txt\0All files\0*.*\0\0", "txt")
+    };
+    let (filter, extension) = (wide(filter), wide(extension));
     let title = wide(title);
     let mut dialog = OPENFILENAMEW {
         lStructSize: size_of::<OPENFILENAMEW>() as u32,

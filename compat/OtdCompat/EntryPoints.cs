@@ -607,8 +607,13 @@ public static unsafe partial class EntryPoints
                             display_name = t.GetCustomAttribute<PluginNameAttribute>()?.Name,
                             // Omitted values preserve the plugin constructor's defaults.
                             // A null placeholder would instead coerce many value types to zero.
-                            settings = properties.Where(p => p.GetCustomAttribute<DefaultPropertyValueAttribute>() != null)
-                                .ToDictionary(p => p.Name, p => p.GetCustomAttribute<DefaultPropertyValueAttribute>()?.Value),
+                            // GeneratedControls also saves a slider's DefaultValue
+                            // for a property that has no value yet.
+                            settings = properties.Where(p => p.GetCustomAttribute<DefaultPropertyValueAttribute>() != null
+                                    || (p.GetCustomAttribute<SliderPropertyAttribute>() != null && p.PropertyType == typeof(float)))
+                                .ToDictionary(p => p.Name, p => p.GetCustomAttribute<DefaultPropertyValueAttribute>() is { } defaults
+                                    ? defaults.Value
+                                    : p.GetCustomAttribute<SliderPropertyAttribute>()!.DefaultValue),
                             properties = properties.Select(p => new {
                                 name = p.Name,
                                 display_name = p.GetCustomAttribute<PropertyAttribute>()?.DisplayName,
@@ -618,7 +623,12 @@ public static unsafe partial class EntryPoints
                                 writable = p.SetMethod?.IsPublic == true && p.GetIndexParameters().Length == 0,
                                 enum_flags = (Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType).IsDefined(typeof(FlagsAttribute), false),
                                 enum_underlying_type = EnumUnderlyingType(Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType),
-                                enum_choices = EnumChoices(Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType)
+                                enum_choices = EnumChoices(Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType),
+                                valid_values = ValidValues(p),
+                                slider = p.GetCustomAttribute<SliderPropertyAttribute>() is { } slider
+                                    ? new { min = slider.Min, max = slider.Max, default_value = slider.DefaultValue }
+                                    : null,
+                                description = p.GetCustomAttribute<BooleanPropertyAttribute>()?.Description
                             }).ToArray()
                         };
                     }).ToArray();
@@ -631,6 +641,18 @@ public static unsafe partial class EntryPoints
             finally { context.Unload(); }
         }
         catch (Exception e) { lastError = e.GetBaseException().Message; Console.Error.WriteLine($".NET plugin inspection failed: {lastError}"); return -1; }
+    }
+
+    // A [PropertyValidated] string's choices come from a static member, as
+    // GeneratedControls reads them. This runs that member's code, like
+    // upstream's settings page; a failure leaves the plain text field.
+    static string[]? ValidValues(PropertyInfo property)
+    {
+        if (property.PropertyType != typeof(string)
+            || property.GetCustomAttribute<PropertyValidatedAttribute>() is not { } validated)
+            return null;
+        try { return validated.GetValue<IEnumerable<string>>(property)?.ToArray(); }
+        catch { return null; }
     }
 
     // Reflection only: inspecting controls must not construct or run a plugin.

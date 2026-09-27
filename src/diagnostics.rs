@@ -42,7 +42,19 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         .as_deref()
         .map(|path| Profile::load(Some(path)))
         .transpose()?;
-    let bundle = json!({
+    write_new(
+        &output,
+        &serde_json::to_vec_pretty(&bundle(profile.as_ref(), private)?)
+            .map_err(|error| error.to_string())?,
+    )?;
+    println!("Saved {}", output.display());
+    Ok(())
+}
+
+/// The diagnostic bundle, as `diagnostics` writes it and the panel's Help >
+/// Export diagnostics saves or copies it.
+pub fn bundle(profile: Option<&Profile>, private: bool) -> Result<Value, String> {
+    Ok(json!({
         "format":"opentabletdriver-rust-diagnostics", "schema_version":1,
         "privacy":if private { "private_details_included" } else { "redacted" },
         "build":{"version":env!("CARGO_PKG_VERSION"), "os":std::env::consts::OS,
@@ -51,16 +63,10 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         "backend":{"transport":"windows_usb_hid", "runtime_tablet":"any configuration with a supported parser",
             "output":"SendInput mouse", "hid_inspected":false, "plugins_loaded":false},
         "displays":display_summary(private),
-        "profile":profile.as_ref().map(|profile| profile_summary(profile, private)).transpose()?,
+        "profile":profile.map(|profile| profile_summary(profile, private)).transpose()?,
         "daemon":daemon_summary(private),
         "excluded":["raw tablet reports", "plugin property values", "imported settings archive", "environment variables"],
-    });
-    write_new(
-        &output,
-        &serde_json::to_vec_pretty(&bundle).map_err(|error| error.to_string())?,
-    )?;
-    println!("Saved {}", output.display());
-    Ok(())
+    }))
 }
 
 fn value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<String, String> {
