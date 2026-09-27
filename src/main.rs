@@ -59,7 +59,7 @@ fn usage() -> &'static str {
   opentabletdriver-rust.exe displays
   opentabletdriver-rust.exe tablets [--list] [--configurations DIRECTORY]
   opentabletdriver-rust.exe capture [--config driver.toml | --otd-settings settings.json] [--seconds 1..60]
-  opentabletdriver-rust.exe plugins catalog|installed|install NAME|remove NAME
+  opentabletdriver-rust.exe plugins catalog|installed|install NAME|install-file PATH|remove NAME
   opentabletdriver-rust.exe device-strings VID PID [INDEX ...]
   opentabletdriver-rust.exe update [--check]
   opentabletdriver-rust.exe --version
@@ -869,6 +869,16 @@ fn main() {
         Ok(Command::CheckPlugins(path)) => Profile::load(Some(&path)).and_then(|profile| {
             let chain = plugins::PluginChain::load(&profile.plugins)?;
             chain.validate_output_mode(profile.relative.is_some())?;
+            // Tools start and stop here as they would with the driver.
+            for tool in profile
+                .plugins
+                .iter()
+                .filter(|p| p.enabled && p.kind == plugins::PluginKind::DotnetTool)
+            {
+                let handle = dotnet::create_tool(tool)
+                    .map_err(|e| format!("tool {} failed to start: {e}", tool.type_name))?;
+                dotnet::destroy_tool(handle);
+            }
             println!(
                 "Loaded {} enabled plugin(s); no HID opened or input injected.",
                 profile.plugins.iter().filter(|p| p.enabled).count()
