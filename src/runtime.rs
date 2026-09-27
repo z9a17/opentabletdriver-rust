@@ -169,6 +169,19 @@ fn run(
     let custom = crate::check_tablet_configurations()?;
     let database = custom.as_ref().unwrap_or_else(|| Database::builtin());
     let notification = Notification::register().map_err(|error| error.to_string())?;
+    // Other connected tablets run beside this worker's tablet while it runs.
+    let primary: crate::companions::Primary = Default::default();
+    let active = Arc::new(AtomicBool::new(false));
+    let companion_logs = logs.clone();
+    let _companions = crate::companions::Companions::start(
+        profile.clone(),
+        database.clone(),
+        primary.clone(),
+        Arc::clone(&active),
+        move |line| {
+            let _ = companion_logs.try_send(line.to_owned());
+        },
+    )?;
     let mut waiting = false;
     'connect: loop {
         if cancelled.load(Ordering::Acquire) {
@@ -217,6 +230,9 @@ fn run(
             continue;
         };
         waiting = false;
+        if let Ok(mut path) = primary.lock() {
+            *path = Some(selected.pen.path_text());
+        }
         // These stay on this thread and survive a quiesce/failed replacement.
         // Construction/reset executes trusted plugin code (including its
         // reset/range-loss callback), but has no live input or host output sink.
@@ -288,12 +304,19 @@ fn run(
             }
             let running = Cell::new(false);
             let quiesced = Cell::new(false);
+            // Tools run while this worker owns the output, like the tablet.
+            let tools = std::cell::RefCell::new(None);
             let result = source.run(&profile, &mut plugins, &log, || {
                 notify(Notice::ActivationReady).map_err(io::Error::other)?;
                 match receive(&commands, cancelled)? {
                     Directive::Run if !cancelled.load(Ordering::Acquire) => {
                         running.set(true);
+                        active.store(true, Ordering::Release);
                         notify(Notice::Running).map_err(io::Error::other)?;
+                        *tools.borrow_mut() =
+                            Some(crate::plugins::Tools::start(&profile.plugins, |line| {
+                                log(line)
+                            }));
                         Ok(true)
                     }
                     Directive::Stop | Directive::Run => Ok(false),
@@ -304,6 +327,8 @@ fn run(
                     _ => Err(io::Error::other("unexpected activation gate command")),
                 }
             });
+            active.store(false, Ordering::Release);
+            drop(tools.take());
             // source has drained its read and core output cleanup has completed.
             if let Err(error) = &result
                 && otd_core::session::is_cleanup_failure(error)

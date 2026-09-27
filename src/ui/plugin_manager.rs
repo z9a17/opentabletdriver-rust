@@ -20,12 +20,14 @@ const REMOVE: u16 = 102;
 const ADD: u16 = 103;
 const PAGE: u16 = 104;
 const REFRESH: u16 = 105;
-const BUTTONS: [(u16, &str); 5] = [
+const FROM_FILE: u16 = 106;
+const BUTTONS: [(u16, &str); 6] = [
     (INSTALL, "&Install"),
     (REMOVE, "&Remove"),
     (ADD, "&Add to settings"),
     (PAGE, "Open &page"),
     (REFRESH, "Re&fresh"),
+    (FROM_FILE, "From fi&le..."),
 ];
 
 #[derive(Clone)]
@@ -412,7 +414,7 @@ impl Manager {
             _ => "&Install",
         };
         let enabled = |id: u16| match (id, row) {
-            (REFRESH, _) => !self.busy,
+            (REFRESH | FROM_FILE, _) => !self.busy,
             (_, None) => false,
             (INSTALL, Some(row)) => !self.busy && row.listed && row.plugin.download_url.is_some(),
             (REMOVE | ADD, Some(row)) => !self.busy && row.installed.is_some(),
@@ -430,6 +432,10 @@ impl Manager {
     }
 
     fn command(&mut self, id: u16) {
+        if id == FROM_FILE {
+            self.install_from_file();
+            return;
+        }
         let Some(row) = self.selected().cloned() else {
             if id == REFRESH {
                 self.refresh_catalog();
@@ -484,6 +490,43 @@ impl Manager {
             }
             _ => {}
         }
+    }
+
+    /// Installs a zip or DLL the user picks; upstream's plugin manager also
+    /// installs local archives.
+    fn install_from_file(&mut self) {
+        let file = match super::commands::file_dialog(
+            self.window,
+            false,
+            super::commands::FileKind::Package,
+            "Install a plugin from a file",
+        ) {
+            Ok(Some(file)) => file,
+            Ok(None) => return,
+            Err(error) => {
+                self.set_status(&error);
+                return;
+            }
+        };
+        let answer = super::commands::message_box(
+            self.window,
+            &format!(
+                "Install {}?\n\nThis file is not from the catalog, so no published hash can check it. Plugins run inside the driver with your permissions. Install only files you trust.",
+                file.display()
+            ),
+            "Install plugin",
+            MB_YESNO | MB_ICONWARNING,
+        );
+        if answer != IDYES {
+            return;
+        }
+        let name = file
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.start(&format!("Installing {name}..."), move || {
+            Done::Installed(plugin_catalog::install_file(&file).map(|folder| (name, folder)))
+        });
     }
 
     fn finished(&mut self) {
@@ -546,7 +589,7 @@ fn add_to_settings(folder: &Path, name: &str) {
         log(
             Level::Warning,
             format!(
-                "{name} exports no position filters this driver can run; it may provide bindings, tools or output modes."
+                "{name} exports no position filters or tools this driver can run; it may provide bindings or output modes."
             ),
         );
         return;

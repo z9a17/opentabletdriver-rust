@@ -417,6 +417,22 @@ pub fn activation_raw_for(percent: f64, max_pressure: u16) -> Result<u16, String
     Ok(low)
 }
 
+/// OpenTabletDriver's settings file in its default app data directory, as
+/// upstream `AppInfo` places it on each platform.
+fn otd_settings_path() -> Option<PathBuf> {
+    let directory = if cfg!(target_os = "windows") {
+        PathBuf::from(env::var_os("LOCALAPPDATA")?)
+    } else if cfg!(target_os = "macos") {
+        PathBuf::from(env::var_os("HOME")?).join("Library/Application Support")
+    } else {
+        env::var_os("XDG_CONFIG_HOME")
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| Some(PathBuf::from(env::var_os("HOME")?).join(".config")))?
+    };
+    Some(directory.join("OpenTabletDriver").join("settings.json"))
+}
+
 impl Profile {
     pub fn load(path: Option<&Path>) -> Result<Self, String> {
         Self::load_connected(path, &[])
@@ -428,12 +444,9 @@ impl Profile {
         if let Some(path) = path {
             return Self::load_toml(path);
         }
-        let Some(local_app_data) = env::var_os("LOCALAPPDATA") else {
+        let Some(otd_path) = otd_settings_path() else {
             return Ok(Self::default());
         };
-        let otd_path = PathBuf::from(local_app_data)
-            .join("OpenTabletDriver")
-            .join("settings.json");
         if otd_path.exists() {
             let text = fs::read_to_string(&otd_path).map_err(|e| {
                 format!(

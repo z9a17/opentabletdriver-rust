@@ -74,6 +74,15 @@ impl PropertyValue {
         };
         let mut choices = if metadata.property_type == "System.Boolean" {
             vec![("True".into(), true.into()), ("False".into(), false.into())]
+        } else if let Some(values) = metadata
+            .valid_values
+            .as_ref()
+            .filter(|_| metadata.property_type == "System.String")
+        {
+            values
+                .iter()
+                .map(|value| (value.clone(), serde_json::Value::String(value.clone())))
+                .collect()
         } else if !metadata.enum_flags && !metadata.enum_choices.is_empty() {
             metadata
                 .enum_choices
@@ -482,7 +491,7 @@ impl Editor {
                     .ok_or("The selected filter no longer exists.")?;
                 let metadata = metadata
                     .filter(|metadata| {
-                        plugin.kind == PluginKind::Dotnet && metadata.type_name == plugin.type_name
+                        plugin.kind.is_managed() && metadata.type_name == plugin.type_name
                     })
                     .ok_or(
                         "Defaults are unavailable for this plugin. Its settings have been kept.",
@@ -543,7 +552,7 @@ impl Editor {
         !self.profile.radial_follow.is_empty()
             && self.profile.plugins.iter().any(|plugin| {
                 plugin.enabled
-                    && plugin.kind == PluginKind::Dotnet
+                    && plugin.kind.is_managed()
                     && plugin.type_name == crate::radial_follow::FILTER_PATH
             })
     }
@@ -569,9 +578,27 @@ pub fn threshold_percent_for(raw: u16, max_pressure: u16) -> f64 {
         .unwrap_or(low)
 }
 
+/// The tool tip upstream's generated control shows: the property's
+/// `[ToolTip]`, a boolean's description, and a slider's range.
+fn property_tooltip(descriptor: &PropertyMetadata) -> Option<String> {
+    let parts: Vec<String> = [
+        descriptor.tooltip.clone(),
+        descriptor.description.clone(),
+        descriptor
+            .slider
+            .as_ref()
+            .map(|slider| format!("Minimum: {}, Maximum: {}", slider.min, slider.max)),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|part| !part.trim().is_empty())
+    .collect();
+    (!parts.is_empty()).then(|| parts.join("\n\n"))
+}
+
 pub fn plugin_name(plugin: &PluginConfig) -> String {
     match plugin.kind {
-        PluginKind::Dotnet => plugin
+        PluginKind::Dotnet | PluginKind::DotnetTool => plugin
             .type_name
             .rsplit('.')
             .next()
@@ -594,6 +621,7 @@ pub fn plugin_detail(plugin: &PluginConfig) -> String {
         .unwrap_or_default();
     match plugin.kind {
         PluginKind::Dotnet => format!(".NET plugin · {file}"),
+        PluginKind::DotnetTool => format!(".NET tool · {file}"),
         PluginKind::Native => format!("Native plugin · {file}"),
     }
 }
@@ -672,7 +700,7 @@ pub fn plugin_editor_fields(
                         .filter(|name| !name.trim().is_empty())
                         .map_or_else(|| display_name(&key), str::to_owned),
                     unit: descriptor.unit.clone().unwrap_or_default(),
-                    tooltip: descriptor.tooltip.clone(),
+                    tooltip: property_tooltip(descriptor),
                     key,
                     value,
                 });
@@ -786,6 +814,51 @@ pub fn parse_number(text: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_control_attributes_become_choices_and_tool_tips() {
+        let mode = crate::dotnet::PropertyMetadata {
+            name: "Mode".into(),
+            property_type: "System.String".into(),
+            valid_values: Some(vec!["Linear".into(), "Smooth".into()]),
+            ..Default::default()
+        };
+        let value = PropertyValue::Typed {
+            saved: Some("Smooth".into()),
+            metadata: Box::new(mode),
+        };
+        let labels: Vec<String> = value
+            .choices()
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect();
+        assert_eq!(labels, ["Use default", "Linear", "Smooth"]);
+        assert_eq!(value.display_text(), "Smooth");
+        let strength = crate::dotnet::PropertyMetadata {
+            name: "Strength".into(),
+            tooltip: Some("How strong".into()),
+            slider: Some(crate::dotnet::Slider {
+                min: 0.0,
+                max: 2.0,
+                default_value: 0.5,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            property_tooltip(&strength).as_deref(),
+            Some(
+                "How strong
+
+Minimum: 0, Maximum: 2"
+            )
+        );
+        let snap = crate::dotnet::PropertyMetadata {
+            name: "Snap".into(),
+            description: Some("Snap to the grid".into()),
+            ..Default::default()
+        };
+        assert_eq!(property_tooltip(&snap).as_deref(), Some("Snap to the grid"));
+    }
 
     #[test]
     fn switching_tablets_resizes_areas_and_thresholds() {

@@ -34,6 +34,16 @@ pub enum PluginKind {
     #[default]
     Native,
     Dotnet,
+    /// An OpenTabletDriver `ITool`: started with the driver, stopped with it.
+    #[serde(rename = "dotnet_tool")]
+    DotnetTool,
+}
+
+impl PluginKind {
+    /// Runs through the .NET bridge.
+    pub fn is_managed(self) -> bool {
+        matches!(self, Self::Dotnet | Self::DotnetTool)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,7 +83,7 @@ impl PluginConfig {
         if !value.is_object() {
             return Err("plugin settings must be a JSON object".into());
         }
-        if self.kind == PluginKind::Dotnet && self.type_name.trim().is_empty() {
+        if self.kind.is_managed() && self.type_name.trim().is_empty() {
             return Err(".NET plugin requires a type_name".into());
         }
         Ok(())
@@ -118,6 +128,16 @@ pub trait Filters {
             values.position = Some([point.0, point.1]);
         }
         runtime.output(input.kind, &values, input.raw)
+    }
+    /// Time until the next timer tick of a timer-driven (async) filter, or
+    /// `None` without one. The session wakes for it on the report thread.
+    fn next_tick(&mut self) -> Option<std::time::Duration> {
+        None
+    }
+    /// Fires due filter timers; their emissions continue downstream of the
+    /// emitting filter through `runtime`, like a synchronous emission.
+    fn tick(&mut self, _now: Instant, _runtime: &mut dyn PipelineRuntime) -> io::Result<()> {
+        Ok(())
     }
     /// Supplies the exact transport packet before its decoded pen is dispatched.
     /// Implementations retaining it must copy into storage allocated at setup.

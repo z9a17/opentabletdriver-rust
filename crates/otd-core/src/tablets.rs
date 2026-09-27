@@ -643,6 +643,7 @@ type Slot = (usize, Role, usize);
 
 /// The loaded configurations and a (vendor, product) index over the usable
 /// ones.
+#[derive(Clone)]
 pub struct Database {
     entries: Vec<Entry>,
     index: BTreeMap<(u16, u16), Vec<Slot>>,

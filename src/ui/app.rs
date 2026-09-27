@@ -675,7 +675,7 @@ impl App {
             .profile
             .plugins
             .iter()
-            .filter(|plugin| plugin.kind == PluginKind::Dotnet)
+            .filter(|plugin| plugin.kind.is_managed())
             .map(|plugin| plugin.path.clone())
             .collect();
         for path in paths {
@@ -802,7 +802,7 @@ impl App {
                 FilterRef::Radial(_) => true,
                 FilterRef::Plugin(index) => {
                     let plugin = &self.editor.profile.plugins[index];
-                    plugin.kind == PluginKind::Dotnet && self.metadata_for(plugin).is_some()
+                    plugin.kind.is_managed() && self.metadata_for(plugin).is_some()
                 }
             };
             EnableWindow(self.c.filter_defaults, can_reset.into());
@@ -824,7 +824,7 @@ impl App {
             FilterRef::Plugin(index) => {
                 let plugin = &self.editor.profile.plugins[index];
                 let metadata = self.metadata_for(plugin).cloned();
-                let properties = (plugin.kind == PluginKind::Dotnet
+                let properties = (plugin.kind.is_managed()
                     && metadata.is_some()
                     && !self.json_mode)
                     .then(|| model::plugin_editor_fields(&plugin.settings_json, metadata.as_ref()))
@@ -1544,7 +1544,7 @@ impl App {
             return;
         };
         let plugin = &self.editor.profile.plugins[index];
-        if plugin.kind != PluginKind::Dotnet || self.metadata_for(plugin).is_none() {
+        if !plugin.kind.is_managed() || self.metadata_for(plugin).is_none() {
             return;
         }
         if self.json_visible {
@@ -1639,7 +1639,7 @@ impl App {
                     self.log(
                         Level::Error,
                         "Plugins",
-                        "This assembly exports no OpenTabletDriver position filters.",
+                        "This assembly exports no OpenTabletDriver position filters or tools.",
                     );
                     return;
                 }

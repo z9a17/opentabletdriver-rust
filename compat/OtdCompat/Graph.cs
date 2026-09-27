@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -97,6 +98,71 @@ unsafe sealed class SynchronousGraph
         }
         catch (GraphAbort) { return -1; }
         finally { callback = null; scope = 0; running = false; }
+    }
+
+    /// Microseconds until the next timer tick of any filter, or -1.
+    public long NextTickMicros()
+    {
+        long now = Stopwatch.GetTimestamp(), best = -1;
+        foreach (Node node in pre.Concat(post))
+            if (!node.Disabled && node.Filter is { HasTimers: true } filter)
+            {
+                long micros = filter.NextTickMicros(now);
+                if (micros >= 0 && (best < 0 || micros < best)) best = micros;
+            }
+        return best;
+    }
+
+    /// Fires due timers. A timer emission continues downstream of its filter,
+    /// exactly as a synchronous emission does.
+    public int Tick(delegate* unmanaged[Cdecl]<nint, uint, uint, GraphReport*, int> native, nint nativeScope)
+    {
+        if (running || Environment.CurrentManagedThreadId != ownerThread)
+            throw new InvalidOperationException("The synchronous graph must run on its owning thread.");
+        running = true; failed = false; FailedIndex = -1; currentEmitter = -1; Error = null;
+        callback = native; scope = nativeScope;
+        try
+        {
+            long now = Stopwatch.GetTimestamp();
+            TickStage(pre, now, Transform);
+            TickStage(post, now, Output);
+            return failed ? -1 : 0;
+        }
+        catch (GraphAbort) { return -1; }
+        finally { callback = null; scope = 0; running = false; }
+    }
+
+    void TickStage(Node[] nodes, long now, Action<IDeviceReport> end)
+    {
+        for (int offset = 0; offset < nodes.Length; offset++)
+        {
+            Node node = nodes[offset];
+            if (node.Disabled || node.Filter is not { HasTimers: true } filter) continue;
+            int next = offset + 1;
+            try
+            {
+                filter.TickGraph(now, emitted =>
+                {
+                    int previous = currentEmitter;
+                    currentEmitter = checked((int)node.Index);
+                    try { Visit(nodes, next, emitted, end); }
+                    finally { currentEmitter = previous; }
+                });
+                if (failed) throw new GraphAbort();
+            }
+            catch (GraphAbort) { throw; }
+            catch (Exception error)
+            {
+                if (!failed)
+                {
+                    node.Disabled = true;
+                    FailedIndex = checked((int)node.Index);
+                    Error = error.GetBaseException().Message;
+                    failed = true;
+                }
+                throw new GraphAbort();
+            }
+        }
     }
 
     void Transform(IDeviceReport report)
@@ -334,6 +400,28 @@ public static unsafe partial class EntryPoints
             if (callback == null) throw new ArgumentException("Missing graph continuation.");
             var graph = (SynchronousGraph)GCHandle.FromIntPtr(context).Target!;
             int result = graph.Dispatch(report, callback, scope);
+            if (result != 0) lastError = graph.Error ?? "A native graph continuation failed.";
+            return result;
+        }
+        catch (Exception error) { lastError = error.GetBaseException().Message; return -1; }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static long GraphNextTick(nint context)
+    {
+        try { return ((SynchronousGraph)GCHandle.FromIntPtr(context).Target!).NextTickMicros(); }
+        catch (Exception error) { lastError = error.GetBaseException().Message; return -1; }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static int TickGraph(nint context,
+        delegate* unmanaged[Cdecl]<nint, uint, uint, GraphReport*, int> callback, nint scope)
+    {
+        try
+        {
+            if (callback == null) throw new ArgumentException("Missing graph continuation.");
+            var graph = (SynchronousGraph)GCHandle.FromIntPtr(context).Target!;
+            int result = graph.Tick(callback, scope);
             if (result != 0) lastError = graph.Error ?? "A native graph continuation failed.";
             return result;
         }

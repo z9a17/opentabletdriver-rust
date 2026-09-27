@@ -312,8 +312,25 @@ pub trait PenDecoder {
     /// `Ok(None)` for packets that carry no pen position (auxiliary, touch,
     /// status and unknown reports), which the session ignores.
     fn decode(&mut self, raw: &[u8]) -> Result<Option<PenReport>, DecodeError>;
+    /// The pen buttons of the report `decode` just returned, in the parser's
+    /// upstream order, for managed filters' `ITabletReport.PenButtons`.
+    fn pen_buttons(&self, _raw: &[u8]) -> Option<Buttons> {
+        None
+    }
     /// Clears parser state when a session ends.
     fn reset(&mut self) {}
+}
+
+/// IntuosV2 pen buttons, with the same checked byte/bit ordering as
+/// `reports::from_pth660`: two buttons in 0x10 packets, three in 0x1e.
+pub fn intuos_v2_pen_buttons(raw: &[u8]) -> Option<Buttons> {
+    match raw {
+        [0x10, flags, ..] if raw.len() >= 17 => Buttons::from_bits(u64::from(flags >> 1), 2).ok(),
+        [0x1e, _, flags, ..] if raw.len() >= 13 => {
+            Buttons::from_bits(u64::from(flags >> 1), 3).ok()
+        }
+        _ => None,
+    }
 }
 
 /// Session decoder for one tablet endpoint.
@@ -326,6 +343,8 @@ pub enum TabletDecoder {
     Values {
         parser: Box<ReportParser>,
         spec: TabletSpec,
+        /// The last decoded report's pen buttons.
+        buttons: Option<Buttons>,
     },
 }
 
@@ -352,6 +371,7 @@ impl TabletDecoder {
             _ => ReportParser::for_type(type_name).map(|parser| Self::Values {
                 parser: Box::new(parser),
                 spec,
+                buttons: None,
             }),
         }
     }
@@ -378,12 +398,26 @@ impl PenDecoder for TabletDecoder {
                 protocol::parse_within(payload, spec.max_x, spec.max_y, spec.max_pressure)
                     .map_err(DecodeError::Pen)
             }
-            Self::Values { parser, spec } => {
+            Self::Values {
+                parser,
+                spec,
+                buttons,
+            } => {
                 let (kind, report) = parser
                     .parse(raw, SESSION_METADATA)
                     .map_err(DecodeError::Report)?;
+                *buttons = report.values.pen_buttons;
                 Ok(pen_from_values(kind, &report.values, report.raw, *spec))
             }
+        }
+    }
+
+    fn pen_buttons(&self, raw: &[u8]) -> Option<Buttons> {
+        match self {
+            Self::IntuosV2 { prefixed, .. } => {
+                intuos_v2_pen_buttons(if *prefixed { raw.get(1..)? } else { raw })
+            }
+            Self::Values { buttons, .. } => *buttons,
         }
     }
 
