@@ -73,6 +73,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked dotnet_tools_start_with_settings_and_stop_on_drop -- --ignored
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked dotnet_filters_run_on_tablets_without_the_intuos_layout -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked dotnet_timer_filters_emit_between_reports -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   portable-core:
     # The report pipeline and session loop must build and pass without Windows.

@@ -25,6 +25,8 @@ pub(super) type DispatchGraph =
     unsafe extern "C" fn(*mut c_void, *const GraphReport, Callback, *mut c_void) -> i32;
 pub(super) type GraphFailure = unsafe extern "C" fn(*mut c_void) -> i32;
 pub(super) type DestroyGraph = unsafe extern "C" fn(*mut c_void);
+pub(super) type GraphNextTick = unsafe extern "C" fn(*mut c_void) -> i64;
+pub(super) type TickGraph = unsafe extern "C" fn(*mut c_void, Callback, *mut c_void) -> i32;
 pub type Callback = unsafe extern "C" fn(*mut c_void, u32, u32, *mut GraphReport) -> i32;
 
 #[repr(C)]
@@ -361,6 +363,9 @@ impl GraphReport {
 
 pub struct Graph {
     context: *mut c_void,
+    /// A filter has an `ITimer`; timers are injected at construction and
+    /// started by upstream's Scheduler setter, so this is known up front.
+    timers: bool,
 }
 impl Graph {
     pub fn new(nodes: &[GraphNode]) -> Result<Self, String> {
@@ -372,7 +377,39 @@ impl Graph {
         if context.is_null() {
             return Err(super::last_error());
         }
-        Ok(Self { context })
+        let mut graph = Self {
+            context,
+            timers: true,
+        };
+        graph.timers = graph.next_tick().is_some();
+        Ok(graph)
+    }
+
+    /// Time until the next filter timer tick, or `None` without timers.
+    pub fn next_tick(&self) -> Option<std::time::Duration> {
+        if !self.timers {
+            return None;
+        }
+        let next = super::bridge().ok()?.graph_next_tick?;
+        u64::try_from(unsafe { next(self.context) })
+            .ok()
+            .map(std::time::Duration::from_micros)
+    }
+
+    /// Fires due filter timers.
+    ///
+    /// # Safety
+    /// As for `dispatch`: `scope` must be valid for every invocation of
+    /// `callback`, which must not unwind or retain frame pointers.
+    pub unsafe fn tick(&self, callback: Callback, scope: *mut c_void) -> io::Result<()> {
+        let bridge = super::bridge().map_err(io::Error::other)?;
+        let Some(tick) = bridge.tick_graph else {
+            return Ok(());
+        };
+        if unsafe { tick(self.context, callback, scope) } != 0 {
+            return Err(io::Error::other(super::last_error()));
+        }
+        Ok(())
     }
 
     /// The scope is live exclusively for this synchronous call. The .NET graph

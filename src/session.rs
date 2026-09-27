@@ -11,8 +11,13 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Storage::FileSystem::ReadFile;
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Threading::{
-    ResetEvent, WaitForMultipleObjects, WaitForSingleObject,
+    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, INFINITE, ResetEvent,
+    SetWaitableTimer, TIMER_ALL_ACCESS, WaitForMultipleObjects, WaitForSingleObject,
 };
+
+/// Waits shorter than this use a high-resolution waitable timer: filter timer
+/// ticks need sub-millisecond deadlines, which millisecond waits truncate.
+const PRECISE_WAIT: Duration = Duration::from_millis(50);
 
 pub use otd_core::session::Mode;
 use otd_core::session::{Read, ReportSource};
@@ -50,6 +55,9 @@ struct HidSource<'a> {
     operation: OVERLAPPED,
     pending: bool,
     label: String,
+    /// Created on the first short wait; sessions without timer-driven
+    /// filters never wait less than a second and never create it.
+    timer: Option<OwnedHandle>,
 }
 
 impl<'a> HidSource<'a> {
@@ -94,7 +102,33 @@ impl<'a> HidSource<'a> {
             // ReadFile needs room for the collection's whole input report.
             buffer: vec![0; usize::from(candidate.input_length.max(1))].into_boxed_slice(),
             pending: false,
+            timer: None,
         })
+    }
+
+    /// Arms the high-resolution timer to signal after `wait`.
+    fn arm_timer(&mut self, wait: Duration) -> io::Result<HANDLE> {
+        if self.timer.is_none() {
+            self.timer = Some(OwnedHandle::new(unsafe {
+                CreateWaitableTimerExW(
+                    ptr::null(),
+                    ptr::null(),
+                    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                    TIMER_ALL_ACCESS,
+                )
+            })?);
+        }
+        let timer = self
+            .timer
+            .as_ref()
+            .map(OwnedHandle::raw)
+            .unwrap_or_default();
+        // Relative due time in 100 ns units, rounded up so it never fires early.
+        let due = -i64::try_from(wait.as_nanos().div_ceil(100).max(1)).unwrap_or(i64::MAX);
+        if unsafe { SetWaitableTimer(timer, &due, 0, None, ptr::null(), 0) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(timer)
     }
 
     fn cancel(&mut self) {
@@ -189,16 +223,28 @@ impl ReportSource for HidSource<'_> {
             self.pending = true;
         }
         let until = Instant::now() + timeout;
+        let precise = timeout < PRECISE_WAIT;
+        let timer = if precise {
+            self.arm_timer(timeout)?
+        } else {
+            ptr::null_mut()
+        };
         let handles = [
             self.stop.raw(),
             self.read_event.raw(),
             self.notification.event(),
+            timer,
         ];
         loop {
             // Other devices' notifications do not extend the wait.
-            let remaining = until.saturating_duration_since(Instant::now());
-            let millis = u32::try_from(remaining.as_millis()).unwrap_or(u32::MAX);
-            match wait(&handles, millis) {
+            let result = if precise {
+                wait(&handles, INFINITE)
+            } else {
+                let remaining = until.saturating_duration_since(Instant::now());
+                let millis = u32::try_from(remaining.as_millis()).unwrap_or(u32::MAX);
+                wait(&handles[..3], millis)
+            };
+            match result {
                 // Stop takes precedence when both stop and read are signaled.
                 Ok(Some(1)) => {
                     self.pending = false;
@@ -206,6 +252,7 @@ impl ReportSource for HidSource<'_> {
                 }
                 // Some HID device arrived or left; only this one matters.
                 Ok(Some(2)) if self.candidate.is_present() => {}
+                Ok(Some(3)) => return Ok(Read::Idle),
                 Ok(Some(_)) => {
                     self.cancel();
                     return Ok(Read::Ended);

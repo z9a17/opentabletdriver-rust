@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Numerics;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -130,7 +131,11 @@ sealed class Instance : IDisposable
     int consuming;
     int asyncEmission;
     Action<IDeviceReport>? graphContinuation;
+    // Timers injected into [Resolved] ITimer members. The report thread fires
+    // them, so timer emissions continue the graph on the thread that owns it.
+    readonly List<SessionTimer> timers = new();
     public PipelinePosition Position { get; }
+    public bool HasTimers => timers.Count != 0;
 
     public Instance(JObject config)
     {
@@ -141,11 +146,13 @@ sealed class Instance : IDisposable
         {
             Type type = context.LoadFromAssemblyPath(path).GetType(config.Value<string>("type_name") ?? "", true)!;
             PluginEligibility.RequireLoadable(type);
-            if (!typeof(IPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(type)
-                || typeof(AsyncPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(type))
-                throw new NotSupportedException("Only synchronous OTD position filters are supported; async filters, output modes, tools and bindings are not supported.");
+            if (!typeof(IPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(type))
+                throw new NotSupportedException("Only OTD position filters are supported; output modes and bindings are not supported.");
             created = Activator.CreateInstance(type) ?? throw new InvalidOperationException("Cannot construct filter");
             filter = (IPositionedPipelineElement<IDeviceReport>)created;
+            // PluginManager.ConstructObject injects services before
+            // PluginSettingStore.ApplySettings, so Frequency finds its timer.
+            InjectTimers(type, created);
             ApplySettings(type, created, config["settings"] as JObject ?? new JObject());
             InjectTablet(type, created, config["tablet"]?.ToObject<TabletConfiguration>()
                 ?? throw new ArgumentException("tablet configuration missing"));
@@ -185,6 +192,61 @@ sealed class Instance : IDisposable
         }
     }
 
+    void InjectTimers(Type type, object value)
+    {
+        const BindingFlags members = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+        for (Type? owner = type; owner != null; owner = owner.BaseType)
+        {
+            foreach (var property in owner.GetProperties(members))
+                if (property.GetCustomAttribute<ResolvedAttribute>() != null && property.PropertyType == typeof(OpenTabletDriver.Plugin.Timers.ITimer))
+                {
+                    var timer = new SessionTimer();
+                    timers.Add(timer);
+                    property.SetValue(value, timer);
+                }
+            foreach (var field in owner.GetFields(members))
+                if (field.GetCustomAttribute<ResolvedAttribute>() != null && field.FieldType == typeof(OpenTabletDriver.Plugin.Timers.ITimer))
+                {
+                    var timer = new SessionTimer();
+                    timers.Add(timer);
+                    field.SetValue(value, timer);
+                }
+        }
+    }
+
+    /// Microseconds until this filter's next timer tick, or -1 without one.
+    public long NextTickMicros(long now)
+    {
+        long best = -1;
+        foreach (var timer in timers)
+            if (timer.Enabled)
+            {
+                long micros = Math.Max(0, (timer.Due - now) * 1_000_000 / Stopwatch.Frequency);
+                if (best < 0 || micros < best) best = micros;
+            }
+        return best;
+    }
+
+    /// Fires this filter's due timers; emissions continue through `continuation`.
+    public void TickGraph(long now, Action<IDeviceReport> continuation)
+    {
+        if (Environment.CurrentManagedThreadId != ownerThread)
+            throw new InvalidOperationException("Timers must fire on the graph's owning thread.");
+        if (Interlocked.Exchange(ref consuming, 1) != 0)
+            throw new InvalidOperationException("Reentrant timer tick of the same filter is unsupported.");
+        graphContinuation = continuation;
+        try
+        {
+            foreach (var timer in timers)
+                timer.FireIfDue(now);
+        }
+        finally
+        {
+            graphContinuation = null;
+            Volatile.Write(ref consuming, 0);
+        }
+    }
+
     static void InjectTablet(Type type, object value, TabletConfiguration configuration)
     {
         var tablet = new TabletReference(configuration, configuration.DigitizerIdentifiers.Take(1));
@@ -199,6 +261,8 @@ sealed class Instance : IDisposable
                 bool tabletRef = property.GetCustomAttribute<TabletReferenceAttribute>() != null;
                 if ((resolved || tabletRef) && property.PropertyType == typeof(TabletReference))
                     property.SetValue(value, tablet);
+                else if (resolved && property.PropertyType == typeof(OpenTabletDriver.Plugin.Timers.ITimer))
+                    continue; // Injected before settings.
                 else if (resolved || tabletRef)
                     throw new NotSupportedException($"Unsupported plugin dependency: {property.Name} ({property.PropertyType.Name})");
             }
@@ -208,6 +272,8 @@ sealed class Instance : IDisposable
                 bool tabletRef = field.GetCustomAttribute<TabletReferenceAttribute>() != null;
                 if ((resolved || tabletRef) && field.FieldType == typeof(TabletReference))
                     field.SetValue(value, tablet);
+                else if (resolved && field.FieldType == typeof(OpenTabletDriver.Plugin.Timers.ITimer))
+                    continue; // Injected before settings.
                 else if (resolved || tabletRef)
                     throw new NotSupportedException($"Unsupported plugin field dependency: {field.Name} ({field.FieldType.Name})");
             }
@@ -323,7 +389,45 @@ sealed class Instance : IDisposable
     {
         filter.Emit -= OnEmit;
         (filter as IDisposable)?.Dispose();
+        foreach (var timer in timers) timer.Dispose();
         context.Unload();
+    }
+}
+
+// The ITimer upstream's PluginManager supplies (WindowsTimer on Windows),
+// except that it elapses on the report thread when the session reaches its
+// due time instead of on a separate timer thread. A late tick fires once and
+// the schedule restarts from now, as a periodic timer drops missed ticks.
+sealed class SessionTimer : OpenTabletDriver.Plugin.Timers.ITimer
+{
+    long due;
+    public float Interval { get; set; } = 1;
+    public bool Enabled { get; private set; }
+    public event Action? Elapsed;
+    internal long Due => due;
+
+    long Period => Math.Max(1, (long)(Math.Max(Interval, 0.05f) * Stopwatch.Frequency / 1000.0));
+
+    public void Start()
+    {
+        due = Stopwatch.GetTimestamp() + Period;
+        Enabled = true;
+    }
+
+    public void Stop() => Enabled = false;
+
+    internal void FireIfDue(long now)
+    {
+        if (!Enabled || now < due) return;
+        due += Period;
+        if (due <= now) due = now + Period;
+        Elapsed?.Invoke();
+    }
+
+    public void Dispose()
+    {
+        Enabled = false;
+        Elapsed = null;
     }
 }
 

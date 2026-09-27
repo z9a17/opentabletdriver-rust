@@ -472,6 +472,16 @@ impl otd_core::plugins::Filters for PluginChain {
     fn prepare_report(&mut self, pen: crate::protocol::PenReport, raw: &[u8]) {
         PluginChain::prepare_report(self, pen, raw);
     }
+    fn next_tick(&mut self) -> Option<std::time::Duration> {
+        self.next_tick_graph()
+    }
+    fn tick(
+        &mut self,
+        now: Instant,
+        runtime: &mut dyn otd_core::plugins::PipelineRuntime,
+    ) -> std::io::Result<()> {
+        self.tick_graph(now, runtime)
+    }
     fn has_pre(&self) -> bool {
         self.has_pre
     }

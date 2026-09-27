@@ -290,6 +290,35 @@ pub fn run(
     status("Tablet connected; receiving pen input");
     let outcome = (|| -> io::Result<()> {
         loop {
+            // Timer-driven filters tick on this thread, between reads.
+            let tick = match mode {
+                Mode::Driver => filters.next_tick(),
+                Mode::Capture { .. } => None,
+            };
+            if tick.is_some_and(|wait| wait.is_zero())
+                && (pipeline.is_relative() || layout.mapper.is_some())
+            {
+                let ticked =
+                    pipeline.process_tick(source.now(), layout.mapper, filters, |packet| {
+                        send(packet)?;
+                        counters.injected += 1;
+                        Ok(())
+                    });
+                if let Some(name) = filters.take_failure() {
+                    status(&format!(
+                        "Disabled failing plugin: {name}. Restart to retry."
+                    ));
+                }
+                if let Err(error) = ticked {
+                    counters.output_failures += 1;
+                    let now = source.now();
+                    if last_output_warning.is_none_or(|last| now - last >= Duration::from_secs(5)) {
+                        eprintln!("Report pipeline failed: {error}");
+                        last_output_warning = Some(now);
+                    }
+                }
+                continue;
+            }
             let timeout = match mode {
                 Mode::Capture { deadline, limit } => {
                     let now = source.now();
@@ -300,7 +329,9 @@ pub fn run(
                         .saturating_duration_since(now)
                         .min(Duration::from_secs(1))
                 }
-                Mode::Driver => Duration::from_secs(1),
+                Mode::Driver => tick.map_or(Duration::from_secs(1), |wait| {
+                    wait.min(Duration::from_secs(1))
+                }),
             };
             let (bytes, ready, queued) = match source.next(timeout)? {
                 Read::Ended => break,
@@ -338,9 +369,14 @@ pub fn run(
                         if pipeline.is_relative() || layout.mapper.is_some() {
                             filters.prepare_report(pen, bytes);
                         }
-                        let emitted = pipeline.process_with_raw(
+                        let emitted = pipeline.process_pen(
                             pen,
                             bytes,
+                            // Upstream pen reports always carry a button
+                            // array; a parser without buttons has an empty one.
+                            decoder
+                                .pen_buttons(bytes)
+                                .or(Some(crate::reports::Buttons::default())),
                             ready,
                             layout.mapper,
                             filters,
@@ -804,6 +840,73 @@ mod tests {
             &mut NoFilters,
         );
         assert!(packets.is_empty());
+    }
+
+    #[test]
+    fn due_filter_timers_tick_between_reads() {
+        struct Timed(u32);
+        impl Filters for Timed {
+            fn next_tick(&mut self) -> Option<Duration> {
+                Some(if self.0 < 3 {
+                    Duration::ZERO
+                } else {
+                    Duration::from_secs(5)
+                })
+            }
+            fn tick(
+                &mut self,
+                _: Instant,
+                runtime: &mut dyn crate::plugins::PipelineRuntime,
+            ) -> io::Result<()> {
+                self.0 += 1;
+                let mut values = crate::reports::ReportValues {
+                    position: Some([5000.0, 5000.0]),
+                    pressure: Some(0),
+                    ..Default::default()
+                };
+                if runtime.transform(crate::reports::ReportKind::Data, &mut values)? {
+                    runtime.output(crate::reports::ReportKind::Data, &values, &[])?;
+                }
+                Ok(())
+            }
+            fn has_pre(&self) -> bool {
+                false
+            }
+            fn process_pre(
+                &mut self,
+                position: (f32, f32),
+                _: protocol::PenReport,
+                _: Instant,
+            ) -> (f32, f32) {
+                position
+            }
+            fn has_pixels(&self) -> bool {
+                false
+            }
+            fn process_pixels(
+                &mut self,
+                position: (f32, f32),
+                _: protocol::PenReport,
+                _: Instant,
+            ) -> (f32, f32) {
+                position
+            }
+            fn reset(&mut self) {}
+            fn take_failure(&mut self) -> Option<&str> {
+                None
+            }
+        }
+        let mut timed = Timed(0);
+        let (packets, _) = session(
+            &profile(),
+            |_| Mode::Driver,
+            vec![(100, Event::Report(&HOVER, false))],
+            vec![(0, monitors(&[1920]))],
+            &mut timed,
+        );
+        assert_eq!(timed.0, 3);
+        // The first tick moves the cursor; the report moves it again.
+        assert_eq!(packets.len(), 2, "{packets:?}");
     }
 
     #[test]

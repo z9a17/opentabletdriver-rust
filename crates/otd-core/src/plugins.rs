@@ -129,6 +129,16 @@ pub trait Filters {
         }
         runtime.output(input.kind, &values, input.raw)
     }
+    /// Time until the next timer tick of a timer-driven (async) filter, or
+    /// `None` without one. The session wakes for it on the report thread.
+    fn next_tick(&mut self) -> Option<std::time::Duration> {
+        None
+    }
+    /// Fires due filter timers; their emissions continue downstream of the
+    /// emitting filter through `runtime`, like a synchronous emission.
+    fn tick(&mut self, _now: Instant, _runtime: &mut dyn PipelineRuntime) -> io::Result<()> {
+        Ok(())
+    }
     /// Supplies the exact transport packet before its decoded pen is dispatched.
     /// Implementations retaining it must copy into storage allocated at setup.
     /// Synthetic position-only consumers may leave this hook as a no-op.

@@ -79,21 +79,29 @@ impl ReportPipeline {
         plugins: &mut impl Filters,
         send: impl FnMut(MousePacket) -> io::Result<()>,
     ) -> io::Result<DispatchStats> {
+        // A synthetic caller without the complete transport packet has no
+        // button reading.
+        let buttons = crate::decoders::intuos_v2_pen_buttons(raw).filter(|_| raw[0] == pen.id);
+        self.process_pen(pen, raw, buttons, now, mapper, plugins, send)
+    }
+
+    /// `process_with_raw` with the decoder's pen buttons, so managed filters
+    /// see `ITabletReport` on every tablet, not only IntuosV2 layouts.
+    #[allow(clippy::too_many_arguments)] // Mirrors process_with_raw's seams.
+    pub fn process_pen(
+        &mut self,
+        pen: PenReport,
+        raw: &[u8],
+        buttons: Option<Buttons>,
+        now: Instant,
+        mapper: Option<Mapper>,
+        plugins: &mut impl Filters,
+        send: impl FnMut(MousePacket) -> io::Result<()>,
+    ) -> io::Result<DispatchStats> {
         let kind = if pen.in_range || pen.sense {
             ReportKind::Data
         } else {
             ReportKind::OutOfRange
-        };
-        // Same checked byte/bit ordering as reports::from_pth660. A synthetic
-        // caller without the complete transport packet has no button reading.
-        let buttons = match (pen.id, raw) {
-            (0x10, [0x10, flags, ..]) if raw.len() >= 17 => {
-                Buttons::from_bits(u64::from(flags >> 1), 2).ok()
-            }
-            (0x1e, [0x1e, _, flags, ..]) if raw.len() >= 13 => {
-                Buttons::from_bits(u64::from(flags >> 1), 3).ok()
-            }
-            _ => None,
         };
         let values = if kind == ReportKind::Data {
             ReportValues {
@@ -201,6 +209,42 @@ impl ReportPipeline {
                     return Err(error);
                 }
             }
+        }
+        Ok(stats)
+    }
+
+    /// Fires due timers of timer-driven filters (upstream's
+    /// `AsyncPositionedPipelineElement`). Their emissions take the same
+    /// transform, contact and output path as any plugin emission.
+    pub fn process_tick(
+        &mut self,
+        now: Instant,
+        mapper: Option<Mapper>,
+        plugins: &mut impl Filters,
+        mut send: impl FnMut(MousePacket) -> io::Result<()>,
+    ) -> io::Result<DispatchStats> {
+        if self.faulted || (self.relative.is_none() && mapper.is_none()) {
+            return Ok(DispatchStats::default());
+        }
+        let mut runtime = Runtime {
+            pipeline: self,
+            mapper,
+            now,
+            send: &mut send,
+            stats: DispatchStats::default(),
+            exact_position: None,
+            shown_position: None,
+            preserve_precision: false,
+            unfiltered_raw: None,
+        };
+        let result = plugins.tick(now, &mut runtime);
+        let stats = runtime.stats;
+        if let Err(error) = result {
+            self.faulted = true;
+            if self.release_all(&mut send).is_ok() {
+                self.faulted = false;
+            }
+            return Err(error);
         }
         Ok(stats)
     }

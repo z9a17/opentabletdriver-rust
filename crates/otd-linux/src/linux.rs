@@ -310,7 +310,11 @@ impl ReportSource for Hidraw<'_> {
         let queued = unsafe { libc::poll(&mut poll, 1, 0) } > 0;
         if !queued {
             // Wake at least every 100 ms to notice a stop request.
-            let wait = timeout.min(Duration::from_millis(100)).as_millis() as i32;
+            // Round up: a sub-millisecond filter timer deadline must not spin.
+            let wait = timeout
+                .min(Duration::from_millis(100))
+                .as_micros()
+                .div_ceil(1000) as i32;
             // SAFETY: one valid pollfd.
             match unsafe { libc::poll(&mut poll, 1, wait) } {
                 0 => return Ok(Read::Idle),
