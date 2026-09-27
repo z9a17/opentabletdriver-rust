@@ -40,7 +40,7 @@ Checks run on Windows 11 x64 with Rust stable MSVC and .NET 8, entirely in the b
 - Companion tests verify that every stop event is signalled before joining and that cleanup errors survive the drain. Primary selection and daemon quiescence ordering were source-reviewed; there was no live two-tablet/profile-switch test.
 - Update tests exercise interruption before commit, new-file rollback, lock contention and repeated recovery. A copied test executable is mapped using `LOAD_LIBRARY_AS_IMAGE_RESOURCE`, without executing its entry point. The test proves deletion is blocked, then verifies rename-based recovery and committed-marker preservation while the image remains mapped.
 - Plugin placement passes with its source on C: and destination on E:.
-- Nine managed integration tests pass using `SettingsFixture`, `DiscoveryFixture` and checksum-pinned RadialFollow 0.3.0, with in-memory output. Timer coverage includes both initially enabled and first-report-started timers. The manual managed replay test also passes.
+- Nine managed integration tests pass using `SettingsFixture`, `DiscoveryFixture` and checksum-pinned RadialFollow 0.3.0, with in-memory output. Timer coverage includes both initially enabled and first-report-started timers. The manual `benchmark_dotnet_post_transform_pipeline` test also passes in the debug test build; its timings are not release performance measurements.
 - Release workspace build and the built sample native DLL round trip.
 - Parity ledger validation and 21 Python tests.
 
@@ -48,14 +48,15 @@ The regular CI also runs the portable core/Linux checks on Ubuntu and core tests
 
 ## Allocation measurement
 
-The offline `GraphBench` harness compiles the actual bridge source and uses the known `DefaultsFilter` fixture, a 17-byte synthetic pen packet, two pen buttons and a callback that validates every output. It warms up 10,000 dispatches, then runs three trials of 100,000 dispatches and deadline queries. Both versions retain report/raw/button snapshots.
+The offline `GraphBench` harness compiles the actual bridge source and uses the known `DefaultsFilter` fixture, a 17-byte synthetic pen packet, two pen buttons and a callback that validates every output. A second graph uses `LateTimerFilter`, which has an injected but stopped timer. Each measurement warms up for 10,000 calls, then runs three trials of 100,000 calls. Both versions retain report/raw/button snapshots.
 
 | Measurement | 0.13.0 bridge | 0.13.1 bridge |
 | --- | ---: | ---: |
 | Managed allocation per dispatch | 496 bytes | 136 bytes |
-| Managed allocation per deadline query | 32 bytes | 0 bytes |
+| Managed allocation per forced deadline query, graph without timers | 32 bytes | 0 bytes |
+| Managed allocation per deadline query, graph with a stopped timer | 32 bytes | 0 bytes |
 
-These values repeated in all three trials. The 360-byte dispatch reduction is specific to this fixture, not a universal plugin claim. Timing varied during JIT warmup and concurrent background work, so no percentage latency improvement is claimed. Native successful report handling and the owner registry pass allocation-count tests with zero allocations after setup.
+These values repeated in all three trials. Production Rust caches the absence of timers, so the forced no-timer query is not a recurring production cost. The stopped-timer graph verifies the allocation reduction for timer-capable graphs. The 360-byte dispatch reduction is specific to this fixture, not a universal plugin claim. Timing varied during JIT warmup and concurrent background work, so no percentage latency improvement is claimed. Native successful report handling and the owner registry pass allocation-count tests with zero allocations after setup.
 
 To reproduce the current harness without HID, UI or input injection:
 
@@ -67,7 +68,7 @@ dotnet build compat/GraphBench/GraphBench.csproj -c Release --no-restore
 dotnet compat/GraphBench/bin/Release/net8.0/GraphBench.dll (Resolve-Path compat/SettingsFixture/bin/Release/net8.0/SettingsFixture.dll).Path (Resolve-Path crates/otd-core/tablets/Wacom/PTH-660.json).Path
 ```
 
-For the baseline comparison, the same harness and fixture were compiled with `Graph.cs` and `EntryPoints.cs` from the audited commit. This harness measures managed dispatch/allocation only; it does not time USB, OS scheduling, `SendInput`, a game or a display.
+The commands above were run successfully against the committed harness project. For the baseline comparison, the same harness and fixture were compiled with `Graph.cs` and `EntryPoints.cs` from the audited commit. This harness measures managed dispatch/allocation only; it does not time USB, OS scheduling, `SendInput`, a game or a display.
 
 ## Operational limits
 

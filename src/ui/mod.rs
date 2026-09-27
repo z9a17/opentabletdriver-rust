@@ -695,6 +695,7 @@ enum BackgroundResult {
         folder: PathBuf,
         name: String,
         entries: Vec<crate::dotnet::InspectedFilter>,
+        errors: Vec<String>,
     },
     Import {
         generation: u64,

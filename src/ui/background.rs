@@ -106,18 +106,34 @@ impl App {
                     folder,
                     name,
                     entries,
+                    errors,
                 } => {
                     if generation != self.metadata_generation {
                         continue;
                     }
                     self.metadata_pending.remove(&folder);
-                    if entries.is_empty() {
+                    if !errors.is_empty() {
+                        self.log(
+                            Level::Warning,
+                            "Plugins",
+                            format!(
+                                "Some DLLs in {name} could not be inspected:\n{}",
+                                errors.join("\n")
+                            ),
+                        );
+                    }
+                    if entries.is_empty() && errors.is_empty() {
                         self.log(Level::Warning, "Plugins", format!("{name} exports no supported filters or tools; it may provide bindings or output modes."));
-                    } else {
+                    } else if !entries.is_empty() {
                         let mut configs = Vec::new();
                         for entry in entries {
                             self.plugin_metadata
                                 .entry(entry.config.path.clone())
+                                .and_modify(|cached| {
+                                    if cached.is_err() {
+                                        *cached = Ok(Vec::new());
+                                    }
+                                })
                                 .or_insert_with(|| Ok(Vec::new()));
                             if let Some(Ok(metadata)) =
                                 self.plugin_metadata.get_mut(&entry.config.path)
@@ -211,16 +227,20 @@ impl App {
         let generation = self.metadata_generation;
         let work_folder = folder.clone();
         if !self.background("plugin-folder-inspection", move || {
-            let entries = crate::plugin_catalog::dlls(&work_folder)
-                .into_iter()
-                .filter_map(|path| crate::dotnet::inspect_details(&path).ok())
-                .flatten()
-                .collect();
+            let mut entries = Vec::new();
+            let mut errors = Vec::new();
+            for path in crate::plugin_catalog::dlls(&work_folder) {
+                match crate::dotnet::inspect_details(&path) {
+                    Ok(found) => entries.extend(found),
+                    Err(error) => errors.push(format!("{}: {error}", path.display())),
+                }
+            }
             BackgroundResult::PluginFolder {
                 generation,
                 folder: work_folder,
                 name,
                 entries,
+                errors,
             }
         }) {
             self.metadata_pending.remove(&folder);

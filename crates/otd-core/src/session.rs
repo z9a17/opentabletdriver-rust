@@ -85,7 +85,7 @@ struct Counters {
     accepted: u64,
     ignored: u64,
     malformed: u64,
-    injected: u64,
+    output_commits: u64,
     output_failures: u64,
 }
 
@@ -343,7 +343,7 @@ pub fn run_gated(
             if pipeline.needs_cleanup() || tick.is_some_and(|wait| wait.is_zero()) {
                 let mut output = |packet| {
                     send(packet)?;
-                    counters.injected += 1;
+                    counters.output_commits += 1;
                     Ok(())
                 };
                 let ticked = if pipeline.needs_cleanup() {
@@ -433,7 +433,7 @@ pub fn run_gated(
                                 send(packet)?;
                                 // Count acknowledged prefixes even if a later
                                 // emission from this input fails.
-                                counters.injected += 1;
+                                counters.output_commits += 1;
                                 Ok(())
                             },
                         );
@@ -487,12 +487,12 @@ pub fn run_gated(
         eprintln!("could not release mouse buttons: {error}");
     }
     eprintln!(
-        "session ended: read={} accepted={} ignored={} malformed={} injected={} output_failures={}",
+        "session ended: read={} accepted={} ignored={} malformed={} output_commits={} output_failures={}",
         counters.read,
         counters.accepted,
         counters.ignored,
         counters.malformed,
-        counters.injected,
+        counters.output_commits,
         counters.output_failures
     );
     if let Some(summary) = timing.summary() {

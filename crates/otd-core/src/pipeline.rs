@@ -17,6 +17,7 @@ use crate::reports::{Buttons, ReportKind, ReportValues};
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DispatchStats {
     pub reports: u64,
+    /// Acknowledged sink packets; a shared sink may coalesce before OS output.
     pub packets: u64,
 }
 
