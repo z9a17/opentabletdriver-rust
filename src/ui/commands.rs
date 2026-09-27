@@ -63,19 +63,27 @@ pub(super) fn accelerator_table() -> HACCEL {
     unsafe { CreateAcceleratorTableW(table.as_ptr(), table.len() as i32) }
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum FileKind {
+    Profile,
+    Dll,
+    /// A plugin archive or DLL for the plugin folder.
+    Package,
+}
+
 pub(super) fn file_dialog(
     window: HWND,
     save: bool,
-    dll: bool,
+    kind: FileKind,
     title: &str,
 ) -> Result<Option<PathBuf>, String> {
     let mut buffer = vec![0u16; 32_768];
-    let filter = if dll {
-        wide("Plugin DLL (*.dll)\0*.dll\0\0")
-    } else {
-        wide("Rust profile (*.toml)\0*.toml\0All files\0*.*\0\0")
+    let (filter, extension) = match kind {
+        FileKind::Profile => ("Rust profile (*.toml)\0*.toml\0All files\0*.*\0\0", "toml"),
+        FileKind::Dll => ("Plugin DLL (*.dll)\0*.dll\0\0", "dll"),
+        FileKind::Package => ("Plugin (*.zip;*.dll)\0*.zip;*.dll\0\0", "zip"),
     };
-    let extension = wide(if dll { "dll" } else { "toml" });
+    let (filter, extension) = (wide(filter), wide(extension));
     let title = wide(title);
     let mut dialog = OPENFILENAMEW {
         lStructSize: size_of::<OPENFILENAMEW>() as u32,
@@ -431,7 +439,7 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         }
         CMD_LOAD => {
             if confirm_discard(window) {
-                match file_dialog(window, false, false, "Load settings") {
+                match file_dialog(window, false, FileKind::Profile, "Load settings") {
                     Ok(Some(path)) => {
                         let loaded = with_app(|app| app.load_file(path.clone())).unwrap_or(false);
                         if !loaded
@@ -459,7 +467,12 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
             let save_as =
                 id == CMD_SAVE_AS || with_app(|app| app.recovered_backup).unwrap_or(false);
             if save_as {
-                match file_dialog(window, true, false, "Save settings as a new file") {
+                match file_dialog(
+                    window,
+                    true,
+                    FileKind::Profile,
+                    "Save settings as a new file",
+                ) {
                     Ok(Some(path)) => {
                         with_app(|app| app.save_as_to(path));
                     }
@@ -547,7 +560,7 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
             } else {
                 "Add native plugin"
             };
-            match file_dialog(window, false, true, title) {
+            match file_dialog(window, false, FileKind::Dll, title) {
                 Ok(Some(path)) => {
                     with_app(|app| app.add_plugin(path, dotnet));
                 }

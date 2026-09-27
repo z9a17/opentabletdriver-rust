@@ -482,7 +482,7 @@ impl Editor {
                     .ok_or("The selected filter no longer exists.")?;
                 let metadata = metadata
                     .filter(|metadata| {
-                        plugin.kind == PluginKind::Dotnet && metadata.type_name == plugin.type_name
+                        plugin.kind.is_managed() && metadata.type_name == plugin.type_name
                     })
                     .ok_or(
                         "Defaults are unavailable for this plugin. Its settings have been kept.",
@@ -543,7 +543,7 @@ impl Editor {
         !self.profile.radial_follow.is_empty()
             && self.profile.plugins.iter().any(|plugin| {
                 plugin.enabled
-                    && plugin.kind == PluginKind::Dotnet
+                    && plugin.kind.is_managed()
                     && plugin.type_name == crate::radial_follow::FILTER_PATH
             })
     }
@@ -571,7 +571,7 @@ pub fn threshold_percent_for(raw: u16, max_pressure: u16) -> f64 {
 
 pub fn plugin_name(plugin: &PluginConfig) -> String {
     match plugin.kind {
-        PluginKind::Dotnet => plugin
+        PluginKind::Dotnet | PluginKind::DotnetTool => plugin
             .type_name
             .rsplit('.')
             .next()
@@ -594,6 +594,7 @@ pub fn plugin_detail(plugin: &PluginConfig) -> String {
         .unwrap_or_default();
     match plugin.kind {
         PluginKind::Dotnet => format!(".NET plugin · {file}"),
+        PluginKind::DotnetTool => format!(".NET tool · {file}"),
         PluginKind::Native => format!("Native plugin · {file}"),
     }
 }

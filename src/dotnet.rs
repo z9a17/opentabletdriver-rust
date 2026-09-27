@@ -47,7 +47,11 @@ struct Bridge {
     dispatch_graph: graph::DispatchGraph,
     graph_failure: graph::GraphFailure,
     destroy_graph: graph::DestroyGraph,
+    create_tool: Option<CreateTool>,
+    destroy_tool: Option<DestroyTool>,
 }
+type CreateTool = unsafe extern "C" fn(*const u8, usize) -> *mut c_void;
+type DestroyTool = unsafe extern "C" fn(*mut c_void);
 static BRIDGE: OnceLock<Result<Bridge, String>> = OnceLock::new();
 
 fn bridge_dir() -> Result<PathBuf, String> {
@@ -153,6 +157,13 @@ fn load_bridge() -> Result<Bridge, String> {
             std::mem::transmute::<*mut c_void, GetPosition>(entry("GetPosition")?)
         },
         inspect: unsafe { std::mem::transmute::<*mut c_void, Inspect>(entry("Inspect")?) },
+        // Bridges older than 0.13 lack tools; filters keep working with them.
+        create_tool: entry("CreateTool")
+            .ok()
+            .map(|entry| unsafe { std::mem::transmute::<*mut c_void, CreateTool>(entry) }),
+        destroy_tool: entry("DestroyTool")
+            .ok()
+            .map(|entry| unsafe { std::mem::transmute::<*mut c_void, DestroyTool>(entry) }),
         get_error: unsafe { std::mem::transmute::<*mut c_void, GetError>(entry("GetError")?) },
         process_report: unsafe {
             std::mem::transmute::<*mut c_void, ProcessReport>(entry("ProcessReport").map_err(|error|
@@ -289,6 +300,37 @@ pub struct FilterMetadata {
     pub default_settings_json: String,
 }
 
+/// Starts an OpenTabletDriver tool: constructs it, applies its settings and
+/// calls `Initialize`. Returns the handle `destroy_tool` disposes.
+pub fn create_tool(config: &crate::plugins::PluginConfig) -> Result<*mut c_void, String> {
+    let bridge = bridge()?;
+    let create = bridge.create_tool.ok_or(
+        "The installed .NET bridge lacks tool support. Replace the compat directory with this release's files.",
+    )?;
+    let settings = serde_json::json!({
+        "assembly_path": config.path.canonicalize().map_err(|e| e.to_string())?,
+        "type_name": config.type_name,
+        "settings": serde_json::from_str::<serde_json::Value>(&config.settings_json).map_err(|e| e.to_string())?,
+    })
+    .to_string();
+    let handle = unsafe { create(settings.as_ptr(), settings.len()) };
+    if handle.is_null() {
+        Err(last_error())
+    } else {
+        Ok(handle)
+    }
+}
+
+pub fn destroy_tool(handle: *mut c_void) {
+    if let Ok(Bridge {
+        destroy_tool: Some(destroy),
+        ..
+    }) = bridge()
+    {
+        unsafe { destroy(handle) };
+    }
+}
+
 pub struct InspectedFilter {
     pub config: crate::plugins::PluginConfig,
     pub metadata: FilterMetadata,
@@ -321,6 +363,8 @@ pub fn inspect_details(path: &Path) -> Result<Vec<InspectedFilter>, String> {
     };
     #[derive(serde::Deserialize)]
     struct Entry {
+        #[serde(default)]
+        kind: Option<String>,
         type_name: String,
         display_name: Option<String>,
         settings: serde_json::Value,
@@ -332,7 +376,11 @@ pub fn inspect_details(path: &Path) -> Result<Vec<InspectedFilter>, String> {
         .map(|entry| InspectedFilter {
             config: crate::plugins::PluginConfig {
                 path: path.clone(),
-                kind: crate::plugins::PluginKind::Dotnet,
+                kind: if entry.kind.as_deref() == Some("tool") {
+                    crate::plugins::PluginKind::DotnetTool
+                } else {
+                    crate::plugins::PluginKind::Dotnet
+                },
                 enabled: false,
                 type_name: entry.type_name.clone(),
                 settings_json: entry.settings.to_string(),
@@ -379,6 +427,59 @@ mod tests {
         raw[12..14].copy_from_slice(&pen.rotation.unwrap_or(0).to_le_bytes());
         raw[16] = pen.hover_distance.unwrap_or(0);
         chain.prepare_report(pen, &raw);
+    }
+
+    #[test]
+    #[ignore = "requires bridge and SettingsFixture DLL; set OTD_COMPAT_DIR and OTD_TEST_SETTINGS_PLUGIN"]
+    fn dotnet_tools_start_with_settings_and_stop_on_drop() {
+        let path: PathBuf = std::env::var_os("OTD_TEST_SETTINGS_PLUGIN")
+            .expect("set OTD_TEST_SETTINGS_PLUGIN")
+            .into();
+        let entries = inspect_details(&path).unwrap();
+        let entry = entries
+            .iter()
+            .find(|entry| entry.config.type_name == "SettingsFixture.MarkerTool")
+            .unwrap();
+        assert_eq!(entry.config.kind, PluginKind::DotnetTool);
+        // Filters in the same assembly stay filters.
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.config.kind == PluginKind::Dotnet)
+        );
+
+        let marker = std::env::temp_dir().join(format!("otd-tool-{}.txt", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let config = PluginConfig {
+            path: path.clone(),
+            kind: PluginKind::DotnetTool,
+            enabled: true,
+            type_name: "SettingsFixture.MarkerTool".into(),
+            settings_json: serde_json::json!({ "MarkerPath": marker }).to_string(),
+        };
+        let lines = std::cell::RefCell::new(Vec::new());
+        let tools = crate::plugins::Tools::start(std::slice::from_ref(&config), |line| {
+            lines.borrow_mut().push(line.to_owned())
+        });
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "started");
+        drop(tools);
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "started stopped");
+        std::fs::remove_file(&marker).unwrap();
+        // A tool whose Initialize fails is reported and skipped, as upstream does.
+        let failing = PluginConfig {
+            settings_json: "{}".into(),
+            ..config
+        };
+        let _none = crate::plugins::Tools::start(&[failing], |line| {
+            lines.borrow_mut().push(line.to_owned())
+        });
+        let lines = lines.into_inner();
+        assert_eq!(lines[0], "Started tool SettingsFixture.MarkerTool.");
+        assert!(
+            lines[1].starts_with("Failed to start tool SettingsFixture.MarkerTool:"),
+            "{}",
+            lines[1]
+        );
     }
 
     #[test]

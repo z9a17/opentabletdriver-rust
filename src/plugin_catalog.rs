@@ -265,6 +265,66 @@ fn install_archive(
         Some("zip") | None => extract(archive, &staged)?,
         Some(other) => return Err(format!("unsupported plugin format {other}")),
     }
+    place(entry, &staged, root)
+}
+
+/// Installs a plugin the user picked: a zip archive, as OpenTabletDriver's
+/// plugin manager accepts, or a single DLL. There is no catalog hash to
+/// check, so the user vouches for the file.
+pub fn install_file(file: &Path) -> Result<PathBuf, String> {
+    let work = std::env::temp_dir().join(format!("otd-rust-plugin-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&work);
+    let result = install_file_into(file, &plugins_directory()?, &work);
+    let _ = fs::remove_dir_all(&work);
+    result
+}
+
+fn install_file_into(file: &Path, root: &Path, work: &Path) -> Result<PathBuf, String> {
+    let name = file
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let entry = PluginMetadata {
+        name,
+        owner: "Local file".into(),
+        description: format!("Installed from {}", file.display()),
+        plugin_version: "0.0.0.0".into(),
+        supported_driver_version: None,
+        max_supported_driver_version: None,
+        repository_url: None,
+        download_url: None,
+        compression_format: None,
+        sha256: None,
+        wiki_url: None,
+        license_identifier: None,
+    };
+    if entry.folder().is_empty() {
+        return Err("the file has no usable name".into());
+    }
+    let staged = work.join("plugin");
+    let _ = fs::remove_dir_all(&staged);
+    let extension = file
+        .extension()
+        .map(|extension| extension.to_string_lossy().to_ascii_lowercase());
+    match extension.as_deref() {
+        Some("zip") => extract(file, &staged)?,
+        Some("dll") => {
+            fs::create_dir_all(&staged).map_err(|error| error.to_string())?;
+            let copied = staged.join(file.file_name().unwrap_or_default());
+            fs::copy(file, copied)
+                .map_err(|error| format!("cannot copy {}: {error}", file.display()))?;
+        }
+        _ => return Err("choose a .zip plugin archive or a .dll".into()),
+    }
+    if dlls(&staged).is_empty() {
+        return Err(format!("{} contains no DLL", file.display()));
+    }
+    place(&entry, &staged, root)
+}
+
+/// Moves a staged plugin folder to `root/<plugin name>` with its metadata.
+fn place(entry: &PluginMetadata, staged: &Path, root: &Path) -> Result<PathBuf, String> {
+    let folder_name = entry.folder();
     fs::write(
         staged.join("metadata.json"),
         serde_json::to_vec_pretty(entry).map_err(|error| error.to_string())?,
@@ -278,7 +338,7 @@ fn install_archive(
         fs::rename(&target, &previous)
             .map_err(|error| format!("cannot replace {}: {error}", target.display()))?;
     }
-    if let Err(error) = fs::rename(&staged, &target) {
+    if let Err(error) = fs::rename(staged, &target) {
         if previous.exists() {
             let _ = fs::rename(&previous, &target);
         }
@@ -323,10 +383,9 @@ pub fn dlls(folder: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// `plugins catalog|installed|install NAME|remove NAME`.
+/// `plugins catalog|installed|install NAME|install-file PATH|remove NAME`.
 pub fn run(arguments: Vec<String>) -> Result<(), String> {
-    let usage =
-        "Usage: plugins catalog | plugins installed | plugins install NAME | plugins remove NAME";
+    let usage = "Usage: plugins catalog | plugins installed | plugins install NAME | plugins install-file PATH | plugins remove NAME";
     let mut arguments = arguments.into_iter();
     let command = arguments.next().ok_or(usage)?;
     let name = arguments.next();
@@ -379,6 +438,14 @@ pub fn run(arguments: Vec<String>) -> Result<(), String> {
                 plugin.plugin_version,
                 folder.display()
             );
+            for dll in dlls(&folder) {
+                println!("  {}", dll.display());
+            }
+            Ok(())
+        }
+        ("install-file", Some(path)) => {
+            let folder = install_file(Path::new(&path))?;
+            println!("Installed {path} in {}", folder.display());
             for dll in dlls(&folder) {
                 println!("  {}", dll.display());
             }
@@ -484,6 +551,39 @@ mod tests {
                 .join(format!("{}.old-update", plugin.folder()))
                 .exists()
         );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn local_files_install_as_zip_or_dll() {
+        let root = std::env::temp_dir().join(format!("otd-plugin-file-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (work, plugins) = (root.join("work"), root.join("Plugins"));
+        fs::create_dir_all(&root).unwrap();
+        let dll = root.join("MyFilter.dll");
+        fs::write(&dll, b"dll").unwrap();
+        let folder = install_file_into(&dll, &plugins, &work).unwrap();
+        assert_eq!(folder, plugins.join("MyFilter"));
+        assert_eq!(dlls(&folder), [folder.join("MyFilter.dll")]);
+        let saved: PluginMetadata =
+            serde_json::from_slice(&fs::read(folder.join("metadata.json")).unwrap()).unwrap();
+        assert_eq!(saved.owner, "Local file");
+        let archive = root.join("Packed.zip");
+        let status = Command::new(system_tool("tar.exe"))
+            .arg("-a")
+            .arg("-cf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&root)
+            .arg("MyFilter.dll")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let folder = install_file_into(&archive, &plugins, &work).unwrap();
+        assert_eq!(dlls(&folder), [plugins.join("Packed").join("MyFilter.dll")]);
+        let text = root.join("notes.txt");
+        fs::write(&text, b"x").unwrap();
+        assert!(install_file_into(&text, &plugins, &work).is_err());
         fs::remove_dir_all(&root).unwrap();
     }
 

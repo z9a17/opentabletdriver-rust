@@ -304,6 +304,8 @@ fn run(
             }
             let running = Cell::new(false);
             let quiesced = Cell::new(false);
+            // Tools run while this worker owns the output, like the tablet.
+            let tools = std::cell::RefCell::new(None);
             let result = source.run(&profile, &mut plugins, &log, || {
                 notify(Notice::ActivationReady).map_err(io::Error::other)?;
                 match receive(&commands, cancelled)? {
@@ -311,6 +313,10 @@ fn run(
                         running.set(true);
                         active.store(true, Ordering::Release);
                         notify(Notice::Running).map_err(io::Error::other)?;
+                        *tools.borrow_mut() =
+                            Some(crate::plugins::Tools::start(&profile.plugins, |line| {
+                                log(line)
+                            }));
                         Ok(true)
                     }
                     Directive::Stop | Directive::Run => Ok(false),
@@ -322,6 +328,7 @@ fn run(
                 }
             });
             active.store(false, Ordering::Release);
+            drop(tools.take());
             // source has drained its read and core output cleanup has completed.
             if let Err(error) = &result
                 && otd_core::session::is_cleanup_failure(error)

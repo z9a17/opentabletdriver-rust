@@ -698,6 +698,9 @@ fn drive(
     } else {
         None
     };
+    let _tools = capture_seconds
+        .is_none()
+        .then(|| plugins::Tools::start(&profile.plugins, |line| eprintln!("{line}")));
     let outcome = (|| {
         let mut waiting = false;
         loop {

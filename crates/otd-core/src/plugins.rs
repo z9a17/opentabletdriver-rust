@@ -34,6 +34,16 @@ pub enum PluginKind {
     #[default]
     Native,
     Dotnet,
+    /// An OpenTabletDriver `ITool`: started with the driver, stopped with it.
+    #[serde(rename = "dotnet_tool")]
+    DotnetTool,
+}
+
+impl PluginKind {
+    /// Runs through the .NET bridge.
+    pub fn is_managed(self) -> bool {
+        matches!(self, Self::Dotnet | Self::DotnetTool)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,7 +83,7 @@ impl PluginConfig {
         if !value.is_object() {
             return Err("plugin settings must be a JSON object".into());
         }
-        if self.kind == PluginKind::Dotnet && self.type_name.trim().is_empty() {
+        if self.kind.is_managed() && self.type_name.trim().is_empty() {
             return Err(".NET plugin requires a type_name".into());
         }
         Ok(())

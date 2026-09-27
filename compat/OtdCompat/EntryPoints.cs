@@ -162,7 +162,7 @@ sealed class Instance : IDisposable
         }
     }
 
-    static void ApplySettings(Type type, object value, JObject settings)
+    internal static void ApplySettings(Type type, object value, JObject settings)
     {
         var properties = type.GetProperties().Where(p => p.GetCustomAttribute<PropertyAttribute>() != null).ToArray();
         foreach (var setting in settings.Properties())
@@ -327,6 +327,48 @@ sealed class Instance : IDisposable
     }
 }
 
+// A running ITool, as DriverDaemon.SetToolSettings constructs it: settings
+// applied, dependency callbacks run, then Initialize. Tools get no tablet.
+sealed class ToolInstance : IDisposable
+{
+    readonly PluginContext context;
+    readonly OpenTabletDriver.Plugin.ITool tool;
+
+    public ToolInstance(JObject config)
+    {
+        string path = Path.GetFullPath(config.Value<string>("assembly_path") ?? throw new ArgumentException("assembly_path missing"));
+        context = new PluginContext(path);
+        object? created = null;
+        try
+        {
+            Type type = context.LoadFromAssemblyPath(path).GetType(config.Value<string>("type_name") ?? "", true)!;
+            PluginEligibility.RequireLoadable(type);
+            if (!typeof(OpenTabletDriver.Plugin.ITool).IsAssignableFrom(type))
+                throw new NotSupportedException($"'{type.FullName}' is not an OpenTabletDriver tool.");
+            created = Activator.CreateInstance(type) ?? throw new InvalidOperationException("Cannot construct tool");
+            tool = (OpenTabletDriver.Plugin.ITool)created;
+            Instance.ApplySettings(type, created, config["settings"] as JObject ?? new JObject());
+            foreach (var method in type.GetMethods())
+                if (method.GetCustomAttribute<OnDependencyLoadAttribute>() != null)
+                    method.Invoke(created, []);
+            if (!tool.Initialize())
+                throw new InvalidOperationException($"{type.FullName} failed to initialize.");
+        }
+        catch
+        {
+            (created as IDisposable)?.Dispose();
+            context.Unload();
+            throw;
+        }
+    }
+
+    public void Dispose()
+    {
+        tool.Dispose();
+        context.Unload();
+    }
+}
+
 public static unsafe partial class EntryPoints
 {
     [ThreadStatic] static string? lastError;
@@ -418,6 +460,27 @@ public static unsafe partial class EntryPoints
     }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static nint CreateTool(byte* json, nuint length)
+    {
+        try
+        {
+            if (length > 131072 || json == null) return 0;
+            var settings = JObject.Parse(Encoding.UTF8.GetString(new ReadOnlySpan<byte>(json, (int)length)));
+            return GCHandle.ToIntPtr(GCHandle.Alloc(new ToolInstance(settings)));
+        }
+        catch (Exception e) { lastError = e.GetBaseException().Message; return 0; }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static void DestroyTool(nint handle)
+    {
+        var owner = GCHandle.FromIntPtr(handle);
+        try { ((ToolInstance)owner.Target!).Dispose(); }
+        catch (Exception e) { Console.Error.WriteLine($".NET tool dispose failed: {e.GetBaseException().Message}"); }
+        finally { owner.Free(); }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static int Inspect(byte* path, int length, byte* output, int capacity)
     {
         try
@@ -427,13 +490,15 @@ public static unsafe partial class EntryPoints
             try
             {
                 var types = context.LoadFromAssemblyPath(file).GetExportedTypes()
-                    .Where(t => !t.IsAbstract && typeof(IPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(t)
+                    .Where(t => !t.IsAbstract && (typeof(IPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(t)
+                            || typeof(OpenTabletDriver.Plugin.ITool).IsAssignableFrom(t))
                         && PluginEligibility.IsDiscoverable(t))
                     .Select(t =>
                     {
                         var properties = t.GetProperties()
                             .Where(p => p.GetCustomAttribute<PropertyAttribute>() != null).ToArray();
                         return new {
+                            kind = typeof(OpenTabletDriver.Plugin.ITool).IsAssignableFrom(t) ? "tool" : "filter",
                             type_name = t.FullName,
                             display_name = t.GetCustomAttribute<PluginNameAttribute>()?.Name,
                             // Omitted values preserve the plugin constructor's defaults.

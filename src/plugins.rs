@@ -275,6 +275,41 @@ pub struct PluginChain {
     prepared_pen: Option<crate::protocol::PenReport>,
 }
 
+/// The profile's enabled tools, running until dropped. As upstream's
+/// DriverDaemon.SetToolSettings does, a tool that fails to start is
+/// reported and skipped.
+pub struct Tools(Vec<*mut std::ffi::c_void>);
+
+impl Tools {
+    pub fn start(configs: &[PluginConfig], log: impl Fn(&str)) -> Self {
+        let mut running = Vec::new();
+        for config in configs
+            .iter()
+            .filter(|config| config.enabled && config.kind == PluginKind::DotnetTool)
+        {
+            match crate::dotnet::create_tool(config) {
+                Ok(handle) => {
+                    log(&format!("Started tool {}.", config.type_name));
+                    running.push(handle);
+                }
+                Err(error) => log(&format!(
+                    "Failed to start tool {}: {error}",
+                    config.type_name
+                )),
+            }
+        }
+        Self(running)
+    }
+}
+
+impl Drop for Tools {
+    fn drop(&mut self) {
+        for handle in self.0.drain(..).rev() {
+            crate::dotnet::destroy_tool(handle);
+        }
+    }
+}
+
 impl PluginChain {
     pub fn load(configs: &[PluginConfig]) -> Result<Self, String> {
         Self::load_with_tablet(configs, current_tablet())
@@ -286,7 +321,7 @@ impl PluginChain {
     ) -> Result<Self, String> {
         let plugins = configs
             .iter()
-            .filter(|p| p.enabled)
+            .filter(|p| p.enabled && p.kind != PluginKind::DotnetTool)
             .map(|config| Plugin::load_with_tablet(config, tablet))
             .collect::<Result<Vec<_>, _>>()?;
         let has_pre = plugins
