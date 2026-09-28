@@ -59,6 +59,13 @@ Release 0.9.0 advances five slices, without completing a full-parity gate:
 No local tests, driver/daemon/UI launches, plugin execution or hardware validation were performed for 0.9.0. Rust formatting and strict workspace/all-target Clippy passed during integration, and the C# bridge compiled. Final packaging results are recorded in the release notes. Historical test results are retained as historical evidence only. At that release, C03 hot-apply rollback remained unimplemented; the 0.10.0 implementation below advances it. Broad bindings, live auxiliary/touch input, async plugins, Ink output, broader devices and cross-platform runtime support remain open.
 
 
+Unreleased changes on `claude/intelligent-babbage-s5fibs` (after 0.13.1):
+
+- **O03/O04 (partial):** absolute pen output (`output = "pen"`, **Windows Ink Mode (pen)** in the panel). The core emits a hover/down/contact/up/leave pen lifecycle with pressure, tilt and eraser; on Windows a synthetic pen pointer delivers it to Windows Ink applications, and on Linux upstream's Artist Mode virtual tablet does. Windows Ink and Windows Pen Pointer absolute modes and Linux Artist Mode import as pen output; the plugin DLLs are not run. See [pen output](PEN_OUTPUT.md). Not yet used with a tablet or drawing application.
+- **S05:** the tablet debugger's packets are decoded in the panel or CLI process, never in the daemon. Panics and fatal errors of the daemon and panel go to `crash.log`, and the panel reports a daemon that exits with a failure code, with its crash record. See [diagnostics](DIAGNOSTICS.md#crash-records).
+
+A reported tablet-debugger crash has no confirmed cause: parser fuzzing (about 52 million fresh-parser packets), serialization, stack use and the window code found no panic. These changes remove the only debugger decoding from the driver process and make any recurrence diagnosable. Validation: formatting and strict Clippy for the Windows MSVC target and the portable crates; portable tests on Linux; the Windows test binaries cross-built with MinGW and run under Wine 9 (all new tests pass; two existing plugin-catalog tests need Windows' `tar.exe`, which Wine lacks). Hosted CI jobs for this branch did not start on GitHub's side, so there is no MSVC test run yet.
+
 Release 0.13.1 fixes the runtime, latency and recovery issues documented in [the audit fixes](AUDIT_FIXES_0.13.1.md). It adds offline regression and allocation evidence without new hardware-validation or full-parity claims.
 
 Release 0.13.0 adds these slices:
