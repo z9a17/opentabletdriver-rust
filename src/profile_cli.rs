@@ -468,7 +468,10 @@ fn profile_section(profile: &Profile, section: &str) -> Result<Value, String> {
         .tablet_name()?
         .unwrap_or_else(|| "Wacom PTH-660".into());
     if section == "output" {
-        return Ok(json!({"tablet": tablet, "output_mode": output_mode(profile)}));
+        return Ok(
+            json!({"tablet": tablet, "output_mode": output_mode(profile),
+            "output": profile.output}),
+        );
     }
     let document: toml::Value = toml::from_str(&profile.to_toml()?)
         .map_err(|error| format!("profile did not round-trip through TOML: {error}"))?;
@@ -510,7 +513,7 @@ fn native_summary(index: usize, name: Option<&str>, profile: &Profile) -> Result
     Ok(json!({"index": index, "name": name, "tablet": tablet,
         "runtime_tablet_supported": otd_core::config::runtime_tablet(&tablet).is_ok(),
         "schema_version": profile.schema_version, "settings_revision": profile.settings_revision,
-        "output_mode": output_mode(profile)}))
+        "output_mode": output_mode(profile), "output": profile.output}))
 }
 
 fn print_json(value: &Value) -> Result<(), String> {

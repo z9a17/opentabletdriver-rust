@@ -373,6 +373,7 @@ const UI_SET_EVBIT: u32 = ioc(WRITE, b'U', 100, size_of::<libc::c_int>());
 const UI_SET_KEYBIT: u32 = ioc(WRITE, b'U', 101, size_of::<libc::c_int>());
 const UI_SET_RELBIT: u32 = ioc(WRITE, b'U', 102, size_of::<libc::c_int>());
 const UI_SET_ABSBIT: u32 = ioc(WRITE, b'U', 103, size_of::<libc::c_int>());
+const UI_SET_PROPBIT: u32 = ioc(WRITE, b'U', 110, size_of::<libc::c_int>());
 const UI_DEV_SETUP: u32 = ioc(WRITE, b'U', 3, size_of::<libc::uinput_setup>());
 const UI_ABS_SETUP: u32 = ioc(WRITE, b'U', 4, size_of::<libc::uinput_abs_setup>());
 const UI_DEV_CREATE: u32 = ioc(0, b'U', 1, 0);
@@ -485,6 +486,102 @@ impl Uinput {
 }
 
 impl Drop for Uinput {
+    fn drop(&mut self) {
+        // SAFETY: no argument; the device was created by this handle.
+        unsafe { libc::ioctl(self.file.as_raw_fd(), UI_DEV_DESTROY as _) };
+    }
+}
+
+/// Upstream's Artist Mode device: a virtual pressure-sensitive tablet that
+/// desktop drawing applications see with pressure, tilt and the eraser.
+pub struct VirtualTablet {
+    file: File,
+    screen: otd_core::mapping::Rect,
+}
+
+impl VirtualTablet {
+    pub fn create(screen: otd_core::mapping::Rect) -> io::Result<Self> {
+        use crate::artist;
+        let file = OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open("/dev/uinput")?;
+        let fd = file.as_raw_fd();
+        let set = |request: u32, value: u16| -> io::Result<()> {
+            // SAFETY: these requests take an int argument by value.
+            if unsafe { libc::ioctl(fd, request as _, libc::c_int::from(value)) } < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        };
+        set(UI_SET_PROPBIT, artist::INPUT_PROP_DIRECT)?;
+        set(UI_SET_PROPBIT, artist::INPUT_PROP_POINTER)?;
+        set(UI_SET_EVBIT, EV_KEY)?;
+        for key in artist::KEYS {
+            set(UI_SET_KEYBIT, key)?;
+        }
+        set(UI_SET_EVBIT, EV_ABS)?;
+        for (code, minimum, maximum, resolution) in artist::axes(screen) {
+            set(UI_SET_ABSBIT, code)?;
+            // SAFETY: plain-data struct; zero is a valid value.
+            let mut axis: libc::uinput_abs_setup = unsafe { std::mem::zeroed() };
+            axis.code = code;
+            axis.absinfo.minimum = minimum;
+            axis.absinfo.maximum = maximum;
+            axis.absinfo.resolution = resolution;
+            // SAFETY: `axis` is a valid uinput_abs_setup.
+            if unsafe { libc::ioctl(fd, UI_ABS_SETUP as _, &axis) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        // SAFETY: plain-data struct; zero is a valid value.
+        let mut setup: libc::uinput_setup = unsafe { std::mem::zeroed() };
+        setup.id.bustype = BUS_VIRTUAL;
+        setup.id.version = 1;
+        for (slot, byte) in setup
+            .name
+            .iter_mut()
+            .zip(b"OpenTabletDriver Virtual Artist Tablet")
+        {
+            *slot = *byte as libc::c_char;
+        }
+        // SAFETY: `setup` is a valid uinput_setup.
+        if unsafe { libc::ioctl(fd, UI_DEV_SETUP as _, &setup) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: no argument.
+        if unsafe { libc::ioctl(fd, UI_DEV_CREATE as _) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self { file, screen })
+    }
+}
+
+impl otd_core::output::pen::PenSink for VirtualTablet {
+    /// One packet as one evdev frame, without allocating.
+    fn send(&mut self, packet: otd_core::output::pen::PenPacket) -> io::Result<()> {
+        let frame = crate::artist::frame(packet, self.screen);
+        // SAFETY: plain-data struct; zero is a valid value.
+        let blank: libc::input_event = unsafe { std::mem::zeroed() };
+        let mut events = [blank; 10];
+        for (event, &(kind, code, value)) in events.iter_mut().zip(frame.as_slice()) {
+            event.type_ = kind;
+            event.code = code;
+            event.value = value;
+        }
+        // SAFETY: `events[..count]` is initialized plain data.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                events.as_ptr().cast::<u8>(),
+                frame.count * size_of::<libc::input_event>(),
+            )
+        };
+        (&self.file).write_all(bytes)
+    }
+}
+
+impl Drop for VirtualTablet {
     fn drop(&mut self) {
         // SAFETY: no argument; the device was created by this handle.
         unsafe { libc::ioctl(self.file.as_raw_fd(), UI_DEV_DESTROY as _) };

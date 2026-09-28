@@ -10,6 +10,7 @@ mod dotnet;
 mod hid;
 mod original_driver;
 mod output;
+mod pen_output;
 mod plugin_catalog;
 mod plugins;
 mod preset_cli;
@@ -802,11 +803,21 @@ fn drive(
 }
 
 fn main() {
+    let command = parse_args();
+    // The daemon and the panel have no console; their panics and fatal
+    // errors go to crash.log, where the panel reads the daemon's back.
+    let role = match &command {
+        Ok(Command::Daemon { background: false }) => "daemon",
+        Ok(Command::Ui) => "panel",
+        Ok(Command::Run { .. } | Command::Capture { .. }) => "driver",
+        _ => "cli",
+    };
+    otd_core::crash::install(env!("CARGO_PKG_VERSION"), role);
     if let Err(error) = update::remove_leftovers() {
         eprintln!("Update recovery failed: {error}");
         std::process::exit(1);
     }
-    let result = match parse_args() {
+    let result = match command {
         Ok(Command::Decode(args)) => decode_cli::run(args),
         Ok(Command::Plugins(args)) => plugin_catalog::run(args),
         Ok(Command::DeviceStrings(args)) => device_strings(args),
@@ -821,9 +832,13 @@ fn main() {
                 daemon::serve()
             }
         }
-        Ok(Command::Control(command)) => {
-            daemon::call(command).and_then(|reply| daemon::print_reply(&reply))
-        }
+        Ok(Command::Control(command)) => daemon::call(command).and_then(|mut reply| {
+            // The daemon sends the debugger's packet undecoded.
+            if let control::Reply::Debug { report } = &mut reply {
+                decode_cli::decode_debug_report(report);
+            }
+            daemon::print_reply(&reply)
+        }),
         Ok(Command::Configuration) => {
             daemon::configuration().and_then(|reply| daemon::print_reply(&reply))
         }
@@ -910,6 +925,9 @@ fn main() {
         Err(error) => Err(error),
     };
     if let Err(error) = result {
+        if role != "cli" {
+            otd_core::crash::record_error(env!("CARGO_PKG_VERSION"), role, &error);
+        }
         eprintln!("{error}");
         std::process::exit(if error.starts_with("Usage:") { 2 } else { 1 });
     }

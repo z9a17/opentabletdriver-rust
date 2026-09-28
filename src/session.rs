@@ -22,12 +22,13 @@ const PRECISE_WAIT: Duration = Duration::from_millis(50);
 pub use otd_core::session::Mode;
 use otd_core::session::{Read, ReportSource};
 
-use crate::config::Profile;
+use crate::config::{OutputKind, Profile};
 use crate::display::WindowsDisplays;
 use crate::hid::{self, Candidate, Event, Notification, OwnedHandle, SelectedDevice};
 use crate::output::SessionOutput;
 use crate::plugins::PluginChain;
 use crate::priority::ReaderPriority;
+use otd_core::output::pen::PenSink;
 
 fn wait(handles: &[HANDLE], timeout: u32) -> io::Result<Option<usize>> {
     let result =
@@ -313,7 +314,8 @@ pub fn run(
     } else {
         None
     };
-    let result = otd_core::session::run(
+    let pen = pen_device(&profile, mode)?;
+    let result = otd_core::session::run_gated_with_pen(
         &mut source,
         &mut WindowsDisplays,
         &profile,
@@ -321,7 +323,9 @@ pub fn run(
         &mut decoder,
         plugins,
         |packet| output.as_ref().map_or(Ok(()), |output| output.send(packet)),
+        pen,
         status,
+        || Ok(true),
     );
     if let Some(output) = &mut output {
         output
@@ -329,6 +333,14 @@ pub fn run(
             .map_err(otd_core::session::cleanup_failure)?;
     }
     result
+}
+
+/// The synthetic pen for a driving session whose profile has pen output.
+fn pen_device(profile: &Profile, mode: Mode) -> io::Result<Option<Box<dyn PenSink>>> {
+    if profile.output != OutputKind::Pen || !matches!(mode, Mode::Driver) {
+        return Ok(None);
+    }
+    Ok(Some(Box::new(crate::pen_output::SyntheticPen::new()?)))
 }
 
 /// Names the session's tablet for the tablet debugger while it runs.
@@ -448,7 +460,8 @@ impl<'a> PreparedSession<'a> {
         let mut source = self.source;
         let _priority = ReaderPriority::raise();
         let mut output = SessionOutput::new()?;
-        let result = otd_core::session::run_gated(
+        let pen = pen_device(&profile, Mode::Driver)?;
+        let result = otd_core::session::run_gated_with_pen(
             &mut source,
             &mut WindowsDisplays,
             &profile,
@@ -456,6 +469,7 @@ impl<'a> PreparedSession<'a> {
             &mut decoder,
             plugins,
             |packet| output.send(packet),
+            pen,
             status,
             gate,
         );

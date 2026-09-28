@@ -16,8 +16,7 @@ Not there yet:
 - desktop layout discovery: pass `--screen WIDTHxHEIGHT` for the whole virtual
   screen;
 - hotplug notifications: it rescans every two seconds;
-- Artist Mode (pressure/tilt through a virtual tablet), pen buttons, pad
-  buttons, and several tablets at once.
+- pen buttons, pad buttons, and several tablets at once.
 
 ## Use
 
@@ -31,6 +30,18 @@ Without `--profile` it imports `~/.config/OpenTabletDriver/settings.json`
 (or `$XDG_CONFIG_HOME/OpenTabletDriver`) as upstream stores it. Stop
 OpenTabletDriver's daemon and unload a kernel driver that grabs the tablet
 first, or both will move the pointer.
+
+## Artist Mode
+
+A profile with `output = "pen"`, or an imported OpenTabletDriver profile in
+Artist Mode, creates upstream's virtual tablet instead of the pointer:
+"OpenTabletDriver Virtual Artist Tablet", with positions in thousandths of a
+pixel, pressure 0-65535 with `BTN_TOUCH` while touching, tilt -64..63 and the
+pen/eraser tool keys held while in range. Imported Artist Mode profiles touch
+whenever pressure is above zero, as upstream does; native profiles follow
+their tip and eraser thresholds. The stylus-button keys are declared but not
+pressed yet. The event framing is unit-tested; the device has not been
+created on a Linux machine.
 
 ## Permissions
 

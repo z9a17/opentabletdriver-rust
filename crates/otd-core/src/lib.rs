@@ -10,6 +10,7 @@
 pub mod actions;
 pub mod areas;
 pub mod config;
+pub mod crash;
 pub mod debug;
 pub mod decoders;
 pub mod display;

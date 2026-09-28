@@ -777,26 +777,36 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
             with_app(App::read_device_strings);
         }
         ID_MODE => {
-            let mode = with_app(|app| app.editor.mode());
+            let mode = with_app(|app| (app.editor.mode(), app.editor.pen()));
             let menu = unsafe { CreatePopupMenu() };
             append(
                 menu,
-                MFT_RADIOCHECK | checked(mode == Some(OutputMode::Absolute)),
+                MFT_RADIOCHECK | checked(mode == Some((OutputMode::Absolute, false))),
                 1,
                 "Absolute Mode",
             );
             append(
                 menu,
-                MFT_RADIOCHECK | checked(mode == Some(OutputMode::Relative)),
+                MFT_RADIOCHECK
+                    | checked(mode.is_some_and(|(mode, _)| mode == OutputMode::Relative)),
                 2,
                 "Relative Mode",
             );
+            append(
+                menu,
+                MFT_RADIOCHECK | checked(mode == Some((OutputMode::Absolute, true))),
+                3,
+                PEN_MODE_LABEL,
+            );
             match popup(window, menu, control) {
                 1 => {
-                    with_app(|app| app.set_output_mode(OutputMode::Absolute));
+                    with_app(|app| app.set_output_mode(OutputMode::Absolute, false));
                 }
                 2 => {
-                    with_app(|app| app.set_output_mode(OutputMode::Relative));
+                    with_app(|app| app.set_output_mode(OutputMode::Relative, false));
+                }
+                3 => {
+                    with_app(|app| app.set_output_mode(OutputMode::Absolute, true));
                 }
                 _ => {}
             }

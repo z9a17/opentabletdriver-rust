@@ -68,7 +68,7 @@ Upstream getters print text for the running daemon's settings. `profiles get` pr
 | --- | --- | --- | --- |
 | `log` | — | Open | The daemon has no log retrieval. S05. |
 | `getallsettings` | `profiles get INPUT` / `configuration` | Covered | `--section all` is the default. The archived OTD document and preserved unknown fields are summarized, not printed. |
-| `getoutputmode TABLET` | `profiles get INPUT --section output` | Covered | Rust modes are `absolute` and `relative`; managed output modes are not hosted (P06). |
+| `getoutputmode TABLET` | `profiles get INPUT --section output` | Covered | Rust modes are `absolute` and `relative`; `output` is `mouse` or `pen` (Windows Ink/Artist Mode, absolute only). Managed output modes are not hosted (P06). |
 | `getareas TABLET` | `profiles get INPUT --section areas` | Covered | Prints `monitor`/`rotation`/`crop` for simple profiles and `absolute` for OTD mappings. |
 | `getsensitivity TABLET` | `profiles get INPUT --section sensitivity` | Covered | |
 | `getbindings TABLET` | `profiles get INPUT --section bindings` | Partial | Only the contact policy exists until B02. |

@@ -61,10 +61,14 @@ pub fn bundle(profile: Option<&Profile>, private: bool) -> Result<Value, String>
             "architecture":std::env::consts::ARCH, "control_protocol":control::PROTOCOL_VERSION,
             "upstream_revision":otd_core::tablets::source_revision()},
         "backend":{"transport":"windows_usb_hid", "runtime_tablet":"any configuration with a supported parser",
-            "output":"SendInput mouse", "hid_inspected":false, "plugins_loaded":false},
+            "output":match profile.map(|profile| profile.output) {
+                Some(crate::config::OutputKind::Pen) => "synthetic pen pointer",
+                _ => "SendInput mouse",
+            }, "hid_inspected":false, "plugins_loaded":false},
         "displays":display_summary(private),
         "profile":profile.map(|profile| profile_summary(profile, private)).transpose()?,
         "daemon":daemon_summary(private),
+        "crashes":crash_summary(private),
         "excluded":["raw tablet reports", "plugin property values", "imported settings archive", "environment variables"],
     }))
 }
@@ -100,6 +104,7 @@ fn profile_summary(profile: &Profile, private: bool) -> Result<Value, String> {
         "relative",
         "absolute",
         "bindings",
+        "output",
         "radial_follow",
     ] {
         if let Some(value) = native.get(key) {
@@ -153,6 +158,24 @@ fn daemon_summary(private: bool) -> Value {
         Err(error) => json!({"available":false, "error_kind":format!("{:?}",error.kind()),
             "message":private.then(|| error.to_string())}),
     }
+}
+
+/// The newest crash records. Their messages may name files, so only the
+/// private bundle includes them.
+fn crash_summary(private: bool) -> Value {
+    let records: Vec<_> = otd_core::crash::recent(10)
+        .into_iter()
+        .map(|record| {
+            let mut result = json!({"time":record.time, "version":record.version,
+                "role":record.role, "kind":record.kind, "thread":record.thread,
+                "location":record.location});
+            if private {
+                result["message"] = json!(record.message);
+            }
+            result
+        })
+        .collect();
+    json!({"recent":records})
 }
 
 fn write_new(path: &Path, data: &[u8]) -> Result<(), String> {

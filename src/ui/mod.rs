@@ -97,6 +97,9 @@ use theme::{Palette, Rgb, ThemeMode, UiPrefs};
 // Menu bar, tabs and commands. Button controls use their command's ID.
 const ID_MENU: u16 = 100;
 const ID_TAB: u16 = 110;
+/// The absolute pen output, as the panel names it. Windows Ink applications
+/// receive pressure and tilt from it.
+const PEN_MODE_LABEL: &str = "Windows Ink Mode (pen)";
 const CMD_LOAD: u16 = 200;
 const CMD_SAVE: u16 = 201;
 const CMD_SAVE_AS: u16 = 202;

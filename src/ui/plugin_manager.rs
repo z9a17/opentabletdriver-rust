@@ -612,7 +612,8 @@ unsafe extern "system" fn window_proc(
             0
         }
         WM_DESTROY => {
-            MANAGER.with(|slot| slot.borrow_mut().take());
+            // Never panic in a window procedure; see the tablet debugger.
+            let _ = MANAGER.try_with(|slot| slot.try_borrow_mut().map(|mut slot| slot.take()));
             0
         }
         _ => unsafe { DefWindowProcW(window, message, wparam, lparam) },
