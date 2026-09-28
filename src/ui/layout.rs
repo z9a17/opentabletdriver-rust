@@ -306,7 +306,10 @@ impl App {
                             self.unit_row(&fields, row, s(92), items, shown, measure);
                         }
                         AreaKind::Tablet => {
-                            self.tablet_view = AreaView::new(canvas_rect, Bounds::tablet());
+                            self.tablet_view = AreaView::new(
+                                canvas_rect,
+                                Bounds::tablet_for(self.editor.profile.tablet),
+                            );
                             let fields = with_units(&self.c.tablet, &TABLET_FIELDS);
                             self.unit_row(&fields, row, s(92), items, shown, measure);
                         }
@@ -418,6 +421,11 @@ impl App {
                         plugin.type_name,
                         plugin.path.display()
                     ),
+                    PluginKind::DotnetTool => format!(
+                        ".NET tool {} from {}. Tools run beside the pen pipeline: the driver starts them with the tablet and stops them with it.",
+                        plugin.type_name,
+                        plugin.path.display()
+                    ),
                     PluginKind::Native => format!("Native filter DLL {}", plugin.path.display()),
                 }
             }
@@ -437,7 +445,7 @@ impl App {
         let toolbar_y = y;
         if let FilterRef::Plugin(index) = target {
             let plugin = &self.editor.profile.plugins[index];
-            let editable = plugin.kind == PluginKind::Dotnet && self.metadata_for(plugin).is_some();
+            let editable = plugin.kind.is_managed() && self.metadata_for(plugin).is_some();
             set_text(
                 self.c.filter_json_toggle,
                 if self.json_visible {

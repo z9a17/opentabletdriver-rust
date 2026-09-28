@@ -11,8 +11,13 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Storage::FileSystem::ReadFile;
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Threading::{
-    ResetEvent, WaitForMultipleObjects, WaitForSingleObject,
+    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, INFINITE, ResetEvent,
+    SetWaitableTimer, TIMER_ALL_ACCESS, WaitForMultipleObjects, WaitForSingleObject,
 };
+
+/// Waits shorter than this use a high-resolution waitable timer: filter timer
+/// ticks need sub-millisecond deadlines, which millisecond waits truncate.
+const PRECISE_WAIT: Duration = Duration::from_millis(50);
 
 pub use otd_core::session::Mode;
 use otd_core::session::{Read, ReportSource};
@@ -20,7 +25,7 @@ use otd_core::session::{Read, ReportSource};
 use crate::config::Profile;
 use crate::display::WindowsDisplays;
 use crate::hid::{self, Candidate, Event, Notification, OwnedHandle, SelectedDevice};
-use crate::output::send_input;
+use crate::output::SessionOutput;
 use crate::plugins::PluginChain;
 use crate::priority::ReaderPriority;
 
@@ -46,10 +51,13 @@ struct HidSource<'a> {
     stop: &'a Event,
     handle: OwnedHandle,
     read_event: Event,
-    buffer: Box<[u8; hid::PEN_REPORT_LENGTH as usize]>,
+    buffer: Box<[u8]>,
     operation: OVERLAPPED,
     pending: bool,
     label: String,
+    /// Created on the first short wait; sessions without timer-driven
+    /// filters never wait less than a second and never create it.
+    timer: Option<OwnedHandle>,
 }
 
 impl<'a> HidSource<'a> {
@@ -91,9 +99,36 @@ impl<'a> HidSource<'a> {
             stop,
             handle,
             read_event,
-            buffer: Box::new([0; hid::PEN_REPORT_LENGTH as usize]),
+            // ReadFile needs room for the collection's whole input report.
+            buffer: vec![0; usize::from(candidate.input_length.max(1))].into_boxed_slice(),
             pending: false,
+            timer: None,
         })
+    }
+
+    /// Arms the high-resolution timer to signal after `wait`.
+    fn arm_timer(&mut self, wait: Duration) -> io::Result<HANDLE> {
+        if self.timer.is_none() {
+            self.timer = Some(OwnedHandle::new(unsafe {
+                CreateWaitableTimerExW(
+                    ptr::null(),
+                    ptr::null(),
+                    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                    TIMER_ALL_ACCESS,
+                )
+            })?);
+        }
+        let timer = self
+            .timer
+            .as_ref()
+            .map(OwnedHandle::raw)
+            .unwrap_or_default();
+        // Relative due time in 100 ns units, rounded up so it never fires early.
+        let due = -i64::try_from(wait.as_nanos().div_ceil(100).max(1)).unwrap_or(i64::MAX);
+        if unsafe { SetWaitableTimer(timer, &due, 0, None, ptr::null(), 0) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(timer)
     }
 
     fn cancel(&mut self) {
@@ -147,6 +182,10 @@ impl<'a> HidSource<'a> {
 }
 
 impl ReportSource for HidSource<'_> {
+    fn shared_output(&self) -> bool {
+        true
+    }
+
     fn label(&self) -> &str {
         &self.label
     }
@@ -188,16 +227,28 @@ impl ReportSource for HidSource<'_> {
             self.pending = true;
         }
         let until = Instant::now() + timeout;
+        let precise = timeout < PRECISE_WAIT;
+        let timer = if precise {
+            self.arm_timer(timeout)?
+        } else {
+            ptr::null_mut()
+        };
         let handles = [
             self.stop.raw(),
             self.read_event.raw(),
             self.notification.event(),
+            timer,
         ];
         loop {
             // Other devices' notifications do not extend the wait.
-            let remaining = until.saturating_duration_since(Instant::now());
-            let millis = u32::try_from(remaining.as_millis()).unwrap_or(u32::MAX);
-            match wait(&handles, millis) {
+            let result = if precise {
+                wait(&handles, INFINITE)
+            } else {
+                let remaining = until.saturating_duration_since(Instant::now());
+                let millis = u32::try_from(remaining.as_millis()).unwrap_or(u32::MAX);
+                wait(&handles[..3], millis)
+            };
+            match result {
                 // Stop takes precedence when both stop and read are signaled.
                 Ok(Some(1)) => {
                     self.pending = false;
@@ -205,6 +256,7 @@ impl ReportSource for HidSource<'_> {
                 }
                 // Some HID device arrived or left; only this one matters.
                 Ok(Some(2)) if self.candidate.is_present() => {}
+                Ok(Some(3)) => return Ok(Read::Idle),
                 Ok(Some(_)) => {
                     self.cancel();
                     return Ok(Read::Ended);
@@ -250,18 +302,49 @@ pub fn run(
             stop_event,
         )?;
     }
+    let profile = profile
+        .for_tablet(selected.spec)
+        .map_err(io::Error::other)?;
+    let mut decoder = selected.decoder()?;
+    let _debug = DebugDevice::set(selected);
     let _priority = ReaderPriority::raise();
-    otd_core::session::run(
+    let mut output = if matches!(mode, Mode::Driver) {
+        Some(SessionOutput::new()?)
+    } else {
+        None
+    };
+    let result = otd_core::session::run(
         &mut source,
         &mut WindowsDisplays,
-        profile,
+        &profile,
         mode,
+        &mut decoder,
         plugins,
-        send_input,
+        |packet| output.as_ref().map_or(Ok(()), |output| output.send(packet)),
         status,
-    )
+    );
+    if let Some(output) = &mut output {
+        output
+            .finish()
+            .map_err(otd_core::session::cleanup_failure)?;
+    }
+    result
 }
 
+/// Names the session's tablet for the tablet debugger while it runs.
+struct DebugDevice {
+    _registration: otd_core::debug::Registration,
+}
+impl DebugDevice {
+    fn set(selected: &SelectedDevice<'_>) -> Self {
+        Self {
+            _registration: otd_core::debug::Registration::new(otd_core::debug::Device {
+                name: selected.configuration.name.clone(),
+                parser: selected.identifier.parser().to_owned(),
+            }),
+        }
+    }
+}
 /// A candidate owns its handle, event and read buffer before the old worker
 /// pauses. Preparation never initializes the tablet or issues a read.
 pub(crate) struct PreparedSession<'a> {
@@ -348,8 +431,8 @@ impl<'a> PreparedSession<'a> {
         Ok(())
     }
 
-    /// The first-read gate runs after the portable session has constructed its
-    /// mapping/pipeline. No report reaches a plugin/output before gate success.
+    /// Activation runs after portable mapping/pipeline setup. Neither reports
+    /// nor timer callbacks reach plugins/output before gate success.
     pub fn run(
         self,
         profile: &Profile,
@@ -357,41 +440,29 @@ impl<'a> PreparedSession<'a> {
         status: &impl Fn(&str),
         gate: impl FnOnce() -> io::Result<bool>,
     ) -> io::Result<()> {
-        let mut source = GatedSource {
-            source: self.source,
-            gate: Some(gate),
-        };
+        let profile = profile
+            .for_tablet(self.selected.spec)
+            .map_err(io::Error::other)?;
+        let mut decoder = self.selected.decoder()?;
+        let _debug = DebugDevice::set(self.selected);
+        let mut source = self.source;
         let _priority = ReaderPriority::raise();
-        otd_core::session::run(
+        let mut output = SessionOutput::new()?;
+        let result = otd_core::session::run_gated(
             &mut source,
             &mut WindowsDisplays,
-            profile,
+            &profile,
             Mode::Driver,
+            &mut decoder,
             plugins,
-            send_input,
+            |packet| output.send(packet),
             status,
-        )
-    }
-}
-
-struct GatedSource<'a, G> {
-    source: HidSource<'a>,
-    gate: Option<G>,
-}
-impl<G: FnOnce() -> io::Result<bool>> ReportSource for GatedSource<'_, G> {
-    fn label(&self) -> &str {
-        self.source.label()
-    }
-    fn now(&self) -> Instant {
-        self.source.now()
-    }
-    fn next(&mut self, timeout: Duration) -> io::Result<Read<'_>> {
-        if let Some(gate) = self.gate.take()
-            && !gate()?
-        {
-            return Ok(Read::Ended);
-        }
-        self.source.next(timeout)
+            gate,
+        );
+        output
+            .finish()
+            .map_err(otd_core::session::cleanup_failure)?;
+        result
     }
 }
 
@@ -400,4 +471,10 @@ pub fn wait_for_retry(notification: &Notification, stop_event: &Event) -> io::Re
         Some(1) => Ok(false),
         _ => Ok(true),
     }
+}
+
+/// True only for a device notification. Stop wakes immediately; the owner
+/// checks its stop flag before its next pass. Timeouts only reap finished jobs.
+pub fn companion_wake(notification: &Notification, stop_event: &Event) -> io::Result<bool> {
+    Ok(wait(&[stop_event.raw(), notification.event()], 2_000)? == Some(1))
 }

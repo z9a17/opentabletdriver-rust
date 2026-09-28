@@ -1,0 +1,17 @@
+[package]
+name = "otd-linux"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "Linux hidraw/uinput backend slice of the Rust OpenTabletDriver port"
+publish = false
+
+[[bin]]
+name = "opentabletdriver-rust-linux"
+path = "src/main.rs"
+
+[dependencies]
+otd-core = { path = "../otd-core" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2.189"

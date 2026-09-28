@@ -17,6 +17,7 @@ use crate::reports::{Buttons, ReportKind, ReportValues};
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DispatchStats {
     pub reports: u64,
+    /// Acknowledged sink packets; a shared sink may coalesce before OS output.
     pub packets: u64,
 }
 
@@ -28,6 +29,7 @@ pub struct ReportPipeline {
     is_eraser: bool,
     desired_contact: bool,
     faulted: bool,
+    physical_present: bool,
 }
 
 impl ReportPipeline {
@@ -39,18 +41,30 @@ impl ReportPipeline {
                 .radial_follow
                 .iter()
                 .copied()
-                .map(RadialFollowSmoothingTabletSpace::new)
+                .map(|settings| RadialFollowSmoothingTabletSpace::new_for(settings, profile.tablet))
                 .collect(),
-            relative: profile.relative.map(RelativeMapper::new).transpose()?,
+            relative: profile
+                .relative
+                .map(|settings| RelativeMapper::new_for(settings, profile.tablet))
+                .transpose()?,
             output: MouseOutput::new(),
             is_eraser: false,
             desired_contact: false,
             faulted: false,
+            physical_present: false,
         })
     }
 
     pub fn is_relative(&self) -> bool {
         self.relative.is_some()
+    }
+
+    pub fn needs_cleanup(&self) -> bool {
+        self.faulted
+    }
+
+    pub fn share_output(&mut self) {
+        self.output.share_position();
     }
 
     /// Compatibility wrapper for callers interested only in whether any packet
@@ -76,21 +90,29 @@ impl ReportPipeline {
         plugins: &mut impl Filters,
         send: impl FnMut(MousePacket) -> io::Result<()>,
     ) -> io::Result<DispatchStats> {
+        // A synthetic caller without the complete transport packet has no
+        // button reading.
+        let buttons = crate::decoders::intuos_v2_pen_buttons(raw).filter(|_| raw[0] == pen.id);
+        self.process_pen(pen, raw, buttons, now, mapper, plugins, send)
+    }
+
+    /// `process_with_raw` with the decoder's pen buttons, so managed filters
+    /// see `ITabletReport` on every tablet, not only IntuosV2 layouts.
+    #[allow(clippy::too_many_arguments)] // Mirrors process_with_raw's seams.
+    pub fn process_pen(
+        &mut self,
+        pen: PenReport,
+        raw: &[u8],
+        buttons: Option<Buttons>,
+        now: Instant,
+        mapper: Option<Mapper>,
+        plugins: &mut impl Filters,
+        send: impl FnMut(MousePacket) -> io::Result<()>,
+    ) -> io::Result<DispatchStats> {
         let kind = if pen.in_range || pen.sense {
             ReportKind::Data
         } else {
             ReportKind::OutOfRange
-        };
-        // Same checked byte/bit ordering as reports::from_pth660. A synthetic
-        // caller without the complete transport packet has no button reading.
-        let buttons = match (pen.id, raw) {
-            (0x10, [0x10, flags, ..]) if raw.len() >= 17 => {
-                Buttons::from_bits(u64::from(flags >> 1), 2).ok()
-            }
-            (0x1e, [0x1e, _, flags, ..]) if raw.len() >= 13 => {
-                Buttons::from_bits(u64::from(flags >> 1), 3).ok()
-            }
-            _ => None,
         };
         let values = if kind == ReportKind::Data {
             ReportValues {
@@ -134,6 +156,14 @@ impl ReportPipeline {
         mut send: impl FnMut(MousePacket) -> io::Result<()>,
     ) -> io::Result<DispatchStats> {
         let mut initial_stats = DispatchStats::default();
+        // Transport state must advance even while cleanup or mapping pauses
+        // dispatch. A retained timer report cannot resurrect a lost pen.
+        let physical_loss = input.kind == ReportKind::OutOfRange;
+        if physical_loss {
+            self.physical_present = false;
+        } else if input.values.position.is_some() {
+            self.physical_present = true;
+        }
         let mapping_paused = self.relative.is_none() && mapper.is_none();
         if self.faulted || mapping_paused {
             // Pausing the graph must also revoke held output, including when
@@ -155,7 +185,6 @@ impl ReportPipeline {
         // An incoming loss is a transport notification even when it came from
         // a general report source without the legacy PenReport adapter. Loss
         // emitted by a plugin reaches Runtime::output instead of this entry.
-        let physical_loss = input.kind == ReportKind::OutOfRange;
         let preserve_precision = !plugins.uses_managed_graph() && !plugins.has_pixels();
         let unfiltered_raw = if preserve_precision && !plugins.has_pre() && self.filters.is_empty()
         {
@@ -176,6 +205,7 @@ impl ReportPipeline {
             shown_position: None,
             preserve_precision,
             unfiltered_raw,
+            timer: false,
         };
         let result = plugins.dispatch(input, &mut runtime);
         let mut stats = runtime.stats;
@@ -198,6 +228,47 @@ impl ReportPipeline {
                     return Err(error);
                 }
             }
+        }
+        Ok(stats)
+    }
+
+    /// Fires due timers of timer-driven filters (upstream's
+    /// `AsyncPositionedPipelineElement`). Their emissions take the same
+    /// transform, contact and output path as any plugin emission.
+    pub fn process_tick(
+        &mut self,
+        now: Instant,
+        mapper: Option<Mapper>,
+        plugins: &mut impl Filters,
+        mut send: impl FnMut(MousePacket) -> io::Result<()>,
+    ) -> io::Result<DispatchStats> {
+        let mut stats = DispatchStats::default();
+        if self.faulted {
+            stats.packets += u64::from(self.release_all(&mut send)?);
+        }
+        if self.relative.is_none() && mapper.is_none() {
+            return Ok(stats);
+        }
+        let mut runtime = Runtime {
+            pipeline: self,
+            mapper,
+            now,
+            send: &mut send,
+            stats,
+            exact_position: None,
+            shown_position: None,
+            preserve_precision: false,
+            unfiltered_raw: None,
+            timer: true,
+        };
+        let result = plugins.tick(now, &mut runtime);
+        let stats = runtime.stats;
+        if let Err(error) = result {
+            self.faulted = true;
+            if self.release_all(&mut send).is_ok() {
+                self.faulted = false;
+            }
+            return Err(error);
         }
         Ok(stats)
     }
@@ -225,6 +296,7 @@ struct Runtime<'a, F> {
     shown_position: Option<[f32; 2]>,
     preserve_precision: bool,
     unfiltered_raw: Option<(u32, u32)>,
+    timer: bool,
 }
 
 impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F> {
@@ -274,6 +346,11 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
     }
 
     fn output(&mut self, kind: ReportKind, values: &ReportValues, _raw: &[u8]) -> io::Result<()> {
+        // A plugin may retain a contact report after transport range loss.
+        // Timers still advance, but cannot revive that output without new input.
+        if self.timer && !self.pipeline.physical_present && kind != ReportKind::OutOfRange {
+            return Ok(());
+        }
         self.stats.reports += 1;
         if let Some(eraser) = values.eraser {
             self.pipeline.is_eraser = eraser;

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -56,14 +57,16 @@ unsafe sealed class SynchronousGraph
     internal const uint Position = 1, Tablet = 2, Eraser = 4, Tilt = 8, Proximity = 16,
         Tool = 32, Aux = 64, Mouse = 128, Absolute = 256, Relative = 512,
         AbsoluteWheel = 1024, RelativeWheel = 2048, WheelButtons = 4096, Touch = 8192, NativeTip = 16384;
-    sealed class Node(GraphNode description)
+    sealed class Node(GraphNode description, Action<IDeviceReport> emit)
     {
         public readonly uint Index = description.Index;
         public readonly Instance? Filter = description.Context == 0 ? null
             : (Instance)GCHandle.FromIntPtr(description.Context).Target!;
+        public readonly Action<IDeviceReport> Emit = emit;
         public bool Disabled;
     }
-    readonly Node[] pre, post;
+    readonly Node[] pre, post, timed;
+    readonly Action<IDeviceReport> transform, output;
     readonly int ownerThread = Environment.CurrentManagedThreadId;
     delegate* unmanaged[Cdecl]<nint, uint, uint, GraphReport*, int> callback;
     nint scope;
@@ -78,10 +81,30 @@ unsafe sealed class SynchronousGraph
         GraphNode[] owned = nodes.ToArray();
         if (owned.Any(node => node.Stage is not (1 or 2)))
             throw new ArgumentException("Invalid synchronous pipeline stage.");
-        pre = owned.Where(node => node.Stage == 1).Select(node => new Node(node)).ToArray();
-        post = owned.Where(node => node.Stage == 2).Select(node => new Node(node)).ToArray();
+        transform = Transform; output = Output;
+        pre = CreateStage(owned, 1, transform);
+        post = CreateStage(owned, 2, output);
+        timed = pre.Concat(post).Where(node => node.Filter is { HasTimers: true }).ToArray();
     }
 
+    Node[] CreateStage(GraphNode[] descriptions, uint stage, Action<IDeviceReport> end)
+    {
+        GraphNode[] selected = descriptions.Where(node => node.Stage == stage).ToArray();
+        var nodes = new Node[selected.Length];
+        for (int offset = 0; offset < selected.Length; offset++)
+        {
+            int next = offset + 1;
+            uint index = selected[offset].Index;
+            nodes[offset] = new Node(selected[offset], emitted =>
+            {
+                int previous = currentEmitter;
+                currentEmitter = checked((int)index);
+                try { Visit(nodes, next, emitted, end); }
+                finally { currentEmitter = previous; }
+            });
+        }
+        return nodes;
+    }
     public int Dispatch(GraphReport* input,
         delegate* unmanaged[Cdecl]<nint, uint, uint, GraphReport*, int> native, nint nativeScope)
     {
@@ -92,16 +115,77 @@ unsafe sealed class SynchronousGraph
         try
         {
             IDeviceReport report = Import(input);
-            if (Call(0, 0, report)) Visit(pre, 0, report, Transform);
+            if (Call(0, 0, report)) Visit(pre, 0, report, transform);
             return failed ? -1 : 0;
         }
         catch (GraphAbort) { return -1; }
         finally { callback = null; scope = 0; running = false; }
     }
 
+    /// Microseconds until the next tick; -1 when stopped; -2 when the graph
+    /// has no timer capability. Only -2 is safe for the native host to cache.
+    public long NextTickMicros()
+    {
+        if (timed.Length == 0) return -2;
+        long now = Stopwatch.GetTimestamp(), best = -1;
+        foreach (Node node in timed)
+            if (!node.Disabled && node.Filter is { HasTimers: true } filter)
+            {
+                long micros = filter.NextTickMicros(now);
+                if (micros >= 0 && (best < 0 || micros < best)) best = micros;
+            }
+        return best;
+    }
+
+    /// Fires due timers. A timer emission continues downstream of its filter,
+    /// exactly as a synchronous emission does.
+    public int Tick(delegate* unmanaged[Cdecl]<nint, uint, uint, GraphReport*, int> native, nint nativeScope)
+    {
+        if (running || Environment.CurrentManagedThreadId != ownerThread)
+            throw new InvalidOperationException("The synchronous graph must run on its owning thread.");
+        running = true; failed = false; FailedIndex = -1; currentEmitter = -1; Error = null;
+        callback = native; scope = nativeScope;
+        try
+        {
+            long now = Stopwatch.GetTimestamp();
+            TickStage(pre, now);
+            TickStage(post, now);
+            return failed ? -1 : 0;
+        }
+        catch (GraphAbort) { return -1; }
+        finally { callback = null; scope = 0; running = false; }
+    }
+
+    void TickStage(Node[] nodes, long now)
+    {
+        for (int offset = 0; offset < nodes.Length; offset++)
+        {
+            Node node = nodes[offset];
+            if (node.Disabled || node.Filter is not { HasTimers: true } filter) continue;
+
+            try
+            {
+                filter.TickGraph(now, node.Emit);
+                if (failed) throw new GraphAbort();
+            }
+            catch (GraphAbort) { throw; }
+            catch (Exception error)
+            {
+                if (!failed)
+                {
+                    node.Disabled = true;
+                    FailedIndex = checked((int)node.Index);
+                    Error = error.GetBaseException().Message;
+                    failed = true;
+                }
+                throw new GraphAbort();
+            }
+        }
+    }
+
     void Transform(IDeviceReport report)
     {
-        if (Call(2, 0, report)) Visit(post, 0, report, Output);
+        if (Call(2, 0, report)) Visit(post, 0, report, output);
     }
     void Output(IDeviceReport report) { Call(3, 0, report); }
 
@@ -121,13 +205,7 @@ unsafe sealed class SynchronousGraph
         }
         try
         {
-            node.Filter.ConsumeGraph(report, emitted =>
-            {
-                int previous = currentEmitter;
-                currentEmitter = checked((int)node.Index);
-                try { Visit(nodes, offset + 1, emitted, end); }
-                finally { currentEmitter = previous; }
-            });
+            node.Filter.ConsumeGraph(report, node.Emit);
             // A plugin may catch an exception raised by a downstream consumer.
             // The failed prefix is still committed; never resume/replay it.
             if (failed) throw new GraphAbort();
@@ -334,6 +412,28 @@ public static unsafe partial class EntryPoints
             if (callback == null) throw new ArgumentException("Missing graph continuation.");
             var graph = (SynchronousGraph)GCHandle.FromIntPtr(context).Target!;
             int result = graph.Dispatch(report, callback, scope);
+            if (result != 0) lastError = graph.Error ?? "A native graph continuation failed.";
+            return result;
+        }
+        catch (Exception error) { lastError = error.GetBaseException().Message; return -1; }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static long GraphNextTick(nint context)
+    {
+        try { return ((SynchronousGraph)GCHandle.FromIntPtr(context).Target!).NextTickMicros(); }
+        catch (Exception error) { lastError = error.GetBaseException().Message; return -1; }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static int TickGraph(nint context,
+        delegate* unmanaged[Cdecl]<nint, uint, uint, GraphReport*, int> callback, nint scope)
+    {
+        try
+        {
+            if (callback == null) throw new ArgumentException("Missing graph continuation.");
+            var graph = (SynchronousGraph)GCHandle.FromIntPtr(context).Target!;
+            int result = graph.Tick(callback, scope);
             if (result != 0) lastError = graph.Error ?? "A native graph continuation failed.";
             return result;
         }

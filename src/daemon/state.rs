@@ -141,7 +141,7 @@ impl Daemon {
             None => crate::load_profile(None, None),
         }
         .and_then(|profile| {
-            profile.validate_runtime_tablet("Wacom PTH-660")?;
+            profile.validate_runtime_tablet()?;
             profile.validate_filter_execution()?;
             if profile.relative.is_none() {
                 crate::display::read_snapshot()?.mapper(&profile)?;
@@ -418,33 +418,55 @@ impl Daemon {
         match notice {
             Notice::Prepared if phase == Phase::Preparing => {
                 if pending.expected != self.identity() {
-                    self.reject_candidate("Apply cancelled because its expected driver generation changed.".into(), false);
+                    self.reject_candidate(
+                        "Apply cancelled because its expected driver generation changed.".into(),
+                        false,
+                    );
                     return;
                 }
                 if initial {
                     match Ownership::acquire() {
                         Ok(ownership) => self.ownership = Some(ownership),
-                        Err(error) => { self.reject_candidate(error, false); return; }
+                        Err(error) => {
+                            self.reject_candidate(error, false);
+                            return;
+                        }
                     }
                     self.pending.as_mut().unwrap().phase = Phase::Activating;
                     self.send_candidate(Directive::Activate);
-                } else if self.state == DriverState::Running && self.worker.as_ref().is_some_and(|worker| !worker.finished()) {
+                } else if self.state == DriverState::Running
+                    && self
+                        .worker
+                        .as_ref()
+                        .is_some_and(|worker| !worker.finished())
+                {
                     self.pending.as_mut().unwrap().phase = Phase::Quiescing;
                     self.state = DriverState::Stopping;
-                    self.log("Replacement prepared; draining current reader and releasing its output.".into());
+                    self.log(
+                        "Replacement prepared; draining current reader and releasing its output."
+                            .into(),
+                    );
                     self.send_active(Directive::Quiesce);
                 } else {
-                    self.reject_candidate("Apply cancelled because the current worker is no longer ready.".into(), false);
+                    self.reject_candidate(
+                        "Apply cancelled because the current worker is no longer ready.".into(),
+                        false,
+                    );
                 }
             }
             Notice::ActivationReady if phase == Phase::Activating => {
                 if pending.expected != self.identity() {
-                    self.reject_candidate("Apply generation changed before activation.".into(), !initial);
+                    self.reject_candidate(
+                        "Apply generation changed before activation.".into(),
+                        !initial,
+                    );
                     return;
                 }
                 // Run is the commit boundary. The worker has not issued a pen
                 // read or dispatched live input before receiving this command.
-                if !self.send_candidate(Directive::Run) { return; }
+                if !self.send_candidate(Directive::Run) {
+                    return;
+                }
                 let pending = self.pending.as_mut().unwrap();
                 pending.phase = Phase::CommitSent;
                 self.generation = pending.generation;
@@ -460,12 +482,20 @@ impl Daemon {
                 if let Some(previous) = previous {
                     let stop = previous.stop();
                     self.retiring = Some(previous);
-                    if let Err(error) = stop { self.fail_stop(error); return; }
+                    if let Err(error) = stop {
+                        self.fail_stop(error);
+                        return;
+                    }
                 }
                 self.log("Driver generation activated; replacement starts with fresh filter/output/relative state.".into());
             }
-            Notice::ActivationFailed(error) if phase == Phase::Activating => self.reject_candidate(error, !initial),
-            Notice::Waiting => self.log("Replacement is waiting for its configured USB PTH-660; current generation remains unchanged.".into()),
+            Notice::ActivationFailed(error) if phase == Phase::Activating => {
+                self.reject_candidate(error, !initial)
+            }
+            Notice::Waiting => self.log(
+                "Replacement is waiting for its tablet; current generation remains unchanged."
+                    .into(),
+            ),
             _ => self.fail_stop("Unexpected candidate lifecycle transition.".into()),
         }
     }
@@ -710,6 +740,9 @@ impl ControlHandler for Daemon {
                 }
             }
             Command::Shutdown => Ok(Reply::ShutdownAccepted),
+            Command::Debug => Ok(Reply::Debug {
+                report: crate::decode_cli::debug_report(),
+            }),
         }
     }
 }

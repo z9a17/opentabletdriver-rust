@@ -149,6 +149,7 @@ impl App {
         let accelerators = accelerator_table();
         let displays = displays_for_driver(process_dpi).unwrap_or_else(|_| fallback_displays());
         let null = ptr::null_mut();
+        let (background_tx, background_rx) = std::sync::mpsc::channel();
         let mut app = Self {
             hwnd,
             dpi,
@@ -205,6 +206,15 @@ impl App {
             selected_filter: 0,
             properties: Vec::new(),
             plugin_metadata: HashMap::new(),
+            metadata_pending: HashMap::new(),
+            metadata_generation: 0,
+            edit_revision: 0,
+            background_tx,
+            background_rx,
+            device_scan_pending: false,
+            device_strings_pending: false,
+            import_pending: false,
+            connected_tablets: Vec::new(),
             labels: HashMap::new(),
             json_visible: false,
             json_mode: false,
@@ -221,6 +231,8 @@ impl App {
             closing: false,
             driver: DriverState::Stopped,
             tablet_present: None,
+            tablet_choices: Vec::new(),
+            preset_choices: Vec::new(),
             status: String::new(),
             status_level: Level::Info,
             validation_status: false,
@@ -673,23 +685,14 @@ impl App {
             .profile
             .plugins
             .iter()
-            .filter(|plugin| plugin.kind == PluginKind::Dotnet)
+            .filter(|plugin| plugin.kind.is_managed())
             .map(|plugin| plugin.path.clone())
             .collect();
         for path in paths {
             if self.plugin_metadata.contains_key(&path) {
                 continue;
             }
-            let result = crate::dotnet::inspect_details(&path)
-                .map(|entries| entries.into_iter().map(|entry| entry.metadata).collect());
-            if let Err(error) = &result {
-                self.log(
-                    Level::Warning,
-                    "Plugins",
-                    format!("Could not read metadata from {}: {error}", path.display()),
-                );
-            }
-            self.plugin_metadata.insert(path, result);
+            self.inspect_plugin(path, false);
         }
     }
 
@@ -703,6 +706,11 @@ impl App {
     }
 
     pub(super) fn refresh_filters(&mut self) {
+        self.refresh_filter_list();
+        self.rebuild_properties();
+    }
+
+    pub(super) fn refresh_filter_list(&mut self) {
         if self.tab == Tab::Filters {
             self.ensure_plugin_metadata();
         }
@@ -735,7 +743,17 @@ impl App {
             }
             SendMessageW(self.c.filter_list, LB_SETCURSEL, self.selected_filter, 0);
         }
-        self.rebuild_properties();
+    }
+
+    pub(super) fn editing_controls(&self) -> bool {
+        let focus = unsafe { GetFocus() };
+        !self.invalid.is_empty()
+            || self.drag.is_some()
+            || [self.c.filter_json, self.c.tip_field, self.c.eraser_field].contains(&focus)
+            || self.c.display.contains(&focus)
+            || self.c.tablet.contains(&focus)
+            || self.c.relative.contains(&focus)
+            || self.properties.iter().any(|row| row.hwnd == focus)
     }
 
     pub(super) fn selected_target(&self) -> Option<FilterRef> {
@@ -800,7 +818,7 @@ impl App {
                 FilterRef::Radial(_) => true,
                 FilterRef::Plugin(index) => {
                     let plugin = &self.editor.profile.plugins[index];
-                    plugin.kind == PluginKind::Dotnet && self.metadata_for(plugin).is_some()
+                    plugin.kind.is_managed() && self.metadata_for(plugin).is_some()
                 }
             };
             EnableWindow(self.c.filter_defaults, can_reset.into());
@@ -822,7 +840,7 @@ impl App {
             FilterRef::Plugin(index) => {
                 let plugin = &self.editor.profile.plugins[index];
                 let metadata = self.metadata_for(plugin).cloned();
-                let properties = (plugin.kind == PluginKind::Dotnet
+                let properties = (plugin.kind.is_managed()
                     && metadata.is_some()
                     && !self.json_mode)
                     .then(|| model::plugin_editor_fields(&plugin.settings_json, metadata.as_ref()))
@@ -1056,7 +1074,7 @@ impl App {
         }
         if self.driver == DriverState::Connected {
             title.push_str(" - ");
-            title.push_str(TABLET_NAME);
+            title.push_str(&self.tablet_label());
         }
         if self.dirty {
             title.insert(0, '*');
@@ -1064,7 +1082,35 @@ impl App {
         unsafe { SetWindowTextW(self.hwnd, wide(&title).as_ptr()) };
     }
 
+    /// The tablet the profile is for, or the default tablet.
+    pub(super) fn tablet_label(&self) -> String {
+        self.editor
+            .profile
+            .tablet_name()
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| TABLET_NAME.into())
+    }
+
+    /// Makes the profile target a tablet (`None`: whichever is connected).
+    pub(super) fn choose_tablet(&mut self, name: Option<String>) {
+        if self.editor.profile.target_tablet == name {
+            return;
+        }
+        self.editor.set_tablet(name);
+        self.mark_dirty();
+        self.sync_all();
+        self.layout();
+        unsafe { InvalidateRect(self.hwnd, ptr::null(), 0) };
+        let message = format!(
+            "Settings now target {}. Save or Apply to use them.",
+            self.tablet_label()
+        );
+        self.log(Level::Info, "Tablet", message);
+    }
+
     pub(super) fn mark_dirty(&mut self) {
+        self.edit_revision = self.edit_revision.wrapping_add(1);
         if !self.dirty {
             self.dirty = true;
             self.update_title();
@@ -1108,6 +1154,8 @@ impl App {
     }
 
     pub(super) fn field_changed(&mut self, hwnd: HWND) {
+        // Count drafts too; invalid text is still a newer user edit.
+        self.edit_revision = self.edit_revision.wrapping_add(1);
         let value = text(hwnd);
         if let Some(index) = self.c.display.iter().position(|h| *h == hwnd) {
             self.edit_area(AreaKind::Display, index, hwnd, &value);
@@ -1138,7 +1186,7 @@ impl App {
     pub(super) fn bounds(&self, which: AreaKind) -> Bounds {
         match which {
             AreaKind::Display => Bounds::from_rect(self.displays.virtual_screen),
-            AreaKind::Tablet => Bounds::tablet(),
+            AreaKind::Tablet => Bounds::tablet_for(self.editor.profile.tablet),
         }
     }
 
@@ -1515,7 +1563,7 @@ impl App {
             return;
         };
         let plugin = &self.editor.profile.plugins[index];
-        if plugin.kind != PluginKind::Dotnet || self.metadata_for(plugin).is_none() {
+        if !plugin.kind.is_managed() || self.metadata_for(plugin).is_none() {
             return;
         }
         if self.json_visible {
@@ -1601,76 +1649,6 @@ impl App {
             }
             Err(error) => self.log(Level::Warning, "Plugins", error),
         }
-    }
-
-    pub(super) fn add_plugin(&mut self, path: PathBuf, dotnet: bool) {
-        let (entries, metadata) = if dotnet {
-            match crate::dotnet::inspect_details(&path) {
-                Ok(entries) if entries.is_empty() => {
-                    self.log(
-                        Level::Error,
-                        "Plugins",
-                        "This assembly exports no OpenTabletDriver position filters.",
-                    );
-                    return;
-                }
-                // Keep the path as chosen rather than the \\?\ form inspection
-                // resolves; loading canonicalizes it again.
-                Ok(entries) => {
-                    let metadata = entries.iter().map(|entry| entry.metadata.clone()).collect();
-                    let configs = entries
-                        .into_iter()
-                        .map(|entry| PluginConfig {
-                            path: path.clone(),
-                            ..entry.config
-                        })
-                        .collect();
-                    (configs, Some(metadata))
-                }
-                Err(error) => {
-                    self.log(
-                        Level::Error,
-                        "Plugins",
-                        format!("Could not inspect {}: {error}", path.display()),
-                    );
-                    return;
-                }
-            }
-        } else {
-            (
-                vec![PluginConfig {
-                    path: path.clone(),
-                    kind: PluginKind::Native,
-                    enabled: false,
-                    type_name: String::new(),
-                    settings_json: "{}".into(),
-                }],
-                None,
-            )
-        };
-        if self.editor.profile.plugins.len() + entries.len() > 32 {
-            self.log(
-                Level::Error,
-                "Plugins",
-                "At most 32 plugin entries are supported.",
-            );
-            return;
-        }
-        if let Some(metadata) = metadata {
-            self.plugin_metadata.insert(path, Ok(metadata));
-        }
-        let first = self.editor.filters().len();
-        let count = entries.len();
-        self.editor.profile.plugins.extend(entries);
-        self.mark_dirty();
-        self.selected_filter = first;
-        self.refresh_filters();
-        if self.tab == Tab::Filters {
-            self.layout();
-        } else {
-            self.select_tab(Tab::Filters);
-        }
-        self.log(Level::Info, "Plugins", format!("Added {count} filter entr{} disabled. Select one, check its settings, then enable it.", if count == 1 { "y" } else { "ies" }));
     }
 
     pub(super) fn set_output_mode(&mut self, mode: OutputMode) {
@@ -2089,6 +2067,9 @@ impl App {
     pub(super) fn replace_profile(&mut self, profile: Profile, path: Option<PathBuf>, dirty: bool) {
         self.editor = Editor::new(profile);
         self.plugin_metadata.clear();
+        self.metadata_pending.clear();
+        self.metadata_generation = self.metadata_generation.wrapping_add(1);
+        self.import_pending = false;
         if let Some(path) = path {
             self.profile_path = path;
             self.profile_snapshot = None;
@@ -2123,7 +2104,7 @@ impl App {
     /// Persistence must also work for disconnected displays or other tablets.
     /// Check runtime requirements before stopping an existing worker.
     fn validate_start(&self, profile: &Profile) -> Result<(), String> {
-        profile.validate_runtime_tablet("Wacom PTH-660")?;
+        profile.validate_runtime_tablet()?;
         profile.validate_filter_execution()?;
         if profile.relative.is_none() {
             displays_for_driver(self.process_dpi)?.mapper(profile)?;
@@ -2199,19 +2180,19 @@ impl App {
             );
             return;
         }
-        match Profile::load(None) {
-            Ok(profile) => {
-                let skipped = profile.ignored_filters;
-                self.replace_profile(profile, None, true);
-                self.log(Level::Info, "Settings", "Imported the active OpenTabletDriver mapping and built-in filters. OpenTabletDriver's own files were not changed.");
-                if skipped > 0 {
-                    self.log(Level::Warning, "Settings", format!("Skipped {skipped} enabled OpenTabletDriver filter(s). Add their DLLs with Plugins > Add .NET plugin."));
-                }
-            }
-            Err(error) => self.log(Level::Error, "Settings", error),
+        if self.import_pending {
+            return;
         }
+        let generation = self.metadata_generation;
+        let edit_revision = self.edit_revision;
+        self.import_pending =
+            self.background("settings-import", move || BackgroundResult::Import {
+                generation,
+                edit_revision,
+                result: Profile::load_connected(None, &crate::hid::connected_tablets())
+                    .map(Box::new),
+            });
     }
-
     pub(super) fn save_to(&mut self, path: PathBuf) {
         self.save_to_mode(path, false);
     }
@@ -2265,32 +2246,6 @@ impl App {
         }
     }
 
-    pub(super) fn detect_tablet(&mut self) {
-        match crate::hid::enumerate() {
-            Ok(devices) => {
-                let pens = devices.iter().filter(|device| device.is_pen()).count();
-                self.tablet_present = Some(pens > 0);
-                if pens == 0 {
-                    self.log(Level::Warning, "Tablet", "No USB PTH-660 was found.");
-                } else {
-                    self.log(
-                        Level::Info,
-                        "Tablet",
-                        format!(
-                            "Found {pens} PTH-660 pen collection{}.",
-                            if pens == 1 { "" } else { "s" }
-                        ),
-                    );
-                }
-            }
-            Err(error) => self.log(
-                Level::Error,
-                "Tablet",
-                format!("HID discovery failed: {error}"),
-            ),
-        }
-    }
-
     // ----- Driver -----------------------------------------------------------------------
 
     pub(super) fn set_driver_state(&mut self, state: DriverState) {
@@ -2324,7 +2279,8 @@ impl App {
 
     fn tray_tip(&self) -> String {
         format!(
-            "OpenTabletDriver Rust\n{TABLET_NAME}: {}",
+            "OpenTabletDriver Rust\n{}: {}",
+            self.tablet_label(),
             self.driver.label()
         )
     }
@@ -2566,6 +2522,18 @@ impl App {
         true
     }
     // ----- Console -------------------------------------------------------------------
+
+    /// Every console line, as Copy All copies them.
+    pub(super) fn log_text(&self) -> String {
+        with_look(|look| {
+            look.log
+                .iter()
+                .map(|e| format!("{} [{}:{}] {}", e.time, e.level.label(), e.group, e.message))
+                .collect::<Vec<_>>()
+                .join("\r\n")
+        })
+        .unwrap_or_default()
+    }
 
     pub(super) fn copy_log(&mut self, all: bool) {
         let indices: Vec<usize> = if all {

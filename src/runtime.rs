@@ -157,8 +157,9 @@ fn run(
             .send(notice)
             .map_err(|_| "daemon control owner disconnected".to_owned())
     };
-    profile.validate_runtime_tablet("Wacom PTH-660")?;
+    profile.validate_runtime_tablet()?;
     profile.validate_filter_execution()?;
+    let tablet_name = profile.tablet_name()?;
     // Exercise deterministic pipeline construction before old output pauses.
     // A fresh output/relative pipeline is used on activation and rollback.
     let _ = otd_core::pipeline::ReportPipeline::new(&profile)?;
@@ -175,12 +176,19 @@ fn run(
         }
         let devices = crate::hid::enumerate_with_database(database)
             .map_err(|error| format!("HID discovery failed: {error}"))?;
-        let Some(selected) =
-            crate::hid::select_pth660(&devices, database, profile.device_path.as_deref())?
+        let Some(selected) = crate::hid::select_device(
+            &devices,
+            database,
+            profile.device_path.as_deref(),
+            tablet_name.as_deref(),
+        )?
         else {
             if !waiting {
                 notify(Notice::Waiting)?;
-                log("Waiting for USB PTH-660");
+                log(&format!(
+                    "Waiting for {}",
+                    tablet_name.as_deref().unwrap_or("a supported tablet")
+                ));
                 waiting = true;
             }
             if !crate::session::wait_for_retry(&notification, interrupt)
@@ -280,12 +288,32 @@ fn run(
             }
             let running = Cell::new(false);
             let quiesced = Cell::new(false);
+            // Tools run while this worker owns the output, like the tablet.
+            let tools = std::cell::RefCell::new(None);
+            let companions = std::cell::RefCell::new(None);
             let result = source.run(&profile, &mut plugins, &log, || {
                 notify(Notice::ActivationReady).map_err(io::Error::other)?;
                 match receive(&commands, cancelled)? {
                     Directive::Run if !cancelled.load(Ordering::Acquire) => {
                         running.set(true);
+                        let companion_logs = logs.clone();
+                        *companions.borrow_mut() = Some(
+                            crate::companions::Companions::start(
+                                profile.clone(),
+                                database.clone(),
+                                selected.pen.path_text(),
+                                interrupt,
+                                move |line| {
+                                    let _ = companion_logs.try_send(line.to_owned());
+                                },
+                            )
+                            .map_err(io::Error::other)?,
+                        );
                         notify(Notice::Running).map_err(io::Error::other)?;
+                        *tools.borrow_mut() =
+                            Some(crate::plugins::Tools::start(&profile.plugins, |line| {
+                                log(line)
+                            }));
                         Ok(true)
                     }
                     Directive::Stop | Directive::Run => Ok(false),
@@ -296,6 +324,11 @@ fn run(
                     _ => Err(io::Error::other("unexpected activation gate command")),
                 }
             });
+            let companion_cleanup = companions
+                .take()
+                .map_or(Ok(()), |mut companions| companions.finish());
+            drop(tools.take());
+            companion_cleanup?;
             // source has drained its read and core output cleanup has completed.
             if let Err(error) = &result
                 && otd_core::session::is_cleanup_failure(error)

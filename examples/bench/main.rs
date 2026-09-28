@@ -485,6 +485,7 @@ fn session_case(bench: &mut Bench, profile: &Profile) -> Result<Option<Value>, S
                 &mut displays,
                 profile,
                 Mode::Driver,
+                &mut otd_core::decoders::TabletDecoder::pth_660(),
                 &mut NoFilters,
                 discard,
                 &|_: &str| {},

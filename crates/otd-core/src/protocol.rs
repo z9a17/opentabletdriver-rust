@@ -50,7 +50,20 @@ fn u16le(data: &[u8], at: usize) -> u16 {
 }
 
 /// Unknown and touch IDs are deliberately ignored; known short reports are errors.
+/// Positions and pressure beyond the PTH-660's range are malformed (BC-06).
+#[inline]
 pub fn parse(data: &[u8]) -> Result<Option<PenReport>, ParseError> {
+    parse_within(data, MAX_X, MAX_Y, MAX_PRESSURE)
+}
+
+/// The IntuosV2 pen layout with another tablet's coordinate and pressure range.
+#[inline]
+pub fn parse_within(
+    data: &[u8],
+    max_x: u32,
+    max_y: u32,
+    max_pressure: u16,
+) -> Result<Option<PenReport>, ParseError> {
     let Some(&id) = data.first() else {
         return Err(ParseError::Empty);
     };
@@ -97,13 +110,13 @@ pub fn parse(data: &[u8]) -> Result<Option<PenReport>, ParseError> {
             hover_distance: None,
         }
     };
-    if report.x > MAX_X || report.y > MAX_Y {
+    if report.x > max_x || report.y > max_y {
         return Err(ParseError::Position {
             x: report.x,
             y: report.y,
         });
     }
-    if report.pressure > MAX_PRESSURE {
+    if report.pressure > max_pressure {
         return Err(ParseError::Pressure(report.pressure));
     }
     Ok(Some(report))

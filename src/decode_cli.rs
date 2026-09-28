@@ -18,6 +18,8 @@ Parsers: pth660-pen, intuos-v2-aux, intuos-v2-touch,
          xp-pen-offset-pressure, xp-pen-offset-aux, xp-pen-dedicated-aux,
          tablet, auxiliary, skip-byte-tablet, veikk, veikk-a15, veikk-tilt,
          veikk-v1
+or any OpenTabletDriver parser type, such as Wacom.IntuosV1.IntuosV1ReportParser
+or OpenTabletDriver.Plugin.Tablet.TabletReportParser.
 Hex may contain ASCII whitespace or colons. Files contain one packet per line;
 blank lines and lines starting with # are ignored. Limits: 4 MiB, 4096 reports,
 192 bytes per packet. Each output line is one JSON snapshot; a later error does
@@ -41,6 +43,7 @@ enum Decoder {
     Bamboo,
     BambooPad,
     BambooV2Aux,
+    Registry(otd_core::decoders::ReportParser),
 }
 
 impl Decoder {
@@ -82,6 +85,12 @@ impl Decoder {
             Self::BambooV2Aux => parse_bamboo_v2_auxiliary(raw, metadata)
                 .map(Some)
                 .map_err(|e| format!("{e:?}")),
+            Self::Registry(parser) => {
+                return parser
+                    .parse(raw, metadata)
+                    .map(|(kind, report)| (kind, Some(report)))
+                    .map_err(|e| format!("{e:?}"));
+            }
         }?;
         Ok((ReportKind::Data, report))
     }
@@ -137,7 +146,18 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         "veikk-a15" => Decoder::Stateless(parse_veikk_a15),
         "veikk-tilt" => Decoder::Stateless(parse_veikk_tilt),
         "veikk-v1" => Decoder::Prefixed(parse_veikk_v1),
-        _ => return Err(format!("unknown parser {parser:?}\n{USAGE}")),
+        name => {
+            // Any OpenTabletDriver parser type, with or without its namespace.
+            let full = if name.starts_with("OpenTabletDriver.") {
+                name.to_owned()
+            } else {
+                format!("OpenTabletDriver.Configurations.Parsers.{name}")
+            };
+            match otd_core::decoders::ReportParser::for_type(&full) {
+                Some(parser) => Decoder::Registry(parser),
+                None => return Err(format!("unknown parser {parser:?}\n{USAGE}")),
+            }
+        }
     };
     let source = match (hex, input) {
         (Some(hex), None) => hex,
@@ -227,6 +247,45 @@ fn parse_hex(text: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// The tablet debugger's view of the latest packet, decoded with the
+/// session's parser type. A fresh parser decodes it, so stateful parsers show
+/// only what this one packet carries.
+pub(crate) fn debug_report() -> crate::control::DebugReport {
+    let snapshot = otd_core::debug::poll();
+    let (tablet, parser) = snapshot
+        .device
+        .map(|device| (Some(device.name), Some(device.parser)))
+        .unwrap_or((None, None));
+    let values = parser
+        .as_deref()
+        .and_then(otd_core::decoders::ReportParser::for_type)
+        .filter(|_| !snapshot.bytes.is_empty())
+        .map(|mut parser| {
+            let metadata = ReportMetadata {
+                device: DeviceId(0),
+                session: SessionId(0),
+                endpoint: EndpointId(0),
+                received_at: Duration::ZERO,
+                sequence: snapshot.sequence,
+            };
+            match parser.parse(&snapshot.bytes, metadata) {
+                Ok((kind, report)) => json!({
+                    "kind": match kind { ReportKind::Data => "data", ReportKind::OutOfRange => "out_of_range" },
+                    "values": values_json(report.values),
+                }),
+                Err(error) => json!({"error": format!("{error:?}")}),
+            }
+        })
+        .unwrap_or(Value::Null);
+    crate::control::DebugReport {
+        tablet,
+        parser,
+        sequence: snapshot.sequence,
+        raw_hex: encode_hex(&snapshot.bytes),
+        values,
+    }
+}
+
 fn encode_hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
     let mut encoded = String::with_capacity(bytes.len() * 2);
@@ -265,4 +324,32 @@ fn values_json(values: ReportValues) -> Value {
         "wheel_buttons": values.wheel_buttons.map(|v| v.as_slice().iter().copied().map(buttons).collect::<Vec<_>>()),
         "touches": values.touches.map(|v| v.as_slice().iter().map(|p| p.map(|p| json!({"id": p.id, "position": p.position}))).collect::<Vec<_>>())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_report_decodes_the_latest_packet_with_the_session_parser() {
+        let registration = otd_core::debug::Registration::new(otd_core::debug::Device {
+            name: "Wacom PTH-660".into(),
+            parser: "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV2.IntuosV2ReportParser"
+                .into(),
+        });
+        // The first poll arms the tap; the report thread then keeps packets.
+        let _ = debug_report();
+        let mut packet = [0u8; 17];
+        packet[0] = 0x10;
+        packet[1] = 0x61;
+        packet[2] = 0x10;
+        packet[8] = 0x20;
+        otd_core::debug::record(&packet);
+        let report = debug_report();
+        drop(registration);
+        assert_eq!(report.tablet.as_deref(), Some("Wacom PTH-660"));
+        assert!(report.raw_hex.starts_with("106110"), "{}", report.raw_hex);
+        assert_eq!(report.values["values"]["position"][0], 16.0);
+        assert_eq!(report.values["values"]["pressure"], 32);
+    }
 }

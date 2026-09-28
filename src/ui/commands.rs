@@ -63,19 +63,27 @@ pub(super) fn accelerator_table() -> HACCEL {
     unsafe { CreateAcceleratorTableW(table.as_ptr(), table.len() as i32) }
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum FileKind {
+    Profile,
+    Dll,
+    /// A plugin archive or DLL for the plugin folder.
+    Package,
+}
+
 pub(super) fn file_dialog(
     window: HWND,
     save: bool,
-    dll: bool,
+    kind: FileKind,
     title: &str,
 ) -> Result<Option<PathBuf>, String> {
     let mut buffer = vec![0u16; 32_768];
-    let filter = if dll {
-        wide("Plugin DLL (*.dll)\0*.dll\0\0")
-    } else {
-        wide("Rust profile (*.toml)\0*.toml\0All files\0*.*\0\0")
+    let (filter, extension) = match kind {
+        FileKind::Profile => ("Rust profile (*.toml)\0*.toml\0All files\0*.*\0\0", "toml"),
+        FileKind::Dll => ("Plugin DLL (*.dll)\0*.dll\0\0", "dll"),
+        FileKind::Package => ("Plugin (*.zip;*.dll)\0*.zip;*.dll\0\0", "zip"),
     };
-    let extension = wide(if dll { "dll" } else { "toml" });
+    let (filter, extension) = (wide(filter), wide(extension));
     let title = wide(title);
     let mut dialog = OPENFILENAMEW {
         lStructSize: size_of::<OPENFILENAMEW>() as u32,
@@ -238,11 +246,63 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                     CMD_OPEN_FOLDER,
                     "Open settings directory...",
                 );
+                presets::append_menu(menu, app);
+                append(menu, MF_STRING, CMD_SAVE_LOG, "Save console log...");
                 unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null()) };
                 append(menu, MF_STRING, CMD_QUIT, "Quit\tCtrl+Q");
             }
             1 => {
                 append(menu, MF_STRING, CMD_DETECT, "Detect tablet\tCtrl+D");
+                append(menu, MF_STRING, CMD_DEBUGGER, "Tablet debugger...");
+                append(
+                    menu,
+                    MF_STRING,
+                    CMD_DEVICE_STRINGS,
+                    "Device string reader...",
+                );
+                // The profile's tablet: whichever is connected, a connected
+                // tablet, or the one it already names.
+                let target = app.editor.profile.target_tablet.clone();
+                app.refresh_tablets(false);
+                let mut choices = app.connected_tablets.clone();
+                if let Some(name) = &target
+                    && !choices.contains(name)
+                {
+                    choices.push(name.clone());
+                }
+                choices.truncate(usize::from(TABLET_CHOICES));
+                let tablets = unsafe { CreatePopupMenu() };
+                append(
+                    tablets,
+                    checked(target.is_none()),
+                    CMD_TABLET_ANY,
+                    "Any connected tablet",
+                );
+                if app.device_scan_pending && app.connected_tablets.is_empty() {
+                    append(
+                        tablets,
+                        MF_GRAYED,
+                        0,
+                        "Detecting tablets… reopen this menu shortly",
+                    );
+                }
+                for (index, name) in choices.iter().enumerate() {
+                    append(
+                        tablets,
+                        checked(target.as_ref() == Some(name)),
+                        CMD_TABLET_FIRST + index as u16,
+                        name,
+                    );
+                }
+                app.tablet_choices = choices;
+                unsafe {
+                    AppendMenuW(
+                        menu,
+                        MF_POPUP,
+                        tablets as usize,
+                        wide("Settings for tablet").as_ptr(),
+                    )
+                };
                 append(
                     menu,
                     if app.editor.mode() == OutputMode::Absolute {
@@ -270,10 +330,18 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                     CMD_AUTOSTART,
                     "Start driver when the panel opens",
                 );
+                append(
+                    menu,
+                    checked(startup::enabled()),
+                    CMD_START_WITH_WINDOWS,
+                    "Start with Windows (in the tray)",
+                );
             }
             2 => {
                 append(menu, MF_STRING, CMD_ADD_DOTNET, "Add .NET plugin...");
                 append(menu, MF_STRING, CMD_ADD_NATIVE, "Add native plugin...");
+                unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null()) };
+                append(menu, MF_STRING, CMD_PLUGIN_MANAGER, "Plugin manager...");
             }
             3 => {
                 let theme = unsafe { CreatePopupMenu() };
@@ -307,6 +375,27 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
             }
             _ => {
                 append(menu, MF_STRING, CMD_DOCS, "Open documentation...");
+                append(menu, MF_STRING, CMD_CHECK_UPDATES, "Check for updates...");
+                append(
+                    menu,
+                    checked(app.prefs.check_for_updates),
+                    CMD_UPDATE_ON_OPEN,
+                    "Check for updates when the panel opens",
+                );
+                append(menu, MF_SEPARATOR, 0, "");
+                append(
+                    menu,
+                    MF_STRING,
+                    CMD_EXPORT_DIAGNOSTICS,
+                    "Export diagnostics...",
+                );
+                append(
+                    menu,
+                    MF_STRING,
+                    CMD_COPY_DIAGNOSTICS,
+                    "Export diagnostics to clipboard",
+                );
+                append(menu, MF_SEPARATOR, 0, "");
                 append(menu, MF_STRING, CMD_ABOUT, "About...\tF1");
             }
         }
@@ -322,7 +411,7 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
 
 pub(super) fn about(window: HWND) {
     let text = format!(
-        "OpenTabletDriver Rust {}\n\nA Windows USB driver for the Wacom PTH-660, written in Rust. This control panel follows the layout of OpenTabletDriver's UX.\n\nLicensed under GPL-3.0-only. The built-in Radial Follow filter is a Rust port of AbstractQbit's RadialFollow 0.3.0.",
+        "OpenTabletDriver Rust {}\n\nA Windows USB tablet driver written in Rust, using OpenTabletDriver's tablet configurations. This control panel follows the layout of OpenTabletDriver's UX.\n\nLicensed under GPL-3.0-only. The built-in Radial Follow filter is a Rust port of AbstractQbit's RadialFollow 0.3.0.",
         env!("CARGO_PKG_VERSION")
     );
     message_box(
@@ -379,7 +468,7 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         }
         CMD_LOAD => {
             if confirm_discard(window) {
-                match file_dialog(window, false, false, "Load settings") {
+                match file_dialog(window, false, FileKind::Profile, "Load settings") {
                     Ok(Some(path)) => {
                         let loaded = with_app(|app| app.load_file(path.clone())).unwrap_or(false);
                         if !loaded
@@ -407,7 +496,12 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
             let save_as =
                 id == CMD_SAVE_AS || with_app(|app| app.recovered_backup).unwrap_or(false);
             if save_as {
-                match file_dialog(window, true, false, "Save settings as a new file") {
+                match file_dialog(
+                    window,
+                    true,
+                    FileKind::Profile,
+                    "Save settings as a new file",
+                ) {
                     Ok(Some(path)) => {
                         with_app(|app| app.save_as_to(path));
                     }
@@ -460,6 +554,31 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         CMD_DETECT => {
             with_app(App::detect_tablet);
         }
+        CMD_TABLET_ANY => {
+            with_app(|app| app.choose_tablet(None));
+        }
+        id if (CMD_TABLET_FIRST..CMD_TABLET_FIRST + TABLET_CHOICES).contains(&id) => {
+            with_app(|app| {
+                let name = app
+                    .tablet_choices
+                    .get(usize::from(id - CMD_TABLET_FIRST))
+                    .cloned();
+                if name.is_some() {
+                    app.choose_tablet(name);
+                }
+            });
+        }
+        CMD_DEBUGGER => {
+            if let Err(error) = debugger::open() {
+                with_app(|app| {
+                    app.log(
+                        Level::Error,
+                        "Tablet",
+                        format!("Cannot open the tablet debugger: {error}"),
+                    )
+                });
+            }
+        }
         CMD_ADD_DOTNET | CMD_ADD_NATIVE => {
             if !with_app(App::can_leave_filter).unwrap_or(false) {
                 return;
@@ -470,7 +589,7 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
             } else {
                 "Add native plugin"
             };
-            match file_dialog(window, false, true, title) {
+            match file_dialog(window, false, FileKind::Dll, title) {
                 Ok(Some(path)) => {
                     with_app(|app| app.add_plugin(path, dotnet));
                 }
@@ -478,6 +597,11 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
                 Err(error) => {
                     with_app(|app| app.log(Level::Error, "UI", error));
                 }
+            }
+        }
+        CMD_PLUGIN_MANAGER => {
+            if let Err(error) = plugin_manager::open() {
+                with_app(|app| app.log(Level::Error, "Plugins", error));
             }
         }
         CMD_REMOVE_FILTER => {
@@ -528,12 +652,129 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
                 app.save_prefs();
             });
         }
+        CMD_CHECK_UPDATES => updates::check(window, true),
+        presets::CMD_PRESET_SAVE => presets::save(window),
+        presets::CMD_PRESET_FOLDER => presets::open_folder(window),
+        id if (presets::CMD_PRESET_FIRST..presets::CMD_PRESET_FIRST + presets::PRESET_CHOICES)
+            .contains(&id) =>
+        {
+            let index = usize::from(id - presets::CMD_PRESET_FIRST);
+            with_app(|app| presets::apply(app, index));
+        }
+        CMD_START_WITH_WINDOWS => {
+            let enable = !startup::enabled();
+            let result = startup::set(enable);
+            with_app(|app| match result {
+                Ok(()) => app.log(
+                    Level::Info,
+                    "UI",
+                    if enable {
+                        "The panel will start in the tray when you sign in to Windows."
+                    } else {
+                        "The panel no longer starts with Windows."
+                    },
+                ),
+                Err(error) => app.log(
+                    Level::Error,
+                    "UI",
+                    format!("Cannot change startup: {error}"),
+                ),
+            });
+        }
+        CMD_UPDATE_ON_OPEN => {
+            with_app(|app| {
+                app.prefs.check_for_updates = !app.prefs.check_for_updates;
+                app.save_prefs();
+            });
+        }
         CMD_SHOW => tray::show_panel(window),
         CMD_COPY_LOG => {
             with_app(|app| app.copy_log(true));
         }
+        CMD_SAVE_LOG => {
+            match text_save_dialog(window, "Save console log", "opentabletdriver-rust-log.txt") {
+                Ok(Some(path)) => with_app(|app| {
+                    let text = app.log_text();
+                    match std::fs::write(&path, text) {
+                        Ok(()) => app.log(
+                            Level::Info,
+                            "UI",
+                            format!("Saved the log to {}.", path.display()),
+                        ),
+                        Err(error) => {
+                            app.log(Level::Error, "UI", format!("Cannot save the log: {error}"))
+                        }
+                    }
+                })
+                .unwrap_or(()),
+                Ok(None) => {}
+                Err(error) => {
+                    with_app(|app| app.log(Level::Error, "UI", error));
+                }
+            }
+        }
         CMD_CLEAR_LOG => {
             with_app(App::clear_log);
+        }
+        CMD_EXPORT_DIAGNOSTICS => {
+            match text_save_dialog(
+                window,
+                "Export diagnostics",
+                "opentabletdriver-rust-diagnostics.json",
+            ) {
+                Ok(Some(path)) => with_app(|app| {
+                    let written = crate::diagnostics::bundle(Some(&app.editor.profile), false)
+                        .and_then(|bundle| {
+                            serde_json::to_vec_pretty(&bundle).map_err(|error| error.to_string())
+                        })
+                        .and_then(|bytes| {
+                            std::fs::write(&path, bytes).map_err(|error| error.to_string())
+                        });
+                    match written {
+                        Ok(()) => app.log(
+                            Level::Info,
+                            "UI",
+                            format!(
+                                "Saved diagnostics to {}. Paths, plugin settings and log text are left out.",
+                                path.display()
+                            ),
+                        ),
+                        Err(error) => app.log(
+                            Level::Error,
+                            "UI",
+                            format!("Cannot export diagnostics: {error}"),
+                        ),
+                    }
+                })
+                .unwrap_or(()),
+                Ok(None) => {}
+                Err(error) => {
+                    with_app(|app| app.log(Level::Error, "UI", error));
+                }
+            }
+        }
+        CMD_COPY_DIAGNOSTICS => {
+            with_app(|app| {
+                let text = crate::diagnostics::bundle(Some(&app.editor.profile), false).and_then(
+                    |bundle| serde_json::to_string_pretty(&bundle).map_err(|e| e.to_string()),
+                );
+                match text {
+                    Ok(text) if copy_to_clipboard(window, &text) => app.log(
+                        Level::Info,
+                        "UI",
+                        "Copied diagnostics to the clipboard. Paths, plugin settings and log text are left out.",
+                    ),
+                    Ok(_) => app.log(Level::Error, "UI", "Cannot open the clipboard."),
+                    Err(error) => app.log(
+                        Level::Error,
+                        "UI",
+                        format!("Cannot export diagnostics: {error}"),
+                    ),
+                }
+            });
+        }
+        CMD_DEVICE_STRINGS => {
+            with_app(App::read_device_strings);
         }
         ID_MODE => {
             let mode = with_app(|app| app.editor.mode());
@@ -635,4 +876,84 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         }
         _ => {}
     }
+}
+
+/// A save dialog for a text file, asking before replacing one.
+/// Upstream's Device string reader asks for IDs and one index; this reads
+/// strings 1-10 of every connected tablet, which is what writing a
+/// configuration needs. `device-strings` reads any IDs and indices.
+pub(super) fn device_string_report() -> String {
+    let database = otd_core::tablets::Database::builtin();
+    let mut tablets: Vec<(u16, u16, String)> = Vec::new();
+    for device in crate::hid::enumerate().unwrap_or_default() {
+        if let Some((name, _, _)) = crate::hid::identify(&device, database)
+            && !tablets
+                .iter()
+                .any(|(vendor, product, _)| (*vendor, *product) == (device.vendor, device.product))
+        {
+            tablets.push((device.vendor, device.product, name));
+        }
+    }
+    if tablets.is_empty() {
+        return "No tablet from OpenTabletDriver's database is connected. For other devices, run: opentabletdriver-rust.exe device-strings VID PID".into();
+    }
+    let indices: Vec<u8> = (1..=10).collect();
+    let mut report = String::new();
+    for (vendor, product, name) in tablets {
+        report.push_str(&format!("{name} ({vendor:04x}:{product:04x})\n"));
+        let collections = crate::hid::read_strings(vendor, product, &indices).unwrap_or_default();
+        // Every collection of one device reports the same strings.
+        if let Some((_, strings)) = collections.first() {
+            for (index, value) in strings {
+                if let Ok(text) = value
+                    && !text.is_empty()
+                {
+                    report.push_str(&format!("  {index}: {text}\n"));
+                }
+            }
+        }
+    }
+    report.trim_end().to_owned()
+}
+
+pub(super) fn text_save_dialog(
+    window: HWND,
+    title: &str,
+    name: &str,
+) -> Result<Option<PathBuf>, String> {
+    let mut buffer = vec![0u16; 32_768];
+    for (slot, unit) in buffer.iter_mut().zip(name.encode_utf16()) {
+        *slot = unit;
+    }
+    let (filter, extension) = if name.ends_with(".json") {
+        ("JSON file (*.json)\0*.json\0All files\0*.*\0\0", "json")
+    } else {
+        ("Text file (*.txt)\0*.txt\0All files\0*.*\0\0", "txt")
+    };
+    let (filter, extension) = (wide(filter), wide(extension));
+    let title = wide(title);
+    let mut dialog = OPENFILENAMEW {
+        lStructSize: size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: window,
+        lpstrFilter: filter.as_ptr(),
+        lpstrFile: buffer.as_mut_ptr(),
+        nMaxFile: buffer.len() as u32,
+        lpstrDefExt: extension.as_ptr(),
+        lpstrTitle: title.as_ptr(),
+        Flags: OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT,
+        ..Default::default()
+    };
+    if unsafe { GetSaveFileNameW(&mut dialog) } == 0 {
+        let code = unsafe { CommDlgExtendedError() };
+        return if code == 0 {
+            Ok(None)
+        } else {
+            Err(format!("file dialog failed (0x{code:x})"))
+        };
+    }
+    let length = buffer
+        .iter()
+        .position(|c| *c == 0)
+        .ok_or("invalid file dialog path")?;
+    Ok(Some(OsString::from_wide(&buffer[..length]).into()))
 }

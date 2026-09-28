@@ -4,7 +4,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::protocol::{HEIGHT_MM, MAX_X, MAX_Y, WIDTH_MM};
+use crate::spec::TabletSpec;
 
 pub const FILTER_PATH: &str = "RadialFollow.RadialFollowSmoothingTabletSpace";
 pub const FILTER_NAME: &str = "AbstractQbit's Radial Follow Smoothing (Tablet coordinates)";
@@ -139,11 +139,17 @@ pub struct RadialFollowSmoothingTabletSpace {
 
 impl RadialFollowSmoothingTabletSpace {
     pub fn new(settings: RadialFollowSettings) -> Self {
+        Self::new_for(settings, TabletSpec::PTH_660)
+    }
+
+    /// Report units are converted with the tablet's size, as the original
+    /// filter reads it from the tablet's digitizer specification.
+    pub fn new_for(settings: RadialFollowSettings, spec: TabletSpec) -> Self {
         Self {
             core: RadialFollowCore::new(settings),
             mm_scale: (
-                WIDTH_MM as f32 / MAX_X as f32,
-                HEIGHT_MM as f32 / MAX_Y as f32,
+                spec.width_mm as f32 / spec.max_x as f32,
+                spec.height_mm as f32 / spec.max_y as f32,
             ),
         }
     }

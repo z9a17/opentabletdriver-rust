@@ -7,8 +7,12 @@ use std::mem::size_of;
 use std::os::windows::ffi::OsStringExt;
 use std::ptr;
 
+use otd_core::decoders::TabletDecoder;
 use otd_core::endpoint_match::{self, Endpoint, Transport};
-use otd_core::tablets::{Database, DeviceIdentifier, Role, TabletConfiguration};
+use otd_core::spec::TabletSpec;
+use otd_core::tablets::{
+    Database, DeviceIdentifier, ParserSupport, Role, TabletConfiguration, parser_support,
+};
 use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
     CM_Get_Device_IDW, CM_Get_Parent, CM_NOTIFY_ACTION, CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL,
     CM_NOTIFY_ACTION_DEVICEREMOVECOMPLETE, CM_NOTIFY_FILTER, CM_NOTIFY_FILTER_0,
@@ -38,7 +42,9 @@ use windows_sys::core::GUID;
 
 pub const WACOM_VENDOR: u16 = 0x056a;
 pub const PTH660_USB: u16 = 0x0357;
+#[cfg(test)]
 pub const PEN_REPORT_LENGTH: u16 = 192;
+#[cfg(test)]
 pub const AUX_REPORT_LENGTH: u16 = 44;
 
 pub struct OwnedHandle(HANDLE);
@@ -145,12 +151,6 @@ impl Candidate {
         std::ffi::OsString::from_wide(&self.path[..length])
             .to_string_lossy()
             .into_owned()
-    }
-
-    pub fn is_pen(&self) -> bool {
-        self.vendor == WACOM_VENDOR
-            && self.product == PTH660_USB
-            && self.input_length == PEN_REPORT_LENGTH
     }
 
     /// Whether this collection's interface still exists. Opens it without
@@ -430,48 +430,176 @@ pub fn enumerate_with_database(database: &Database) -> io::Result<Vec<Candidate>
     Ok(found)
 }
 
+/// A collection's path and its strings by index.
+pub type DeviceStrings = (String, Vec<(u8, Result<String, String>)>);
+
+/// USB string descriptors of every HID collection with these IDs, as
+/// OpenTabletDriver's device string reader shows them. Read-only: each
+/// collection is opened without read or write access.
+pub fn read_strings(vendor: u16, product: u16, indices: &[u8]) -> io::Result<Vec<DeviceStrings>> {
+    let guid = hid_guid();
+    let set = unsafe {
+        SetupDiGetClassDevsW(
+            &guid,
+            ptr::null(),
+            ptr::null_mut(),
+            DIGCF_PRESENT | DIGCF_DEVICEINTERFACE,
+        )
+    };
+    if set == INVALID_HANDLE_VALUE as isize {
+        return Err(io::Error::last_os_error());
+    }
+    let _guard = DeviceInfoSet(set);
+    let mut found = Vec::new();
+    for index in 0.. {
+        let mut interface = SP_DEVICE_INTERFACE_DATA {
+            cbSize: size_of::<SP_DEVICE_INTERFACE_DATA>() as u32,
+            ..Default::default()
+        };
+        if unsafe { SetupDiEnumDeviceInterfaces(set, ptr::null(), &guid, index, &mut interface) }
+            == 0
+        {
+            break;
+        }
+        let Ok((path, _)) = detail_path(set, &interface) else {
+            continue;
+        };
+        let Ok(handle) = OwnedHandle::new(unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                ptr::null(),
+                OPEN_EXISTING,
+                0,
+                ptr::null_mut(),
+            )
+        }) else {
+            continue;
+        };
+        let mut attrs = HIDD_ATTRIBUTES {
+            Size: size_of::<HIDD_ATTRIBUTES>() as u32,
+            VendorID: 0,
+            ProductID: 0,
+            VersionNumber: 0,
+        };
+        if !unsafe { HidD_GetAttributes(handle.raw(), &mut attrs) }
+            || attrs.VendorID != vendor
+            || attrs.ProductID != product
+        {
+            continue;
+        }
+        let strings = indices
+            .iter()
+            .map(|&string| {
+                (
+                    string,
+                    indexed_string(handle.raw(), string).map_err(|error| error.to_string()),
+                )
+            })
+            .collect();
+        found.push((
+            String::from_utf16_lossy(&path[..path.len().saturating_sub(1)]),
+            strings,
+        ));
+    }
+    Ok(found)
+}
+
 pub struct SelectedDevice<'a> {
     pub pen: &'a Candidate,
     pub configuration: TabletConfiguration,
     pub identifier: DeviceIdentifier,
     pub auxiliary: Option<(&'a Candidate, DeviceIdentifier)>,
+    /// The digitizer's ranges from the configuration.
+    pub spec: TabletSpec,
 }
 
-/// Database predicates govern selection; the execution gate remains explicit
-/// until other parser/specification combinations have a runtime implementation.
-pub fn select_pth660<'a>(
+impl SelectedDevice<'_> {
+    /// The decoder for this endpoint's configured parser.
+    pub fn decoder(&self) -> io::Result<TabletDecoder> {
+        TabletDecoder::for_parser(self.identifier.parser(), self.spec).ok_or_else(|| {
+            io::Error::other(format!(
+                "{} uses {}, which this driver cannot decode",
+                self.configuration.name,
+                self.identifier.parser()
+            ))
+        })
+    }
+}
+
+/// The configuration name and role of a discovered collection, if a usable
+/// configuration matches it, and whether the driver can decode it.
+pub fn identify(device: &Candidate, database: &Database) -> Option<(String, Role, bool)> {
+    database
+        .find(device.vendor, device.product)
+        .find(|found| endpoint_match::matches(&device.endpoint, found).is_ok())
+        .map(|found| {
+            (
+                found.configuration.name.clone(),
+                found.role,
+                parser_support(found.identifier.parser()) != ParserSupport::Missing,
+            )
+        })
+}
+
+/// Configuration names of the connected tablets this driver can run, in
+/// device-path order. Used to pick which OpenTabletDriver profile to import.
+pub fn connected_tablets() -> Vec<String> {
+    let database = Database::builtin();
+    let mut names = Vec::new();
+    for device in enumerate().unwrap_or_default() {
+        if let Some((name, Role::Digitizer, true)) = identify(&device, database)
+            && !names.contains(&name)
+        {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// Selects one tablet to drive. Every digitizer interface that matches a
+/// usable configuration (IDs, report lengths and device strings) and whose
+/// parser and specifications this driver supports is a candidate. A profile
+/// that names a tablet selects only that tablet; `path` selects one endpoint.
+/// Among several candidates the first by device path wins, so the choice is
+/// stable; OpenTabletDriver would run all of them.
+pub fn select_device<'a>(
     devices: &'a [Candidate],
     database: &Database,
     path: Option<&str>,
+    tablet: Option<&str>,
 ) -> Result<Option<SelectedDevice<'a>>, String> {
-    let builtin = Database::builtin()
-        .find(WACOM_VENDOR, PTH660_USB)
-        .find(|found| found.role == Role::Digitizer)
-        .expect("pinned PTH-660 configuration");
-    let mut selected = None;
-    for found in database.find(WACOM_VENDOR, PTH660_USB).filter(|found| {
-        found.role == Role::Digitizer && found.configuration.name == "Wacom PTH-660"
-    }) {
-        for device in devices
-            .iter()
-            .filter(|device| path.is_none_or(|path| device.path_text().eq_ignore_ascii_case(path)))
+    let mut unsupported = None;
+    for device in devices
+        .iter()
+        .filter(|device| path.is_none_or(|path| device.path_text().eq_ignore_ascii_case(path)))
+    {
+        for found in database
+            .find(device.vendor, device.product)
+            .filter(|found| {
+                found.role == Role::Digitizer
+                    && tablet.is_none_or(|name| found.configuration.name == name)
+            })
         {
             if endpoint_match::matches(&device.endpoint, &found).is_err() {
                 continue;
             }
-            if found.identifier.parser() != builtin.identifier.parser()
-                || device.input_length != PEN_REPORT_LENGTH
-                || found.configuration.specifications != builtin.configuration.specifications
-            {
-                return Err("The matched PTH-660 override changes its parser, report length or specifications; this runtime cannot safely execute that configuration yet.".into());
-            }
-            if let Some(previous) = &selected {
-                let previous: &SelectedDevice<'_> = previous;
-                if previous.pen.path != device.path {
-                    return Err("Multiple matching PTH-660 pen endpoints; select device_path in the profile.".into());
-                }
+            if parser_support(found.identifier.parser()) == ParserSupport::Missing {
+                unsupported = Some(format!(
+                    "{} uses {}, which this driver cannot decode",
+                    found.configuration.name,
+                    found.identifier.parser()
+                ));
                 continue;
             }
+            let spec = match TabletSpec::from_configuration(found.configuration) {
+                Ok(spec) => spec,
+                Err(error) => {
+                    unsupported = Some(error);
+                    continue;
+                }
+            };
             let auxiliary = database
                 .find(device.vendor, device.product)
                 .filter(|aux| {
@@ -492,15 +620,19 @@ pub fn select_pth660<'a>(
             let mut configuration = found.configuration.clone();
             // The managed TabletReference constructor receives the actual selected identifier.
             configuration.digitizer_identifiers = vec![found.identifier.clone()];
-            selected = Some(SelectedDevice {
+            return Ok(Some(SelectedDevice {
                 pen: device,
                 configuration,
                 identifier: found.identifier.clone(),
                 auxiliary,
-            });
+                spec,
+            }));
         }
     }
-    Ok(selected)
+    match unsupported {
+        Some(reason) => Err(reason),
+        None => Ok(None),
+    }
 }
 
 /// Initialization follows pinned InputDevice.Initialize: strings, delayed

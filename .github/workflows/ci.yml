@@ -71,6 +71,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked dotnet_tablet_reference_uses_selected_database_specification -- --ignored
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked dotnet_tools_start_with_settings_and_stop_on_drop -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked dotnet_filters_run_on_tablets_without_the_intuos_layout -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked dotnet_timer_filters_emit_between_reports -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked dotnet_inspection_reports_generated_control_attributes -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   portable-core:
     # The report pipeline and session loop must build and pass without Windows.
@@ -80,5 +88,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: cargo clippy --locked -p otd-core --all-targets -- -D warnings
-      - run: cargo test --locked -p otd-core
+      - run: cargo clippy --locked -p otd-core -p otd-linux --all-targets -- -D warnings
+      - run: cargo test --locked -p otd-core -p otd-linux
+      - run: cargo build --locked -p otd-linux --release
+      - uses: actions/upload-artifact@v7
+        with:
+          name: opentabletdriver-rust-linux-x64
+          path: target/release/opentabletdriver-rust-linux
+
+  portable-macos:
+    # The portable core must also build and pass on macOS.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --locked -p otd-core -p otd-linux

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Numerics;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -130,7 +131,11 @@ sealed class Instance : IDisposable
     int consuming;
     int asyncEmission;
     Action<IDeviceReport>? graphContinuation;
+    // Timers injected into [Resolved] ITimer members. The report thread fires
+    // them, so timer emissions continue the graph on the thread that owns it.
+    readonly List<SessionTimer> timers = new();
     public PipelinePosition Position { get; }
+    public bool HasTimers => timers.Count != 0;
 
     public Instance(JObject config)
     {
@@ -141,11 +146,13 @@ sealed class Instance : IDisposable
         {
             Type type = context.LoadFromAssemblyPath(path).GetType(config.Value<string>("type_name") ?? "", true)!;
             PluginEligibility.RequireLoadable(type);
-            if (!typeof(IPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(type)
-                || typeof(AsyncPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(type))
-                throw new NotSupportedException("Only synchronous OTD position filters are supported; async filters, output modes, tools and bindings are not supported.");
+            if (!typeof(IPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(type))
+                throw new NotSupportedException("Only OTD position filters are supported; output modes and bindings are not supported.");
             created = Activator.CreateInstance(type) ?? throw new InvalidOperationException("Cannot construct filter");
             filter = (IPositionedPipelineElement<IDeviceReport>)created;
+            // PluginManager.ConstructObject injects services before
+            // PluginSettingStore.ApplySettings, so Frequency finds its timer.
+            InjectTimers(type, created);
             ApplySettings(type, created, config["settings"] as JObject ?? new JObject());
             InjectTablet(type, created, config["tablet"]?.ToObject<TabletConfiguration>()
                 ?? throw new ArgumentException("tablet configuration missing"));
@@ -162,7 +169,7 @@ sealed class Instance : IDisposable
         }
     }
 
-    static void ApplySettings(Type type, object value, JObject settings)
+    internal static void ApplySettings(Type type, object value, JObject settings)
     {
         var properties = type.GetProperties().Where(p => p.GetCustomAttribute<PropertyAttribute>() != null).ToArray();
         foreach (var setting in settings.Properties())
@@ -185,6 +192,61 @@ sealed class Instance : IDisposable
         }
     }
 
+    void InjectTimers(Type type, object value)
+    {
+        const BindingFlags members = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+        for (Type? owner = type; owner != null; owner = owner.BaseType)
+        {
+            foreach (var property in owner.GetProperties(members))
+                if (property.GetCustomAttribute<ResolvedAttribute>() != null && property.PropertyType == typeof(OpenTabletDriver.Plugin.Timers.ITimer))
+                {
+                    var timer = new SessionTimer();
+                    timers.Add(timer);
+                    property.SetValue(value, timer);
+                }
+            foreach (var field in owner.GetFields(members))
+                if (field.GetCustomAttribute<ResolvedAttribute>() != null && field.FieldType == typeof(OpenTabletDriver.Plugin.Timers.ITimer))
+                {
+                    var timer = new SessionTimer();
+                    timers.Add(timer);
+                    field.SetValue(value, timer);
+                }
+        }
+    }
+
+    /// Microseconds until this filter's next timer tick, or -1 without one.
+    public long NextTickMicros(long now)
+    {
+        long best = -1;
+        foreach (var timer in timers)
+            if (timer.Enabled)
+            {
+                long micros = Math.Max(0, (timer.Due - now) * 1_000_000 / Stopwatch.Frequency);
+                if (best < 0 || micros < best) best = micros;
+            }
+        return best;
+    }
+
+    /// Fires this filter's due timers; emissions continue through `continuation`.
+    public void TickGraph(long now, Action<IDeviceReport> continuation)
+    {
+        if (Environment.CurrentManagedThreadId != ownerThread)
+            throw new InvalidOperationException("Timers must fire on the graph's owning thread.");
+        if (Interlocked.Exchange(ref consuming, 1) != 0)
+            throw new InvalidOperationException("Reentrant timer tick of the same filter is unsupported.");
+        graphContinuation = continuation;
+        try
+        {
+            foreach (var timer in timers)
+                timer.FireIfDue(now);
+        }
+        finally
+        {
+            graphContinuation = null;
+            Volatile.Write(ref consuming, 0);
+        }
+    }
+
     static void InjectTablet(Type type, object value, TabletConfiguration configuration)
     {
         var tablet = new TabletReference(configuration, configuration.DigitizerIdentifiers.Take(1));
@@ -199,6 +261,8 @@ sealed class Instance : IDisposable
                 bool tabletRef = property.GetCustomAttribute<TabletReferenceAttribute>() != null;
                 if ((resolved || tabletRef) && property.PropertyType == typeof(TabletReference))
                     property.SetValue(value, tablet);
+                else if (resolved && property.PropertyType == typeof(OpenTabletDriver.Plugin.Timers.ITimer))
+                    continue; // Injected before settings.
                 else if (resolved || tabletRef)
                     throw new NotSupportedException($"Unsupported plugin dependency: {property.Name} ({property.PropertyType.Name})");
             }
@@ -208,6 +272,8 @@ sealed class Instance : IDisposable
                 bool tabletRef = field.GetCustomAttribute<TabletReferenceAttribute>() != null;
                 if ((resolved || tabletRef) && field.FieldType == typeof(TabletReference))
                     field.SetValue(value, tablet);
+                else if (resolved && field.FieldType == typeof(OpenTabletDriver.Plugin.Timers.ITimer))
+                    continue; // Injected before settings.
                 else if (resolved || tabletRef)
                     throw new NotSupportedException($"Unsupported plugin field dependency: {field.Name} ({field.FieldType.Name})");
             }
@@ -323,6 +389,88 @@ sealed class Instance : IDisposable
     {
         filter.Emit -= OnEmit;
         (filter as IDisposable)?.Dispose();
+        foreach (var timer in timers) timer.Dispose();
+        context.Unload();
+    }
+}
+
+// The ITimer upstream's PluginManager supplies (WindowsTimer on Windows),
+// except that it elapses on the report thread when the session reaches its
+// due time instead of on a separate timer thread. A late tick fires once and
+// the schedule restarts from now, as a periodic timer drops missed ticks.
+sealed class SessionTimer : OpenTabletDriver.Plugin.Timers.ITimer
+{
+    long due;
+    public float Interval { get; set; } = 1;
+    public bool Enabled { get; private set; }
+    public event Action? Elapsed;
+    internal long Due => due;
+
+    long Period => Math.Max(1, (long)(Math.Max(Interval, 0.05f) * Stopwatch.Frequency / 1000.0));
+
+    public void Start()
+    {
+        due = Stopwatch.GetTimestamp() + Period;
+        Enabled = true;
+    }
+
+    public void Stop() => Enabled = false;
+
+    internal void FireIfDue(long now)
+    {
+        if (!Enabled || now < due) return;
+        due += Period;
+        if (due <= now) due = now + Period;
+        Elapsed?.Invoke();
+        long finished = Stopwatch.GetTimestamp();
+        if (Enabled && due <= finished) due = finished + Period;
+    }
+
+    public void Dispose()
+    {
+        Enabled = false;
+        Elapsed = null;
+    }
+}
+
+// A running ITool, as DriverDaemon.SetToolSettings constructs it: settings
+// applied, dependency callbacks run, then Initialize. Tools get no tablet.
+sealed class ToolInstance : IDisposable
+{
+    readonly PluginContext context;
+    readonly OpenTabletDriver.Plugin.ITool tool;
+
+    public ToolInstance(JObject config)
+    {
+        string path = Path.GetFullPath(config.Value<string>("assembly_path") ?? throw new ArgumentException("assembly_path missing"));
+        context = new PluginContext(path);
+        object? created = null;
+        try
+        {
+            Type type = context.LoadFromAssemblyPath(path).GetType(config.Value<string>("type_name") ?? "", true)!;
+            PluginEligibility.RequireLoadable(type);
+            if (!typeof(OpenTabletDriver.Plugin.ITool).IsAssignableFrom(type))
+                throw new NotSupportedException($"'{type.FullName}' is not an OpenTabletDriver tool.");
+            created = Activator.CreateInstance(type) ?? throw new InvalidOperationException("Cannot construct tool");
+            tool = (OpenTabletDriver.Plugin.ITool)created;
+            Instance.ApplySettings(type, created, config["settings"] as JObject ?? new JObject());
+            foreach (var method in type.GetMethods())
+                if (method.GetCustomAttribute<OnDependencyLoadAttribute>() != null)
+                    method.Invoke(created, []);
+            if (!tool.Initialize())
+                throw new InvalidOperationException($"{type.FullName} failed to initialize.");
+        }
+        catch
+        {
+            (created as IDisposable)?.Dispose();
+            context.Unload();
+            throw;
+        }
+    }
+
+    public void Dispose()
+    {
+        tool.Dispose();
         context.Unload();
     }
 }
@@ -418,6 +566,27 @@ public static unsafe partial class EntryPoints
     }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static nint CreateTool(byte* json, nuint length)
+    {
+        try
+        {
+            if (length > 131072 || json == null) return 0;
+            var settings = JObject.Parse(Encoding.UTF8.GetString(new ReadOnlySpan<byte>(json, (int)length)));
+            return GCHandle.ToIntPtr(GCHandle.Alloc(new ToolInstance(settings)));
+        }
+        catch (Exception e) { lastError = e.GetBaseException().Message; return 0; }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static void DestroyTool(nint handle)
+    {
+        var owner = GCHandle.FromIntPtr(handle);
+        try { ((ToolInstance)owner.Target!).Dispose(); }
+        catch (Exception e) { Console.Error.WriteLine($".NET tool dispose failed: {e.GetBaseException().Message}"); }
+        finally { owner.Free(); }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static int Inspect(byte* path, int length, byte* output, int capacity)
     {
         try
@@ -427,19 +596,26 @@ public static unsafe partial class EntryPoints
             try
             {
                 var types = context.LoadFromAssemblyPath(file).GetExportedTypes()
-                    .Where(t => !t.IsAbstract && typeof(IPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(t)
+                    .Where(t => !t.IsAbstract && (typeof(IPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(t)
+                            || typeof(OpenTabletDriver.Plugin.ITool).IsAssignableFrom(t))
                         && PluginEligibility.IsDiscoverable(t))
                     .Select(t =>
                     {
                         var properties = t.GetProperties()
                             .Where(p => p.GetCustomAttribute<PropertyAttribute>() != null).ToArray();
                         return new {
+                            kind = typeof(OpenTabletDriver.Plugin.ITool).IsAssignableFrom(t) ? "tool" : "filter",
                             type_name = t.FullName,
                             display_name = t.GetCustomAttribute<PluginNameAttribute>()?.Name,
                             // Omitted values preserve the plugin constructor's defaults.
                             // A null placeholder would instead coerce many value types to zero.
-                            settings = properties.Where(p => p.GetCustomAttribute<DefaultPropertyValueAttribute>() != null)
-                                .ToDictionary(p => p.Name, p => p.GetCustomAttribute<DefaultPropertyValueAttribute>()?.Value),
+                            // GeneratedControls also saves a slider's DefaultValue
+                            // for a property that has no value yet.
+                            settings = properties.Where(p => p.GetCustomAttribute<DefaultPropertyValueAttribute>() != null
+                                    || (p.GetCustomAttribute<SliderPropertyAttribute>() != null && p.PropertyType == typeof(float)))
+                                .ToDictionary(p => p.Name, p => p.GetCustomAttribute<DefaultPropertyValueAttribute>() is { } defaults
+                                    ? defaults.Value
+                                    : p.GetCustomAttribute<SliderPropertyAttribute>()!.DefaultValue),
                             properties = properties.Select(p => new {
                                 name = p.Name,
                                 display_name = p.GetCustomAttribute<PropertyAttribute>()?.DisplayName,
@@ -449,7 +625,12 @@ public static unsafe partial class EntryPoints
                                 writable = p.SetMethod?.IsPublic == true && p.GetIndexParameters().Length == 0,
                                 enum_flags = (Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType).IsDefined(typeof(FlagsAttribute), false),
                                 enum_underlying_type = EnumUnderlyingType(Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType),
-                                enum_choices = EnumChoices(Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType)
+                                enum_choices = EnumChoices(Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType),
+                                valid_values = ValidValues(p),
+                                slider = p.GetCustomAttribute<SliderPropertyAttribute>() is { } slider
+                                    ? new { min = slider.Min, max = slider.Max, default_value = slider.DefaultValue }
+                                    : null,
+                                description = p.GetCustomAttribute<BooleanPropertyAttribute>()?.Description
                             }).ToArray()
                         };
                     }).ToArray();
@@ -462,6 +643,18 @@ public static unsafe partial class EntryPoints
             finally { context.Unload(); }
         }
         catch (Exception e) { lastError = e.GetBaseException().Message; Console.Error.WriteLine($".NET plugin inspection failed: {lastError}"); return -1; }
+    }
+
+    // A [PropertyValidated] string's choices come from a static member, as
+    // GeneratedControls reads them. This runs that member's code, like
+    // upstream's settings page; a failure leaves the plain text field.
+    static string[]? ValidValues(PropertyInfo property)
+    {
+        if (property.PropertyType != typeof(string)
+            || property.GetCustomAttribute<PropertyValidatedAttribute>() is not { } validated)
+            return null;
+        try { return validated.GetValue<IEnumerable<string>>(property)?.ToArray(); }
+        catch { return null; }
     }
 
     // Reflection only: inspecting controls must not construct or run a plugin.

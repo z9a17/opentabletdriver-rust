@@ -47,7 +47,13 @@ struct Bridge {
     dispatch_graph: graph::DispatchGraph,
     graph_failure: graph::GraphFailure,
     destroy_graph: graph::DestroyGraph,
+    graph_next_tick: Option<graph::GraphNextTick>,
+    tick_graph: Option<graph::TickGraph>,
+    create_tool: Option<CreateTool>,
+    destroy_tool: Option<DestroyTool>,
 }
+type CreateTool = unsafe extern "C" fn(*const u8, usize) -> *mut c_void;
+type DestroyTool = unsafe extern "C" fn(*mut c_void);
 static BRIDGE: OnceLock<Result<Bridge, String>> = OnceLock::new();
 
 fn bridge_dir() -> Result<PathBuf, String> {
@@ -148,11 +154,25 @@ fn load_bridge() -> Result<Bridge, String> {
         destroy_graph: unsafe {
             std::mem::transmute::<*mut c_void, graph::DestroyGraph>(entry("DestroyGraph")?)
         },
+        // Bridges older than 0.14 lack timers; synchronous filters still run.
+        graph_next_tick: entry("GraphNextTick").ok().map(|entry| unsafe {
+            std::mem::transmute::<*mut c_void, graph::GraphNextTick>(entry)
+        }),
+        tick_graph: entry("TickGraph")
+            .ok()
+            .map(|entry| unsafe { std::mem::transmute::<*mut c_void, graph::TickGraph>(entry) }),
         get_api: unsafe { std::mem::transmute::<*mut c_void, GetApi>(entry("GetApi")?) },
         get_position: unsafe {
             std::mem::transmute::<*mut c_void, GetPosition>(entry("GetPosition")?)
         },
         inspect: unsafe { std::mem::transmute::<*mut c_void, Inspect>(entry("Inspect")?) },
+        // Bridges older than 0.13 lack tools; filters keep working with them.
+        create_tool: entry("CreateTool")
+            .ok()
+            .map(|entry| unsafe { std::mem::transmute::<*mut c_void, CreateTool>(entry) }),
+        destroy_tool: entry("DestroyTool")
+            .ok()
+            .map(|entry| unsafe { std::mem::transmute::<*mut c_void, DestroyTool>(entry) }),
         get_error: unsafe { std::mem::transmute::<*mut c_void, GetError>(entry("GetError")?) },
         process_report: unsafe {
             std::mem::transmute::<*mut c_void, ProcessReport>(entry("ProcessReport").map_err(|error|
@@ -268,6 +288,22 @@ pub struct PropertyMetadata {
     pub enum_underlying_type: Option<String>,
     #[serde(default)]
     pub enum_choices: Vec<EnumChoice>,
+    /// A `[PropertyValidated]` string's allowed values.
+    #[serde(default)]
+    pub valid_values: Option<Vec<String>>,
+    #[serde(default)]
+    pub slider: Option<Slider>,
+    /// A `[BooleanProperty]`'s description.
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// `[SliderProperty]`: upstream shows the range as a tool tip.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+pub struct Slider {
+    pub min: f32,
+    pub max: f32,
+    pub default_value: f32,
 }
 
 fn property_writable() -> bool {
@@ -287,6 +323,37 @@ pub struct FilterMetadata {
     pub properties: Vec<PropertyMetadata>,
     /// Attribute defaults from inspection; omitted properties retain constructor defaults.
     pub default_settings_json: String,
+}
+
+/// Starts an OpenTabletDriver tool: constructs it, applies its settings and
+/// calls `Initialize`. Returns the handle `destroy_tool` disposes.
+pub fn create_tool(config: &crate::plugins::PluginConfig) -> Result<*mut c_void, String> {
+    let bridge = bridge()?;
+    let create = bridge.create_tool.ok_or(
+        "The installed .NET bridge lacks tool support. Replace the compat directory with this release's files.",
+    )?;
+    let settings = serde_json::json!({
+        "assembly_path": config.path.canonicalize().map_err(|e| e.to_string())?,
+        "type_name": config.type_name,
+        "settings": serde_json::from_str::<serde_json::Value>(&config.settings_json).map_err(|e| e.to_string())?,
+    })
+    .to_string();
+    let handle = unsafe { create(settings.as_ptr(), settings.len()) };
+    if handle.is_null() {
+        Err(last_error())
+    } else {
+        Ok(handle)
+    }
+}
+
+pub fn destroy_tool(handle: *mut c_void) {
+    if let Ok(Bridge {
+        destroy_tool: Some(destroy),
+        ..
+    }) = bridge()
+    {
+        unsafe { destroy(handle) };
+    }
 }
 
 pub struct InspectedFilter {
@@ -321,6 +388,8 @@ pub fn inspect_details(path: &Path) -> Result<Vec<InspectedFilter>, String> {
     };
     #[derive(serde::Deserialize)]
     struct Entry {
+        #[serde(default)]
+        kind: Option<String>,
         type_name: String,
         display_name: Option<String>,
         settings: serde_json::Value,
@@ -332,7 +401,11 @@ pub fn inspect_details(path: &Path) -> Result<Vec<InspectedFilter>, String> {
         .map(|entry| InspectedFilter {
             config: crate::plugins::PluginConfig {
                 path: path.clone(),
-                kind: crate::plugins::PluginKind::Dotnet,
+                kind: if entry.kind.as_deref() == Some("tool") {
+                    crate::plugins::PluginKind::DotnetTool
+                } else {
+                    crate::plugins::PluginKind::Dotnet
+                },
                 enabled: false,
                 type_name: entry.type_name.clone(),
                 settings_json: entry.settings.to_string(),
@@ -364,7 +437,7 @@ mod tests {
 
     // Existing synthetic pipeline fixtures now supply the raw context required
     // by managed dispatch, just as the transport session does.
-    fn prepare_synthetic_pen(chain: &mut PluginChain, pen: PenReport) {
+    fn synthetic_pen_raw(pen: PenReport) -> [u8; 192] {
         let mut raw = [0u8; 192];
         raw[0] = pen.id;
         raw[1] = u8::from(pen.tip_switch)
@@ -378,7 +451,60 @@ mod tests {
         raw[11] = pen.tilt[1] as u8;
         raw[12..14].copy_from_slice(&pen.rotation.unwrap_or(0).to_le_bytes());
         raw[16] = pen.hover_distance.unwrap_or(0);
-        chain.prepare_report(pen, &raw);
+        raw
+    }
+
+    #[test]
+    #[ignore = "requires bridge and SettingsFixture DLL; set OTD_COMPAT_DIR and OTD_TEST_SETTINGS_PLUGIN"]
+    fn dotnet_tools_start_with_settings_and_stop_on_drop() {
+        let path: PathBuf = std::env::var_os("OTD_TEST_SETTINGS_PLUGIN")
+            .expect("set OTD_TEST_SETTINGS_PLUGIN")
+            .into();
+        let entries = inspect_details(&path).unwrap();
+        let entry = entries
+            .iter()
+            .find(|entry| entry.config.type_name == "SettingsFixture.MarkerTool")
+            .unwrap();
+        assert_eq!(entry.config.kind, PluginKind::DotnetTool);
+        // Filters in the same assembly stay filters.
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.config.kind == PluginKind::Dotnet)
+        );
+
+        let marker = std::env::temp_dir().join(format!("otd-tool-{}.txt", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let config = PluginConfig {
+            path: path.clone(),
+            kind: PluginKind::DotnetTool,
+            enabled: true,
+            type_name: "SettingsFixture.MarkerTool".into(),
+            settings_json: serde_json::json!({ "MarkerPath": marker }).to_string(),
+        };
+        let lines = std::cell::RefCell::new(Vec::new());
+        let tools = crate::plugins::Tools::start(std::slice::from_ref(&config), |line| {
+            lines.borrow_mut().push(line.to_owned())
+        });
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "started");
+        drop(tools);
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "started stopped");
+        std::fs::remove_file(&marker).unwrap();
+        // A tool whose Initialize fails is reported and skipped, as upstream does.
+        let failing = PluginConfig {
+            settings_json: "{}".into(),
+            ..config
+        };
+        let _none = crate::plugins::Tools::start(&[failing], |line| {
+            lines.borrow_mut().push(line.to_owned())
+        });
+        let lines = lines.into_inner();
+        assert_eq!(lines[0], "Started tool SettingsFixture.MarkerTool.");
+        assert!(
+            lines[1].starts_with("Failed to start tool SettingsFixture.MarkerTool:"),
+            "{}",
+            lines[1]
+        );
     }
 
     #[test]
@@ -454,6 +580,228 @@ mod tests {
         assert!(plugin.process(&mut sample));
         assert_eq!(sample.x, 17.0);
         assert_eq!(sample.y, 20.0);
+    }
+
+    #[test]
+    #[ignore = "requires bridge and SettingsFixture DLL; set OTD_COMPAT_DIR and OTD_TEST_SETTINGS_PLUGIN"]
+    fn dotnet_filters_run_on_tablets_without_the_intuos_layout() {
+        let path: PathBuf = std::env::var_os("OTD_TEST_SETTINGS_PLUGIN")
+            .expect("set OTD_TEST_SETTINGS_PLUGIN")
+            .into();
+        let tablet = otd_core::tablets::Database::builtin()
+            .entries()
+            .iter()
+            .filter_map(|entry| entry.usable())
+            .find(|tablet| tablet.name == "XP-Pen Deco 01 V2")
+            .unwrap();
+        let config = PluginConfig {
+            path,
+            kind: PluginKind::Dotnet,
+            enabled: true,
+            type_name: "SettingsFixture.DefaultsFilter".into(),
+            settings_json: r#"{"InheritedOffset":5000.0}"#.into(),
+        };
+        let desktop = Rect {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        let mapper = Mapper::new(Crop::default(), 0, desktop, desktop).unwrap();
+        // An XP-Pen packet: report ID 0x07, not an IntuosV2 0x10/0x1e layout.
+        let pen = PenReport {
+            id: 0x07,
+            x: 20_000,
+            y: 10_000,
+            pressure: 100,
+            in_range: true,
+            sense: true,
+            tip_switch: true,
+            eraser: false,
+            tilt: [0; 2],
+            rotation: None,
+            hover_distance: None,
+        };
+        let raw = [0x07, 0xa1, 0x20, 0x4e, 0x10, 0x27, 0x64, 0x00, 0x00, 0x00];
+        let buttons = otd_core::reports::Buttons::from_bits(0, 2).ok();
+        let run = |chain: &mut PluginChain| {
+            let mut pipeline = ReportPipeline::new(&Profile::default()).unwrap();
+            let mut sent = Vec::new();
+            pipeline
+                .process_pen(
+                    pen,
+                    &raw,
+                    buttons,
+                    Instant::now(),
+                    Some(mapper),
+                    chain,
+                    |packet| {
+                        sent.push(packet);
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            assert_eq!(chain.take_failure(), None);
+            sent
+        };
+        let filtered = run(&mut PluginChain::load_with_tablet(&[config], tablet).unwrap());
+        let unfiltered = run(&mut PluginChain::load(&[]).unwrap());
+        assert_eq!(filtered.len(), 1);
+        // The fixture moves X by 5011.5 tablet units before mapping.
+        // Unfiltered output keeps exact integer mapping; filtered output maps
+        // floats, so Y may differ by rounding only.
+        assert!(
+            filtered[0].dx > unfiltered[0].dx + 100,
+            "{filtered:?} {unfiltered:?}"
+        );
+        assert!(
+            (filtered[0].dy - unfiltered[0].dy).abs() < 64,
+            "{filtered:?} {unfiltered:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires bridge and SettingsFixture DLL; set OTD_COMPAT_DIR and OTD_TEST_SETTINGS_PLUGIN"]
+    fn dotnet_inspection_reports_generated_control_attributes() {
+        let path: PathBuf = std::env::var_os("OTD_TEST_SETTINGS_PLUGIN")
+            .expect("set OTD_TEST_SETTINGS_PLUGIN")
+            .into();
+        let entries = inspect_details(&path).unwrap();
+        let entry = entries
+            .iter()
+            .find(|entry| entry.config.type_name == "SettingsFixture.ControlsFilter")
+            .unwrap();
+        let property = |name: &str| {
+            entry
+                .metadata
+                .properties
+                .iter()
+                .find(|property| property.name == name)
+                .unwrap()
+        };
+        assert_eq!(
+            property("Mode").valid_values.as_deref(),
+            Some(&["Linear".to_owned(), "Smooth".to_owned()][..])
+        );
+        assert_eq!(
+            property("Strength").slider,
+            Some(Slider {
+                min: 0.0,
+                max: 2.0,
+                default_value: 0.5
+            })
+        );
+        assert_eq!(
+            property("Snap").description.as_deref(),
+            Some("Snap to the grid")
+        );
+        // A slider without DefaultPropertyValue saves its DefaultValue.
+        let defaults: serde_json::Value =
+            serde_json::from_str(&entry.config.settings_json).unwrap();
+        assert_eq!(defaults, serde_json::json!({"Strength": 0.5}));
+    }
+
+    #[test]
+    #[ignore = "requires bridge and SettingsFixture DLL; set OTD_COMPAT_DIR and OTD_TEST_SETTINGS_PLUGIN"]
+    fn dotnet_timer_filters_emit_between_reports() {
+        use otd_core::plugins::Filters;
+        for (type_name, late) in [
+            ("SettingsFixture.AsyncFixtureFilter", false),
+            ("SettingsFixture.LateTimerFilter", true),
+        ] {
+            let path: PathBuf = std::env::var_os("OTD_TEST_SETTINGS_PLUGIN")
+                .expect("set OTD_TEST_SETTINGS_PLUGIN")
+                .into();
+            let config = PluginConfig {
+                path,
+                kind: PluginKind::Dotnet,
+                enabled: true,
+                type_name: type_name.into(),
+                settings_json: if late {
+                    r#"{"Offset":1000.0}"#
+                } else {
+                    r#"{"Frequency":1000.0,"Offset":1000.0}"#
+                }
+                .into(),
+            };
+            let mut chain = PluginChain::load(&[config]).unwrap();
+            // Frequency 1000 Hz: the Scheduler was injected before settings.
+            if late {
+                assert_eq!(chain.next_tick(), None, "timer starts on the first report");
+            } else {
+                let first = chain.next_tick().expect("the async filter has a timer");
+                assert!(first <= Duration::from_millis(2), "{first:?}");
+            }
+            let desktop = Rect {
+                left: 0,
+                top: 0,
+                right: 1920,
+                bottom: 1080,
+            };
+            let mapper = Mapper::new(Crop::default(), 0, desktop, desktop).unwrap();
+            let raw = [
+                0x10, 0x60, 0x14, 0x56, 0x00, 0xa3, 0x16, 0x00, 0x00, 0x00, 0x07, 0x04, 0, 0, 0, 0,
+                0x28,
+            ];
+            let pen = crate::protocol::parse(&raw).unwrap().unwrap();
+            let mut pipeline = ReportPipeline::new(&Profile::default()).unwrap();
+            let mut direct = Vec::new();
+            pipeline
+                .process_with_raw(
+                    pen,
+                    &raw,
+                    Instant::now(),
+                    Some(mapper),
+                    &mut chain,
+                    |packet| {
+                        direct.push(packet);
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            assert!(
+                direct.is_empty(),
+                "the async filter holds reports for its timer"
+            );
+            let (mut reports, mut packets) = (0, Vec::new());
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_millis(30) {
+                if chain.next_tick() == Some(Duration::ZERO) {
+                    let stats = pipeline
+                        .process_tick(Instant::now(), Some(mapper), &mut chain, |packet| {
+                            packets.push(packet);
+                            Ok(())
+                        })
+                        .unwrap();
+                    reports += stats.reports;
+                } else {
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+            }
+            assert_eq!(chain.take_failure(), None);
+            assert!(reports >= 5, "only {reports} timer emissions in 30 ms");
+            // The first tick moves the cursor; repeats at the same spot send nothing.
+            assert_eq!(packets.len(), 1, "{packets:?}");
+            let mut plain = ReportPipeline::new(&Profile::default()).unwrap();
+            let mut unfiltered = Vec::new();
+            plain
+                .process_with_raw(
+                    pen,
+                    &raw,
+                    Instant::now(),
+                    Some(mapper),
+                    &mut PluginChain::load(&[]).unwrap(),
+                    |packet| {
+                        unfiltered.push(packet);
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            assert!(
+                packets[0].dx > unfiltered[0].dx,
+                "{packets:?} {unfiltered:?}"
+            );
+        }
     }
 
     #[test]
@@ -648,26 +996,44 @@ mod tests {
         };
         std::thread::sleep(Duration::from_millis(55));
         let mut first = None;
-        prepare_synthetic_pen(&mut chain, pen);
+        let raw = synthetic_pen_raw(pen);
         assert!(
             pipeline
-                .process(pen, Instant::now(), Some(mapper), &mut chain, |packet| {
-                    first = Some(packet);
-                    Ok(())
-                })
+                .process_with_raw(
+                    pen,
+                    &raw,
+                    Instant::now(),
+                    Some(mapper),
+                    &mut chain,
+                    |packet| {
+                        first = Some(packet);
+                        Ok(())
+                    }
+                )
                 .unwrap()
+                .packets
+                > 0
         );
         assert!(first.is_some());
         pen.x += 20; // Under one screen pixel, inside the configured 5 px dead zone.
         let mut second = None;
-        prepare_synthetic_pen(&mut chain, pen);
+        let raw = synthetic_pen_raw(pen);
         assert!(
-            !pipeline
-                .process(pen, Instant::now(), Some(mapper), &mut chain, |packet| {
-                    second = Some(packet);
-                    Ok(())
-                })
+            pipeline
+                .process_with_raw(
+                    pen,
+                    &raw,
+                    Instant::now(),
+                    Some(mapper),
+                    &mut chain,
+                    |packet| {
+                        second = Some(packet);
+                        Ok(())
+                    }
+                )
                 .unwrap()
+                .packets
+                == 0
         );
         assert!(
             second.is_none(),
@@ -726,12 +1092,19 @@ mod tests {
             let mut run = |reports: u32| {
                 for index in 0..reports {
                     pen.x = 20_000 + index % 1_000;
-                    prepare_synthetic_pen(&mut chain, pen);
+                    let raw = synthetic_pen_raw(pen);
                     pipeline
-                        .process(pen, Instant::now(), Some(mapper), &mut chain, |packet| {
-                            black_box(packet);
-                            Ok(())
-                        })
+                        .process_with_raw(
+                            pen,
+                            &raw,
+                            Instant::now(),
+                            Some(mapper),
+                            &mut chain,
+                            |packet| {
+                                black_box(packet);
+                                Ok(())
+                            },
+                        )
                         .unwrap();
                 }
             };

@@ -6,20 +6,24 @@
 use std::path::Path;
 use std::time::Duration;
 
-use crate::config::{Profile, activation_raw};
+#[cfg(test)]
+use crate::config::activation_raw;
+use crate::config::{Profile, activation_raw_for};
 use crate::display::DisplaySnapshot;
 use crate::dotnet::{FilterMetadata, PropertyMetadata};
 #[cfg(test)]
 use crate::mapping::Rect;
 use crate::mapping::{Crop, OtdArea, OtdMapping};
 use crate::plugins::{PluginConfig, PluginKind};
-use crate::protocol::{HEIGHT_MM, MAX_PRESSURE, MAX_X, MAX_Y, WIDTH_MM};
+#[cfg(test)]
+use crate::protocol::{MAX_PRESSURE, WIDTH_MM};
 use crate::radial_follow::{FILTER_NAME, RadialFollowSettings};
 use crate::relative::RelativeSettings;
+use otd_core::spec::TabletSpec;
 
-/// PTH-660 active area. The absolute and relative mappers use the same size.
+/// PTH-660 active area, the default tablet's.
+#[cfg(test)]
 pub const TABLET_WIDTH_MM: f64 = WIDTH_MM;
-pub const TABLET_HEIGHT_MM: f64 = HEIGHT_MM;
 
 pub use otd_core::areas::{
     Align, AspectSource, Bounds, align, constrain, fit_aspect, flip_handedness, flip_horizontal,
@@ -70,6 +74,15 @@ impl PropertyValue {
         };
         let mut choices = if metadata.property_type == "System.Boolean" {
             vec![("True".into(), true.into()), ("False".into(), false.into())]
+        } else if let Some(values) = metadata
+            .valid_values
+            .as_ref()
+            .filter(|_| metadata.property_type == "System.String")
+        {
+            values
+                .iter()
+                .map(|value| (value.clone(), serde_json::Value::String(value.clone())))
+                .collect()
         } else if !metadata.enum_flags && !metadata.enum_choices.is_empty() {
             metadata
                 .enum_choices
@@ -186,9 +199,13 @@ pub fn default_relative() -> RelativeSettings {
 /// OpenTabletDriver, so it can be shown in the same editors. The mapping is
 /// equivalent within one output pixel.
 pub fn simple_mapping(profile: &Profile, displays: &DisplaySnapshot) -> OtdMapping {
-    let mm_x = TABLET_WIDTH_MM / f64::from(MAX_X);
-    let mm_y = TABLET_HEIGHT_MM / f64::from(MAX_Y);
-    let crop = profile.crop;
+    let (mm_x, mm_y) = profile.tablet.mm_per_unit();
+    // The default crop is the whole digitizer of the profile's tablet.
+    let crop = if profile.crop == Crop::default() {
+        Crop::full(profile.tablet)
+    } else {
+        profile.crop
+    };
     let (width, height) = (f64::from(crop.width) * mm_x, f64::from(crop.height) * mm_y);
     let (width, height) = if matches!(profile.rotation, 90 | 270) {
         (height, width)
@@ -247,7 +264,7 @@ impl Editor {
             mapping
         } else if self.profile.relative.is_some() {
             self.absolute_stash
-                .unwrap_or_else(|| simple_mapping(&Profile::default(), displays))
+                .unwrap_or_else(|| simple_mapping(&self.blank(), displays))
         } else {
             simple_mapping(&self.profile, displays)
         }
@@ -279,7 +296,7 @@ impl Editor {
                 let mapping = self
                     .absolute_stash
                     .take()
-                    .unwrap_or_else(|| simple_mapping(&Profile::default(), displays));
+                    .unwrap_or_else(|| simple_mapping(&self.blank(), displays));
                 self.set_absolute(mapping);
             }
             OutputMode::Relative if self.profile.relative.is_none() => {
@@ -319,7 +336,44 @@ impl Editor {
         } else {
             self.profile.contact.tip_threshold_raw
         };
-        raw.map(threshold_percent)
+        raw.map(|raw| threshold_percent_for(raw, self.profile.tablet.max_pressure))
+    }
+
+    /// A full-area profile for the same tablet.
+    fn blank(&self) -> Profile {
+        Profile {
+            tablet: self.profile.tablet,
+            target_tablet: self.profile.target_tablet.clone(),
+            ..Profile::default()
+        }
+    }
+
+    /// Makes the profile target a tablet, or any tablet with `None`. Areas
+    /// that no longer fit the tablet become its full area.
+    pub fn set_tablet(&mut self, name: Option<String>) {
+        let spec = name
+            .as_deref()
+            .map_or(TabletSpec::PTH_660, otd_core::config::spec_for_tablet);
+        self.profile.target_tablet = name;
+        if spec == self.profile.tablet {
+            return;
+        }
+        self.profile.tablet = spec;
+        if let Some(mapping) = &mut self.profile.otd_mapping {
+            constrain(&mut mapping.tablet, Bounds::tablet_for(spec));
+        } else if self.profile.relative.is_none() {
+            // A simple full-area profile keeps covering the whole tablet.
+            self.profile.crop = Crop::default();
+        }
+        for raw in [
+            &mut self.profile.contact.tip_threshold_raw,
+            &mut self.profile.contact.eraser_threshold_raw,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            *raw = (*raw).min(spec.max_pressure);
+        }
     }
 
     pub fn set_threshold_percent(
@@ -327,7 +381,10 @@ impl Editor {
         eraser: bool,
         percent: Option<f64>,
     ) -> Result<(), String> {
-        let raw = percent.map(activation_raw).transpose()?;
+        let max = self.profile.tablet.max_pressure;
+        let raw = percent
+            .map(|percent| activation_raw_for(percent, max))
+            .transpose()?;
         if eraser {
             self.profile.contact.eraser_threshold_raw = raw;
         } else {
@@ -434,7 +491,7 @@ impl Editor {
                     .ok_or("The selected filter no longer exists.")?;
                 let metadata = metadata
                     .filter(|metadata| {
-                        plugin.kind == PluginKind::Dotnet && metadata.type_name == plugin.type_name
+                        plugin.kind.is_managed() && metadata.type_name == plugin.type_name
                     })
                     .ok_or(
                         "Defaults are unavailable for this plugin. Its settings have been kept.",
@@ -495,15 +552,21 @@ impl Editor {
         !self.profile.radial_follow.is_empty()
             && self.profile.plugins.iter().any(|plugin| {
                 plugin.enabled
-                    && plugin.kind == PluginKind::Dotnet
+                    && plugin.kind.is_managed()
                     && plugin.type_name == crate::radial_follow::FILTER_PATH
             })
     }
 }
 
 /// The shortest percentage that `activation_raw` maps back to `raw`.
+#[cfg(test)]
 pub fn threshold_percent(raw: u16) -> f64 {
-    let max = f64::from(MAX_PRESSURE);
+    threshold_percent_for(raw, MAX_PRESSURE)
+}
+
+/// `threshold_percent` for a tablet with another pressure range.
+pub fn threshold_percent_for(raw: u16, max_pressure: u16) -> f64 {
+    let max = f64::from(max_pressure);
     let low = f64::from(raw.saturating_sub(1)) / max * 100.0;
     let middle = (low + f64::from(raw) / max * 100.0) / 2.0;
     (0..=6)
@@ -511,13 +574,31 @@ pub fn threshold_percent(raw: u16) -> f64 {
             let scale = 10f64.powi(decimals);
             (middle * scale).round() / scale
         })
-        .find(|&percent| activation_raw(percent) == Ok(raw))
+        .find(|&percent| activation_raw_for(percent, max_pressure) == Ok(raw))
         .unwrap_or(low)
+}
+
+/// The tool tip upstream's generated control shows: the property's
+/// `[ToolTip]`, a boolean's description, and a slider's range.
+fn property_tooltip(descriptor: &PropertyMetadata) -> Option<String> {
+    let parts: Vec<String> = [
+        descriptor.tooltip.clone(),
+        descriptor.description.clone(),
+        descriptor
+            .slider
+            .as_ref()
+            .map(|slider| format!("Minimum: {}, Maximum: {}", slider.min, slider.max)),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|part| !part.trim().is_empty())
+    .collect();
+    (!parts.is_empty()).then(|| parts.join("\n\n"))
 }
 
 pub fn plugin_name(plugin: &PluginConfig) -> String {
     match plugin.kind {
-        PluginKind::Dotnet => plugin
+        PluginKind::Dotnet | PluginKind::DotnetTool => plugin
             .type_name
             .rsplit('.')
             .next()
@@ -540,6 +621,7 @@ pub fn plugin_detail(plugin: &PluginConfig) -> String {
         .unwrap_or_default();
     match plugin.kind {
         PluginKind::Dotnet => format!(".NET plugin · {file}"),
+        PluginKind::DotnetTool => format!(".NET tool · {file}"),
         PluginKind::Native => format!("Native plugin · {file}"),
     }
 }
@@ -618,7 +700,7 @@ pub fn plugin_editor_fields(
                         .filter(|name| !name.trim().is_empty())
                         .map_or_else(|| display_name(&key), str::to_owned),
                     unit: descriptor.unit.clone().unwrap_or_default(),
-                    tooltip: descriptor.tooltip.clone(),
+                    tooltip: property_tooltip(descriptor),
                     key,
                     value,
                 });
@@ -732,6 +814,74 @@ pub fn parse_number(text: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_control_attributes_become_choices_and_tool_tips() {
+        let mode = crate::dotnet::PropertyMetadata {
+            name: "Mode".into(),
+            property_type: "System.String".into(),
+            valid_values: Some(vec!["Linear".into(), "Smooth".into()]),
+            ..Default::default()
+        };
+        let value = PropertyValue::Typed {
+            saved: Some("Smooth".into()),
+            metadata: Box::new(mode),
+        };
+        let labels: Vec<String> = value
+            .choices()
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect();
+        assert_eq!(labels, ["Use default", "Linear", "Smooth"]);
+        assert_eq!(value.display_text(), "Smooth");
+        let strength = crate::dotnet::PropertyMetadata {
+            name: "Strength".into(),
+            tooltip: Some("How strong".into()),
+            slider: Some(crate::dotnet::Slider {
+                min: 0.0,
+                max: 2.0,
+                default_value: 0.5,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            property_tooltip(&strength).as_deref(),
+            Some(
+                "How strong
+
+Minimum: 0, Maximum: 2"
+            )
+        );
+        let snap = crate::dotnet::PropertyMetadata {
+            name: "Snap".into(),
+            description: Some("Snap to the grid".into()),
+            ..Default::default()
+        };
+        assert_eq!(property_tooltip(&snap).as_deref(), Some("Snap to the grid"));
+    }
+
+    #[test]
+    fn switching_tablets_resizes_areas_and_thresholds() {
+        let mut editor = Editor::new(Profile::default());
+        let mut mapping = simple_mapping(&editor.profile, &displays());
+        mapping.tablet.width = 200.0;
+        editor.set_absolute(mapping);
+        editor.set_threshold_percent(false, Some(50.0)).unwrap();
+        editor.set_tablet(Some("Wacom CTL-4100".into()));
+        let spec = editor.profile.tablet;
+        assert_eq!(spec, otd_core::config::spec_for_tablet("Wacom CTL-4100"));
+        assert!(spec.width_mm < 200.0);
+        let area = editor.profile.otd_mapping.unwrap().tablet;
+        assert!(area.width <= spec.width_mm, "{area:?}");
+        assert!(editor.profile.contact.tip_threshold_raw.unwrap() <= spec.max_pressure);
+        assert_eq!(
+            editor.profile.tablet_name().unwrap().as_deref(),
+            Some("Wacom CTL-4100")
+        );
+        editor.set_tablet(None);
+        assert_eq!(editor.profile.tablet, TabletSpec::PTH_660);
+        assert_eq!(editor.profile.tablet_name().unwrap(), None);
+    }
 
     fn displays() -> DisplaySnapshot {
         DisplaySnapshot {

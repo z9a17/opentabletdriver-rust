@@ -10,6 +10,7 @@ use crate::plugins::PluginConfig;
 use crate::protocol::MAX_PRESSURE;
 use crate::radial_follow::{FILTER_NAME, FILTER_PATH, RadialFollowSettings};
 use crate::relative::RelativeSettings;
+use crate::spec::TabletSpec;
 
 mod schema;
 pub use schema::{
@@ -58,6 +59,14 @@ pub struct Profile {
     pub auto_enabled_radial_follow: usize,
     pub ignored_filters: usize,
     pub source: String,
+    /// The tablet a native profile is for, by configuration name, or `None`
+    /// for whichever tablet is connected. Imported profiles name their
+    /// tablet in the preserved OpenTabletDriver document instead.
+    pub target_tablet: Option<String>,
+    /// The tablet this profile drives. Not saved: an imported profile takes
+    /// it from its tablet's configuration, and the runtime sets it for the
+    /// device it selected (`for_tablet`).
+    pub tablet: TabletSpec,
 }
 
 impl Default for Profile {
@@ -80,6 +89,8 @@ impl Default for Profile {
             auto_enabled_radial_follow: 0,
             ignored_filters: 0,
             source: "built-in full-area defaults".into(),
+            tablet: TabletSpec::PTH_660,
+            target_tablet: None,
         }
     }
 }
@@ -115,6 +126,9 @@ struct RawProfile {
     radial_follow: Vec<RadialFollowSettings>,
     #[serde(default)]
     plugins: Vec<PluginConfig>,
+    /// The tablet a native profile is for, by configuration name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tablet: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -344,21 +358,54 @@ fn radial_settings(store: &OtdStore) -> Result<RadialFollowSettings, String> {
     .clamped())
 }
 
+/// The specification of a named tablet in the built-in database, or the
+/// PTH-660's when the name is unknown.
+pub fn spec_for_tablet(name: &str) -> TabletSpec {
+    runtime_tablet(name).unwrap_or(TabletSpec::PTH_660)
+}
+
+/// The specification of a named tablet whose parser the runtime supports.
+pub fn runtime_tablet(name: &str) -> Result<TabletSpec, String> {
+    use crate::tablets::{Database, Entry, ParserSupport, parser_support};
+    let configuration = Database::builtin()
+        .entries()
+        .iter()
+        .filter_map(Entry::usable)
+        .find(|configuration| configuration.name == name)
+        .ok_or_else(|| format!("no tablet configuration is named {name}"))?;
+    if let Some(identifier) = configuration
+        .digitizer_identifiers
+        .iter()
+        .find(|identifier| parser_support(identifier.parser()) == ParserSupport::Missing)
+    {
+        return Err(format!(
+            "{name} uses {}, which this driver cannot decode",
+            identifier.parser()
+        ));
+    }
+    TabletSpec::from_configuration(configuration)
+}
+
 /// First raw pressure at which OpenTabletDriver's tip or eraser binding
 /// presses. Its `ThresholdBindingState` compares
 /// `pressure / MaxPressure * 100 > threshold` in single precision and treats
 /// a 100 % threshold as met at full pressure.
 pub fn activation_raw(percent: f64) -> Result<u16, String> {
+    activation_raw_for(percent, MAX_PRESSURE)
+}
+
+/// `activation_raw` for a tablet with another pressure range.
+pub fn activation_raw_for(percent: f64, max_pressure: u16) -> Result<u16, String> {
     if !percent.is_finite() || !(0.0..=100.0).contains(&percent) {
         return Err("tip/eraser activation threshold must be 0..100 percent".into());
     }
     let threshold = percent as f32;
     let presses = |raw: u16| {
-        let value = f32::from(raw) / f32::from(MAX_PRESSURE) * 100.0;
+        let value = f32::from(raw) / f32::from(max_pressure) * 100.0;
         value > threshold || (threshold == 100.0 && value == 100.0)
     };
     // `presses` is monotonic and true at full pressure.
-    let (mut low, mut high) = (0, MAX_PRESSURE);
+    let (mut low, mut high) = (0, max_pressure);
     while low < high {
         let middle = low + (high - low) / 2;
         if presses(middle) {
@@ -370,19 +417,44 @@ pub fn activation_raw(percent: f64) -> Result<u16, String> {
     Ok(low)
 }
 
+/// OpenTabletDriver's settings file in its default app data directory, as
+/// upstream `AppInfo` places it on each platform.
+fn otd_settings_path() -> Option<PathBuf> {
+    let directory = if cfg!(target_os = "windows") {
+        PathBuf::from(env::var_os("LOCALAPPDATA")?)
+    } else if cfg!(target_os = "macos") {
+        PathBuf::from(env::var_os("HOME")?).join("Library/Application Support")
+    } else {
+        env::var_os("XDG_CONFIG_HOME")
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| Some(PathBuf::from(env::var_os("HOME")?).join(".config")))?
+    };
+    Some(directory.join("OpenTabletDriver").join("settings.json"))
+}
+
 impl Profile {
     pub fn load(path: Option<&Path>) -> Result<Self, String> {
+        Self::load_connected(path, &[])
+    }
+
+    /// `load`, importing OpenTabletDriver's profile for one of the connected
+    /// tablets (configuration names, in preference order) when no path is given.
+    pub fn load_connected(path: Option<&Path>, connected: &[String]) -> Result<Self, String> {
         if let Some(path) = path {
             return Self::load_toml(path);
         }
-        let Some(local_app_data) = env::var_os("LOCALAPPDATA") else {
+        let Some(otd_path) = otd_settings_path() else {
             return Ok(Self::default());
         };
-        let otd_path = PathBuf::from(local_app_data)
-            .join("OpenTabletDriver")
-            .join("settings.json");
         if otd_path.exists() {
-            Self::load_otd(&otd_path)
+            let text = fs::read_to_string(&otd_path).map_err(|e| {
+                format!(
+                    "cannot read OpenTabletDriver settings {}: {e}",
+                    otd_path.display()
+                )
+            })?;
+            Self::from_otd_text_connected(&text, &otd_path, connected, ImportOptions::default())
         } else {
             Ok(Self::default())
         }
@@ -411,15 +483,39 @@ impl Profile {
         path: &Path,
         options: ImportOptions,
     ) -> Result<Self, String> {
+        Self::from_otd_text_connected(text, path, &[], options)
+    }
+
+    /// Imports the profile of the first connected tablet that has one, else
+    /// the PTH-660's, else the first profile whose tablet this driver runs.
+    pub fn from_otd_text_connected(
+        text: &str,
+        path: &Path,
+        connected: &[String],
+        options: ImportOptions,
+    ) -> Result<Self, String> {
         let settings: OtdSettings = serde_json::from_str(text)
             .map_err(|e| format!("invalid OpenTabletDriver settings {}: {e}", path.display()))?;
-        let selected_index = settings
+        let tablets: Vec<&str> = settings
             .profiles
             .iter()
-            .position(|profile| {
-                profile.get("Tablet").and_then(serde_json::Value::as_str) == Some("Wacom PTH-660")
+            .map(|profile| {
+                profile
+                    .get("Tablet")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
             })
-            .ok_or("OpenTabletDriver settings have no Wacom PTH-660 profile")?;
+            .collect();
+        let selected_index = connected
+            .iter()
+            .find_map(|name| tablets.iter().position(|tablet| tablet == name))
+            .or_else(|| tablets.iter().position(|tablet| *tablet == "Wacom PTH-660"))
+            .or_else(|| {
+                tablets
+                    .iter()
+                    .position(|tablet| runtime_tablet(tablet).is_ok())
+            })
+            .ok_or("OpenTabletDriver settings have no profile for a tablet this driver supports")?;
         Self::from_otd_profile_text(text, path, selected_index, options)
     }
 
@@ -444,6 +540,8 @@ impl Profile {
             .ok_or("selected OTD profile has no tablet name")?;
         let selected: OtdProfile = serde_json::from_value(selected_value.clone())
             .map_err(|e| format!("invalid {tablet_name} profile: {e}"))?;
+        // Thresholds and relative scaling depend on the tablet's ranges.
+        let tablet = spec_for_tablet(tablet_name);
         let mut diagnostics = schema::import_diagnostics(text, selected_index)?;
         if !selected.output_mode.enable {
             return Err(format!(
@@ -477,7 +575,7 @@ impl Profile {
                             rotation: relative.rotation,
                             reset_delay: parse_reset_delay(&relative.reset_delay)?,
                         }
-                        .validate()?,
+                        .validate_for(tablet)?,
                     ),
                 )
             }
@@ -551,17 +649,20 @@ impl Profile {
             contact: ContactPolicy {
                 tip_enabled,
                 eraser_enabled,
-                tip_threshold_raw: Some(activation_raw(
+                tip_threshold_raw: Some(activation_raw_for(
                     selected.bindings.tip_activation_threshold,
+                    tablet.max_pressure,
                 )?),
-                eraser_threshold_raw: Some(activation_raw(
+                eraser_threshold_raw: Some(activation_raw_for(
                     selected.bindings.eraser_activation_threshold,
+                    tablet.max_pressure,
                 )?),
             },
             radial_follow,
             auto_enabled_radial_follow,
             ignored_filters,
             source: format!("OpenTabletDriver settings: {}", path.display()),
+            tablet,
             ..Self::default()
         })
     }
@@ -621,17 +722,6 @@ impl Profile {
                 "absolute areas cannot be mixed with monitor/crop/top-level rotation".into(),
             );
         }
-        for threshold in [
-            raw.bindings.tip_threshold_raw,
-            raw.bindings.eraser_threshold_raw,
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if threshold > MAX_PRESSURE {
-                return Err("binding threshold exceeds tablet pressure range".into());
-            }
-        }
         let base = path.parent().unwrap_or_else(|| Path::new("."));
         for filter in &raw.radial_follow {
             if ![
@@ -670,7 +760,8 @@ impl Profile {
                 .validate()
             })
             .transpose()?;
-        let profile = Self {
+        let target_tablet = raw.tablet;
+        let mut profile = Self {
             settings_revision: raw.settings_revision,
             imported_otd: raw.imported_otd,
             preserved_fields: archived,
@@ -690,10 +781,32 @@ impl Profile {
             rotation: raw.rotation.unwrap_or(0),
             device_path: raw.device_path,
             source: format!("Rust profile: {}", path.display()),
+            target_tablet,
             ..Self::default()
         };
-        if !profile.crop.valid() {
-            return Err("crop must be nonzero and within 0..44800 X, 0..29600 Y".into());
+        profile.tablet = profile
+            .tablet_name()?
+            .map_or(TabletSpec::PTH_660, |name| spec_for_tablet(&name));
+        for threshold in [
+            profile.contact.tip_threshold_raw,
+            profile.contact.eraser_threshold_raw,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if threshold > profile.tablet.max_pressure {
+                return Err("binding threshold exceeds tablet pressure range".into());
+            }
+        }
+        // The default crop means the whole digitizer of any tablet.
+        if profile.crop != Crop::default() && !profile.crop.valid_for(profile.tablet) {
+            return Err(format!(
+                "crop must be nonzero and within 0..{} X, 0..{} Y",
+                profile.tablet.max_x, profile.tablet.max_y
+            ));
+        }
+        if let Some(relative) = profile.relative {
+            relative.validate_for(profile.tablet)?;
         }
         if !matches!(profile.rotation, 0 | 90 | 180 | 270) {
             return Err("rotation must be 0, 90, 180, or 270".into());
@@ -717,6 +830,9 @@ impl Profile {
     }
 
     pub fn tablet_name(&self) -> Result<Option<String>, String> {
+        if let Some(name) = &self.target_tablet {
+            return Ok(Some(name.clone()));
+        }
         let Some(imported) = &self.imported_otd else {
             return Ok(None);
         };
@@ -732,15 +848,39 @@ impl Profile {
             .ok_or_else(|| "preserved OTD profile has no tablet identity".into())
     }
 
-    pub fn validate_runtime_tablet(&self, supported_tablet: &str) -> Result<(), String> {
-        if let Some(name) = self.tablet_name()?
-            && name != supported_tablet
-        {
-            return Err(format!(
-                "Profile targets {name}; this runtime currently supports {supported_tablet}. The profile can be stored or exported, but cannot be started on this device backend."
-            ));
+    /// Checks that a profile targeting a named tablet can run: its
+    /// configuration exists and its parser and specifications are supported.
+    /// Profiles without a tablet name run on whichever tablet is selected.
+    pub fn validate_runtime_tablet(&self) -> Result<(), String> {
+        if let Some(name) = self.tablet_name()? {
+            runtime_tablet(&name)?;
         }
         Ok(())
+    }
+
+    /// This profile for the tablet the runtime selected. Raw pressure
+    /// thresholds must fit the tablet's pressure range.
+    pub fn for_tablet(&self, spec: TabletSpec) -> Result<Self, String> {
+        for threshold in [
+            self.contact.tip_threshold_raw,
+            self.contact.eraser_threshold_raw,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if threshold > spec.max_pressure {
+                return Err(format!(
+                    "pressure threshold {threshold} exceeds this tablet's range 0..{}",
+                    spec.max_pressure
+                ));
+            }
+        }
+        if let Some(relative) = self.relative {
+            relative.validate_for(spec)?;
+        }
+        let mut profile = self.clone();
+        profile.tablet = spec;
+        Ok(profile)
     }
 
     /// Reconcile representable edits into a copy of the complete OTD document.
@@ -786,6 +926,7 @@ impl Profile {
             bindings: self.contact,
             radial_follow: self.radial_follow.clone(),
             plugins: self.plugins.clone(),
+            tablet: self.target_tablet.clone(),
         };
         toml::to_string_pretty(&raw).map_err(|e| e.to_string())
     }
@@ -939,6 +1080,23 @@ impl Profile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_native_profile_keeps_its_tablet() {
+        let profile = Profile {
+            target_tablet: Some("Wacom CTL-4100".into()),
+            ..Profile::default()
+        };
+        let text = profile.to_toml().unwrap();
+        assert!(text.contains("tablet = \"Wacom CTL-4100\""), "{text}");
+        let loaded = Profile::from_toml_text(&text, Path::new("driver.toml")).unwrap();
+        assert_eq!(loaded.target_tablet.as_deref(), Some("Wacom CTL-4100"));
+        assert_eq!(loaded.tablet, spec_for_tablet("Wacom CTL-4100"));
+        assert_ne!(loaded.tablet, TabletSpec::PTH_660);
+        // Earlier profiles have no tablet and keep the PTH-660's ranges.
+        let old = Profile::from_toml_text("", Path::new("driver.toml")).unwrap();
+        assert_eq!((old.target_tablet, old.tablet), (None, TabletSpec::PTH_660));
+    }
 
     #[test]
     fn default_profile_is_valid() {

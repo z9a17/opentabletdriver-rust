@@ -3,7 +3,7 @@
 //! platform reads them; this module turns a snapshot into a `Mapper`.
 
 use crate::config::Profile;
-use crate::mapping::{Mapper, Rect};
+use crate::mapping::{Crop, Mapper, Rect};
 
 /// The virtual screen and the monitor count: enough to notice a resolution or
 /// monitor change from the report thread without enumerating monitors or
@@ -31,7 +31,7 @@ impl DisplaySnapshot {
 
     pub fn mapper(&self, profile: &Profile) -> Result<Mapper, String> {
         if let Some(settings) = profile.otd_mapping {
-            return Mapper::from_otd(settings, self.virtual_screen)
+            return Mapper::from_otd_for(settings, self.virtual_screen, profile.tablet)
                 .ok_or_else(|| "invalid OpenTabletDriver absolute-area mapping".into());
         }
         let dest = if let Some(index) = profile.monitor {
@@ -42,8 +42,20 @@ impl DisplaySnapshot {
         } else {
             self.virtual_screen
         };
-        Mapper::new(profile.crop, profile.rotation, dest, self.virtual_screen)
-            .ok_or_else(|| "invalid tablet-to-display mapping".into())
+        // The default crop means the whole digitizer, whatever its size.
+        let crop = if profile.crop == Crop::default() {
+            Crop::full(profile.tablet)
+        } else {
+            profile.crop
+        };
+        Mapper::new_for(
+            crop,
+            profile.rotation,
+            dest,
+            self.virtual_screen,
+            profile.tablet,
+        )
+        .ok_or_else(|| "invalid tablet-to-display mapping".into())
     }
 }
 

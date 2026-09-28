@@ -1,7 +1,7 @@
 use super::{PipelineStage, Plugin, PluginChain};
 use crate::dotnet::{Graph, GraphNode, GraphReport};
 use otd_core::plugins::{DispatchInput, PipelineRuntime};
-use otd_core::reports::{Buttons, ReportKind, ReportValues};
+use otd_core::reports::{ReportKind, ReportValues};
 use otd_plugin_api::Sample;
 use std::ffi::c_void;
 use std::io;
@@ -148,42 +148,67 @@ unsafe extern "C" fn callback(
 }
 
 impl PluginChain {
+    pub(super) fn next_tick_graph(&self) -> Option<std::time::Duration> {
+        self.graph.as_ref()?.next_tick()
+    }
+
+    pub(super) fn tick_graph(
+        &mut self,
+        now: std::time::Instant,
+        runtime: &mut dyn PipelineRuntime,
+    ) -> io::Result<()> {
+        let Some(graph) = &self.graph else {
+            return Ok(());
+        };
+        let time_ns = now
+            .saturating_duration_since(self.epoch)
+            .as_nanos()
+            .min(u128::from(u64::MAX)) as u64;
+        let mut scope = Scope {
+            plugins: &mut self.plugins,
+            runtime,
+            failure: &mut self.failure,
+            time_ns,
+            error: None,
+        };
+        let result = unsafe { graph.tick(callback, (&mut scope as *mut Scope<'_>).cast()) };
+        let result = match scope.error.take() {
+            Some(error) => Err(error),
+            None => result,
+        };
+        if result.is_err()
+            && let Some(index) = graph.failed_index()
+            && let Some(plugin) = self.plugins.get_mut(index)
+        {
+            plugin.disabled = true;
+            self.failure = Some(index);
+        }
+        result
+    }
+
     pub(super) fn dispatch_graph(
         &mut self,
         input: DispatchInput<'_>,
         runtime: &mut dyn PipelineRuntime,
     ) -> io::Result<()> {
         let mut values = input.values;
-        let mut raw = input.raw;
+        let raw = input.raw;
         let time_ns = input
             .now
             .saturating_duration_since(self.epoch)
             .as_nanos()
             .min(u128::from(u64::MAX)) as u64;
         if let Some(graph) = &self.graph {
-            // Legacy synthetic callers prepare their actual raw bytes before
-            // process(). Production dispatch passes the transport borrow directly.
-            if raw.is_empty() && input.pen.is_some() && self.prepared_pen == input.pen {
-                raw = &self.raw[..self.raw_length];
-            }
-            if let Some(pen) = input.pen {
-                let (minimum, flags_at, count) = match pen.id {
-                    0x10 => (17, 1, 2),
-                    0x1e => (13, 2, 3),
-                    _ => {
-                        return Err(io::Error::other(
-                            "managed dispatch has an unsupported native pen ID",
-                        ));
-                    }
-                };
-                if raw.first() != Some(&pen.id) || raw.len() < minimum || raw.len() > 192 {
+            // Any tablet's packet: the decoder supplies its parser's pen
+            // buttons; IntuosV2 packets without them are read as before.
+            if input.pen.is_some() {
+                if raw.is_empty() || raw.len() > 192 {
                     return Err(io::Error::other(
-                        "managed dispatch requires the matching complete raw pen packet",
+                        "managed dispatch requires the complete raw pen packet",
                     ));
                 }
                 if input.kind == ReportKind::Data && values.pen_buttons.is_none() {
-                    values.pen_buttons =
-                        Buttons::from_bits(u64::from(raw[flags_at] >> 1), count).ok();
+                    values.pen_buttons = otd_core::decoders::intuos_v2_pen_buttons(raw);
                 }
             }
             let frame = GraphReport::new(input.kind, &values, raw)?;

@@ -97,6 +97,21 @@ pub enum Command {
         expected: WorkerIdentity,
         profile_toml: String,
     },
+    /// The latest tablet packet, decoded, for the tablet debugger. Each poll
+    /// keeps the report thread's copy armed for about two seconds.
+    Debug,
+}
+
+/// What the tablet debugger shows: the tablet, its parser, a packet counter
+/// for the report rate, the latest packet and its decoded values.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DebugReport {
+    pub tablet: Option<String>,
+    pub parser: Option<String>,
+    pub sequence: u64,
+    pub raw_hex: String,
+    pub values: serde_json::Value,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,6 +151,9 @@ pub enum Reply {
     Configuration {
         identity: WorkerIdentity,
         profile_toml: Option<String>,
+    },
+    Debug {
+        report: DebugReport,
     },
     Error {
         error: ControlError,

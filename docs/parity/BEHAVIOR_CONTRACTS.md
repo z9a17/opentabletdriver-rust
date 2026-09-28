@@ -134,7 +134,17 @@ The executables embed OpenTabletDriver's 339 tablet configuration files unchange
 - a file with a new name is added;
 - a later file with the same name is ignored.
 
-`opentabletdriver-rust.exe tablets` shows the result. Live Windows snapshots now supply report lengths, device strings, attributes and physical identity to the matcher. Execution remains restricted to the PTH-660 parser, pen report length and specifications supported by this runtime; incompatible overrides are rejected. Multiple matching pen endpoints require an explicit `device_path`. Auxiliary pairing is recorded but does not start auxiliary reading. The selected configuration/identifier supplies managed TabletReference initialization.
+`opentabletdriver-rust.exe tablets` shows the result. Live Windows snapshots supply report lengths, device strings, attributes and physical identity to the matcher. Auxiliary pairing is recorded but does not start auxiliary reading. The selected configuration and identifier supply managed TabletReference initialization.
+
+## Other tablets
+
+Since 0.11.0 the driver runs any tablet whose configuration names one of the 52 parser types (all of them, except OpenTabletDriver's passthrough parser). Selection, parsing and mapping work as follows:
+- **Selection.** A profile imported for a named tablet selects only that tablet. A profile without a tablet name, including every earlier Rust profile, selects the first matching tablet by device path. Without a saved profile, the driver imports the OpenTabletDriver profile of the connected tablet.
+- **Parsing.** IntuosV2 tablets keep the checked PTH-660 decoder, with the matched configuration's coordinate and pressure ranges. Every other parser runs its Rust port (`crates/otd-core/src/decoders.rs`) and feeds the pipeline position, pressure, tip (pressure above zero), eraser, tilt and proximity.
+- **Mapping.** Mapping, relative output, Radial Follow and pressure thresholds use the matched configuration's millimetre size and ranges. The default full-area crop covers the whole digitizer of the selected tablet.
+- **Parser check.** `tests/parsers/upstream.json` holds 10,400 seeded packets decoded by OpenTabletDriver 0.6.7's own parser classes (`bench/upstream --parsers`), and a test compares every field of every packet with the Rust ports.
+
+The PTH-660 path compiles to the same checks as before. The golden traces and differential tests pass unchanged. No tablet other than the PTH-660 has been tested on hardware.
 
 ## New report, action and control foundations
 
@@ -197,8 +207,13 @@ S05 diagnostic JSON is an explicit static snapshot of build/display information,
 | BC-25 | Configuration file that does not parse | the exception stops detection, so no tablet is found | reported and skipped; the other files still apply | Record: one bad file should not disable every tablet |
 | BC-26 | Configuration file syntax | Newtonsoft.Json also accepts comments, single-quoted strings, unquoted property names, property names in any case and numbers written as strings | strict JSON with OpenTabletDriver's property names; anything else is an error or an unknown-field warning | Open: matters once override files select devices (D02) |
 | BC-27 | Configuration order | built-ins in the assembly's resource order, then files in the file system's order | built-ins by path, then files breadth first in NTFS name order | Record: built-in names are unique, so order only decides between tablets that declare the same interface (D02) |
-| BC-28 | Override of the PTH-660 configuration | used for detection and parsing | predicates and initialization apply; unsupported parser/report-length/specification changes are rejected | D02, D03; hardware evidence pending |
+| BC-28 | Override of a tablet configuration | used for detection and parsing | used for detection, parsing and specifications | Record since 0.11.0; hardware evidence pending |
 | BC-29 | Initialization failure | warning and continued initialization | failed or partial initialization aborts the session before output | Record: fail closed on partially initialized hardware; D02 evidence pending |
+| BC-30 | Packet shorter than a field read with `Unsafe.ReadUnaligned` | reads up to three bytes past the packet | rejected as short | Record: memory past a packet is not input; a device sends its configured length |
+| BC-31 | Truncated touch packet (IntuosV2, Wacom 64-byte aux) | slots updated before the exception stay updated | no slot changes | Record: truncation should not move or release a contact |
+| BC-32 | Several supported tablets connected | each detected tablet runs | one tablet: the profile's tablet, else the first by device path | Record: owner decision; simultaneous tablets are D05 |
+| BC-33 | Position or pressure beyond a tablet's configured range (other than the PTH-660) | passed on | clamped to the range | Record: keeps the pen inside the configured area |
+| BC-34 | Buttons, wheels, strips and touch of other tablets | bound per profile | decoded, not bound | B02-B04; deferred at the owner's request |
 
 [otd]: https://github.com/OpenTabletDriver/OpenTabletDriver/tree/736003ed72c8bbb28033b039d5a0bb76c344145c
 [DeviceReader]: https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver/Devices/DeviceReader.cs#L102-L113
