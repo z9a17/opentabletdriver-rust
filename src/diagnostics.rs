@@ -65,6 +65,7 @@ pub fn bundle(profile: Option<&Profile>, private: bool) -> Result<Value, String>
         "displays":display_summary(private),
         "profile":profile.map(|profile| profile_summary(profile, private)).transpose()?,
         "daemon":daemon_summary(private),
+        "crashes":crash_summary(private),
         "excluded":["raw tablet reports", "plugin property values", "imported settings archive", "environment variables"],
     }))
 }
@@ -153,6 +154,24 @@ fn daemon_summary(private: bool) -> Value {
         Err(error) => json!({"available":false, "error_kind":format!("{:?}",error.kind()),
             "message":private.then(|| error.to_string())}),
     }
+}
+
+/// The newest crash records. Their messages may name files, so only the
+/// private bundle includes them.
+fn crash_summary(private: bool) -> Value {
+    let records: Vec<_> = otd_core::crash::recent(10)
+        .into_iter()
+        .map(|record| {
+            let mut result = json!({"time":record.time, "version":record.version,
+                "role":record.role, "kind":record.kind, "thread":record.thread,
+                "location":record.location});
+            if private {
+                result["message"] = json!(record.message);
+            }
+            result
+        })
+        .collect();
+    json!({"recent":records})
 }
 
 fn write_new(path: &Path, data: &[u8]) -> Result<(), String> {

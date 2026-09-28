@@ -2451,6 +2451,9 @@ impl App {
                     }
                     self.set_driver_state(self.driver);
                 }
+                client::ClientEvent::DaemonExited(message) => {
+                    self.log(Level::Error, "Daemon", message);
+                }
                 client::ClientEvent::Offline(error) => {
                     self.running = None;
                     self.set_driver_state(DriverState::Disconnected);

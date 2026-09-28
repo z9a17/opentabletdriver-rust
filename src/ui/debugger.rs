@@ -1,7 +1,8 @@
 //! Tablet debugger, like OpenTabletDriver's: the tablet, its parser, the
 //! report rate, the latest raw packet and its decoded values, and the pen on
-//! an outline of the tablet. A background thread polls the daemon; the report
-//! thread only copies packets while this window is open.
+//! an outline of the tablet. A background thread polls the daemon and decodes
+//! the packet in this process; the daemon only copies packets while this
+//! window is open and never decodes them.
 use super::*;
 use crate::control::{self, Command, DebugReport, Reply, Request};
 use otd_core::spec::TabletSpec;
@@ -21,7 +22,8 @@ struct Debugger {
     error: Option<String>,
     /// (time, packet counter) samples for the report rate.
     history: VecDeque<(Instant, u64)>,
-    spec: Option<(String, TabletSpec)>,
+    /// The last tablet looked up, and its specification when it has one.
+    spec: Option<(String, Option<TabletSpec>)>,
 }
 
 thread_local! {
@@ -72,10 +74,13 @@ pub(super) fn open() -> Result<(), String> {
     let cancelled = Arc::new(AtomicBool::new(false));
     let stop = Arc::clone(&cancelled);
     let target = window as isize;
-    std::thread::Builder::new()
+    if let Err(error) = std::thread::Builder::new()
         .name("tablet-debugger".into())
         .spawn(move || poll(sender, stop, target))
-        .map_err(|error| error.to_string())?;
+    {
+        unsafe { DestroyWindow(window) };
+        return Err(error.to_string());
+    }
     DEBUGGER.with(|slot| {
         *slot.borrow_mut() = Some(Debugger {
             window,
@@ -106,11 +111,18 @@ fn poll(
         let update =
             match control::request(&Request::new(1, Command::Debug), Duration::from_secs(1)) {
                 Ok(response) => match response.reply {
-                    Reply::Debug { report } => Ok(report),
+                    Reply::Debug { mut report } => {
+                        // Decoded here, never in the daemon.
+                        crate::decode_cli::decode_debug_report(&mut report);
+                        Ok(report)
+                    }
                     Reply::Error { error } => Err(error.message),
                     _ => Err("unexpected daemon reply".into()),
                 },
-                Err(_) => Err("The driver is not running. Start it to see reports.".into()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    Err("The driver is not running. Start it to see reports.".into())
+                }
+                Err(error) => Err(format!("Cannot reach the driver: {error}")),
             };
         // The window takes the newest update; a full channel means it has
         // not drawn the previous one yet.
@@ -127,6 +139,18 @@ impl Debugger {
             match update {
                 Ok(report) => {
                     let now = Instant::now();
+                    // Another tablet or a restarted session counts from zero.
+                    if self
+                        .latest
+                        .as_ref()
+                        .is_some_and(|latest| latest.tablet != report.tablet)
+                        || self
+                            .history
+                            .back()
+                            .is_some_and(|(_, sequence)| *sequence > report.sequence)
+                    {
+                        self.history.clear();
+                    }
                     self.history.push_back((now, report.sequence));
                     while self
                         .history
@@ -135,12 +159,13 @@ impl Debugger {
                     {
                         self.history.pop_front();
                     }
+                    // Look each tablet up once, including one without a
+                    // usable specification.
                     if let Some(name) = &report.tablet
                         && self.spec.as_ref().is_none_or(|(known, _)| known != name)
                     {
-                        self.spec = otd_core::config::runtime_tablet(name)
-                            .ok()
-                            .map(|spec| (name.clone(), spec));
+                        self.spec =
+                            Some((name.clone(), otd_core::config::runtime_tablet(name).ok()));
                     }
                     self.error = None;
                     self.latest = Some(report);
@@ -275,7 +300,7 @@ impl Debugger {
     /// The pen on an outline of the tablet's active area, with a pressure bar.
     fn draw_tablet(&self, canvas: &mut canvas::Canvas, area: RECT, style: &draw::Style) {
         let p = style.palette;
-        let Some((_, spec)) = &self.spec else {
+        let Some((_, Some(spec))) = &self.spec else {
             return;
         };
         let bar = style.ipx(18.0);
@@ -416,7 +441,7 @@ unsafe extern "system" fn window_proc(
 ) -> LRESULT {
     match message {
         WM_DEBUG_REPORT => {
-            DEBUGGER.with(|slot| {
+            let _ = DEBUGGER.try_with(|slot| {
                 if let Ok(mut slot) = slot.try_borrow_mut()
                     && let Some(debugger) = slot.as_mut()
                 {
@@ -427,19 +452,34 @@ unsafe extern "system" fn window_proc(
             0
         }
         WM_PAINT => {
-            DEBUGGER.with(|slot| {
-                if let Ok(slot) = slot.try_borrow()
-                    && let Some(debugger) = slot.as_ref()
-                {
-                    debugger.paint();
-                }
-            });
-            0
+            let painted = DEBUGGER
+                .try_with(|slot| {
+                    if let Ok(slot) = slot.try_borrow()
+                        && let Some(debugger) = slot.as_ref()
+                    {
+                        debugger.paint();
+                        true
+                    } else {
+                        false
+                    }
+                })
+                .unwrap_or(false);
+            // An unpainted window must still be validated, or Windows keeps
+            // sending WM_PAINT.
+            if painted {
+                0
+            } else {
+                unsafe { DefWindowProcW(window, message, wparam, lparam) }
+            }
         }
         WM_ERASEBKGND => 1,
         WM_DESTROY => {
-            DEBUGGER.with(|slot| {
-                if let Some(debugger) = slot.borrow_mut().take() {
+            // Never panic in a window procedure: the slot may be gone when
+            // Windows destroys the window at thread exit.
+            let _ = DEBUGGER.try_with(|slot| {
+                if let Ok(mut slot) = slot.try_borrow_mut()
+                    && let Some(debugger) = slot.take()
+                {
                     debugger.cancelled.store(true, Ordering::Release);
                 }
             });
@@ -499,7 +539,7 @@ mod preview {
             }),
             error: None,
             history: VecDeque::new(),
-            spec: Some(("Wacom PTH-660".into(), TabletSpec::PTH_660)),
+            spec: Some(("Wacom PTH-660".into(), Some(TabletSpec::PTH_660))),
         };
         let now = Instant::now();
         debugger

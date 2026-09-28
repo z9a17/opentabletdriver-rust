@@ -220,7 +220,11 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 }
 
 fn parse_hex(text: &str) -> Result<Vec<u8>, String> {
-    let mut bytes = Vec::with_capacity(MAX_PACKET_BYTES);
+    parse_hex_within(text, MAX_PACKET_BYTES)
+}
+
+fn parse_hex_within(text: &str, maximum: usize) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::with_capacity(maximum.min(MAX_PACKET_BYTES));
     let mut high = None;
     for character in text.chars() {
         if character.is_ascii_whitespace() || character == ':' {
@@ -230,8 +234,8 @@ fn parse_hex(text: &str) -> Result<Vec<u8>, String> {
             .to_digit(16)
             .ok_or("expected hexadecimal byte pairs")? as u8;
         if let Some(value) = high.take() {
-            if bytes.len() == MAX_PACKET_BYTES {
-                return Err("packet exceeds 192 bytes".into());
+            if bytes.len() == maximum {
+                return Err(format!("packet exceeds {maximum} bytes"));
             }
             bytes.push((value << 4) | digit);
         } else {
@@ -247,43 +251,57 @@ fn parse_hex(text: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-/// The tablet debugger's view of the latest packet, decoded with the
-/// session's parser type. A fresh parser decodes it, so stateful parsers show
-/// only what this one packet carries.
+/// The tablet debugger's view of the latest packet, for the daemon to send.
+/// The daemon never decodes it: a decoding fault in the debugger must not be
+/// able to stop the process that owns the tablet and the output. Clients
+/// decode with [`decode_debug_report`].
 pub(crate) fn debug_report() -> crate::control::DebugReport {
     let snapshot = otd_core::debug::poll();
     let (tablet, parser) = snapshot
         .device
         .map(|device| (Some(device.name), Some(device.parser)))
         .unwrap_or((None, None));
-    let values = parser
-        .as_deref()
-        .and_then(otd_core::decoders::ReportParser::for_type)
-        .filter(|_| !snapshot.bytes.is_empty())
-        .map(|mut parser| {
-            let metadata = ReportMetadata {
-                device: DeviceId(0),
-                session: SessionId(0),
-                endpoint: EndpointId(0),
-                received_at: Duration::ZERO,
-                sequence: snapshot.sequence,
-            };
-            match parser.parse(&snapshot.bytes, metadata) {
-                Ok((kind, report)) => json!({
-                    "kind": match kind { ReportKind::Data => "data", ReportKind::OutOfRange => "out_of_range" },
-                    "values": values_json(report.values),
-                }),
-                Err(error) => json!({"error": format!("{error:?}")}),
-            }
-        })
-        .unwrap_or(Value::Null);
     crate::control::DebugReport {
         tablet,
         parser,
         sequence: snapshot.sequence,
         raw_hex: encode_hex(&snapshot.bytes),
-        values,
+        values: Value::Null,
     }
+}
+
+/// Fills in the decoded values of a debugger snapshot in the client's own
+/// process, with a fresh parser of the session's type. Stateful parsers
+/// therefore show only what this one packet carries. A snapshot a daemon
+/// already decoded (earlier versions did) is left as it is.
+pub(crate) fn decode_debug_report(report: &mut crate::control::DebugReport) {
+    if !report.values.is_null() {
+        return;
+    }
+    let Some(parser) = report.parser.as_deref() else {
+        return;
+    };
+    let Ok(bytes) = parse_hex_within(&report.raw_hex, otd_core::debug::MAX_BYTES) else {
+        return;
+    };
+    let Some(mut parser) = otd_core::decoders::ReportParser::for_type(parser) else {
+        report.values = json!({"error": "this driver has no decoder for the parser"});
+        return;
+    };
+    let metadata = ReportMetadata {
+        device: DeviceId(0),
+        session: SessionId(0),
+        endpoint: EndpointId(0),
+        received_at: Duration::ZERO,
+        sequence: report.sequence,
+    };
+    report.values = match parser.parse(&bytes, metadata) {
+        Ok((kind, decoded)) => json!({
+            "kind": match kind { ReportKind::Data => "data", ReportKind::OutOfRange => "out_of_range" },
+            "values": values_json(decoded.values),
+        }),
+        Err(error) => json!({"error": format!("{error:?}")}),
+    };
 }
 
 fn encode_hex(bytes: &[u8]) -> String {
@@ -345,11 +363,61 @@ mod tests {
         packet[2] = 0x10;
         packet[8] = 0x20;
         otd_core::debug::record(&packet);
-        let report = debug_report();
+        let mut report = debug_report();
         drop(registration);
         assert_eq!(report.tablet.as_deref(), Some("Wacom PTH-660"));
         assert!(report.raw_hex.starts_with("106110"), "{}", report.raw_hex);
+        // The daemon side sends bytes only; the client decodes them.
+        assert!(report.values.is_null());
+        decode_debug_report(&mut report);
         assert_eq!(report.values["values"]["position"][0], 16.0);
         assert_eq!(report.values["values"]["pressure"], 32);
+    }
+
+    #[test]
+    fn client_decoding_keeps_daemon_values_and_handles_odd_snapshots() {
+        let mut report = crate::control::DebugReport {
+            tablet: Some("Tablet".into()),
+            parser: Some("OpenTabletDriver.Plugin.Tablet.TabletReportParser".into()),
+            sequence: 3,
+            raw_hex: "ff".repeat(otd_core::debug::MAX_BYTES),
+            values: serde_json::Value::Null,
+        };
+        // A full-size capture decodes; it is longer than `decode` accepts.
+        decode_debug_report(&mut report);
+        assert!(!report.values.is_null());
+        let decoded = report.values.clone();
+        decode_debug_report(&mut report);
+        assert_eq!(report.values, decoded, "already decoded values stay");
+        for (parser, raw_hex) in [
+            (Some("Unknown.Parser"), "10"),
+            (
+                Some("OpenTabletDriver.Plugin.Tablet.TabletReportParser"),
+                "",
+            ),
+            (
+                Some("OpenTabletDriver.Plugin.Tablet.TabletReportParser"),
+                "1",
+            ),
+            (
+                Some("OpenTabletDriver.Plugin.Tablet.TabletReportParser"),
+                "zz",
+            ),
+            (None, "10"),
+        ] {
+            let mut report = crate::control::DebugReport {
+                tablet: None,
+                parser: parser.map(str::to_owned),
+                sequence: 0,
+                raw_hex: raw_hex.into(),
+                values: serde_json::Value::Null,
+            };
+            decode_debug_report(&mut report);
+            if parser == Some("Unknown.Parser") {
+                assert!(report.values["error"].is_string());
+            } else {
+                assert!(report.values.is_null(), "{parser:?} {raw_hex:?}");
+            }
+        }
     }
 }

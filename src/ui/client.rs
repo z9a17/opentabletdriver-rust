@@ -10,7 +10,11 @@ use std::sync::{
     mpsc::{self, Receiver, SyncSender, TrySendError},
 };
 use std::time::Duration;
-use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::Foundation::{HWND, WAIT_OBJECT_0};
+use windows_sys::Win32::System::Threading::{
+    GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    WaitForSingleObject,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
 
 pub(super) enum ClientCommand {
@@ -32,6 +36,8 @@ pub(super) enum ClientEvent {
     },
     Offline(Option<String>),
     ActionFinished(Result<(), String>),
+    /// The daemon process ended with a failure code or left a crash record.
+    DaemonExited(String),
 }
 
 pub(super) struct DaemonClient {
@@ -178,6 +184,83 @@ fn publish(
     }
 }
 
+/// The daemon process this panel attached to. Its handle keeps the process ID
+/// from being reused and yields the exit code, so a crash (a panic, or a
+/// native fault inside a plugin) is told apart from an ordinary shutdown.
+struct Watched {
+    instance: String,
+    pid: u32,
+    /// When the daemon started, in seconds since the Unix epoch.
+    started: u64,
+    process: crate::hid::OwnedHandle,
+}
+
+impl Watched {
+    /// Daemon instances are named `PID-NANOSECONDS`.
+    fn open(instance: &str) -> Option<Self> {
+        let (pid, started) = instance.split_once('-')?;
+        let pid: u32 = pid.parse().ok()?;
+        let started = started.parse::<u128>().ok()? / 1_000_000_000;
+        let process = crate::hid::OwnedHandle::new(unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                0,
+                pid,
+            )
+        })
+        .ok()?;
+        Some(Self {
+            instance: instance.to_owned(),
+            pid,
+            started: u64::try_from(started).unwrap_or(u64::MAX),
+            process,
+        })
+    }
+
+    /// The exit code once the process has ended.
+    fn exit_code(&self) -> Option<u32> {
+        if unsafe { WaitForSingleObject(self.process.raw(), 0) } != WAIT_OBJECT_0 {
+            return None;
+        }
+        let mut code = 0;
+        (unsafe { GetExitCodeProcess(self.process.raw(), &mut code) } != 0).then_some(code)
+    }
+}
+
+/// What the console says about a daemon that ended with `code`; nothing for
+/// an ordinary shutdown.
+pub(super) fn exit_message(
+    code: u32,
+    crash: Option<&otd_core::crash::CrashRecord>,
+) -> Option<String> {
+    if code == 0 && crash.is_none() {
+        return None;
+    }
+    let meaning = match code {
+        0 => "",
+        1 => " (fatal error)",
+        0xC000_0005 => " (access violation)",
+        0xC000_00FD => " (stack overflow)",
+        0xC000_0409 => " (fail-fast; a Rust panic ends the process this way)",
+        0xE043_4352 => " (unhandled .NET exception)",
+        _ => "",
+    };
+    let mut message =
+        format!("The driver daemon stopped unexpectedly with exit code 0x{code:08X}{meaning}.");
+    match crash {
+        Some(crash) => {
+            message.push(' ');
+            message.push_str(&crash.summary());
+            message.push_str(" The record is in crash.log in the settings directory.");
+        }
+        None => message.push_str(
+            " It left no crash record; Windows Event Viewer (Windows Logs > Application) names the faulting module.",
+        ),
+    }
+    message.push_str(" Start driver launches it again.");
+    Some(message)
+}
+
 fn run(
     commands: Receiver<ClientCommand>,
     events: SyncSender<ClientEvent>,
@@ -190,6 +273,7 @@ fn run(
     // Retain across disconnections and daemon replacement: a queued launch
     // preference must not undo an explicit stop/shutdown from another client.
     let mut observed_active = false;
+    let mut watched: Option<Watched> = None;
     while !stop.load(Ordering::Acquire) {
         let snapshot = (|| -> io::Result<(ControlStatus, Option<Box<Profile>>)> {
             let Reply::Status { status } = call(Command::Status)? else {
@@ -221,6 +305,12 @@ fn run(
         })();
         match snapshot {
             Ok((status, profile)) => {
+                if watched
+                    .as_ref()
+                    .is_none_or(|watched| watched.instance != status.instance)
+                {
+                    watched = Watched::open(&status.instance);
+                }
                 let identity = status.identity();
                 let loaded = profile.is_some();
                 if publish(
@@ -238,6 +328,21 @@ fn run(
                 }
             }
             Err(error) => {
+                // Report a daemon that ended badly once, before going offline.
+                if let Some(code) = watched.as_ref().and_then(Watched::exit_code) {
+                    let ended = watched.take();
+                    let crash = ended
+                        .and_then(|ended| otd_core::crash::latest_for(ended.pid, ended.started));
+                    if let Some(message) = exit_message(code, crash.as_ref()) {
+                        publish(
+                            &events,
+                            ClientEvent::DaemonExited(message),
+                            window,
+                            &stop,
+                            true,
+                        );
+                    }
+                }
                 let message = if error.kind() == io::ErrorKind::NotFound {
                     None
                 } else {
@@ -274,5 +379,44 @@ fn run(
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_failed_daemon_exits_are_reported() {
+        assert_eq!(exit_message(0, None), None);
+        let fault = exit_message(0xC000_0005, None).unwrap();
+        assert!(fault.contains("0xC0000005 (access violation)"), "{fault}");
+        assert!(fault.contains("Event Viewer"), "{fault}");
+        let mut record = otd_core::crash::CrashRecord::new("0.14.0", "daemon", "panic", "boom");
+        record.thread = Some("tablet-driver".into());
+        record.location = Some("src/x.rs:1:1".into());
+        let panic = exit_message(0xC000_0409, Some(&record)).unwrap();
+        assert!(panic.contains("Rust panic"), "{panic}");
+        assert!(
+            panic
+                .contains("daemon 0.14.0 panicked on thread 'tablet-driver' at src/x.rs:1:1: boom"),
+            "{panic}"
+        );
+        // A clean exit with a recorded fatal error is still reported.
+        assert!(exit_message(0, Some(&record)).is_some());
+    }
+
+    #[test]
+    fn watched_instances_need_a_process_id_and_start_time() {
+        assert!(Watched::open("not-an-instance").is_none());
+        assert!(Watched::open("123").is_none());
+        let own = format!("{}-{}", std::process::id(), 5_000_000_000u64);
+        let watched = Watched::open(&own).expect("this process can be opened");
+        assert_eq!((watched.pid, watched.started), (std::process::id(), 5));
+        assert_eq!(
+            watched.exit_code(),
+            None,
+            "a running process has no exit code"
+        );
     }
 }
