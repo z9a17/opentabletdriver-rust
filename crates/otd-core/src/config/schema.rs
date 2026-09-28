@@ -97,7 +97,8 @@ pub(super) fn import_diagnostics(
     let profile = &document["Profiles"][selected];
     if let Some(bindings) = profile["Bindings"].as_object() {
         for (name, value) in bindings {
-            if matches!(name.as_str(), "TipButton" | "EraserButton") {
+            // Pen buttons are imported one by one, with their own diagnostics.
+            if matches!(name.as_str(), "TipButton" | "EraserButton" | "PenButtons") {
                 continue;
             }
             if matches!(
@@ -195,6 +196,7 @@ pub(super) fn extract_unknown_fields(document: &mut toml::Value) -> BTreeMap<Str
             "relative",
             "absolute",
             "bindings",
+            "pen_buttons",
             "output",
             "radial_follow",
             "plugins",
@@ -404,6 +406,13 @@ impl OtdSettingsDocument {
                 }
                 if imported.contact.eraser_enabled {
                     migrated_fields.push("Bindings.EraserButton".into());
+                }
+                if imported
+                    .pen_buttons
+                    .iter()
+                    .any(|action| *action != crate::output::buttons::ButtonAction::None)
+                {
+                    migrated_fields.push("Bindings.PenButtons".into());
                 }
                 if !imported.radial_follow.is_empty() {
                     migrated_fields.push(format!(
@@ -617,6 +626,9 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
             legacy_force_radial_follow: imported.legacy_force_radial_follow,
         },
     )?;
+    if profile.pen_buttons != baseline.pen_buttons {
+        return Err("OTD export cannot write edited pen button actions back to the source bindings. Keep the Rust TOML profile, or edit them in OpenTabletDriver.".into());
+    }
     let original: Value =
         serde_json::from_str(&imported.settings_json).map_err(|error| error.to_string())?;
     let mut document = original.clone();

@@ -41,3 +41,16 @@ These checks cover the 0.7.0 changes described in [input latency](INPUT_LATENCY.
 - One unplug/replug test showed the daemon entering its waiting state and reopening the 192-byte pen collection when Windows presented it again. Windows briefly reset the collection after the first return; the daemon reopened it a second time without exiting. The pen was not moved after replug, so resumed cursor input is not confirmed by that test.
 - Repeated unplug/replug with pen input after reconnect, hold-contact unplug, sleep/wake, and display-topology changes have not yet been validated on hardware.
 - The 0.3.0 Radial Follow port uses the current saved tablet-space parameters and matches the original C# core's radial curve at ten reference distances. It has not been run against live pen movement or clicks: the active 0.2.0 driver was left running at the user's request. On the first 0.3.0 launch, compare slow movements inside the 0.302 mm inner radius, larger jumps past the 0.7039 mm outer radius, and pen redetection after at least 50 ms with OpenTabletDriver's original filter.
+
+
+## Pen side buttons (pending)
+
+Needs a Windows build with [pen side buttons](PEN_BUTTONS.md). Replay tests cover the logic; these steps check it on a tablet.
+
+1. With the default profile, press the first side button while hovering over a text field: a context menu opens where the pen is. The second button should middle click (paste on Linux, autoscroll in browsers).
+2. Hold a side button, move the pen out of range and back. The click must have been released when the pen left: no stuck menu, no drag.
+3. Hold a side button while touching with the tip. The button must not change the tip's click.
+4. Set `pen_buttons = ["keys:Control+Z", "keys:Escape", "mouse:forward"]` and check each in a text editor or browser. A chord must not leave Ctrl held after release, including when the pen leaves range or you press Ctrl+C in the console.
+5. In pen output, open a drawing application: a side button should arrive as the pen's barrel button (most applications list it as a stylus or pen button you can assign). Windows pens have one barrel button, so buttons 1 to 3 all act as it.
+6. Unplug the tablet while a button is held and confirm nothing stays pressed.
+7. Report the tablet model, the Windows build, and any button that does the wrong thing.

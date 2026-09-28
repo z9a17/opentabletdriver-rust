@@ -1,9 +1,10 @@
-//! Windows adapter for the portable shared action state (B01 foundation).
+//! Windows adapter for the portable shared action state (B01 foundation),
+//! and the key and button output of the pen side buttons.
 //!
 //! This does not replace the existing combined mouse motion/tip packet path.
-//! The future binding engine must use one shared `ActionState` for all its
-//! synthetic held actions. Physical user input and other injectors are outside
-//! that ownership model.
+//! All sessions share one `ActionState` for their synthetic held actions, so
+//! two tablets holding the same key press it once. Physical user input and
+//! other injectors are outside that ownership model.
 //!
 //! Each call sends exactly one INPUT and acknowledges only a return count of 1.
 //! See https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput
@@ -11,8 +12,13 @@
 
 use std::io;
 use std::mem::size_of;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use otd_core::actions::{Action, ActionState, ActionTransition, KeyboardUsage, MouseButton};
+use otd_core::actions::{
+    Action, ActionOwner, ActionState, ActionTransition, KeyboardUsage, MouseButton,
+};
+use otd_core::output::buttons::ActionSink;
 use windows_sys::Win32::Foundation::SetLastError;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
@@ -199,4 +205,75 @@ fn keyboard_scan_code(key: KeyboardUsage) -> Option<(u16, bool)> {
         _ => return None,
     };
     Some((code & 0xff, code & 0xff00 == 0xe000))
+}
+
+/// Every session's held actions.
+static HELD: Mutex<ActionState> = Mutex::new(ActionState::new());
+static NEXT_DEVICE: AtomicU64 = AtomicU64::new(1);
+
+fn held() -> io::Result<std::sync::MutexGuard<'static, ActionState>> {
+    HELD.lock()
+        .map_err(|_| io::Error::other("held action lock poisoned"))
+}
+
+/// One tablet session's share of the held actions. Dropping it lets go of
+/// what it still holds.
+pub struct SessionActions {
+    device: u64,
+}
+
+impl SessionActions {
+    pub fn new() -> Self {
+        Self {
+            device: NEXT_DEVICE.fetch_add(1, Ordering::Relaxed),
+        }
+    }
+}
+
+impl Default for SessionActions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ActionSink for SessionActions {
+    fn supports(&self, action: Action) -> bool {
+        supports(action)
+    }
+
+    fn hold(&mut self, binding: u32, action: Action, down: bool) -> io::Result<()> {
+        held()?
+            .set_held(
+                ActionOwner {
+                    device: self.device,
+                    binding,
+                },
+                action,
+                down,
+            )
+            .map(|_| ())
+            .map_err(io::Error::other)
+    }
+
+    fn flush(&mut self) -> io::Result<usize> {
+        let mut state = held()?;
+        flush_pending(&mut state)
+    }
+
+    fn release_all(&mut self) -> io::Result<usize> {
+        let mut state = held()?;
+        state.release_device(self.device);
+        flush_pending(&mut state)
+    }
+}
+
+impl Drop for SessionActions {
+    fn drop(&mut self) {
+        // Best effort: a release that fails stays pending, and the next flush
+        // by any session retries it.
+        if let Ok(mut state) = HELD.lock() {
+            state.release_device(self.device);
+            let _ = flush_pending(&mut state);
+        }
+    }
 }

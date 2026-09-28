@@ -5,6 +5,7 @@
 
 use crate::mapping::Mapper;
 use crate::state::Frame;
+pub mod buttons;
 pub mod owners;
 pub mod pen;
 

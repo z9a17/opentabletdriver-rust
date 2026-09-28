@@ -315,7 +315,7 @@ pub fn run(
         None
     };
     let pen = pen_device(&profile, mode)?;
-    let result = otd_core::session::run_gated_with_pen(
+    let result = otd_core::session::run_gated_with_devices(
         &mut source,
         &mut WindowsDisplays,
         &profile,
@@ -324,6 +324,7 @@ pub fn run(
         plugins,
         |packet| output.as_ref().map_or(Ok(()), |output| output.send(packet)),
         pen,
+        action_sink(mode),
         status,
         || Ok(true),
     );
@@ -333,6 +334,12 @@ pub fn run(
             .map_err(otd_core::session::cleanup_failure)?;
     }
     result
+}
+
+/// Key and button output for a driving session's pen side buttons.
+fn action_sink(mode: Mode) -> Option<Box<dyn otd_core::output::buttons::ActionSink>> {
+    matches!(mode, Mode::Driver)
+        .then(|| Box::new(crate::action_output::SessionActions::new()) as Box<_>)
 }
 
 /// The synthetic pen for a driving session whose profile has pen output.
@@ -461,7 +468,7 @@ impl<'a> PreparedSession<'a> {
         let _priority = ReaderPriority::raise();
         let mut output = SessionOutput::new()?;
         let pen = pen_device(&profile, Mode::Driver)?;
-        let result = otd_core::session::run_gated_with_pen(
+        let result = otd_core::session::run_gated_with_devices(
             &mut source,
             &mut WindowsDisplays,
             &profile,
@@ -470,6 +477,7 @@ impl<'a> PreparedSession<'a> {
             plugins,
             |packet| output.send(packet),
             pen,
+            action_sink(Mode::Driver),
             status,
             gate,
         );

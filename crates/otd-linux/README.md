@@ -16,7 +16,7 @@ Not there yet:
 - desktop layout discovery: pass `--screen WIDTHxHEIGHT` for the whole virtual
   screen;
 - hotplug notifications: it rescans every two seconds;
-- pen buttons, pad buttons, and several tablets at once.
+- pad buttons and express keys, and several tablets at once.
 
 ## Use
 
@@ -31,6 +31,14 @@ Without `--profile` it imports `~/.config/OpenTabletDriver/settings.json`
 OpenTabletDriver's daemon and unload a kernel driver that grabs the tablet
 first, or both will move the pointer.
 
+## Pen side buttons
+
+The profile's [pen button actions](../../docs/PEN_BUTTONS.md) work here too:
+right and middle click by default, or mouse buttons and keys of your choice.
+Keys go through a second virtual device, "OpenTabletDriver Rust keyboard",
+which is created only when a profile has a key binding. The mouse buttons use
+the pointer. Nothing here has been run with a tablet.
+
 ## Artist Mode
 
 A profile with `output = "pen"`, or an imported OpenTabletDriver profile in
@@ -39,9 +47,9 @@ Artist Mode, creates upstream's virtual tablet instead of the pointer:
 pixel, pressure 0-65535 with `BTN_TOUCH` while touching, tilt -64..63 and the
 pen/eraser tool keys held while in range. Imported Artist Mode profiles touch
 whenever pressure is above zero, as upstream does; native profiles follow
-their tip and eraser thresholds. The stylus-button keys are declared but not
-pressed yet. The event framing is unit-tested; the device has not been
-created on a Linux machine.
+their tip and eraser thresholds. Pen side buttons are `BTN_STYLUS`, `BTN_STYLUS2` and `BTN_STYLUS3`. The event
+framing is unit-tested, and the virtual devices have been created on a Linux
+machine (without a tablet or any input sent).
 
 ## Permissions
 

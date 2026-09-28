@@ -16,8 +16,9 @@ It turns your pen tablet into a precise mouse or a pressure-sensitive pen, with 
 - **Several tablets at once,** each with its own profile.
 - **Native control panel** in OpenTabletDriver's layout, with light and dark themes, a tray icon, and a tablet debugger that shows raw and decoded pen data live.
 - **Command line and background service** for scripting: profiles, presets, diagnostics and area conversion all work headless.
+- **Pen side buttons** click or press keys and shortcuts, like OpenTabletDriver's: right and middle click by default, or anything you set. See [pen side buttons](docs/PEN_BUTTONS.md).
 
-Not done yet: pen side buttons and tablet express keys.
+Not done yet: tablet express keys, and a settings panel editor for the side buttons.
 
 ## Get started (Windows)
 

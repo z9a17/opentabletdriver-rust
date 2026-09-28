@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::keys;
 use crate::mapping::{Crop, OtdArea, OtdMapping};
+use crate::output::buttons::{ButtonAction, default_pen_buttons};
 use crate::plugins::PluginConfig;
 use crate::protocol::MAX_PRESSURE;
 use crate::radial_follow::{FILTER_NAME, FILTER_PATH, RadialFollowSettings};
@@ -72,6 +74,11 @@ pub const WINDOWS_PEN_POINTER_MODE: &str = "VoiDPlugins.OutputMode.WindowsPenPoi
 /// <https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Desktop/Interop/Input/Absolute/EvdevVirtualTablet.cs>
 pub const LINUX_ARTIST_MODE: &str = "OpenTabletDriver.Desktop.Output.LinuxArtistMode";
 pub(crate) const ADAPTIVE_BINDING: &str = "OpenTabletDriver.Desktop.Binding.AdaptiveBinding";
+const MOUSE_BINDING: &str = "OpenTabletDriver.Desktop.Binding.MouseBinding";
+const KEY_BINDING: &str = "OpenTabletDriver.Desktop.Binding.KeyBinding";
+const MULTI_KEY_BINDING: &str = "OpenTabletDriver.Desktop.Binding.MultiKeyBinding";
+/// Most pen buttons a profile can bind; a report's button set holds 64.
+pub const MAX_PEN_BUTTONS: usize = 64;
 
 #[derive(Clone, Debug)]
 pub struct Profile {
@@ -89,6 +96,9 @@ pub struct Profile {
     pub otd_mapping: Option<OtdMapping>,
     pub relative: Option<RelativeSettings>,
     pub contact: ContactPolicy,
+    /// What each pen side button does, by button index. OpenTabletDriver's
+    /// defaults are barrel buttons 1, 2 and 3. Buttons past the end do nothing.
+    pub pen_buttons: Vec<ButtonAction>,
     /// Absolute output only; relative output always moves the mouse.
     pub output: OutputKind,
     pub radial_follow: Vec<RadialFollowSettings>,
@@ -121,6 +131,7 @@ impl Default for Profile {
             otd_mapping: None,
             relative: None,
             contact: ContactPolicy::default(),
+            pen_buttons: default_pen_buttons(),
             output: OutputKind::Mouse,
             radial_follow: Vec::new(),
             plugins: Vec::new(),
@@ -160,6 +171,9 @@ struct RawProfile {
     absolute: Option<OtdMapping>,
     #[serde(default)]
     bindings: ContactPolicy,
+    /// Pen button actions as text (see `ButtonAction`), absent for the defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pen_buttons: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "OutputKind::is_mouse")]
     output: OutputKind,
     #[serde(default)]
@@ -288,6 +302,9 @@ struct OtdBindings {
     #[serde(default = "default_activation_percent")]
     eraser_activation_threshold: f64,
     eraser_button: Option<OtdStore>,
+    /// Kept as JSON so one odd entry cannot fail the whole import.
+    #[serde(default)]
+    pen_buttons: serde_json::Value,
 }
 
 fn default_activation_percent() -> f64 {
@@ -301,6 +318,7 @@ impl Default for OtdBindings {
             tip_button: None,
             eraser_activation_threshold: 1.0,
             eraser_button: None,
+            pen_buttons: serde_json::Value::Null,
         }
     }
 }
@@ -372,6 +390,91 @@ fn binding_enabled(store: Option<&OtdStore>, expected: &str, pen: bool) -> Resul
         },
         path => Err(format!("unsupported enabled {expected} binding: {path}")),
     }
+}
+
+/// One enabled OTD pen-button store as a button action. A disabled or missing
+/// store does nothing, as upstream's `BindingHandler` skips null bindings.
+/// `pen` says the output is a pen device, where `Button n` is a barrel button.
+fn pen_button_action(store: Option<&OtdStore>, pen: bool) -> Result<ButtonAction, String> {
+    let Some(store) = store.filter(|store| store.enable) else {
+        return Ok(ButtonAction::None);
+    };
+    let property = |name: &str| {
+        store
+            .settings
+            .iter()
+            .rev()
+            .find(|setting| setting.property == name)
+            .and_then(|setting| setting.value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+    match store.path.as_str() {
+        ADAPTIVE_BINDING => match property("Binding") {
+            Some("Button 1") => Ok(ButtonAction::Barrel(1)),
+            Some("Button 2") => Ok(ButtonAction::Barrel(2)),
+            Some("Button 3") => Ok(ButtonAction::Barrel(3)),
+            // On a mouse both are the left button; a pen device touches by
+            // pressure, which a side button cannot express.
+            Some("Tip" | "Eraser") if !pen => {
+                Ok(ButtonAction::Mouse(crate::actions::MouseButton::Left))
+            }
+            other => Err(format!("unsupported Adaptive Binding action: {other:?}")),
+        },
+        MOUSE_BINDING => match property("Button") {
+            // Upstream parses the name ignoring case; an unknown one does nothing.
+            None => Ok(ButtonAction::None),
+            Some(name) if name.eq_ignore_ascii_case("none") => Ok(ButtonAction::None),
+            Some(name) => format!("mouse:{name}").parse(),
+        },
+        KEY_BINDING => match property("Key") {
+            None | Some("None") => Ok(ButtonAction::None),
+            Some(name) => keys::usage_from_name(name)
+                .map(|key| ButtonAction::Keys(vec![key]))
+                .ok_or_else(|| format!("unsupported key {name:?}")),
+        },
+        MULTI_KEY_BINDING => match property("Keys") {
+            None => Ok(ButtonAction::None),
+            Some(names) => keys::parse_chord(names).map(ButtonAction::Keys),
+        },
+        path => Err(format!("unsupported pen button binding: {path}")),
+    }
+}
+
+/// The pen button actions of an OTD profile's `Bindings.PenButtons`. Entries
+/// this driver cannot carry out become diagnostics and do nothing.
+fn import_pen_buttons(
+    value: &serde_json::Value,
+    pen: bool,
+    diagnostics: &mut Vec<ProfileDiagnostic>,
+) -> Vec<ButtonAction> {
+    let Some(entries) = value.as_array() else {
+        return Vec::new();
+    };
+    let mut actions = Vec::with_capacity(entries.len().min(MAX_PEN_BUTTONS));
+    for (index, entry) in entries.iter().take(MAX_PEN_BUTTONS).enumerate() {
+        let action = if entry.is_null() {
+            Ok(ButtonAction::None)
+        } else {
+            serde_json::from_value::<OtdStore>(entry.clone())
+                .map_err(|error| format!("unreadable pen button binding: {error}"))
+                .and_then(|store| pen_button_action(Some(&store), pen))
+        };
+        actions.push(action.unwrap_or_else(|message| {
+            diagnostics.push(ProfileDiagnostic::unsupported(
+                format!("Bindings.PenButtons[{index}]"),
+                format!("{message}; this pen button does nothing."),
+            ));
+            ButtonAction::None
+        }));
+    }
+    if entries.len() > MAX_PEN_BUTTONS {
+        diagnostics.push(ProfileDiagnostic::unsupported(
+            "Bindings.PenButtons",
+            format!("Only the first {MAX_PEN_BUTTONS} pen buttons are applied."),
+        ));
+    }
+    actions
 }
 
 fn radial_property(store: &OtdStore, name: &str, default: f64) -> Result<f64, String> {
@@ -685,6 +788,7 @@ impl Profile {
                 import_binding(selected.bindings.eraser_button.as_ref(), "Eraser"),
             )
         };
+        let pen_buttons = import_pen_buttons(&selected.bindings.pen_buttons, pen, &mut diagnostics);
         let mut radial_follow = Vec::new();
         let mut auto_enabled_radial_follow = 0;
         let mut ignored_filters = 0;
@@ -756,6 +860,7 @@ impl Profile {
                     )?),
                 }
             },
+            pen_buttons,
             output: if pen {
                 OutputKind::Pen
             } else {
@@ -869,6 +974,24 @@ impl Profile {
             })
             .transpose()?;
         let target_tablet = raw.tablet;
+        let pen_buttons = match &raw.pen_buttons {
+            None => default_pen_buttons(),
+            Some(texts) => {
+                if texts.len() > MAX_PEN_BUTTONS {
+                    return Err(format!(
+                        "at most {MAX_PEN_BUTTONS} pen_buttons are supported"
+                    ));
+                }
+                texts
+                    .iter()
+                    .enumerate()
+                    .map(|(index, text)| {
+                        text.parse::<ButtonAction>()
+                            .map_err(|error| format!("pen_buttons[{index}]: {error}"))
+                    })
+                    .collect::<Result<_, _>>()?
+            }
+        };
         let mut profile = Self {
             settings_revision: raw.settings_revision,
             imported_otd: raw.imported_otd,
@@ -876,6 +999,7 @@ impl Profile {
             diagnostics,
             otd_mapping: raw.absolute,
             contact: raw.bindings,
+            pen_buttons,
             output: raw.output,
             radial_follow: raw.radial_follow,
             plugins,
@@ -1036,6 +1160,8 @@ impl Profile {
             }),
             absolute: self.otd_mapping,
             bindings: self.contact,
+            pen_buttons: (self.pen_buttons != default_pen_buttons())
+                .then(|| self.pen_buttons.iter().map(ToString::to_string).collect()),
             output: self.output,
             radial_follow: self.radial_follow.clone(),
             plugins: self.plugins.clone(),
@@ -1504,6 +1630,215 @@ mod tests {
         assert!(profile.contact.tip_enabled);
         assert_eq!(profile.contact.tip_threshold_raw, Some(82));
         assert_eq!(profile.radial_follow.len(), 1);
+    }
+
+    fn store(path: &str, property: &str, value: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({"Path": path, "Enable": true,
+            "Settings": [{"Property": property, "Value": value}]})
+    }
+
+    fn import_pen_buttons_from(buttons: serde_json::Value) -> Profile {
+        let mut json = relative_profile();
+        json["Profiles"][0]["Bindings"]["PenButtons"] = buttons;
+        Profile::from_otd_text(&json.to_string(), Path::new("buttons.json")).unwrap()
+    }
+
+    #[test]
+    fn a_native_profile_starts_with_upstreams_barrel_buttons() {
+        let profile = Profile::default();
+        assert_eq!(
+            profile.pen_buttons,
+            [
+                ButtonAction::Barrel(1),
+                ButtonAction::Barrel(2),
+                ButtonAction::Barrel(3)
+            ]
+        );
+        assert!(!profile.to_toml().unwrap().contains("pen_buttons"));
+    }
+
+    #[test]
+    fn imports_upstreams_default_pen_button_bindings_without_a_warning() {
+        let adaptive = |number: u8| {
+            store(
+                ADAPTIVE_BINDING,
+                "Binding",
+                format!("Button {number}").into(),
+            )
+        };
+        let profile = import_pen_buttons_from(serde_json::json!([adaptive(1), adaptive(2)]));
+        assert_eq!(
+            profile.pen_buttons,
+            [ButtonAction::Barrel(1), ButtonAction::Barrel(2)]
+        );
+        assert!(
+            profile
+                .diagnostics
+                .iter()
+                .all(|diagnostic| !diagnostic.location.contains("PenButtons")),
+            "{:?}",
+            profile.diagnostics
+        );
+    }
+
+    #[test]
+    fn imports_mouse_key_and_chord_bindings() {
+        use crate::actions::MouseButton;
+        let profile = import_pen_buttons_from(serde_json::json!([
+            store(
+                "OpenTabletDriver.Desktop.Binding.MouseBinding",
+                "Button",
+                "Forward".into()
+            ),
+            store(
+                "OpenTabletDriver.Desktop.Binding.KeyBinding",
+                "Key",
+                "Escape".into()
+            ),
+            store(
+                "OpenTabletDriver.Desktop.Binding.MultiKeyBinding",
+                "Keys",
+                "Control+Shift+Z".into()
+            ),
+        ]));
+        assert_eq!(
+            profile.pen_buttons[0],
+            ButtonAction::Mouse(MouseButton::Forward)
+        );
+        assert_eq!(profile.pen_buttons[1].to_string(), "keys:Escape");
+        assert_eq!(
+            profile.pen_buttons[2].to_string(),
+            "keys:LeftControl+LeftShift+Z"
+        );
+        assert!(
+            profile
+                .diagnostics
+                .iter()
+                .all(|d| !d.location.contains("PenButtons"))
+        );
+    }
+
+    #[test]
+    fn disabled_null_and_empty_pen_buttons_do_nothing_without_a_warning() {
+        let mut disabled = store(ADAPTIVE_BINDING, "Binding", "Button 1".into());
+        disabled["Enable"] = false.into();
+        let profile = import_pen_buttons_from(serde_json::json!([
+            disabled,
+            null,
+            store(
+                "OpenTabletDriver.Desktop.Binding.MouseBinding",
+                "Button",
+                serde_json::Value::Null
+            ),
+        ]));
+        assert_eq!(profile.pen_buttons, [const { ButtonAction::None }; 3]);
+        assert!(
+            profile
+                .diagnostics
+                .iter()
+                .all(|d| !d.location.contains("PenButtons"))
+        );
+        // A profile with no PenButtons at all binds nothing, as upstream.
+        assert!(
+            import_pen_buttons_from(serde_json::json!([]))
+                .pen_buttons
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn unsupported_pen_button_bindings_are_reported_and_disabled() {
+        let profile = import_pen_buttons_from(serde_json::json!([
+            store(
+                "OpenTabletDriver.Desktop.Binding.PresetBinding",
+                "Preset",
+                "Gaming".into()
+            ),
+            store(
+                "OpenTabletDriver.Desktop.Binding.KeyBinding",
+                "Key",
+                "Mute".into()
+            ),
+            store(
+                "OpenTabletDriver.Desktop.Binding.MouseBinding",
+                "Button",
+                "Sideways".into()
+            ),
+            store(ADAPTIVE_BINDING, "Binding", "Tip".into()),
+        ]));
+        // On a mouse, an adaptive Tip is the left button; the rest are refused.
+        assert_eq!(profile.pen_buttons[0..3], [const { ButtonAction::None }; 3]);
+        assert_eq!(
+            profile.pen_buttons[3],
+            ButtonAction::Mouse(crate::actions::MouseButton::Left)
+        );
+        let reported: Vec<_> = profile
+            .diagnostics
+            .iter()
+            .filter(|d| d.location.starts_with("Bindings.PenButtons"))
+            .map(|d| d.location.as_str())
+            .collect();
+        assert_eq!(
+            reported,
+            [
+                "Bindings.PenButtons[0]",
+                "Bindings.PenButtons[1]",
+                "Bindings.PenButtons[2]"
+            ]
+        );
+    }
+
+    #[test]
+    fn pen_buttons_survive_a_save_and_reload() {
+        let profile = import_pen_buttons_from(serde_json::json!([
+            store(ADAPTIVE_BINDING, "Binding", "Button 2".into()),
+            store(
+                "OpenTabletDriver.Desktop.Binding.MultiKeyBinding",
+                "Keys",
+                "Control+Z".into()
+            ),
+        ]));
+        let text = profile.to_toml().unwrap();
+        assert!(text.contains("pen_buttons"), "{text}");
+        let reloaded = Profile::from_toml_text(&text, Path::new("saved.toml")).unwrap();
+        assert_eq!(reloaded.pen_buttons, profile.pen_buttons);
+
+        let none = import_pen_buttons_from(serde_json::json!([]));
+        let reloaded =
+            Profile::from_toml_text(&none.to_toml().unwrap(), Path::new("saved.toml")).unwrap();
+        assert!(reloaded.pen_buttons.is_empty(), "an empty list stays empty");
+    }
+
+    #[test]
+    fn native_toml_reads_pen_buttons_and_rejects_bad_ones() {
+        let profile = Profile::from_toml_text(
+            "pen_buttons = [\"mouse:right\", \"none\", \"keys:Control+Z\"]\n",
+            Path::new("native.toml"),
+        )
+        .unwrap();
+        assert_eq!(profile.pen_buttons.len(), 3);
+        assert_eq!(profile.pen_buttons[1], ButtonAction::None);
+        for bad in [
+            "pen_buttons = [\"mouse:sideways\"]\n",
+            "pen_buttons = [\"keys:Mute\"]\n",
+            "pen_buttons = [1]\n",
+        ] {
+            assert!(
+                Profile::from_toml_text(bad, Path::new("bad.toml")).is_err(),
+                "{bad}"
+            );
+        }
+        let many = format!("pen_buttons = [{}]\n", vec!["\"none\""; 65].join(","));
+        assert!(Profile::from_toml_text(&many, Path::new("many.toml")).is_err());
+    }
+
+    #[test]
+    fn editing_pen_buttons_cannot_be_exported_to_otd_settings() {
+        let mut profile = import_pen_buttons_from(serde_json::json!([]));
+        assert!(profile.to_otd_json().is_ok());
+        profile.pen_buttons = vec![ButtonAction::Barrel(1)];
+        let error = profile.to_otd_json().unwrap_err();
+        assert!(error.contains("pen button"), "{error}");
     }
 
     #[test]

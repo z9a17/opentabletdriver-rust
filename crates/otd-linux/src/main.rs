@@ -11,6 +11,8 @@ mod artist;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod descriptor;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod keymap;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod sysfs;
 
 #[cfg(target_os = "linux")]
@@ -59,8 +61,9 @@ mod app {
     use otd_core::spec::TabletSpec;
     use otd_core::tablets::{Database, ParserSupport, Role, parser_support};
 
-    use crate::linux::{self, Device, Hidraw, Uinput, VirtualTablet};
+    use crate::linux::{self, Device, Hidraw, Uinput, VirtualKeyboard, VirtualTablet};
     use otd_core::config::OutputKind;
+    use otd_core::output::buttons::ButtonAction;
 
     static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -260,10 +263,26 @@ mod app {
             .map_err(std::io::Error::other)?;
         let mut decoder = TabletDecoder::for_parser(selected.identifier.parser(), selected.spec)
             .ok_or_else(|| std::io::Error::other("unsupported parser"))?;
+        // Devices for the pen side buttons are made before the session starts:
+        // a new uinput device needs a moment before desktops listen to it.
+        let keys = profile
+            .pen_buttons
+            .iter()
+            .any(|action| matches!(action, ButtonAction::Keys(_)));
+        // Barrel buttons are the pen device's own buttons in pen output.
+        let clicks = profile
+            .pen_buttons
+            .iter()
+            .any(|action| matches!(action, ButtonAction::Mouse(_)));
+        let keyboard = keys.then(VirtualKeyboard::create).transpose()?;
         if profile.output == OutputKind::Pen {
-            // Artist Mode: the virtual tablet replaces the pointer.
+            // Artist Mode: the virtual tablet replaces the pointer, and a
+            // pointer is added only for mouse-button bindings.
             let tablet = VirtualTablet::create(displays.0.virtual_screen)?;
-            return session::run_gated_with_pen(
+            let pointer = clicks
+                .then(|| Uinput::create(true).map(std::rc::Rc::new))
+                .transpose()?;
+            return session::run_gated_with_devices(
                 &mut source,
                 displays,
                 &profile,
@@ -272,20 +291,25 @@ mod app {
                 &mut NoFilters,
                 |_| Ok(()),
                 Some(Box::new(tablet)),
+                Some(linux::action_sink(pointer, keyboard)),
                 &|line| eprintln!("{line}"),
                 || Ok(true),
             );
         }
-        let output = Uinput::create(profile.relative.is_some())?;
-        session::run(
+        let output = std::rc::Rc::new(Uinput::create(profile.relative.is_some())?);
+        let sender = std::rc::Rc::clone(&output);
+        session::run_gated_with_devices(
             &mut source,
             displays,
             &profile,
             Mode::Driver,
             &mut decoder,
             &mut NoFilters,
-            |packet| output.send(packet),
+            move |packet| sender.send(packet),
+            None,
+            Some(linux::action_sink(Some(output.clone()), keyboard)),
             &|line| eprintln!("{line}"),
+            || Ok(true),
         )
     }
 

@@ -5,8 +5,10 @@
 use std::io;
 use std::time::Instant;
 
+use crate::actions::Action;
 use crate::config::{ContactPolicy, OutputKind, Profile};
 use crate::mapping::Mapper;
+use crate::output::buttons::{ActionSink, ButtonOutput};
 use crate::output::pen::{PenOutput, PenSample, PenSink};
 use crate::output::{MouseOutput, MousePacket};
 use crate::plugins::{DispatchInput, Filters, PipelineRuntime};
@@ -27,6 +29,10 @@ pub struct ReportPipeline {
     filters: Vec<RadialFollowSmoothingTabletSpace>,
     relative: Option<RelativeMapper>,
     output: MouseOutput,
+    /// Pen side buttons. Until the platform supplies an action sink they only
+    /// drive a pen device's barrel buttons.
+    buttons: ButtonOutput,
+    profile_buttons: Vec<crate::output::buttons::ButtonAction>,
     /// The profile asks for pen output; the platform supplies the device.
     pen_requested: bool,
     pen: Option<PenOutput>,
@@ -57,6 +63,8 @@ impl ReportPipeline {
                 .map(|settings| RelativeMapper::new_for(settings, profile.tablet))
                 .transpose()?,
             output: MouseOutput::new(),
+            buttons: ButtonOutput::new(&profile.pen_buttons, pen_requested, Box::new(NoActions)).0,
+            profile_buttons: profile.pen_buttons.clone(),
             pen_requested,
             pen: None,
             max_pressure: u32::from(profile.tablet.max_pressure),
@@ -88,6 +96,16 @@ impl ReportPipeline {
     /// this sink; the mouse sink then receives nothing.
     pub fn set_pen_sink(&mut self, sink: Box<dyn PenSink>) {
         self.pen = Some(PenOutput::new(sink, self.max_pressure));
+    }
+
+    /// Sends keys and mouse buttons for the pen side buttons through `sink`.
+    /// Returns a message for each binding the platform cannot carry out; those
+    /// buttons do nothing.
+    pub fn set_action_sink(&mut self, sink: Box<dyn ActionSink>) -> Vec<String> {
+        let (buttons, rejected) =
+            ButtonOutput::new(&self.profile_buttons, self.pen_requested, sink);
+        self.buttons = buttons;
+        rejected
     }
 
     /// Compatibility wrapper for callers interested only in whether any packet
@@ -302,9 +320,11 @@ impl ReportPipeline {
     ) -> io::Result<bool> {
         self.desired_contact = false;
         let pen = self.pen.as_mut().map_or(Ok(false), PenOutput::release);
-        let result = match (pen, self.output.release_all(send)) {
-            (Ok(pen), Ok(mouse)) => Ok(pen || mouse),
-            (Err(error), _) | (_, Err(error)) => Err(error),
+        let mouse = self.output.release_all(send);
+        let buttons = self.buttons.release_all();
+        let result = match (pen, mouse, buttons) {
+            (Ok(pen), Ok(mouse), Ok(buttons)) => Ok(pen || mouse || buttons),
+            (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => Err(error),
         };
         // Display-change/session cleanup also calls this outside process_report.
         // A failed release there must be retried before the graph can resume.
@@ -411,6 +431,13 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
             ));
         }
         let contact = self.pipeline.desired_contact;
+        // Side buttons follow the report after the pointer has moved, so a
+        // click lands where the pen is. A pen out of range holds none.
+        let wanted = self
+            .pipeline
+            .buttons
+            .wanted(values.pen_buttons, kind != ReportKind::OutOfRange);
+        let barrel = self.pipeline.buttons.barrel(wanted);
         if let Some(pen) = &mut self.pipeline.pen {
             let emitted = if kind == ReportKind::OutOfRange {
                 pen.release()?
@@ -423,14 +450,15 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
                         tilt: values.tilt,
                         eraser: self.pipeline.is_eraser,
                         contact,
+                        barrel,
                     })?,
                     None => false,
                 }
             } else {
-                pen.contact(contact, values.pressure)?
+                pen.contact(contact, values.pressure, barrel)?
             };
             self.stats.packets += u64::from(emitted);
-            return Ok(());
+            return self.pipeline.buttons.apply(wanted);
         }
         let emitted = if position.is_none() && kind == ReportKind::Data {
             self.pipeline
@@ -453,7 +481,29 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
                 .emit_mapped(mapped, contact, &mut *self.send)?
         };
         self.stats.packets += u64::from(emitted);
+        self.pipeline.buttons.apply(wanted)
+    }
+}
+
+/// The action sink of a pipeline the platform has not given one: pen buttons
+/// still reach a pen device, and nothing else is sent.
+struct NoActions;
+
+impl ActionSink for NoActions {
+    fn supports(&self, _: Action) -> bool {
+        false
+    }
+
+    fn hold(&mut self, _: u32, _: Action, _: bool) -> io::Result<()> {
         Ok(())
+    }
+
+    fn flush(&mut self) -> io::Result<usize> {
+        Ok(0)
+    }
+
+    fn release_all(&mut self) -> io::Result<usize> {
+        Ok(0)
     }
 }
 
@@ -593,6 +643,255 @@ mod tests {
             ..profile(true, false)
         };
         assert!(ReportPipeline::new(&relative).is_err());
+    }
+
+    /// A captured hover report with the pen side buttons in bits 1 and 2 of
+    /// the flags byte (`0x02` barrel button 1, `0x04` button 2), or with
+    /// neither in-range bit, which is the pen leaving.
+    fn with_buttons(bits: u8, in_range: bool) -> [u8; 17] {
+        let mut report = CAPTURE[0];
+        report[1] = if in_range { 0x60 } else { 0x00 } | bits;
+        report
+    }
+
+    #[derive(Clone, Debug, PartialEq)]
+    enum Sent {
+        Mouse(MousePacket),
+        Action(crate::actions::ActionTransition),
+    }
+
+    fn feed(
+        pipeline: &mut ReportPipeline,
+        mapper: Mapper,
+        report: &[u8; 17],
+        log: &std::rc::Rc<std::cell::RefCell<Vec<Sent>>>,
+    ) {
+        let pen = protocol::parse(report).unwrap().unwrap();
+        let mouse = std::rc::Rc::clone(log);
+        pipeline
+            .process_with_raw(
+                pen,
+                report,
+                Instant::now(),
+                Some(mapper),
+                &mut crate::plugins::NoFilters,
+                move |packet| {
+                    mouse.borrow_mut().push(Sent::Mouse(packet));
+                    Ok(())
+                },
+            )
+            .unwrap();
+    }
+
+    fn buttons_pipeline(
+        profile: &Profile,
+    ) -> (
+        ReportPipeline,
+        Mapper,
+        std::rc::Rc<std::cell::RefCell<Vec<Sent>>>,
+    ) {
+        let mut pipeline = ReportPipeline::new(profile).unwrap();
+        let log: std::rc::Rc<std::cell::RefCell<Vec<Sent>>> = Default::default();
+        let actions = std::rc::Rc::clone(&log);
+        let rejected =
+            pipeline.set_action_sink(Box::new(crate::output::buttons::LocalActions::new(
+                move |transition| {
+                    actions.borrow_mut().push(Sent::Action(transition));
+                    Ok(())
+                },
+                |_| true,
+            )));
+        assert!(rejected.is_empty(), "{rejected:?}");
+        let screen = Rect {
+            left: 0,
+            top: 0,
+            right: 2560,
+            bottom: 1440,
+        };
+        let mapper = DisplaySnapshot {
+            virtual_screen: screen,
+            monitors: vec![screen],
+        }
+        .mapper(profile)
+        .unwrap();
+        (pipeline, mapper, log)
+    }
+
+    fn actions(
+        log: &std::rc::Rc<std::cell::RefCell<Vec<Sent>>>,
+    ) -> Vec<(crate::actions::Action, bool)> {
+        log.borrow()
+            .iter()
+            .filter_map(|sent| match sent {
+                Sent::Action(transition) => Some((transition.action, transition.pressed)),
+                Sent::Mouse(_) => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn side_buttons_click_where_the_pen_is_and_release_when_it_leaves() {
+        use crate::actions::{Action, MouseButton};
+        let (mut pipeline, mapper, log) = buttons_pipeline(&profile(false, false));
+        feed(&mut pipeline, mapper, &with_buttons(0, true), &log);
+        assert!(actions(&log).is_empty());
+        log.borrow_mut().clear();
+
+        feed(&mut pipeline, mapper, &with_buttons(0x02, true), &log);
+        feed(&mut pipeline, mapper, &with_buttons(0x02, true), &log);
+        assert_eq!(actions(&log), [(Action::Mouse(MouseButton::Right), true)]);
+        feed(&mut pipeline, mapper, &with_buttons(0x06, true), &log);
+        assert_eq!(
+            actions(&log).last(),
+            Some(&(Action::Mouse(MouseButton::Middle), true))
+        );
+        feed(&mut pipeline, mapper, &with_buttons(0x04, true), &log);
+        assert_eq!(
+            actions(&log).last(),
+            Some(&(Action::Mouse(MouseButton::Right), false))
+        );
+        // The pen leaves with a button still down.
+        feed(&mut pipeline, mapper, &with_buttons(0x04, false), &log);
+        assert_eq!(
+            actions(&log).last(),
+            Some(&(Action::Mouse(MouseButton::Middle), false))
+        );
+        let before = log.borrow().len();
+        feed(&mut pipeline, mapper, &with_buttons(0x04, false), &log);
+        assert_eq!(log.borrow().len(), before, "nothing left to release");
+    }
+
+    #[test]
+    fn the_pointer_moves_before_its_side_button_presses() {
+        let (mut pipeline, mapper, log) = buttons_pipeline(&profile(false, false));
+        feed(&mut pipeline, mapper, &with_buttons(0, true), &log);
+        log.borrow_mut().clear();
+        let mut moved = with_buttons(0x02, true);
+        moved[2] ^= 0x40; // a different X position
+        feed(&mut pipeline, mapper, &moved, &log);
+        let log = log.borrow();
+        assert!(matches!(log[0], Sent::Mouse(_)), "{log:?}");
+        assert!(matches!(log[1], Sent::Action(_)), "{log:?}");
+    }
+
+    #[test]
+    fn a_configured_key_chord_and_disabled_buttons_follow_the_profile() {
+        use crate::actions::{Action, KeyboardUsage};
+        use crate::output::buttons::ButtonAction;
+        let profile = Profile {
+            pen_buttons: vec![
+                ButtonAction::Keys(crate::keys::parse_chord("Control+Z").unwrap()),
+                ButtonAction::None,
+            ],
+            ..profile(false, false)
+        };
+        let (mut pipeline, mapper, log) = buttons_pipeline(&profile);
+        feed(&mut pipeline, mapper, &with_buttons(0x06, true), &log);
+        let key = |usage| Action::Key(KeyboardUsage::new(usage).unwrap());
+        assert_eq!(actions(&log), [(key(0xe0), true), (key(0x1d), true)]);
+        pipeline.release_all(|_| Ok(())).unwrap();
+        assert_eq!(
+            actions(&log)[2..],
+            [(key(0x1d), false), (key(0xe0), false)],
+            "cleanup releases the chord"
+        );
+    }
+
+    #[test]
+    fn relative_mode_has_side_buttons_too() {
+        use crate::actions::{Action, MouseButton};
+        let (mut pipeline, mapper, log) = buttons_pipeline(&profile(true, false));
+        feed(&mut pipeline, mapper, &with_buttons(0x02, true), &log);
+        assert_eq!(actions(&log), [(Action::Mouse(MouseButton::Right), true)]);
+    }
+
+    #[test]
+    fn pen_output_reports_barrel_buttons_instead_of_clicks() {
+        use crate::output::pen::PenPacket;
+        let profile = Profile {
+            output: crate::config::OutputKind::Pen,
+            ..profile(false, false)
+        };
+        let (mut pipeline, mapper, log) = buttons_pipeline(&profile);
+        let packets: std::rc::Rc<std::cell::RefCell<Vec<PenPacket>>> = Default::default();
+        let sink = std::rc::Rc::clone(&packets);
+        pipeline.set_pen_sink(Box::new(move |packet: PenPacket| {
+            sink.borrow_mut().push(packet);
+            Ok(())
+        }));
+        for report in [
+            with_buttons(0, true),
+            with_buttons(0x02, true),
+            with_buttons(0x06, true),
+            with_buttons(0x04, true),
+            with_buttons(0, false),
+        ] {
+            feed(&mut pipeline, mapper, &report, &log);
+        }
+        let barrel: Vec<u8> = packets
+            .borrow()
+            .iter()
+            .map(|packet| packet.barrel)
+            .collect();
+        assert_eq!(
+            barrel,
+            [0, 0b001, 0b011, 0b010, 0],
+            "leaving range releases the barrel"
+        );
+        assert!(actions(&log).is_empty(), "no mouse buttons in pen mode");
+    }
+
+    #[test]
+    fn side_buttons_allocate_nothing() {
+        let profile = profile(false, false);
+        let mut pipeline = ReportPipeline::new(&profile).unwrap();
+        let injected = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let counter = std::rc::Rc::clone(&injected);
+        pipeline.set_action_sink(Box::new(crate::output::buttons::LocalActions::new(
+            move |_| {
+                counter.set(counter.get() + 1);
+                Ok(())
+            },
+            |_| true,
+        )));
+        let screen = Rect {
+            left: 0,
+            top: 0,
+            right: 2560,
+            bottom: 1440,
+        };
+        let mapper = DisplaySnapshot {
+            virtual_screen: screen,
+            monitors: vec![screen],
+        }
+        .mapper(&profile)
+        .unwrap();
+        let reports = [
+            with_buttons(0, true),
+            with_buttons(0x02, true),
+            with_buttons(0x06, true),
+            with_buttons(0x04, true),
+            with_buttons(0, false),
+        ];
+        let mut plugins = crate::plugins::NoFilters;
+        crate::test_alloc::assert_no_allocations(|| {
+            for index in 0..10_000usize {
+                let bytes = black_box(&reports[index % reports.len()]);
+                let pen = protocol::parse(bytes).unwrap().unwrap();
+                pipeline
+                    .process_with_raw(
+                        pen,
+                        bytes,
+                        Instant::now(),
+                        Some(mapper),
+                        &mut plugins,
+                        |_| Ok(()),
+                    )
+                    .unwrap();
+            }
+        });
+        // Per 5-report cycle: right down, middle down, right up, middle up.
+        assert_eq!(injected.get(), 8_000);
     }
 
     #[test]
