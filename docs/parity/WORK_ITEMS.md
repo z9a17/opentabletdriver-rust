@@ -417,7 +417,7 @@ Implement or adapt the upstream RPC method/event/data contract so original conso
 
 **Depends on:** S02, S05, C04, C05, P08, R02. **Start:** `src/main.rs` commands and UP-CLI declarations.
 
-Add upstream-equivalent load/save/defaults/preset, detect, install/uninstall, output/filter/tool/binding setters, area/sensitivity/reset/lock operations, getters/lists, device strings, diagnostics, updates, stdio and editor workflows. Preserve current Rust commands and document aliases/differences. Return stable exit codes and machine-readable output where appropriate.
+Add upstream-equivalent load/save/defaults/preset, detect, install/uninstall, output/filter/tool/binding setters, area/sensitivity/reset/lock operations, getters/lists, device strings, diagnostics, updates, stdio and editor workflows. Preserve current Rust commands and document aliases/differences. Return stable exit codes and machine-readable output where appropriate. The current inventory is the [command matrix](CLI_COMMAND_MATRIX.md).
 
 **Accept:** A command matrix maps every upstream command to a working Rust command or open task; scripted end-to-end tests use a fake daemon and real IPC. Invalid commands never inject input. Updating delegates to R02 rather than bypassing its validation.
 
