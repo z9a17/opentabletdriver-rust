@@ -67,6 +67,10 @@ pub const WINDOWS_INK_BINDING: &str = "VoiDPlugins.OutputMode.WindowsInkButtonHa
 /// zero, without tip or eraser bindings.
 /// <https://github.com/Kuuuube/VoiDPlugins/tree/02c3ed3a54937e39157f984c42400a755b82eb9e/src/OutputMode/WindowsPenPointer>
 pub const WINDOWS_PEN_POINTER_MODE: &str = "VoiDPlugins.OutputMode.WindowsPenPointerOutputMode";
+/// OpenTabletDriver's Linux Artist Mode, a virtual pressure-sensitive tablet
+/// that touches whenever pressure is above zero.
+/// <https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Desktop/Interop/Input/Absolute/EvdevVirtualTablet.cs>
+pub const LINUX_ARTIST_MODE: &str = "OpenTabletDriver.Desktop.Output.LinuxArtistMode";
 pub(crate) const ADAPTIVE_BINDING: &str = "OpenTabletDriver.Desktop.Binding.AdaptiveBinding";
 
 #[derive(Clone, Debug)]
@@ -599,9 +603,15 @@ impl Profile {
                 "the {tablet_name} output mode is disabled; its settings remain available in the import preview"
             ));
         }
-        let pen_pointer = selected.output_mode.path == WINDOWS_PEN_POINTER_MODE;
+        let artist = selected.output_mode.path == LINUX_ARTIST_MODE;
+        let pen_pointer = artist || selected.output_mode.path == WINDOWS_PEN_POINTER_MODE;
         let pen = pen_pointer || selected.output_mode.path == WINDOWS_INK_ABSOLUTE_MODE;
-        if pen_pointer {
+        if artist {
+            diagnostics.push(ProfileDiagnostic::warning(
+                "linux_artist_mode",
+                "Artist Mode was imported as pen output (a virtual tablet on Linux, Windows Ink on Windows). As upstream, the pen touches whenever pressure is above zero; the profile's tip/eraser bindings and thresholds are preserved but not applied.".into(),
+            ));
+        } else if pen_pointer {
             diagnostics.push(ProfileDiagnostic::warning(
                 "windows_pen_pointer_native",
                 "Windows Pen Pointer was imported as this driver's native pen output, which injects a synthetic pen the same way; the plugin DLL is not used. As in the plugin, the pen touches whenever pressure is above zero; the profile's tip/eraser bindings and thresholds are preserved but not applied.".into(),
@@ -615,7 +625,8 @@ impl Profile {
         let (otd_mapping, relative) = match selected.output_mode.path.as_str() {
             "OpenTabletDriver.Desktop.Output.AbsoluteMode"
             | WINDOWS_INK_ABSOLUTE_MODE
-            | WINDOWS_PEN_POINTER_MODE => {
+            | WINDOWS_PEN_POINTER_MODE
+            | LINUX_ARTIST_MODE => {
                 let absolute = selected
                     .absolute_mode_settings
                     .ok_or("Absolute Mode requires AbsoluteModeSettings")?;
@@ -1249,6 +1260,16 @@ mod tests {
                 .diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.location == "windows_pen_pointer_native")
+        );
+        let artist = text.replace(WINDOWS_PEN_POINTER_MODE, LINUX_ARTIST_MODE);
+        let artist = Profile::from_otd_text(&artist, Path::new("settings.json")).unwrap();
+        assert_eq!(artist.output, OutputKind::Pen);
+        assert_eq!(artist.contact.tip_threshold_raw, Some(1));
+        let exported: serde_json::Value =
+            serde_json::from_str(&artist.to_otd_json().unwrap()).unwrap();
+        assert_eq!(
+            exported["Profiles"][0]["OutputMode"]["Path"],
+            LINUX_ARTIST_MODE
         );
         // Exporting keeps the plugin the profile came from.
         let exported: serde_json::Value =

@@ -665,6 +665,7 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
         let source_mode = selected["OutputMode"]["Path"].as_str();
         target_mode = match (pen, source_mode) {
             (true, Some(super::WINDOWS_PEN_POINTER_MODE)) => super::WINDOWS_PEN_POINTER_MODE,
+            (true, Some(super::LINUX_ARTIST_MODE)) => super::LINUX_ARTIST_MODE,
             (true, _) => super::WINDOWS_INK_ABSOLUTE_MODE,
             (false, _) => "OpenTabletDriver.Desktop.Output.AbsoluteMode",
         };

@@ -1,11 +1,13 @@
 //! Linux backend slice (X02/X03): runs a tablet through the portable core
-//! with hidraw input and a uinput pointer. The display layout comes from
-//! `--screen` instead of the desktop, and there is no daemon, UI, plugin
-//! host, Artist Mode or hotplug notification yet; it rescans every two
-//! seconds. Built and unit-tested on Windows only; no Linux hardware run
+//! with hidraw input and a uinput pointer, or with pen output a virtual
+//! Artist Mode tablet. The display layout comes from `--screen` instead of
+//! the desktop, and there is no daemon, UI, plugin host or hotplug
+//! notification yet; it rescans every two seconds. Built and unit-tested on Windows only; no Linux hardware run
 //! has been made.
 
-// Portable parsing, unit-tested on every platform.
+// Portable parsing and event framing, unit-tested on every platform.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod artist;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod descriptor;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -57,7 +59,8 @@ mod app {
     use otd_core::spec::TabletSpec;
     use otd_core::tablets::{Database, ParserSupport, Role, parser_support};
 
-    use crate::linux::{self, Device, Hidraw, Uinput};
+    use crate::linux::{self, Device, Hidraw, Uinput, VirtualTablet};
+    use otd_core::config::OutputKind;
 
     static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -257,6 +260,22 @@ mod app {
             .map_err(std::io::Error::other)?;
         let mut decoder = TabletDecoder::for_parser(selected.identifier.parser(), selected.spec)
             .ok_or_else(|| std::io::Error::other("unsupported parser"))?;
+        if profile.output == OutputKind::Pen {
+            // Artist Mode: the virtual tablet replaces the pointer.
+            let tablet = VirtualTablet::create(displays.0.virtual_screen)?;
+            return session::run_gated_with_pen(
+                &mut source,
+                displays,
+                &profile,
+                Mode::Driver,
+                &mut decoder,
+                &mut NoFilters,
+                |_| Ok(()),
+                Some(Box::new(tablet)),
+                &|line| eprintln!("{line}"),
+                || Ok(true),
+            );
+        }
         let output = Uinput::create(profile.relative.is_some())?;
         session::run(
             &mut source,
