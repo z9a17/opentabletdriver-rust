@@ -6,6 +6,7 @@
 use crate::mapping::Mapper;
 use crate::state::Frame;
 pub mod owners;
+pub mod pen;
 
 /// `MOUSEINPUT` flag values. They equal Windows' `MOUSEEVENTF_*` constants,
 /// so the Windows adapter passes them through; other platforms translate.

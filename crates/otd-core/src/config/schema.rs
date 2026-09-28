@@ -195,6 +195,7 @@ pub(super) fn extract_unknown_fields(document: &mut toml::Value) -> BTreeMap<Str
             "relative",
             "absolute",
             "bindings",
+            "output",
             "radial_follow",
             "plugins",
             "tablet",
@@ -621,8 +622,9 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
     let mut document = original.clone();
     let selected = &mut document["Profiles"][imported.selected_profile];
     let target_mode;
+    let pen = profile.output == super::OutputKind::Pen;
     if let Some(relative) = profile.relative {
-        if profile.otd_mapping.is_some() {
+        if profile.otd_mapping.is_some() || pen {
             return Err("OTD export requires exactly one output mode".into());
         }
         relative.validate()?;
@@ -658,7 +660,14 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
             )?;
         }
     } else if let Some(mapping) = profile.otd_mapping {
-        target_mode = "OpenTabletDriver.Desktop.Output.AbsoluteMode";
+        // OpenTabletDriver has pen output through plugins: keep the source's
+        // pen plugin, or else use Windows Ink.
+        let source_mode = selected["OutputMode"]["Path"].as_str();
+        target_mode = match (pen, source_mode) {
+            (true, Some(super::WINDOWS_PEN_POINTER_MODE)) => super::WINDOWS_PEN_POINTER_MODE,
+            (true, _) => super::WINDOWS_INK_ABSOLUTE_MODE,
+            (false, _) => "OpenTabletDriver.Desktop.Output.AbsoluteMode",
+        };
         let settings = &mut selected["AbsoluteModeSettings"];
         for (name, area, previous) in [
             (
@@ -760,24 +769,35 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
             "Eraser",
         ),
     ] {
-        if current_enabled != old_enabled {
+        // A changed output kind rewrites an enabled contact binding for it.
+        let rebind = current_enabled && profile.output != baseline.output;
+        if current_enabled != old_enabled || rebind {
             ensure_object(&mut selected["Bindings"])?;
             let store = &mut selected["Bindings"][button];
             if current_enabled {
+                let (path, property, value) = if pen {
+                    (super::WINDOWS_INK_BINDING, "Button", "Pen Tip")
+                } else {
+                    (super::ADAPTIVE_BINDING, "Binding", action)
+                };
                 if !store.is_null()
-                    && store["Path"].as_str()
-                        != Some("OpenTabletDriver.Desktop.Binding.AdaptiveBinding")
+                    && !matches!(
+                        store["Path"].as_str(),
+                        Some(super::ADAPTIVE_BINDING | super::WINDOWS_INK_BINDING)
+                    )
                 {
                     return Err(format!(
                         "cannot replace preserved unsupported {button}; its original binding would be lost"
                     ));
                 }
-                set_field(
-                    store,
-                    "Path",
-                    json!("OpenTabletDriver.Desktop.Binding.AdaptiveBinding"),
-                )?;
-                set_store_property(store, "Binding", json!(action))?;
+                if store["Path"].as_str() != Some(path) {
+                    // The other binding type's properties do not carry over.
+                    if store.is_object() {
+                        set_field(store, "Settings", json!([]))?;
+                    }
+                    set_field(store, "Path", json!(path))?;
+                }
+                set_store_property(store, property, json!(value))?;
             }
             set_field(store, "Enable", json!(current_enabled))?;
         }

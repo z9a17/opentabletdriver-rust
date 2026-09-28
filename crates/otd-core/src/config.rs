@@ -38,6 +38,37 @@ impl Default for ContactPolicy {
     }
 }
 
+/// What the absolute output drives.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputKind {
+    /// The mouse cursor, with the tip/eraser as the left button.
+    #[default]
+    Mouse,
+    /// A pen device with pressure, tilt, eraser and hover: synthetic pointer
+    /// injection (Windows Ink) on Windows, a virtual tablet on Linux.
+    Pen,
+}
+
+impl OutputKind {
+    fn is_mouse(&self) -> bool {
+        *self == Self::Mouse
+    }
+}
+
+/// The Windows Ink plugin's output modes and bindings. Importing them selects
+/// the native pen output; the plugin DLL and its VMulti driver are not used.
+/// <https://github.com/X9VoiD/VoiDPlugins/tree/a69fe346b27512a34bda5e4a9481795b1ce2264b/src/OutputMode/WindowsInk>
+pub const WINDOWS_INK_ABSOLUTE_MODE: &str = "VoiDPlugins.OutputMode.WinInkAbsoluteMode";
+pub const WINDOWS_INK_RELATIVE_MODE: &str = "VoiDPlugins.OutputMode.WinInkRelativeMode";
+pub const WINDOWS_INK_BINDING: &str = "VoiDPlugins.OutputMode.WindowsInkButtonHandler";
+/// The Windows Pen Pointer plugin's output mode, which injects a synthetic
+/// pen as the native pen output does. It touches whenever pressure is above
+/// zero, without tip or eraser bindings.
+/// <https://github.com/Kuuuube/VoiDPlugins/tree/02c3ed3a54937e39157f984c42400a755b82eb9e/src/OutputMode/WindowsPenPointer>
+pub const WINDOWS_PEN_POINTER_MODE: &str = "VoiDPlugins.OutputMode.WindowsPenPointerOutputMode";
+pub(crate) const ADAPTIVE_BINDING: &str = "OpenTabletDriver.Desktop.Binding.AdaptiveBinding";
+
 #[derive(Clone, Debug)]
 pub struct Profile {
     pub schema_version: u32,
@@ -54,6 +85,8 @@ pub struct Profile {
     pub otd_mapping: Option<OtdMapping>,
     pub relative: Option<RelativeSettings>,
     pub contact: ContactPolicy,
+    /// Absolute output only; relative output always moves the mouse.
+    pub output: OutputKind,
     pub radial_follow: Vec<RadialFollowSettings>,
     pub plugins: Vec<PluginConfig>,
     pub auto_enabled_radial_follow: usize,
@@ -84,6 +117,7 @@ impl Default for Profile {
             otd_mapping: None,
             relative: None,
             contact: ContactPolicy::default(),
+            output: OutputKind::Mouse,
             radial_follow: Vec::new(),
             plugins: Vec::new(),
             auto_enabled_radial_follow: 0,
@@ -122,6 +156,8 @@ struct RawProfile {
     absolute: Option<OtdMapping>,
     #[serde(default)]
     bindings: ContactPolicy,
+    #[serde(default, skip_serializing_if = "OutputKind::is_mouse")]
+    output: OutputKind,
     #[serde(default)]
     radial_follow: Vec<RadialFollowSettings>,
     #[serde(default)]
@@ -292,31 +328,46 @@ struct OtdProperty {
     value: serde_json::Value,
 }
 
-fn binding_enabled(store: Option<&OtdStore>, expected: &str) -> Result<bool, String> {
+/// Whether an OTD tip/eraser binding store means contact. `expected` is the
+/// mouse binding's action, `Tip` or `Eraser`. With a Windows Ink output mode,
+/// that plugin's `Pen Tip` binding also means contact; the plugin presses its
+/// eraser bit instead when the eraser is in range.
+fn binding_enabled(store: Option<&OtdStore>, expected: &str, pen: bool) -> Result<bool, String> {
     let Some(store) = store else {
         return Ok(false);
     };
     if !store.enable {
         return Ok(false);
     }
-    if store.path != "OpenTabletDriver.Desktop.Binding.AdaptiveBinding" {
-        return Err(format!(
-            "unsupported enabled {expected} binding: {}",
-            store.path
-        ));
+    let property = |name: &str| {
+        store
+            .settings
+            .iter()
+            .rev()
+            .find(|setting| setting.property == name)
+            .and_then(|setting| setting.value.as_str())
+    };
+    match store.path.as_str() {
+        ADAPTIVE_BINDING => {
+            let selected = property("Binding");
+            if selected != Some(expected) {
+                return Err(format!(
+                    "unsupported enabled {expected} binding action: {selected:?}"
+                ));
+            }
+            Ok(true)
+        }
+        WINDOWS_INK_BINDING if !pen => Err(format!(
+            "the {expected} binding is a Windows Ink binding, which needs a Windows Ink output mode"
+        )),
+        WINDOWS_INK_BINDING => match property("Button") {
+            Some("Pen Tip") => Ok(true),
+            button => Err(format!(
+                "unsupported Windows Ink {expected} binding: {button:?}; only Pen Tip is applied"
+            )),
+        },
+        path => Err(format!("unsupported enabled {expected} binding: {path}")),
     }
-    let selected = store
-        .settings
-        .iter()
-        .rev()
-        .find(|setting| setting.property == "Binding")
-        .and_then(|setting| setting.value.as_str());
-    if selected != Some(expected) {
-        return Err(format!(
-            "unsupported enabled {expected} binding action: {selected:?}"
-        ));
-    }
-    Ok(true)
 }
 
 fn radial_property(store: &OtdStore, name: &str, default: f64) -> Result<f64, String> {
@@ -548,8 +599,23 @@ impl Profile {
                 "the {tablet_name} output mode is disabled; its settings remain available in the import preview"
             ));
         }
+        let pen_pointer = selected.output_mode.path == WINDOWS_PEN_POINTER_MODE;
+        let pen = pen_pointer || selected.output_mode.path == WINDOWS_INK_ABSOLUTE_MODE;
+        if pen_pointer {
+            diagnostics.push(ProfileDiagnostic::warning(
+                "windows_pen_pointer_native",
+                "Windows Pen Pointer was imported as this driver's native pen output, which injects a synthetic pen the same way; the plugin DLL is not used. As in the plugin, the pen touches whenever pressure is above zero; the profile's tip/eraser bindings and thresholds are preserved but not applied.".into(),
+            ));
+        } else if pen {
+            diagnostics.push(ProfileDiagnostic::warning(
+                "windows_ink_native",
+                "Windows Ink Absolute Mode was imported as this driver's native pen output. The Windows Ink plugin and its VMulti driver are not used; its Sync settings are preserved but not applied.".into(),
+            ));
+        }
         let (otd_mapping, relative) = match selected.output_mode.path.as_str() {
-            "OpenTabletDriver.Desktop.Output.AbsoluteMode" => {
+            "OpenTabletDriver.Desktop.Output.AbsoluteMode"
+            | WINDOWS_INK_ABSOLUTE_MODE
+            | WINDOWS_PEN_POINTER_MODE => {
                 let absolute = selected
                     .absolute_mode_settings
                     .ok_or("Absolute Mode requires AbsoluteModeSettings")?;
@@ -579,15 +645,20 @@ impl Profile {
                     ),
                 )
             }
+            WINDOWS_INK_RELATIVE_MODE => {
+                return Err(format!(
+                    "unsupported {tablet_name} output mode: Windows Ink Relative Mode; the native pen output is absolute, so choose Windows Ink Absolute Mode, Absolute Mode or Relative Mode"
+                ));
+            }
             _ => {
                 return Err(format!(
-                    "unsupported {tablet_name} output mode: {}; choose Absolute Mode or Relative Mode",
+                    "unsupported {tablet_name} output mode: {}; choose Absolute Mode, Relative Mode or Windows Ink Absolute Mode",
                     selected.output_mode.path
                 ));
             }
         };
         let mut import_binding = |store: Option<&OtdStore>, name| {
-            binding_enabled(store, name).unwrap_or_else(|message| {
+            binding_enabled(store, name, pen).unwrap_or_else(|message| {
                 diagnostics.push(ProfileDiagnostic::unsupported(
                     format!("Bindings.{name}"),
                     message,
@@ -595,8 +666,14 @@ impl Profile {
                 false
             })
         };
-        let tip_enabled = import_binding(selected.bindings.tip_button.as_ref(), "Tip");
-        let eraser_enabled = import_binding(selected.bindings.eraser_button.as_ref(), "Eraser");
+        let (tip_enabled, eraser_enabled) = if pen_pointer {
+            (true, true)
+        } else {
+            (
+                import_binding(selected.bindings.tip_button.as_ref(), "Tip"),
+                import_binding(selected.bindings.eraser_button.as_ref(), "Eraser"),
+            )
+        };
         let mut radial_follow = Vec::new();
         let mut auto_enabled_radial_follow = 0;
         let mut ignored_filters = 0;
@@ -646,17 +723,32 @@ impl Profile {
             diagnostics,
             otd_mapping,
             relative,
-            contact: ContactPolicy {
-                tip_enabled,
-                eraser_enabled,
-                tip_threshold_raw: Some(activation_raw_for(
-                    selected.bindings.tip_activation_threshold,
-                    tablet.max_pressure,
-                )?),
-                eraser_threshold_raw: Some(activation_raw_for(
-                    selected.bindings.eraser_activation_threshold,
-                    tablet.max_pressure,
-                )?),
+            contact: if pen_pointer {
+                // Any pressure above zero.
+                ContactPolicy {
+                    tip_enabled,
+                    eraser_enabled,
+                    tip_threshold_raw: Some(1),
+                    eraser_threshold_raw: Some(1),
+                }
+            } else {
+                ContactPolicy {
+                    tip_enabled,
+                    eraser_enabled,
+                    tip_threshold_raw: Some(activation_raw_for(
+                        selected.bindings.tip_activation_threshold,
+                        tablet.max_pressure,
+                    )?),
+                    eraser_threshold_raw: Some(activation_raw_for(
+                        selected.bindings.eraser_activation_threshold,
+                        tablet.max_pressure,
+                    )?),
+                }
+            },
+            output: if pen {
+                OutputKind::Pen
+            } else {
+                OutputKind::Mouse
             },
             radial_follow,
             auto_enabled_radial_follow,
@@ -715,6 +807,11 @@ impl Profile {
         {
             return Err("relative profiles use [relative].rotation; omit absolute monitor, crop, and top-level rotation".into());
         }
+        if raw.relative.is_some() && raw.output == OutputKind::Pen {
+            return Err(
+                "pen output is absolute; remove [relative] or set output = \"mouse\"".into(),
+            );
+        }
         if raw.absolute.is_some()
             && (raw.monitor.is_some() || raw.crop.is_some() || raw.rotation.is_some())
         {
@@ -768,6 +865,7 @@ impl Profile {
             diagnostics,
             otd_mapping: raw.absolute,
             contact: raw.bindings,
+            output: raw.output,
             radial_follow: raw.radial_follow,
             plugins,
             relative,
@@ -900,6 +998,9 @@ impl Profile {
 
     pub fn to_toml(&self) -> Result<String, String> {
         self.validate_filter_execution()?;
+        if self.relative.is_some() && self.output == OutputKind::Pen {
+            return Err("pen output is absolute; choose mouse output for relative mode".into());
+        }
         let simple = self.otd_mapping.is_none() && self.relative.is_none();
         let raw = RawProfile {
             schema_version: PROFILE_SCHEMA_VERSION,
@@ -924,6 +1025,7 @@ impl Profile {
             }),
             absolute: self.otd_mapping,
             bindings: self.contact,
+            output: self.output,
             radial_follow: self.radial_follow.clone(),
             plugins: self.plugins.clone(),
             tablet: self.target_tablet.clone(),
@@ -1012,6 +1114,11 @@ impl Profile {
                 plugin.enabled
             );
         }
+        if self.output == OutputKind::Pen {
+            println!(
+                "Pen output: pressure, tilt, eraser and hover go to a pen device (Windows Ink on Windows)."
+            );
+        }
         if let Some(relative) = self.relative {
             println!(
                 "Relative Mode: X={:.4}, Y={:.4} counts/mm; rotation={:.2}°; reset delay={:.4} ms",
@@ -1080,6 +1187,150 @@ impl Profile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn windows_ink_settings(tip: &str, eraser: &str) -> String {
+        format!(
+            r#"{{"Profiles":[{{"Tablet":"Wacom PTH-660","OutputMode":{{"Path":"VoiDPlugins.OutputMode.WinInkAbsoluteMode","Enable":true,"Settings":[{{"Property":"Sync","Value":true}}]}},"AbsoluteModeSettings":{{"Display":{{"Width":2560,"Height":1440,"X":1280,"Y":720,"Rotation":0}},"Tablet":{{"Width":85,"Height":47.8125,"X":110,"Y":23.90625,"Rotation":0}},"EnableClipping":true,"EnableAreaLimiting":false}},"Bindings":{{"TipActivationThreshold":2,"TipButton":{{"Path":"VoiDPlugins.OutputMode.WindowsInkButtonHandler","Enable":true,"Settings":[{{"Property":"Button","Value":"{tip}"}}]}},"EraserActivationThreshold":1,"EraserButton":{{"Path":"VoiDPlugins.OutputMode.WindowsInkButtonHandler","Enable":true,"Settings":[{{"Property":"Button","Value":"{eraser}"}}]}}}}}}]}}"#
+        )
+    }
+
+    #[test]
+    fn windows_ink_absolute_mode_imports_as_native_pen_output() {
+        let path = Path::new("settings.json");
+        let profile =
+            Profile::from_otd_text(&windows_ink_settings("Pen Tip", "Pen Tip"), path).unwrap();
+        assert_eq!(profile.output, OutputKind::Pen);
+        assert!(profile.otd_mapping.is_some() && profile.relative.is_none());
+        assert!(profile.contact.tip_enabled && profile.contact.eraser_enabled);
+        assert!(
+            profile
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.location == "windows_ink_native"),
+            "{:?}",
+            profile.diagnostics
+        );
+        // Pen output survives the native profile format.
+        let text = profile.to_toml().unwrap();
+        assert!(text.contains("output = \"pen\""), "{text}");
+        let reloaded = Profile::from_toml_text(&text, Path::new("driver.toml")).unwrap();
+        assert_eq!(reloaded.output, OutputKind::Pen);
+        // Mouse output is the default and is not written.
+        assert!(!Profile::default().to_toml().unwrap().contains("output"));
+
+        // Buttons other than Pen Tip are not applied and say so.
+        let toggle =
+            Profile::from_otd_text(&windows_ink_settings("Pen Tip", "Eraser (Toggle)"), path)
+                .unwrap();
+        assert!(toggle.contact.tip_enabled && !toggle.contact.eraser_enabled);
+        assert!(toggle.diagnostics.iter().any(|diagnostic| {
+            diagnostic.location == "Bindings.Eraser" && diagnostic.message.contains("Toggle")
+        }));
+        let relative = windows_ink_settings("Pen Tip", "Pen Tip")
+            .replace("WinInkAbsoluteMode", "WinInkRelativeMode");
+        assert!(
+            Profile::from_otd_text(&relative, path)
+                .unwrap_err()
+                .contains("Windows Ink Relative Mode")
+        );
+    }
+
+    #[test]
+    fn windows_pen_pointer_imports_as_pen_output_touching_above_zero_pressure() {
+        let text = windows_ink_settings("Pen Button", "Eraser (Toggle)")
+            .replace(WINDOWS_INK_ABSOLUTE_MODE, WINDOWS_PEN_POINTER_MODE);
+        let profile = Profile::from_otd_text(&text, Path::new("settings.json")).unwrap();
+        assert_eq!(profile.output, OutputKind::Pen);
+        assert!(profile.contact.tip_enabled && profile.contact.eraser_enabled);
+        assert_eq!(profile.contact.tip_threshold_raw, Some(1));
+        assert_eq!(profile.contact.eraser_threshold_raw, Some(1));
+        assert!(
+            profile
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.location == "windows_pen_pointer_native")
+        );
+        // Exporting keeps the plugin the profile came from.
+        let exported: serde_json::Value =
+            serde_json::from_str(&profile.to_otd_json().unwrap()).unwrap();
+        assert_eq!(
+            exported["Profiles"][0]["OutputMode"]["Path"],
+            WINDOWS_PEN_POINTER_MODE
+        );
+    }
+
+    #[test]
+    fn windows_ink_bindings_need_a_windows_ink_output_mode() {
+        let mouse = windows_ink_settings("Pen Tip", "Pen Tip").replace(
+            "VoiDPlugins.OutputMode.WinInkAbsoluteMode",
+            "OpenTabletDriver.Desktop.Output.AbsoluteMode",
+        );
+        let profile = Profile::from_otd_text(&mouse, Path::new("settings.json")).unwrap();
+        assert_eq!(profile.output, OutputKind::Mouse);
+        assert!(!profile.contact.tip_enabled && !profile.contact.eraser_enabled);
+    }
+
+    #[test]
+    fn pen_output_is_absolute_only() {
+        let error = Profile::from_toml_text(
+            "output = \"pen\"\n[relative]\nx_sensitivity = 10.0\ny_sensitivity = 10.0\nreset_delay_ms = 100.0\n",
+            Path::new("driver.toml"),
+        )
+        .unwrap_err();
+        assert!(error.contains("pen output is absolute"), "{error}");
+        let profile = Profile {
+            output: OutputKind::Pen,
+            relative: Some(RelativeSettings {
+                sensitivity: (10.0, 10.0),
+                rotation: 0.0,
+                reset_delay: Duration::from_millis(100),
+            }),
+            ..Profile::default()
+        };
+        assert!(profile.to_toml().is_err());
+        assert!(
+            Profile::from_toml_text("output = \"tablet\"\n", Path::new("driver.toml")).is_err()
+        );
+    }
+
+    #[test]
+    fn pen_output_exports_as_the_windows_ink_mode_and_back() {
+        let path = Path::new("settings.json");
+        let mouse_text = windows_ink_settings("Pen Tip", "Pen Tip")
+            .replace(
+                "VoiDPlugins.OutputMode.WinInkAbsoluteMode\",\"Enable\":true,\"Settings\":[{\"Property\":\"Sync\",\"Value\":true}]",
+                "OpenTabletDriver.Desktop.Output.AbsoluteMode\",\"Enable\":true",
+            )
+            .replace(
+                r#""Path":"VoiDPlugins.OutputMode.WindowsInkButtonHandler","Enable":true,"Settings":[{"Property":"Button","Value":"Pen Tip"}]"#,
+                r#""Path":"OpenTabletDriver.Desktop.Binding.AdaptiveBinding","Enable":true,"Settings":[{"Property":"Binding","Value":"Tip"}]"#,
+            );
+        let mut profile = Profile::from_otd_text(&mouse_text, path).unwrap();
+        assert_eq!(profile.output, OutputKind::Mouse);
+        assert!(profile.contact.tip_enabled);
+        profile.output = OutputKind::Pen;
+        let exported: serde_json::Value =
+            serde_json::from_str(&profile.to_otd_json().unwrap()).unwrap();
+        let selected = &exported["Profiles"][0];
+        assert_eq!(selected["OutputMode"]["Path"], WINDOWS_INK_ABSOLUTE_MODE);
+        assert_eq!(
+            selected["Bindings"]["TipButton"]["Path"],
+            WINDOWS_INK_BINDING
+        );
+        assert_eq!(
+            selected["Bindings"]["TipButton"]["Settings"],
+            serde_json::json!([{"Property": "Button", "Value": "Pen Tip"}])
+        );
+        // The exported document imports as pen output with the same contact.
+        let reimported =
+            Profile::from_otd_text(&serde_json::to_string(&exported).unwrap(), path).unwrap();
+        assert_eq!(reimported.output, OutputKind::Pen);
+        assert_eq!(reimported.contact.tip_enabled, profile.contact.tip_enabled);
+        assert_eq!(
+            reimported.contact.tip_threshold_raw,
+            profile.contact.tip_threshold_raw
+        );
+    }
 
     #[test]
     fn a_native_profile_keeps_its_tablet() {

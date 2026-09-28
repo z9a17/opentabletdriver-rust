@@ -275,6 +275,23 @@ impl Mapper {
         Some((px, py))
     }
 
+    /// The desktop area pixel positions are clamped to.
+    pub fn virtual_screen(self) -> Rect {
+        self.virtual_screen
+    }
+
+    /// A desktop pixel position moved inside the virtual screen.
+    pub fn clamp_pixels(self, px: f64, py: f64) -> Option<(f64, f64)> {
+        if !px.is_finite() || !py.is_finite() {
+            return None;
+        }
+        let screen = self.virtual_screen;
+        Some((
+            px.clamp(f64::from(screen.left), f64::from(screen.right - 1)),
+            py.clamp(f64::from(screen.top), f64::from(screen.bottom - 1)),
+        ))
+    }
+
     pub fn normalize_pixels(self, px: f64, py: f64) -> Option<(i32, i32)> {
         if !px.is_finite() || !py.is_finite() {
             return None;

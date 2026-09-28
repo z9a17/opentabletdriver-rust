@@ -5,6 +5,10 @@
 
 rotation = 0
 
+# "pen" sends pressure, tilt, eraser and hover to Windows Ink applications
+# instead of moving the mouse (absolute mode only). See docs/PEN_OUTPUT.md.
+# output = "pen"
+
 # If more than one PTH-660 pen collection is attached, use a path from
 # opentabletdriver-rust list --paths. A TOML literal string avoids backslash escaping.
 # device_path = '\\?\hid#vid_056a&pid_0357...'

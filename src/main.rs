@@ -10,6 +10,7 @@ mod dotnet;
 mod hid;
 mod original_driver;
 mod output;
+mod pen_output;
 mod plugin_catalog;
 mod plugins;
 mod preset_cli;

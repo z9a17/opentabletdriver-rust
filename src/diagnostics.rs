@@ -61,7 +61,10 @@ pub fn bundle(profile: Option<&Profile>, private: bool) -> Result<Value, String>
             "architecture":std::env::consts::ARCH, "control_protocol":control::PROTOCOL_VERSION,
             "upstream_revision":otd_core::tablets::source_revision()},
         "backend":{"transport":"windows_usb_hid", "runtime_tablet":"any configuration with a supported parser",
-            "output":"SendInput mouse", "hid_inspected":false, "plugins_loaded":false},
+            "output":match profile.map(|profile| profile.output) {
+                Some(crate::config::OutputKind::Pen) => "synthetic pen pointer",
+                _ => "SendInput mouse",
+            }, "hid_inspected":false, "plugins_loaded":false},
         "displays":display_summary(private),
         "profile":profile.map(|profile| profile_summary(profile, private)).transpose()?,
         "daemon":daemon_summary(private),
@@ -101,6 +104,7 @@ fn profile_summary(profile: &Profile, private: bool) -> Result<Value, String> {
         "relative",
         "absolute",
         "bindings",
+        "output",
         "radial_follow",
     ] {
         if let Some(value) = native.get(key) {

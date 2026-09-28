@@ -585,6 +585,7 @@ impl App {
 
     pub(super) fn sync_mode(&self) {
         let label = match self.editor.mode() {
+            OutputMode::Absolute if self.editor.pen() => PEN_MODE_LABEL,
             OutputMode::Absolute => "Absolute Mode",
             OutputMode::Relative => "Relative Mode",
         };
@@ -1651,9 +1652,11 @@ impl App {
         }
     }
 
-    pub(super) fn set_output_mode(&mut self, mode: OutputMode) {
-        if self.editor.mode() != mode {
+    pub(super) fn set_output_mode(&mut self, mode: OutputMode, pen: bool) {
+        let pen = pen && mode == OutputMode::Absolute;
+        if self.editor.mode() != mode || self.editor.pen() != pen {
             self.editor.set_mode(mode, &self.displays);
+            self.editor.set_pen(pen, &self.displays);
             self.mark_dirty();
             self.sync_mode();
             self.sync_areas(None);

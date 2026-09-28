@@ -12,6 +12,7 @@ use crate::decoders::PenDecoder;
 use crate::display::{DisplayFingerprint, DisplaySnapshot};
 use crate::mapping::Mapper;
 use crate::output::MousePacket;
+use crate::output::pen::PenSink;
 use crate::pipeline::ReportPipeline;
 use crate::plugins::Filters;
 use crate::protocol;
@@ -294,11 +295,41 @@ pub fn run_gated(
     mode: Mode,
     decoder: &mut impl PenDecoder,
     filters: &mut impl Filters,
+    send: impl FnMut(MousePacket) -> io::Result<()>,
+    status: &impl Fn(&str),
+    gate: impl FnOnce() -> io::Result<bool>,
+) -> io::Result<()> {
+    run_gated_with_pen(
+        source, displays, profile, mode, decoder, filters, send, None, status, gate,
+    )
+}
+
+/// `run_gated` with the platform's pen device, which a profile with pen
+/// output needs. Pen packets go to it; `send` then receives none.
+#[allow(clippy::too_many_arguments)]
+pub fn run_gated_with_pen(
+    source: &mut impl ReportSource,
+    displays: &mut impl Displays,
+    profile: &Profile,
+    mode: Mode,
+    decoder: &mut impl PenDecoder,
+    filters: &mut impl Filters,
     mut send: impl FnMut(MousePacket) -> io::Result<()>,
+    pen: Option<Box<dyn PenSink>>,
     status: &impl Fn(&str),
     gate: impl FnOnce() -> io::Result<bool>,
 ) -> io::Result<()> {
     let mut pipeline = ReportPipeline::new(profile).map_err(io::Error::other)?;
+    match pen {
+        Some(sink) if pipeline.wants_pen() => pipeline.set_pen_sink(sink),
+        None if pipeline.wants_pen() && matches!(mode, Mode::Driver) => {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "pen output is not available here; choose mouse output",
+            ));
+        }
+        _ => {}
+    }
     if source.shared_output() {
         pipeline.share_output();
     }
@@ -437,6 +468,12 @@ pub fn run_gated(
                                 Ok(())
                             },
                         );
+                        // Pen packets bypass the mouse sink's commit count.
+                        if pipeline.wants_pen()
+                            && let Ok(stats) = &emitted
+                        {
+                            counters.output_commits += stats.packets;
+                        }
                         if let Some(name) = filters.take_failure() {
                             status(&format!(
                                 "Disabled failing plugin: {name}. Restart to retry."
@@ -734,6 +771,87 @@ mod tests {
             "{}",
             statuses[1]
         );
+    }
+
+    #[test]
+    fn pen_profiles_drive_the_pen_device_instead_of_the_mouse() {
+        use crate::output::pen::{PenPacket, PenPhase};
+        let mut profile = profile();
+        profile.output = crate::config::OutputKind::Pen;
+        let events = || {
+            vec![
+                (100, Event::Report(&HOVER, false)),
+                (105, Event::Report(&CONTACT, false)),
+                (110, Event::Report(&HOVER, false)),
+            ]
+        };
+        let clock = Rc::new(Cell::new(Instant::now()));
+        let start = clock.get();
+        let mut displays = FakeDisplays {
+            clock: clock.clone(),
+            start,
+            schedule: vec![(0, monitors(&[1920]))],
+        };
+        let mut source = FakeSource::new(clock.clone(), events());
+        let mouse = RefCell::new(Vec::new());
+        let pen: Rc<RefCell<Vec<PenPacket>>> = Rc::default();
+        let sink = Rc::clone(&pen);
+        run_gated_with_pen(
+            &mut source,
+            &mut displays,
+            &profile,
+            Mode::Driver,
+            &mut crate::decoders::TabletDecoder::pth_660(),
+            &mut NoFilters,
+            |packet| {
+                mouse.borrow_mut().push(packet);
+                Ok(())
+            },
+            Some(Box::new(move |packet| {
+                sink.borrow_mut().push(packet);
+                Ok(())
+            })),
+            &|_| {},
+            || Ok(true),
+        )
+        .unwrap();
+        assert!(mouse.borrow().is_empty(), "{:?}", mouse.borrow());
+        let pen = pen.borrow();
+        let phases: Vec<_> = pen.iter().map(|packet| packet.phase).collect();
+        // Hover, touch, lift, then the session's cleanup leaves range.
+        assert_eq!(
+            phases,
+            [
+                PenPhase::Hover,
+                PenPhase::Down,
+                PenPhase::Up,
+                PenPhase::Leave
+            ]
+        );
+        assert!(
+            pen[1].pressure > 0.0 && pen[1].pressure < 1.0,
+            "{:?}",
+            pen[1]
+        );
+        assert!(pen[1].tilt.is_some());
+        for packet in pen.iter() {
+            assert!((0.0..1920.0).contains(&packet.x) && (0.0..1080.0).contains(&packet.y));
+        }
+
+        // A platform without a pen device refuses the profile.
+        let mut source = FakeSource::new(clock, events());
+        let error = run(
+            &mut source,
+            &mut displays,
+            &profile,
+            Mode::Driver,
+            &mut crate::decoders::TabletDecoder::pth_660(),
+            &mut NoFilters,
+            |_| Ok(()),
+            &|_| {},
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
     }
 
     #[test]

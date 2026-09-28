@@ -8,7 +8,7 @@ use std::time::Duration;
 
 #[cfg(test)]
 use crate::config::activation_raw;
-use crate::config::{Profile, activation_raw_for};
+use crate::config::{OutputKind, Profile, activation_raw_for};
 use crate::display::DisplaySnapshot;
 use crate::dotnet::{FilterMetadata, PropertyMetadata};
 #[cfg(test)]
@@ -300,6 +300,8 @@ impl Editor {
                 self.set_absolute(mapping);
             }
             OutputMode::Relative if self.profile.relative.is_none() => {
+                // Pen output is absolute.
+                self.profile.output = OutputKind::Mouse;
                 self.absolute_stash = Some(self.absolute(displays));
                 self.profile.otd_mapping = None;
                 self.profile.monitor = None;
@@ -310,6 +312,23 @@ impl Editor {
             }
             _ => {}
         }
+    }
+
+    /// Absolute output as a pen (Windows Ink) instead of the mouse.
+    pub fn pen(&self) -> bool {
+        self.profile.output == OutputKind::Pen
+    }
+
+    /// Pen output needs absolute mode; choosing it leaves relative mode.
+    pub fn set_pen(&mut self, pen: bool, displays: &DisplaySnapshot) {
+        if pen {
+            self.set_mode(OutputMode::Absolute, displays);
+        }
+        self.profile.output = if pen {
+            OutputKind::Pen
+        } else {
+            OutputKind::Mouse
+        };
     }
 
     pub fn binding_enabled(&self, eraser: bool) -> bool {
@@ -972,6 +991,23 @@ Minimum: 0, Maximum: 2"
         editor.set_mode(OutputMode::Relative, &displays);
         assert_eq!(editor.relative().sensitivity, (12.0, 8.0));
         validated(&editor.profile, Path::new("driver.toml")).unwrap();
+    }
+
+    #[test]
+    fn pen_output_is_an_absolute_mode_that_relative_mode_turns_off() {
+        let displays = displays();
+        let mut editor = Editor::new(Profile::default());
+        editor.set_mode(OutputMode::Relative, &displays);
+        editor.set_pen(true, &displays);
+        assert!(editor.pen());
+        assert_eq!(editor.mode(), OutputMode::Absolute);
+        validated(&editor.profile, Path::new("driver.toml")).unwrap();
+        editor.set_mode(OutputMode::Relative, &displays);
+        assert!(!editor.pen());
+        validated(&editor.profile, Path::new("driver.toml")).unwrap();
+        editor.set_pen(true, &displays);
+        editor.set_pen(false, &displays);
+        assert!(!editor.pen() && editor.mode() == OutputMode::Absolute);
     }
 
     #[test]

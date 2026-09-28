@@ -5,8 +5,9 @@
 use std::io;
 use std::time::Instant;
 
-use crate::config::{ContactPolicy, Profile};
+use crate::config::{ContactPolicy, OutputKind, Profile};
 use crate::mapping::Mapper;
+use crate::output::pen::{PenOutput, PenSample, PenSink};
 use crate::output::{MouseOutput, MousePacket};
 use crate::plugins::{DispatchInput, Filters, PipelineRuntime};
 use crate::protocol::PenReport;
@@ -26,6 +27,10 @@ pub struct ReportPipeline {
     filters: Vec<RadialFollowSmoothingTabletSpace>,
     relative: Option<RelativeMapper>,
     output: MouseOutput,
+    /// The profile asks for pen output; the platform supplies the device.
+    pen_requested: bool,
+    pen: Option<PenOutput>,
+    max_pressure: u32,
     is_eraser: bool,
     desired_contact: bool,
     faulted: bool,
@@ -35,6 +40,10 @@ pub struct ReportPipeline {
 impl ReportPipeline {
     pub fn new(profile: &Profile) -> Result<Self, String> {
         profile.validate_filter_execution()?;
+        let pen_requested = profile.output == OutputKind::Pen;
+        if pen_requested && profile.relative.is_some() {
+            return Err("pen output is absolute; choose mouse output for relative mode".into());
+        }
         Ok(Self {
             contact: profile.contact,
             filters: profile
@@ -48,6 +57,9 @@ impl ReportPipeline {
                 .map(|settings| RelativeMapper::new_for(settings, profile.tablet))
                 .transpose()?,
             output: MouseOutput::new(),
+            pen_requested,
+            pen: None,
+            max_pressure: u32::from(profile.tablet.max_pressure),
             is_eraser: false,
             desired_contact: false,
             faulted: false,
@@ -65,6 +77,17 @@ impl ReportPipeline {
 
     pub fn share_output(&mut self) {
         self.output.share_position();
+    }
+
+    /// Whether the profile asks for pen output.
+    pub fn wants_pen(&self) -> bool {
+        self.pen_requested
+    }
+
+    /// Sends output to a pen device instead of the mouse. Pen packets go to
+    /// this sink; the mouse sink then receives nothing.
+    pub fn set_pen_sink(&mut self, sink: Box<dyn PenSink>) {
+        self.pen = Some(PenOutput::new(sink, self.max_pressure));
     }
 
     /// Compatibility wrapper for callers interested only in whether any packet
@@ -278,7 +301,11 @@ impl ReportPipeline {
         send: impl FnOnce(MousePacket) -> io::Result<()>,
     ) -> io::Result<bool> {
         self.desired_contact = false;
-        let result = self.output.release_all(send);
+        let pen = self.pen.as_mut().map_or(Ok(false), PenOutput::release);
+        let result = match (pen, self.output.release_all(send)) {
+            (Ok(pen), Ok(mouse)) => Ok(pen || mouse),
+            (Err(error), _) | (_, Err(error)) => Err(error),
+        };
         // Display-change/session cleanup also calls this outside process_report.
         // A failed release there must be retried before the graph can resume.
         self.faulted = result.is_err();
@@ -384,6 +411,27 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
             ));
         }
         let contact = self.pipeline.desired_contact;
+        if let Some(pen) = &mut self.pipeline.pen {
+            let emitted = if kind == ReportKind::OutOfRange {
+                pen.release()?
+            } else if let Some((x, y)) = position {
+                match self.mapper.and_then(|mapper| mapper.clamp_pixels(x, y)) {
+                    Some((x, y)) => pen.sample(PenSample {
+                        x,
+                        y,
+                        pressure: values.pressure,
+                        tilt: values.tilt,
+                        eraser: self.pipeline.is_eraser,
+                        contact,
+                    })?,
+                    None => false,
+                }
+            } else {
+                pen.contact(contact, values.pressure)?
+            };
+            self.stats.packets += u64::from(emitted);
+            return Ok(());
+        }
         let emitted = if position.is_none() && kind == ReportKind::Data {
             self.pipeline
                 .output
@@ -494,6 +542,57 @@ mod tests {
                 assert!(replay(10_000, relative, filtered) > 0);
             }
         }
+    }
+
+    #[test]
+    fn pen_output_allocates_nothing_and_sends_no_mouse_packets() {
+        for filtered in [false, true] {
+            let profile = Profile {
+                output: crate::config::OutputKind::Pen,
+                ..profile(false, filtered)
+            };
+            let mut pipeline = ReportPipeline::new(&profile).unwrap();
+            let screen = Rect {
+                left: -1920,
+                top: 0,
+                right: 2560,
+                bottom: 1440,
+            };
+            let mapper = DisplaySnapshot {
+                virtual_screen: screen,
+                monitors: vec![screen],
+            }
+            .mapper(&profile)
+            .unwrap();
+            let sent = std::rc::Rc::new(std::cell::Cell::new(0u32));
+            let counter = std::rc::Rc::clone(&sent);
+            pipeline.set_pen_sink(Box::new(move |packet: crate::output::pen::PenPacket| {
+                assert!((-1920.0..2560.0).contains(&packet.x), "{packet:?}");
+                counter.set(counter.get() + 1);
+                Ok(())
+            }));
+            let mut plugins = crate::plugins::NoFilters;
+            crate::test_alloc::assert_no_allocations(|| {
+                for index in 0..10_000usize {
+                    let bytes = black_box(&CAPTURE[index % CAPTURE.len()]);
+                    let pen = protocol::parse(bytes).unwrap().unwrap();
+                    pipeline
+                        .process(pen, Instant::now(), Some(mapper), &mut plugins, |packet| {
+                            panic!("mouse packet in pen mode: {packet:?}")
+                        })
+                        .unwrap();
+                }
+                pipeline
+                    .release_all(|packet| panic!("mouse packet in pen mode: {packet:?}"))
+                    .unwrap();
+            });
+            assert!(sent.get() > 0);
+        }
+        let relative = Profile {
+            output: crate::config::OutputKind::Pen,
+            ..profile(true, false)
+        };
+        assert!(ReportPipeline::new(&relative).is_err());
     }
 
     #[test]
