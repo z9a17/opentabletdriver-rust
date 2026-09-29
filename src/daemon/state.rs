@@ -8,7 +8,7 @@
 //! Before Run, failed activation drains the candidate and resumes the retained
 //! old worker. After Run, failures stop the committed generation; they never
 //! replay the old one. Stop/Shutdown cancel every role before handling queued
-//! readiness. Ownership outlives all worker joins and explicit restoration.
+//! readiness. Ownership outlives all worker joins and output cleanup.
 //! This is a synchronous PTH-660 transaction, not rollback of hardware writes
 //! or arbitrary side effects of trusted plugin constructors/disposal.
 use std::collections::VecDeque;
@@ -573,24 +573,16 @@ impl Daemon {
                 .is_none_or(|pending| pending.worker.is_none())
         {
             self.pending = None;
-            let restore = self.ownership.as_mut().map_or(Ok(()), Ownership::restore);
-            match restore {
-                Ok(()) => {
-                    self.ownership = None;
-                    self.stopping = false;
-                }
-                Err(error) => {
-                    self.remember_cleanup_error(error);
-                    self.stopping = false;
-                }
-            }
+            // Every worker has joined before releasing the driver mutex.
+            self.ownership = None;
+            self.stopping = false;
             self.state = if self.cleanup_error.is_some() {
                 DriverState::Failed
             } else {
                 DriverState::Stopped
             };
             if self.state == DriverState::Stopped {
-                self.log("Driver stopped; output cleanup and original-driver launch restoration completed.".into());
+                self.log("Driver stopped; output cleanup completed.".into());
             }
         }
     }
@@ -615,11 +607,7 @@ impl Daemon {
             }
         }
         self.pending = None;
-        if let Some(ownership) = &mut self.ownership
-            && let Err(error) = ownership.restore()
-        {
-            self.remember_cleanup_error(error);
-        }
+        // The mutex remains owned through all worker joins above.
         self.ownership = None;
         self.cleanup_error.clone().map_or(Ok(()), Err)
     }

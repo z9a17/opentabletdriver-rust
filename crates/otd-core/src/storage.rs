@@ -3,7 +3,7 @@
 //! checks detect external edits, but are not an atomic compare-and-swap against
 //! applications which ignore that lock and write between the final check/rename.
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -105,7 +105,7 @@ fn save_inner(
     let parent = path.parent().ok_or("output has no parent directory")?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
-    let _lock = SaveLock::acquire(&path)?;
+    let _lock = WriterLock::acquire(&sibling(&path, ".lock")?)?;
     let previous = verify(&path, mode)?;
     if let Ok(metadata) = fs::metadata(&path)
         && metadata.permissions().readonly()
@@ -192,28 +192,44 @@ fn sibling(path: &Path, suffix: &str) -> Result<PathBuf, String> {
     Ok(path.with_file_name(name))
 }
 
-struct SaveLock {
-    path: PathBuf,
+/// An immutable marker is published atomically, then the OS owns the lock.
+/// Never remove this file: unlinking it lets two writers lock different files.
+/// Old versions using create_new fail closed on the persistent marker. Their
+/// pid-only sentinels cannot prove an idle writer and require explicit recovery.
+pub(crate) struct WriterLock {
     _file: File,
 }
 
-impl SaveLock {
-    fn acquire(path: &Path) -> Result<Self, String> {
-        let path = sibling(path, ".lock")?;
-        let mut file = OpenOptions::new().create_new(true).write(true).open(&path)
-            .map_err(|error| format!("cannot acquire save lock {}: {error}. If an earlier writer crashed, remove this lock only after confirming no save is running.", path.display()))?;
-        if let Err(error) = writeln!(file, "pid={}", std::process::id()) {
-            drop(file);
-            let _ = fs::remove_file(&path);
-            return Err(format!("cannot initialize save lock: {error}"));
+impl WriterLock {
+    pub(crate) fn acquire(path: &Path) -> Result<Self, String> {
+        const MARKER: &[u8] = b"OpenTabletDriver Rust OS writer lock v2\n";
+        if !path.try_exists().map_err(|error| error.to_string())? {
+            let marker = Temporary::write(path, MARKER)?;
+            if let Err(error) = publish(&marker.path, path, false) {
+                if !path.try_exists().map_err(|error| error.to_string())? {
+                    return Err(format!("cannot publish writer lock {}: {error}", path.display()));
+                }
+            }
         }
-        Ok(Self { path, _file: file })
-    }
-}
-
-impl Drop for SaveLock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        let mut options = OpenOptions::new();
+        options.read(true).write(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            // Permit competing handles to observe the OS lock, but prohibit
+            // unlink/rename while one writer could still own this file.
+            options.share_mode(0x0000_0001 | 0x0000_0002); // FILE_SHARE_READ | FILE_SHARE_WRITE
+        }
+        let mut file = options.open(path)
+            .map_err(|error| format!("cannot open writer lock {}: {error}", path.display()))?;
+        file.try_lock().map_err(|error| format!("cannot acquire writer lock {}: {error}", path.display()))?;
+        let mut marker = Vec::with_capacity(MARKER.len() + 1);
+        (&mut file).take((MARKER.len() + 1) as u64).read_to_end(&mut marker)
+            .map_err(|error| error.to_string())?;
+        if marker != MARKER {
+            return Err(format!("legacy or unrecognized writer lock {}: close all older driver/panel versions, confirm no save is running, then remove this legacy lock once. Modern v2 lock files stay in place and recover automatically after a crash.", path.display()));
+        }
+        Ok(Self { _file: file })
     }
 }
 

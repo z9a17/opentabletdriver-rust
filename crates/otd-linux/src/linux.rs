@@ -199,7 +199,8 @@ pub fn initialize(
         .transpose()?
         .unwrap_or(0);
     if delay == u32::MAX {
-        return Err(io::Error::other(
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
             "infinite feature initialization delay is unsupported",
         ));
     }
@@ -212,7 +213,10 @@ pub fn initialize(
         let usb = device
             .usb
             .as_deref()
-            .ok_or_else(|| io::Error::other("initialization strings need a USB device"))?;
+            .ok_or_else(|| io::Error::new(
+                io::ErrorKind::Unsupported,
+                "initialization strings need a USB device",
+            ))?;
         usb_string(usb, index).map_err(|error| {
             io::Error::new(
                 error.kind(),

@@ -70,7 +70,12 @@ impl OutputOwners {
         let absolute =
             packet.flags & (flags::MOVE | flags::ABSOLUTE) == flags::MOVE | flags::ABSOLUTE;
         let position = (packet.dx, packet.dy);
-        if absolute && self.position == Some(position) {
+        // A physical mouse may have moved since our last packet. A contact
+        // transition must restore the tablet position before pressing/releasing.
+        if absolute
+            && self.position == Some(position)
+            && packet.flags & (flags::LEFTDOWN | flags::LEFTUP) == 0
+        {
             packet.flags &= !flags::MOVE;
         }
         if packet.flags & (flags::MOVE | flags::LEFTDOWN | flags::LEFTUP) != 0 {

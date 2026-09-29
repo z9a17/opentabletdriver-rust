@@ -416,21 +416,45 @@ fn show(value: &serde_json::Value) -> String {
 
 /// "a1b2c3" as "a1 b2 c3".
 /// Trailing zero bytes are summarized: most packets are padded to the
-/// collection's report length.
+/// collection's report length. Bound the on-screen preview while capture and
+/// background decoding retain the full packet.
 fn spaced_hex(hex: &str) -> String {
-    let bytes: Vec<&str> = (0..hex.len() / 2).map(|i| &hex[i * 2..i * 2 + 2]).collect();
-    let used = bytes
-        .iter()
-        .rposition(|byte| *byte != "00")
-        .map_or(0, |last| last + 1);
-    let zeros = bytes.len() - used;
-    if zeros > 4 {
-        format!("{} (+{zeros} zero bytes)", bytes[..used].join(" "))
-            .trim_start()
-            .to_owned()
-    } else {
-        bytes.join(" ")
+    const MAX_PREVIEW_BYTES: usize = 64;
+    let bytes = hex.as_bytes();
+    if bytes.len() % 2 != 0 || !bytes.iter().all(|byte| byte.is_ascii_hexdigit()) {
+        return "Invalid raw hexadecimal data.".into();
     }
+    let count = bytes.len() / 2;
+    let used = bytes
+        .chunks_exact(2)
+        .rposition(|byte| byte != b"00")
+        .map_or(0, |last| last + 1);
+    let zeros = count - used;
+    let preview_count = if zeros > 4 { used } else { count };
+    let shown = preview_count.min(MAX_PREVIEW_BYTES);
+    let mut preview = String::with_capacity(shown * 3 + 96);
+    for byte in bytes.chunks_exact(2).take(shown) {
+        if !preview.is_empty() {
+            preview.push(' ');
+        }
+        preview.push(char::from(byte[0]));
+        preview.push(char::from(byte[1]));
+    }
+    use std::fmt::Write;
+    let omitted = preview_count - shown;
+    if omitted != 0 {
+        if !preview.is_empty() {
+            preview.push(' ');
+        }
+        let _ = write!(preview, "(+{omitted} more bytes)");
+    }
+    if zeros > 4 {
+        if !preview.is_empty() {
+            preview.push(' ');
+        }
+        let _ = write!(preview, "(+{zeros} zero bytes)");
+    }
+    preview
 }
 
 unsafe extern "system" fn window_proc(

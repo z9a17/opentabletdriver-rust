@@ -5,7 +5,8 @@
 //! driver decodes, filters, maps and calls `SendInput` on one thread, so only
 //! that thread is raised: to time-critical, 15, the highest priority available
 //! without real-time rights. It blocks on the HID read and works for
-//! microseconds per report, so it cannot starve other threads. At normal
+//! microseconds per native report. Trusted plugins execute on this same thread
+//! and can take longer; their work must not be assumed bounded. At normal
 //! priority, busy threads of equal or higher priority on every CPU can delay
 //! its wakeup by milliseconds (see `benchmark_reader_wake_latency_under_load`).
 //!

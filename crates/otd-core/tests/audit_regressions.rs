@@ -394,7 +394,7 @@ fn retained_timer_output_cannot_restore_lost_contact() {
 #[test]
 fn toml_threshold_uses_selected_tablet_pressure_range() {
     let name = "Gaomon M7";
-    let spec = otd_core::config::spec_for_tablet(name);
+    let spec = otd_core::config::spec_for_tablet(name).unwrap();
     assert_eq!(spec.max_pressure, 16383);
     let text =
         "schema_version = 1\ntablet = \"Gaomon M7\"\n[bindings]\ntip_threshold_raw = 16383\n";

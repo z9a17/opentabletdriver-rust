@@ -759,7 +759,10 @@ impl App {
         }
 
         let top = content.top + height + gap;
-        let text = "Pen button bindings are not implemented in this build; the side buttons do nothing while this driver runs. Mouse output does not carry pressure or tilt, and Windows Ink output is not available yet.";
+        let text = match self.editor.profile.output {
+            crate::config::OutputKind::Pen => "Pen output carries pressure, tilt and eraser state through Windows Ink. Pen button bindings are not implemented; the side buttons have no assigned actions.",
+            crate::config::OutputKind::Mouse => "Mouse output moves the cursor and maps tip or eraser contact to the left mouse button. Pen button bindings are not implemented; the side buttons have no assigned actions.",
+        };
         let text_height = canvas::wrapped_height(
             dc,
             style.fonts.ui,

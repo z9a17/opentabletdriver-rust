@@ -61,10 +61,10 @@ use windows_sys::Win32::UI::Controls::{
     BST_CHECKED, CDDS_PREPAINT, CDIS_DISABLED, CDIS_FOCUS, CDIS_HOT, CDIS_SELECTED,
     CDIS_SHOWKEYBOARDCUES, CDRF_DODEFAULT, CDRF_SKIPDEFAULT, DRAWITEMSTRUCT, EM_SETCUEBANNER,
     EM_SETMARGINS, ICC_BAR_CLASSES, ICC_STANDARD_CLASSES, ICC_TAB_CLASSES, INITCOMMONCONTROLSEX,
-    InitCommonControlsEx, MEASUREITEMSTRUCT, NM_CUSTOMDRAW, NMCUSTOMDRAW, NMHDR, ODS_FOCUS,
+    InitCommonControlsEx, MEASUREITEMSTRUCT, NM_CUSTOMDRAW, NMCUSTOMDRAW, NMHDR, NMTTDISPINFOW, ODS_FOCUS,
     ODS_SELECTED, ODT_LISTBOX, TBS_BOTH, TBS_HORZ, TBS_NOTICKS, TTF_IDISHWND, TTF_SUBCLASS,
     TTM_ADDTOOLW, TTM_DELTOOLW, TTM_NEWTOOLRECTW, TTM_SETMAXTIPWIDTH, TTM_UPDATETIPTEXTW,
-    TTS_ALWAYSTIP, TTS_NOPREFIX, TTTOOLINFOW,
+    TTS_ALWAYSTIP, TTS_NOPREFIX, TTTOOLINFOW, TTN_GETDISPINFOW, TTM_UPDATE,
 };
 use windows_sys::Win32::UI::HiDpi::{
     AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE,
@@ -181,6 +181,7 @@ const WM_AUTOSTART: u32 = WM_APP + 4;
 const WM_SHOW_PANEL: u32 = WM_APP + 5;
 const WM_TRAY: u32 = WM_APP + 6;
 const WM_BACKGROUND: u32 = WM_APP + 7;
+const WM_METADATA_REFRESH: u32 = WM_APP + 8;
 
 const PANEL_CLASS: &str = "OpenTabletDriverRustControlPanel";
 const PANEL_MUTEX: &str = "Local\\OpenTabletDriverRustPanel";
@@ -686,8 +687,10 @@ struct Controls {
 enum BackgroundResult {
     Metadata {
         generation: u64,
+        revision: u64,
         path: PathBuf,
         result: Result<Vec<crate::dotnet::InspectedFilter>, String>,
+        aliases: Vec<(PathBuf, PathBuf)>,
     },
     Devices {
         announce: bool,
@@ -695,10 +698,13 @@ enum BackgroundResult {
     },
     PluginFolder {
         generation: u64,
+        revision: u64,
+        select_added: bool,
         folder: PathBuf,
         name: String,
         entries: Vec<crate::dotnet::InspectedFilter>,
         errors: Vec<String>,
+        aliases: Vec<(PathBuf, PathBuf)>,
     },
     Import {
         generation: u64,
@@ -706,6 +712,13 @@ enum BackgroundResult {
         result: Result<Box<Profile>, String>,
     },
     Strings(String),
+    Presets(Result<Vec<String>, String>),
+    Diagnostics(Result<DiagnosticExport, String>),
+}
+
+enum DiagnosticExport {
+    Clipboard(String),
+    Saved(PathBuf),
 }
 struct App {
     hwnd: HWND,
@@ -716,6 +729,9 @@ struct App {
     prefs_path: PathBuf,
     process_dpi: isize,
     tooltip: HWND,
+    /// Tooltip callback storage lives until the next hover notification.
+    filter_tip: Vec<u16>,
+    hovered_filter: Option<usize>,
     accelerators: HACCEL,
     c: Controls,
     tab: Tab,
@@ -734,13 +750,16 @@ struct App {
     /// Discovery results are UI-only; they are never written into profiles.
     plugin_metadata: HashMap<PathBuf, Result<Vec<FilterMetadata>, String>>,
     metadata_pending: HashMap<PathBuf, bool>,
+    metadata_versions: HashMap<PathBuf, u64>,
     metadata_generation: u64,
+    metadata_refresh_deferred: bool,
     edit_revision: u64,
     background_tx: std::sync::mpsc::Sender<BackgroundResult>,
     background_rx: std::sync::mpsc::Receiver<BackgroundResult>,
     device_scan_pending: bool,
     device_strings_pending: bool,
     import_pending: bool,
+    diagnostics_pending: bool,
     connected_tablets: Vec<String>,
     /// Label controls keyed by the control they name.
     labels: HashMap<isize, HWND>,
@@ -757,12 +776,18 @@ struct App {
     daemon_instance: Option<String>,
     daemon_log_sequence: u64,
     closing: bool,
+    update_restart_pending: bool,
+    update_close_approved: bool,
     driver: DriverState,
     tablet_present: Option<bool>,
     /// The tablets listed in the last Tablets menu, by command offset.
     tablet_choices: Vec<String>,
     /// The presets listed in the last File menu, by command offset.
     preset_choices: Vec<String>,
+    /// Worker cache; it never changes the command mapping of an open menu.
+    preset_names: Vec<String>,
+    preset_scan_pending: bool,
+    presets_loaded: bool,
     status: String,
     status_level: Level,
     validation_status: bool,
@@ -994,6 +1019,16 @@ unsafe extern "system" fn window_proc(
         }
         WM_NOTIFY => {
             let header = unsafe { &*(lp as *const NMHDR) };
+            if header.code == TTN_GETDISPINFOW {
+                if !with_app(|app| header.hwndFrom == app.tooltip && header.idFrom == app.c.filter_list as usize).unwrap_or(false) {
+                    return default();
+                }
+                let tip = unsafe { &mut *(lp as *mut NMTTDISPINFOW) };
+                tip.szText[0] = 0;
+                tip.lpszText = tip.szText.as_mut_ptr();
+                with_app(|app| app.filter_tooltip(tip));
+                return 0;
+            }
             if header.code == NM_CUSTOMDRAW {
                 return custom_draw(unsafe { &mut *(lp as *mut NMCUSTOMDRAW) });
             }
@@ -1017,15 +1052,22 @@ unsafe extern "system" fn window_proc(
             1
         }
         WM_COMMAND => {
+            if with_app(|app| app.update_restart_pending).unwrap_or(false) { return 0; }
             on_command(
                 window,
                 (wp & 0xFFFF) as u16,
                 ((wp >> 16) & 0xFFFF) as u32,
                 lp as HWND,
             );
+            with_app(|app| {
+                if app.metadata_refresh_deferred {
+                    unsafe { PostMessageW(window, WM_METADATA_REFRESH, 0, 0); }
+                }
+            });
             0
         }
         WM_HSCROLL => {
+            if with_app(|app| app.update_restart_pending).unwrap_or(false) { return 0; }
             let slider = lp as HWND;
             with_app(|app| app.slider_moved(slider));
             0
@@ -1119,6 +1161,10 @@ unsafe extern "system" fn window_proc(
             }
             0
         }
+        WM_METADATA_REFRESH => {
+            with_app(App::refresh_deferred_metadata);
+            0
+        }
         WM_DETECT => {
             with_app(App::detect_tablet);
             0
@@ -1166,12 +1212,16 @@ unsafe extern "system" fn window_proc(
             if with_app(|app| app.closing).unwrap_or(false) {
                 return 0;
             }
+            let approved_restart = with_app(|app| app.update_close_approved).unwrap_or(false);
+            if !approved_restart && with_app(|app| app.update_restart_pending).unwrap_or(false) {
+                return 0;
+            }
             // Close from the tray asks about unsaved edits with the panel shown.
-            if with_app(|app| app.dirty).unwrap_or(false) && unsafe { IsWindowVisible(window) } == 0
+            if !approved_restart && with_app(|app| app.dirty || !app.invalid.is_empty() || app.json_error.is_some()).unwrap_or(false) && unsafe { IsWindowVisible(window) } == 0
             {
                 tray::show_panel(window);
             }
-            if !confirm_discard(window) {
+            if !approved_restart && !confirm_discard(window) {
                 return 0;
             }
             if with_app(App::begin_close).unwrap_or(true) {
@@ -1396,6 +1446,13 @@ pub fn run() -> Result<(), String> {
         unsafe {
             if TranslateAcceleratorW(window, accelerators, &message) != 0 {
                 continue;
+            }
+            if message.message == WM_MOUSEMOVE {
+                // Updating a live tooltip may ask the owner for its text, so
+                // finish borrowing App before calling the tooltip window.
+                if let Some(Some(tooltip)) = with_app(|app| app.filter_hover_changed(message.hwnd, message.lParam)) {
+                    SendMessageW(tooltip, TTM_UPDATE, 0, 0);
+                }
             }
             if IsDialogMessageW(window, &message) == 0 {
                 TranslateMessage(&message);

@@ -90,7 +90,7 @@ fn capacity(error: ReportError) -> io::Error {
 
 impl GraphReport {
     pub fn new(kind: ReportKind, values: &ReportValues, raw: &[u8]) -> io::Result<Self> {
-        if raw.len() > 192 {
+        if raw.len() > usize::from(u16::MAX) {
             return Err(invalid("native graph packet exceeds transport capacity"));
         }
         // All fields permit an all-zero representation; pointers start null and

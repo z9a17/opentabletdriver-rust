@@ -97,7 +97,7 @@ impl PropertyValue {
         } else {
             return Vec::new();
         };
-        choices.insert(0, ("Use default".into(), serde_json::Value::Null));
+        choices.insert(0, (self.default_label(), serde_json::Value::Null));
         choices
     }
 
@@ -105,7 +105,9 @@ impl PropertyValue {
         let Self::Typed { saved, metadata } = self else {
             return false;
         };
-        let saved = saved.as_ref().unwrap_or(&serde_json::Value::Null);
+        let Some(saved) = saved.as_ref().filter(|value| !value.is_null()) else {
+            return false;
+        };
         saved == value
             || metadata.enum_choices.iter().any(|choice| {
                 saved == &choice.value && value.as_str() == Some(choice.name.as_str())
@@ -113,6 +115,26 @@ impl PropertyValue {
     }
 
     pub fn display_text(&self) -> String {
+        if let Self::Typed { saved, metadata } = self {
+            if saved.is_none() {
+                return if self.choices().is_empty() { String::new() } else { "Constructor value".into() };
+            }
+            if saved.as_ref().is_some_and(serde_json::Value::is_null) {
+                return if metadata.default_is_attribute {
+                    metadata.default_value.as_ref().map_or_else(
+                        || "Declared default".into(),
+                        |value| match value {
+                            serde_json::Value::String(text) => text.clone(),
+                            _ => value.to_string(),
+                        },
+                    )
+                } else if self.choices().is_empty() {
+                    String::new()
+                } else {
+                    "Constructor value".into()
+                };
+            }
+        }
         if let Some((label, _)) = self
             .choices()
             .into_iter()
@@ -133,6 +155,8 @@ impl PropertyValue {
                         || matches!(
                             metadata.property_type.as_str(),
                             "System.String"
+                                | "System.TimeSpan"
+                                | "System.DateTime"
                                 | "System.Boolean"
                                 | "System.SByte"
                                 | "System.Byte"
@@ -165,6 +189,40 @@ impl PropertyValue {
                 ..
             }
         )
+    }
+
+    pub fn reset_value(&self) -> serde_json::Value {
+        match self {
+            Self::Typed { metadata, .. } => metadata.default_value.clone().unwrap_or(serde_json::Value::Null),
+            _ => serde_json::Value::Null,
+        }
+    }
+
+    pub fn default_label(&self) -> String {
+        match self {
+            Self::Typed { metadata, .. } => metadata.default_value.as_ref().map_or_else(
+                || "Constructor value".into(),
+                |value| format!("Default: {}", scalar_text(value)),
+            ),
+            _ => "Use default".into(),
+        }
+    }
+
+    pub fn default_cue(&self) -> String {
+        match self {
+            Self::Typed { saved: None, .. } => "Constructor value".into(),
+            Self::Typed { saved: Some(value), metadata } if value.is_null() => {
+                if metadata.default_is_attribute { self.default_label() } else { "Constructor value".into() }
+            }
+            _ => String::new(),
+        }
+    }
+}
+
+fn scalar_text(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => format!("{text:?}"),
+        _ => value.to_string(),
     }
 }
 
@@ -369,13 +427,13 @@ impl Editor {
 
     /// Makes the profile target a tablet, or any tablet with `None`. Areas
     /// that no longer fit the tablet become its full area.
-    pub fn set_tablet(&mut self, name: Option<String>) {
+    pub fn set_tablet(&mut self, name: Option<String>) -> Result<(), String> {
         let spec = name
             .as_deref()
-            .map_or(TabletSpec::PTH_660, otd_core::config::spec_for_tablet);
+            .map(otd_core::config::spec_for_tablet).transpose()?.unwrap_or(TabletSpec::PTH_660);
         self.profile.target_tablet = name;
         if spec == self.profile.tablet {
-            return;
+            return Ok(());
         }
         self.profile.tablet = spec;
         if let Some(mapping) = &mut self.profile.otd_mapping {
@@ -393,6 +451,7 @@ impl Editor {
         {
             *raw = (*raw).min(spec.max_pressure);
         }
+        Ok(())
     }
 
     pub fn set_threshold_percent(
@@ -603,6 +662,7 @@ fn property_tooltip(descriptor: &PropertyMetadata) -> Option<String> {
     let parts: Vec<String> = [
         descriptor.tooltip.clone(),
         descriptor.description.clone(),
+        descriptor.default_value.as_ref().map(|value| format!("Default: {}", scalar_text(value))),
         descriptor
             .slider
             .as_ref()
@@ -851,7 +911,7 @@ mod tests {
             .into_iter()
             .map(|(label, _)| label)
             .collect();
-        assert_eq!(labels, ["Use default", "Linear", "Smooth"]);
+        assert_eq!(labels, ["Constructor value", "Linear", "Smooth"]);
         assert_eq!(value.display_text(), "Smooth");
         let strength = crate::dotnet::PropertyMetadata {
             name: "Strength".into(),
@@ -886,9 +946,9 @@ Minimum: 0, Maximum: 2"
         mapping.tablet.width = 200.0;
         editor.set_absolute(mapping);
         editor.set_threshold_percent(false, Some(50.0)).unwrap();
-        editor.set_tablet(Some("Wacom CTL-4100".into()));
+        editor.set_tablet(Some("Wacom CTL-4100".into())).unwrap();
         let spec = editor.profile.tablet;
-        assert_eq!(spec, otd_core::config::spec_for_tablet("Wacom CTL-4100"));
+        assert_eq!(spec, otd_core::config::spec_for_tablet("Wacom CTL-4100").unwrap());
         assert!(spec.width_mm < 200.0);
         let area = editor.profile.otd_mapping.unwrap().tablet;
         assert!(area.width <= spec.width_mm, "{area:?}");
@@ -897,7 +957,7 @@ Minimum: 0, Maximum: 2"
             editor.profile.tablet_name().unwrap().as_deref(),
             Some("Wacom CTL-4100")
         );
-        editor.set_tablet(None);
+        editor.set_tablet(None).unwrap();
         assert_eq!(editor.profile.tablet, TabletSpec::PTH_660);
         assert_eq!(editor.profile.tablet_name().unwrap(), None);
     }

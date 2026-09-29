@@ -422,6 +422,9 @@ pub fn checkbox(
 
 /// Trackbar channel with the part left of the thumb filled.
 pub fn slider(canvas: &mut Canvas, channel: RECT, thumb_x: i32, style: &Style, disabled: bool) {
+    if channel.right <= channel.left {
+        return;
+    }
     let p = &style.palette;
     let height = style.ipx(4.0);
     let middle = (channel.top + channel.bottom) / 2;

@@ -545,17 +545,18 @@ pub fn identify(device: &Candidate, database: &Database) -> Option<(String, Role
 
 /// Configuration names of the connected tablets this driver can run, in
 /// device-path order. Used to pick which OpenTabletDriver profile to import.
-pub fn connected_tablets() -> Vec<String> {
-    let database = Database::builtin();
+pub fn connected_tablets() -> Result<Vec<String>, String> {
+    let database = crate::config::configured_tablets()?;
     let mut names = Vec::new();
-    for device in enumerate().unwrap_or_default() {
-        if let Some((name, Role::Digitizer, true)) = identify(&device, database)
+    for device in enumerate_with_database(&database).map_err(|error| error.to_string())? {
+        if let Some((name, Role::Digitizer, true)) = identify(&device, &database)
+            && crate::config::runtime_tablet_in(&name, &database).is_ok()
             && !names.contains(&name)
         {
             names.push(name);
         }
     }
-    names
+    Ok(names)
 }
 
 /// Selects one tablet to drive. Every digitizer interface that matches a

@@ -42,7 +42,12 @@ struct Row {
 enum Done {
     Catalog(Result<Vec<PluginMetadata>, String>),
     Installed(Result<(String, PathBuf), String>),
-    Removed(Result<String, String>),
+    Removed(Result<(String, PathBuf), String>),
+}
+
+struct Completion {
+    result: Done,
+    installed: Result<Vec<(PathBuf, PluginMetadata)>, String>,
 }
 
 struct Manager {
@@ -53,9 +58,10 @@ struct Manager {
     buttons: Vec<HWND>,
     rows: Vec<Row>,
     catalog: Vec<PluginMetadata>,
+    installed: Vec<(PathBuf, PluginMetadata)>,
     busy: bool,
-    sender: Sender<Done>,
-    results: Receiver<Done>,
+    sender: Sender<Completion>,
+    results: Receiver<Completion>,
     _fonts: FontSet,
 }
 
@@ -181,6 +187,7 @@ pub(super) fn open() -> Result<(), String> {
             buttons,
             rows: Vec::new(),
             catalog: Vec::new(),
+            installed: Vec::new(),
             busy: false,
             sender,
             results,
@@ -265,10 +272,16 @@ impl Manager {
         self.set_status(label);
         self.update_buttons();
         let (sender, window) = (self.sender.clone(), self.window as isize);
-        std::thread::spawn(move || {
-            let _ = sender.send(work());
+        if let Err(error) = std::thread::Builder::new().name("plugin-manager".into()).spawn(move || {
+            let done = work();
+            let installed = plugin_catalog::installed();
+            let _ = sender.send(Completion { result: done, installed });
             unsafe { PostMessageW(window as HWND, WM_PLUGINS, 0, 0) };
-        });
+        }) {
+            self.busy = false;
+            self.set_status(&format!("Could not start plugin work: {error}"));
+            self.update_buttons();
+        }
     }
 
     fn refresh_catalog(&mut self) {
@@ -279,7 +292,7 @@ impl Manager {
 
     /// Rebuilds the rows from the catalog and the installed plugins.
     fn rebuild(&mut self) {
-        let installed = plugin_catalog::installed();
+        let installed = &self.installed;
         let mut rows: Vec<Row> = self
             .catalog
             .iter()
@@ -298,8 +311,8 @@ impl Manager {
                 .any(|row| row.plugin.name == local.name && row.plugin.owner == local.owner)
             {
                 rows.push(Row {
-                    installed: Some((folder, local.plugin_version.clone())),
-                    plugin: local,
+                    installed: Some((folder.clone(), local.plugin_version.clone())),
+                    plugin: local.clone(),
                     listed: false,
                 });
             }
@@ -468,7 +481,7 @@ impl Manager {
                 if let Some((folder, _)) = row.installed.clone() {
                     let name = row.plugin.name.clone();
                     self.start(&format!("Removing {name}..."), move || {
-                        Done::Removed(plugin_catalog::uninstall(&folder).map(|()| name))
+                        Done::Removed(plugin_catalog::uninstall(&folder).map(|()| (name, folder)))
                     });
                 }
             }
@@ -530,8 +543,12 @@ impl Manager {
     }
 
     fn finished(&mut self) {
-        while let Ok(done) = self.results.try_recv() {
+        while let Ok(Completion { result: done, installed }) = self.results.try_recv() {
             self.busy = false;
+            let inventory_error = match installed {
+                Ok(installed) => { self.installed = installed; None },
+                Err(error) => Some(error),
+            };
             match done {
                 Done::Catalog(Ok(catalog)) => {
                     self.set_status(&format!(
@@ -545,32 +562,42 @@ impl Manager {
                 }
                 Done::Installed(Ok((name, folder))) => {
                     self.set_status(&format!(
-                        "Installed {name}. Add to settings uses its filters."
+                        "Installed {name}. Discovering its filters and defaults..."
                     ));
                     log(
                         Level::Info,
                         format!("Installed plugin {name} in {}.", folder.display()),
                     );
+                    with_app(|app| app.installed_plugin_changed(folder, name));
                 }
                 Done::Installed(Err(error)) => {
                     self.set_status("The plugin was not installed.");
                     log(Level::Error, format!("Plugin install failed: {error}"));
                 }
-                Done::Removed(Ok(name)) => {
+                Done::Removed(Ok((name, folder))) => {
                     self.set_status(&format!("Removed {name}."));
                     log(
                         Level::Info,
                         format!("Removed plugin {name}. Settings that use it need editing."),
                     );
+                    with_app(|app| app.plugin_removed(&folder));
                 }
                 Done::Removed(Err(error)) => {
                     self.set_status("The plugin was not removed.");
                     log(Level::Error, error);
                 }
             }
+            if let Some(error) = inventory_error {
+                self.set_status(&format!("Could not refresh installed plugins: {error}. The previous list was kept."));
+                log(Level::Warning, format!("Could not refresh installed plugins: {error}"));
+            }
         }
         self.rebuild();
     }
+}
+
+pub(super) fn set_restart_pending(pending: bool) {
+    with_manager(|manager| unsafe { EnableWindow(manager.window, i32::from(!pending)); });
 }
 
 fn log(level: Level, message: String) {

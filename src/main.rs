@@ -27,7 +27,7 @@ use otd_core::tablets::{self, Database, Origin, ParserSupport, Role, Severity};
 use otd_core::test_alloc;
 use otd_core::{config, mapping, protocol, radial_follow, relative};
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError, WAIT_OBJECT_0};
@@ -370,27 +370,6 @@ fn list(paths: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// OpenTabletDriver's configuration directory. Its files override built-in
-/// tablet configurations by name.
-fn otd_configurations() -> Option<PathBuf> {
-    std::env::var_os("LOCALAPPDATA").map(|directory| {
-        PathBuf::from(directory)
-            .join("OpenTabletDriver")
-            .join("Configurations")
-    })
-}
-
-/// The tablet configurations with the files in `directory` applied, or `None`
-/// when there are none, and the number of files.
-fn load_tablets(directory: Option<&Path>) -> Result<(Option<Database>, usize), String> {
-    let files = match directory {
-        Some(directory) => tablets::read_directory(directory).map_err(|e| e.to_string())?,
-        None => Vec::new(),
-    };
-    let database = (!files.is_empty()).then(|| Database::with_overrides(&files));
-    Ok((database, files.len()))
-}
-
 /// Says which configuration declares the USB PTH-660 pen interface and
 /// whether an override file changes it. Overrides are used as upstream uses them.
 fn report_pth_660(database: &Database) {
@@ -446,10 +425,8 @@ fn report_pth_660(database: &Database) {
 /// Loads the tablet configurations as OpenTabletDriver's daemon does when it
 /// starts and reports what the USB PTH-660 resolves to. Nothing here runs per
 /// report.
-fn check_tablet_configurations() -> Result<Option<Database>, String> {
-    let directory = otd_configurations().filter(|directory| directory.is_dir());
-    let (custom, _) = load_tablets(directory.as_deref())?;
-    let database = custom.as_ref().unwrap_or_else(|| Database::builtin());
+fn check_tablet_configurations() -> Result<std::borrow::Cow<'static, Database>, String> {
+    let database = otd_core::config::configured_tablets()?;
     let errors = database
         .entries()
         .iter()
@@ -460,19 +437,20 @@ fn check_tablet_configurations() -> Result<Option<Database>, String> {
             "warning: {errors} tablet configuration files have errors; `opentabletdriver-rust tablets` lists them"
         );
     }
-    report_pth_660(database);
-    Ok(custom)
+    report_pth_660(&database);
+    Ok(database)
 }
 
 /// Summarizes the tablet configuration database; with `list`, every tablet,
 /// its interfaces and every diagnostic. Reads files only.
 fn tablets(list: bool, directory: Option<PathBuf>) -> Result<(), String> {
     let explicit = directory.is_some();
-    let directory = directory
-        .or_else(otd_configurations)
-        .filter(|directory| explicit || directory.is_dir());
-    let (custom, files) = load_tablets(directory.as_deref())?;
-    let database = custom.as_ref().unwrap_or_else(|| Database::builtin());
+    let directory = directory.or_else(otd_core::config::configurations_directory);
+    let directory = match directory {
+        Some(directory) if explicit || directory.try_exists().map_err(|error| error.to_string())? => Some(directory),
+        _ => None,
+    };
+    let (database, files) = otd_core::config::tablets_from_directory(directory.as_deref())?;
     let entries = database.entries();
     let built_in = Database::builtin().entries().len();
     println!(
@@ -519,7 +497,7 @@ fn tablets(list: bool, directory: Option<PathBuf>) -> Result<(), String> {
             missing.join(", ")
         }
     );
-    report_pth_660(database);
+    report_pth_660(&database);
     for entry in entries {
         if list {
             match &entry.configuration {
@@ -614,7 +592,7 @@ fn load_profile(
         } else if std::env::var_os("OTD_RUST_PORTABLE_DIR").is_some() {
             Ok(Profile::default())
         } else {
-            Profile::load_connected(None, &hid::connected_tablets())
+            Profile::load_connected(None, &hid::connected_tablets()?)
         }
     }
 }
@@ -649,7 +627,9 @@ fn drive(
     capture_seconds: Option<u64>,
     status: impl Fn(&str),
 ) -> Result<(), String> {
-    profile.validate_runtime_tablet()?;
+    let configured_tablets = check_tablet_configurations()?;
+    let database = configured_tablets.as_ref();
+    profile.validate_runtime_tablet_in(database)?;
     profile.validate_filter_execution()?;
     let tablet_name = profile.tablet_name()?;
     if profile.relative.is_none() {
@@ -660,10 +640,6 @@ fn drive(
         env!("CARGO_PKG_VERSION")
     );
     profile.print_summary();
-    let custom_tablets = check_tablet_configurations()?;
-    let database = custom_tablets
-        .as_ref()
-        .unwrap_or_else(|| Database::builtin());
     if capture_seconds.is_none() {
         println!("Reading pen input and moving the cursor. Press Ctrl+C to stop.");
     } else {
@@ -677,21 +653,22 @@ fn drive(
         deadline: Instant::now() + Duration::from_secs(seconds),
         limit: 10_000,
     });
-    let mut original_driver = if capture_seconds.is_none() {
-        Some(
-            original_driver::OriginalDriverGuard::pause().map_err(|error| {
-                format!("could not pause the original OpenTabletDriver safely: {error}")
-            })?,
-        )
-    } else {
-        None
-    };
+    if capture_seconds.is_none() {
+        original_driver::ensure_stopped()
+            .map_err(|error| format!("driver coexistence check failed: {error}"))?;
+        if profile.plugins.iter().any(|plugin| plugin.enabled)
+            && !plugin_catalog::recover_installations()? {
+            return Err("Plugins are being installed or recovered; retry starting the driver after that finishes.".into());
+        }
+    }
     let _tools = capture_seconds
         .is_none()
         .then(|| plugins::Tools::start(&profile.plugins, |line| eprintln!("{line}")));
+    let mut companions = None::<companions::Companions>;
     let outcome = (|| {
         let mut waiting = false;
         loop {
+            if let Some(companions) = &mut companions { companions.check_finished()?; }
             if unsafe { WaitForSingleObject(stop_event.raw(), 0) } == WAIT_OBJECT_0 {
                 break;
             }
@@ -726,6 +703,9 @@ fn drive(
                 continue;
             };
             waiting = false;
+            if let Some(companions) = &mut companions {
+                companions.reserve_primary(&selected.pen.path_text(), &selected.configuration.name)?;
+            }
             let mut plugins = plugins::PluginChain::load_with_tablet(
                 if capture_seconds.is_none() {
                     &profile.plugins
@@ -745,17 +725,16 @@ fn drive(
                 "{} found; opening pen input",
                 selected.configuration.name
             ));
-            let mut companions = if capture_seconds.is_none() {
-                Some(companions::Companions::start(
+            if capture_seconds.is_none() && companions.is_none() {
+                companions = Some(companions::Companions::start(
                     profile.clone(),
                     database.clone(),
                     selected.pen.path_text(),
+                    selected.configuration.name.clone(),
                     stop_event,
                     |line| eprintln!("{line}"),
-                )?)
-            } else {
-                None
-            };
+                )?);
+            }
             let result = session::run(
                 &selected,
                 &profile,
@@ -765,9 +744,7 @@ fn drive(
                 &mut plugins,
                 &status,
             );
-            if let Some(companions) = &mut companions {
-                companions.finish()?;
-            }
+            if let Some(companions) = &mut companions { companions.check_finished()?; }
             match result {
                 Ok(()) => {}
                 Err(error) => {
@@ -789,17 +766,9 @@ fn drive(
         }
         Ok(())
     })();
+    let outcome = companions.as_mut().map_or(Ok(()), companions::Companions::finish).and(outcome);
     drop(_tools);
-    let restoration = original_driver.as_mut().map_or(Ok(()), |guard| {
-        guard
-            .restore()
-            .map_err(|error| format!("could not restore the original driver: {error}"))
-    });
-    match (outcome, restoration) {
-        (Err(error), Err(restore)) => Err(format!("{error}; {restore}")),
-        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-        (Ok(()), Ok(())) => Ok(()),
-    }
+    outcome
 }
 
 fn main() {
@@ -867,13 +836,22 @@ fn main() {
             })
             .and_then(|reply| daemon::print_reply(&reply))
         }),
-        Ok(Command::Ui) => ui::run(),
+        Ok(Command::Ui) => {
+            // Recovery trouble must not lock the owner out of the panel's Stop.
+            if let Err(error) = plugin_catalog::recover_installations() {
+                eprintln!("Plugin recovery failed; the panel remains available: {error}");
+            }
+            ui::run()
+        },
         Ok(Command::Update { check }) => update::run(check),
         Ok(Command::Version) => {
             println!("opentabletdriver-rust {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        Ok(Command::InspectPlugin(path)) => dotnet::inspect(&path).and_then(|entries| {
+        Ok(Command::InspectPlugin(path)) => plugin_catalog::recover_installations().and_then(|ready| {
+            if !ready { return Err("Plugins are being installed or recovered; retry inspection after that finishes.".into()); }
+            dotnet::inspect(&path)
+        }).and_then(|entries| {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&entries).map_err(|e| e.to_string())?
@@ -881,6 +859,10 @@ fn main() {
             Ok(())
         }),
         Ok(Command::CheckPlugins(path)) => Profile::load(Some(&path)).and_then(|profile| {
+            if profile.plugins.iter().any(|plugin| plugin.enabled)
+                && !plugin_catalog::recover_installations()? {
+                return Err("Plugins are being installed or recovered; retry loading them after that finishes.".into());
+            }
             let chain = plugins::PluginChain::load(&profile.plugins)?;
             chain.validate_output_mode(profile.relative.is_some())?;
             // Tools start and stop here as they would with the driver.

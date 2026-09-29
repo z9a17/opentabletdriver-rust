@@ -67,6 +67,9 @@ New imports honor disabled Radial Follow entries. Older saved native `[[radial_f
 
 The GUI and CLI share the persistent daemon through protocol v2. Pipe calls run on a background client with bounded queues; status messages use sequence numbers to avoid repeated log replay. See the [headless commands](../README.md#profiles-and-headless-control).
 
+
+Version 0.14.1 shows declared defaults in property help and filter-row hover summaries. Installing or updating a package discovers its supported filters and tools in the background; new entries are disabled until enabled and applied. Discovery merges DLL/type identities instead of adding another copy, preserving existing settings and order. Attribute and slider defaults seed new entries. Constructor-only defaults remain unknown during inspection: imported omitted values keep constructor semantics, and inspection never constructs a plugin just to read a default. DateTime and TimeSpan fields accept literal text. Plugin information refreshes after updates and removals without discarding an active or invalid draft.
+
 ## Native Rust plugins
 
 The release also includes `otd_ema_filter.dll`, a small exponential-smoothing example. [driver.plugins.example.toml](../driver.plugins.example.toml) enables it. Its `alpha` is in 0..1 (1 follows the pen immediately) and `reset_ms` sets the inactivity reset. Relative DLL paths resolve against the profile's directory, not the process's working directory. In the panel, **Add native...** adds a DLL entry; its settings are edited as JSON because native DLLs do not describe their properties.

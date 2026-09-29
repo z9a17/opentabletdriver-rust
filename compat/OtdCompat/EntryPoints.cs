@@ -40,7 +40,7 @@ public unsafe struct FilterApi
 
 // Share the official OTD interface assembly with plugins, but resolve each
 // plugin's other managed/native dependencies from its own directory.
-sealed class PluginContext(string path) : AssemblyLoadContext(isCollectible: true)
+sealed class PluginContext(string path, bool inspect = false) : AssemblyLoadContext(isCollectible: true)
 {
     readonly AssemblyDependencyResolver resolver = new(path);
     readonly string directory = Path.GetDirectoryName(path)!;
@@ -54,7 +54,15 @@ sealed class PluginContext(string path) : AssemblyLoadContext(isCollectible: tru
             string candidate = Path.Combine(directory, name.Name + ".dll");
             if (File.Exists(candidate)) dependency = candidate;
         }
-        return dependency == null ? null : LoadFromAssemblyPath(dependency);
+        return dependency == null ? null : LoadPluginAssembly(dependency);
+    }
+    internal Assembly LoadPluginAssembly(string file)
+    {
+        if (!inspect) return LoadFromAssemblyPath(file);
+        // Inspection must not map installed managed DLLs into the panel.
+        // Unloading a collectible context does not immediately unmap them.
+        using var stream = File.OpenRead(file);
+        return LoadFromStream(stream);
     }
     protected override nint LoadUnmanagedDll(string name)
     {
@@ -84,7 +92,7 @@ static class PluginEligibility
     }
 }
 
-class Report : ITabletReport, IEraserReport
+class PenSnapshot : ITabletReport
 {
     // Transport-only fallback for the Rust profile's raw tip-switch policy.
     // Independent of Raw: changing bytes does not reparse any property.
@@ -105,8 +113,9 @@ class Report : ITabletReport, IEraserReport
         }
     }
     public bool[] PenButtons { get; set; } = [];
-    public bool Eraser { get; set; }
 }
+
+class Report : PenSnapshot, IEraserReport { public bool Eraser { get; set; } }
 
 // Implement only real pinned 0.6.7 interfaces. There is no rotation interface;
 // rotation and the other transport-only fields remain available through Raw.
@@ -115,7 +124,7 @@ class TiltReport : Report, ITiltReport
     public Vector2 Tilt { get; set; }
 }
 
-sealed class ProximityReport : TiltReport, IProximityReport
+class ProximityReport : TiltReport, IProximityReport
 {
     public bool NearProximity { get; set; }
     public uint HoverDistance { get; set; }
@@ -163,8 +172,14 @@ sealed class Instance : IDisposable
         }
         catch
         {
-            (created as IDisposable)?.Dispose();
-            context.Unload();
+            // Cleanup failures must not hide the construction/settings error.
+            try { (created as IDisposable)?.Dispose(); }
+            catch (Exception error) { Console.Error.WriteLine($".NET plugin cleanup failed: {error.GetBaseException().Message}"); }
+            finally
+            {
+                foreach (var timer in timers) timer.Dispose();
+                context.Unload();
+            }
             throw;
         }
     }
@@ -172,9 +187,8 @@ sealed class Instance : IDisposable
     internal static void ApplySettings(Type type, object value, JObject settings)
     {
         var properties = type.GetProperties().Where(p => p.GetCustomAttribute<PropertyAttribute>() != null).ToArray();
-        foreach (var setting in settings.Properties())
-            if (!properties.Any(p => p.Name == setting.Name))
-                throw new ArgumentException($"Unknown plugin setting: {setting.Name}");
+        // Upstream ignores saved keys no longer declared by a plugin. Keep
+        // those keys in the Rust profile for upgrades and rollback.
         foreach (var property in properties)
         {
             if (!property.CanWrite) continue;
@@ -221,7 +235,13 @@ sealed class Instance : IDisposable
         foreach (var timer in timers)
             if (timer.Enabled)
             {
-                long micros = Math.Max(0, (timer.Due - now) * 1_000_000 / Stopwatch.Frequency);
+                long remaining = Math.Max(0, timer.Due - now);
+                // Multiply only the remainder: long intervals must not wrap
+                // into an immediate tick and keep the report thread awake.
+                long seconds = remaining / Stopwatch.Frequency;
+                long fraction = (long)((remaining % Stopwatch.Frequency) * (1_000_000.0 / Stopwatch.Frequency));
+                long micros = seconds > (long.MaxValue - fraction) / 1_000_000
+                    ? long.MaxValue : seconds * 1_000_000 + fraction;
                 if (best < 0 || micros < best) best = micros;
             }
         return best;
@@ -388,9 +408,12 @@ sealed class Instance : IDisposable
     public void Dispose()
     {
         filter.Emit -= OnEmit;
-        (filter as IDisposable)?.Dispose();
-        foreach (var timer in timers) timer.Dispose();
-        context.Unload();
+        try { (filter as IDisposable)?.Dispose(); }
+        finally
+        {
+            foreach (var timer in timers) timer.Dispose();
+            context.Unload();
+        }
     }
 }
 
@@ -401,16 +424,30 @@ sealed class Instance : IDisposable
 sealed class SessionTimer : OpenTabletDriver.Plugin.Timers.ITimer
 {
     long due;
-    public float Interval { get; set; } = 1;
+    float interval = 1;
+    long period = Math.Max(1, Stopwatch.Frequency / 1000);
+    public float Interval
+    {
+        get => interval;
+        set
+        {
+            double ticks = Math.Max(value, 0.05f) * (Stopwatch.Frequency / 1000.0);
+            if (!float.IsFinite(value) || value <= 0 || ticks >= long.MaxValue)
+                throw new ArgumentOutOfRangeException(nameof(value), "Timer interval must be finite, positive and representable.");
+            period = Math.Max(1, (long)ticks);
+            interval = value;
+        }
+    }
     public bool Enabled { get; private set; }
     public event Action? Elapsed;
     internal long Due => due;
 
-    long Period => Math.Max(1, (long)(Math.Max(Interval, 0.05f) * Stopwatch.Frequency / 1000.0));
+    static long AddPeriod(long timestamp, long ticks) => timestamp > long.MaxValue - ticks
+        ? long.MaxValue : timestamp + ticks;
 
     public void Start()
     {
-        due = Stopwatch.GetTimestamp() + Period;
+        due = AddPeriod(Stopwatch.GetTimestamp(), period);
         Enabled = true;
     }
 
@@ -419,11 +456,11 @@ sealed class SessionTimer : OpenTabletDriver.Plugin.Timers.ITimer
     internal void FireIfDue(long now)
     {
         if (!Enabled || now < due) return;
-        due += Period;
-        if (due <= now) due = now + Period;
+        due = AddPeriod(due, period);
+        if (due <= now) due = AddPeriod(now, period);
         Elapsed?.Invoke();
         long finished = Stopwatch.GetTimestamp();
-        if (Enabled && due <= finished) due = finished + Period;
+        if (Enabled && due <= finished) due = AddPeriod(finished, period);
     }
 
     public void Dispose()
@@ -462,16 +499,17 @@ sealed class ToolInstance : IDisposable
         }
         catch
         {
-            (created as IDisposable)?.Dispose();
-            context.Unload();
+            try { (created as IDisposable)?.Dispose(); }
+            catch (Exception error) { Console.Error.WriteLine($".NET tool cleanup failed: {error.GetBaseException().Message}"); }
+            finally { context.Unload(); }
             throw;
         }
     }
 
     public void Dispose()
     {
-        tool.Dispose();
-        context.Unload();
+        try { tool.Dispose(); }
+        finally { context.Unload(); }
     }
 }
 
@@ -592,10 +630,10 @@ public static unsafe partial class EntryPoints
         try
         {
             string file = Path.GetFullPath(Encoding.UTF8.GetString(new ReadOnlySpan<byte>(path, length)));
-            var context = new PluginContext(file);
+            var context = new PluginContext(file, inspect: true);
             try
             {
-                var types = context.LoadFromAssemblyPath(file).GetExportedTypes()
+                var types = context.LoadPluginAssembly(file).GetExportedTypes()
                     .Where(t => !t.IsAbstract && (typeof(IPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(t)
                             || typeof(OpenTabletDriver.Plugin.ITool).IsAssignableFrom(t))
                         && PluginEligibility.IsDiscoverable(t))
@@ -623,6 +661,7 @@ public static unsafe partial class EntryPoints
                                 tooltip = p.GetCustomAttribute<ToolTipAttribute>()?.ToolTip,
                                 property_type = (Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType).FullName,
                                 writable = p.SetMethod?.IsPublic == true && p.GetIndexParameters().Length == 0,
+                                default_is_attribute = p.GetCustomAttribute<DefaultPropertyValueAttribute>() != null,
                                 enum_flags = (Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType).IsDefined(typeof(FlagsAttribute), false),
                                 enum_underlying_type = EnumUnderlyingType(Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType),
                                 enum_choices = EnumChoices(Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType),
