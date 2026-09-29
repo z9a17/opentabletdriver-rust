@@ -47,7 +47,7 @@ sealed class RingSnapshot : AuxSnapshot, IAbsoluteWheelReport, IWheelButtonRepor
 sealed class TouchSnapshot : ITouchReport
 {
     public byte[] Raw { get; set; } = [];
-    public TouchPoint[] Touches { get; init; } = [];
+    public TouchPoint[] Touches { get; set; } = [];
 }
 
 sealed class GraphAbort : Exception { }
@@ -342,51 +342,99 @@ unsafe sealed class SynchronousGraph
                 f.TouchXY[i * 2] = point.Position.X; f.TouchXY[i * 2 + 1] = point.Position.Y;
             }
         }
-        if (report is Report { NativeTipSwitch: bool tip }) { f.Flags |= NativeTip; f.TipSwitch = tip ? 1u : 0; }
+        if (report is PenSnapshot { NativeTipSwitch: bool tip }) { f.Flags |= NativeTip; f.TipSwitch = tip ? 1u : 0; }
         return f;
     }
 
     static IDeviceReport Import(GraphReport* f)
     {
         if (f == null || f->Version != 2 || f->Size != sizeof(GraphReport)
-            || f->RawLength > 192 || (f->Raw == null && f->RawLength != 0))
+            || f->RawLength > ushort.MaxValue || (f->Raw == null && f->RawLength != 0))
             throw new ArgumentException("Invalid native graph report.");
         byte[] raw = new ReadOnlySpan<byte>(f->Raw, (int)f->RawLength).ToArray();
         if (f->Kind == 1) return new OutOfRangeReport(raw);
         if (f->Kind != 0) throw new ArgumentException("Unknown report kind.");
-        if ((f->Flags & Tablet) != 0)
+        if ((f->Flags & NativeTip) != 0 && (f->Flags & Tablet) == 0)
+            throw new ArgumentException("Native tip state requires a tablet report.");
+        // Supported parser shapes, without advertising absent interfaces.
+        // Unsupported future shapes fail explicitly instead of losing fields.
+        IDeviceReport report = (f->Flags & ~NativeTip) switch
         {
-            uint required = Position | Tablet | Eraser | Tilt;
-            if ((f->Flags & required) != required || (f->Flags & ~(required | Proximity | NativeTip)) != 0)
-                throw new NotSupportedException("Unsupported native pen capability combination.");
-            TiltReport report = (f->Flags & Proximity) != 0
-                ? new ProximityReport { NearProximity = f->Near != 0, HoverDistance = f->Distance }
-                : new TiltReport();
-            report.Raw = raw; report.Position = new Vector2(f->X, f->Y); report.Pressure = f->Pressure;
-            report.PenButtons = Unpack(f->PenBits, f->PenCount); report.Eraser = f->Eraser != 0;
-            report.Tilt = new Vector2(f->TiltX, f->TiltY);
-            report.NativeTipSwitch = (f->Flags & NativeTip) != 0 ? f->TipSwitch != 0 : null;
-            return report;
+            0 => new DeviceSnapshot(),
+            Position | Tablet => new PenSnapshot(),
+            Position | Tablet | Eraser => new Report(),
+            Position | Tablet | Tilt => new TiltPenSnapshot(),
+            Position | Tablet | Proximity => new ProximityPenSnapshot(),
+            Position | Tablet | Eraser | Tilt => new TiltReport(),
+            Position | Tablet | Eraser | Proximity => new EraserProximitySnapshot(),
+            Position | Tablet | Tilt | Proximity => new TiltProximityPenSnapshot(),
+            Position | Tablet | Eraser | Tilt | Proximity => new ProximityReport(),
+            Position | Tablet | Eraser | Proximity | Aux => new AuxPenSnapshot(),
+            Tool | Eraser | Proximity => new ToolSnapshot(),
+            Position | Mouse => new MouseSnapshot(),
+            Position | Mouse | Proximity => new ProximityMouseSnapshot(),
+            Position | Mouse | Aux => new AuxMouseSnapshot(),
+            Aux => new AuxSnapshot(),
+            Aux | Absolute | AbsoluteWheel | WheelButtons => new RingSnapshot(),
+            Aux | WheelButtons => new AuxWheelButtonsSnapshot(),
+            Absolute => new AbsoluteSnapshot(),
+            Absolute | AbsoluteWheel => new AbsoluteWheelSnapshot(),
+            Aux | Absolute => new AuxAbsoluteSnapshot(),
+            Relative => new RelativeSnapshot(),
+            Relative | RelativeWheel => new RelativeWheelSnapshot(),
+            Aux | Relative | RelativeWheel => new AuxRelativeWheelSnapshot(),
+            Touch => new TouchSnapshot(),
+            Aux | Touch => new AuxTouchSnapshot(),
+            _ => throw new NotSupportedException($"Unsupported native report capabilities: 0x{f->Flags:x}.")
+        };
+        report.Raw = raw;
+        if (report is IAbsolutePositionReport position) position.Position = new Vector2(f->X, f->Y);
+        if (report is ITabletReport tablet)
+        { tablet.Pressure = f->Pressure; tablet.PenButtons = Unpack(f->PenBits, f->PenCount); }
+        if (report is PenSnapshot pen) pen.NativeTipSwitch = (f->Flags & NativeTip) != 0 ? f->TipSwitch != 0 : null;
+        if (report is IEraserReport eraser) eraser.Eraser = f->Eraser != 0;
+        if (report is ITiltReport tilt) tilt.Tilt = new Vector2(f->TiltX, f->TiltY);
+        if (report is IProximityReport proximity)
+        { proximity.NearProximity = f->Near != 0; proximity.HoverDistance = f->Distance; }
+        if (report is IToolReport tool)
+        {
+            if (f->ToolType > 1) throw new ArgumentException("Invalid tool type.");
+            tool.Serial = f->Serial; tool.RawToolID = f->ToolID; tool.Tool = (ToolType)f->ToolType;
         }
-        if (f->Flags == (Aux | Absolute | AbsoluteWheel | WheelButtons))
+        if (report is IAuxReport aux) aux.AuxButtons = Unpack(f->AuxBits, f->AuxCount);
+        if (report is IMouseReport mouse)
+        { mouse.MouseButtons = Unpack(f->MouseBits, f->MouseCount); mouse.Scroll = new Vector2(f->ScrollX, f->ScrollY); }
+        if (report is IAbsoluteAnalogReport absolute)
         {
-            if (f->AbsoluteCount > 16 || f->WheelCount > 8) throw new ArgumentException("Invalid ring capacity.");
-            var positions = new uint?[f->AbsoluteCount]; var buttons = new bool[f->WheelCount][];
+            if (f->AbsoluteCount > 16) throw new ArgumentException("Invalid absolute analog capacity.");
+            var positions = new uint?[f->AbsoluteCount];
             for (int i = 0; i < positions.Length; i++) if ((f->AbsolutePresent & (1u << i)) != 0) positions[i] = f->AbsoluteValues[i];
-            for (int i = 0; i < buttons.Length; i++) buttons[i] = Unpack(f->WheelBits[i], f->WheelCounts[i]);
-            return new RingSnapshot { Raw = raw, AuxButtons = Unpack(f->AuxBits, f->AuxCount), AnalogPositions = positions, WheelButtons = buttons };
+            absolute.AnalogPositions = positions;
         }
-        if (f->Flags == Aux) return new AuxSnapshot { Raw = raw, AuxButtons = Unpack(f->AuxBits, f->AuxCount) };
-        if (f->Flags == Touch)
+        if (report is IRelativeAnalogReport relative)
+        {
+            if (f->RelativeCount > 16) throw new ArgumentException("Invalid relative analog capacity.");
+            var deltas = new int[f->RelativeCount];
+            for (int i = 0; i < deltas.Length; i++) deltas[i] = f->RelativeValues[i];
+            relative.AnalogDeltas = deltas;
+        }
+        if (report is IWheelButtonReport wheel)
+        {
+            if (f->WheelCount > 8) throw new ArgumentException("Invalid wheel capacity.");
+            var buttons = new bool[f->WheelCount][];
+            for (int i = 0; i < buttons.Length; i++) buttons[i] = Unpack(f->WheelBits[i], f->WheelCounts[i]);
+            wheel.WheelButtons = buttons;
+        }
+        if (report is ITouchReport)
         {
             if (f->TouchCount > 32) throw new ArgumentException("Invalid touch capacity.");
             var points = new TouchPoint[f->TouchCount];
             for (int i = 0; i < points.Length; i++) if ((f->TouchPresent & (1u << i)) != 0)
                 points[i] = new TouchPoint { TouchID = checked((byte)f->TouchIDs[i]), Position = new Vector2(f->TouchXY[i * 2], f->TouchXY[i * 2 + 1]) };
-            return new TouchSnapshot { Raw = raw, Touches = points };
+            if (report is TouchSnapshot touch) touch.Touches = points;
+            else if (report is AuxTouchSnapshot auxTouch) auxTouch.Touches = points;
         }
-        if (f->Flags == 0) return new DeviceSnapshot { Raw = raw };
-        throw new NotSupportedException("Unsupported native report capability combination.");
+        return report;
     }
 }
 

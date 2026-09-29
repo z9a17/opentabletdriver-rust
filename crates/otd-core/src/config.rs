@@ -413,16 +413,58 @@ fn radial_settings(store: &OtdStore) -> Result<RadialFollowSettings, String> {
     .clamped())
 }
 
-/// The specification of a named tablet in the built-in database, or the
-/// PTH-660's when the name is unknown.
-pub fn spec_for_tablet(name: &str) -> TabletSpec {
-    runtime_tablet(name).unwrap_or(TabletSpec::PTH_660)
+/// Resolves ranges for profile editing without requiring runtime parser support.
+/// A named tablet never silently acquires another tablet's dimensions.
+pub fn spec_for_tablet(name: &str) -> Result<TabletSpec, String> {
+    spec_for_tablet_in(name, configured_tablets()?.as_ref())
+}
+
+fn spec_for_tablet_in(name: &str, database: &crate::tablets::Database) -> Result<TabletSpec, String> {
+    let configuration = database.entries().iter()
+        .filter_map(crate::tablets::Entry::usable)
+        .find(|configuration| configuration.name == name)
+        .ok_or_else(|| format!("no usable tablet configuration is named {name}"))?;
+    TabletSpec::from_configuration(configuration)
 }
 
 /// The specification of a named tablet whose parser the runtime supports.
 pub fn runtime_tablet(name: &str) -> Result<TabletSpec, String> {
-    use crate::tablets::{Database, Entry, ParserSupport, parser_support};
-    let configuration = Database::builtin()
+    runtime_tablet_in(name, configured_tablets()?.as_ref())
+}
+
+/// The effective configuration set, shared by import and runtime selection.
+/// This performs setup-time file I/O; report processing uses the selected spec.
+pub fn configured_tablets() -> Result<std::borrow::Cow<'static, crate::tablets::Database>, String> {
+    let directory = configurations_directory();
+    let directory = match directory {
+        Some(directory) if directory.try_exists().map_err(|error| format!("cannot inspect tablet configurations: {error}"))? => Some(directory),
+        _ => None,
+    };
+    tablets_from_directory(directory.as_deref()).map(|(database, _)| database)
+}
+
+pub fn configurations_directory() -> Option<PathBuf> {
+    otd_settings_path().and_then(|path| path.parent().map(|p| p.join("Configurations")))
+}
+
+/// One configuration read per operation; an explicit directory must be readable.
+pub fn tablets_from_directory(directory: Option<&Path>) -> Result<(std::borrow::Cow<'static, crate::tablets::Database>, usize), String> {
+    use crate::tablets::{Database, read_directory};
+    let files = match directory {
+        Some(directory) => read_directory(directory).map_err(|error| error.to_string())?,
+        None => Vec::new(),
+    };
+    let database = if files.is_empty() {
+        std::borrow::Cow::Borrowed(Database::builtin())
+    } else {
+        std::borrow::Cow::Owned(Database::with_overrides(&files))
+    };
+    Ok((database, files.len()))
+}
+
+pub fn runtime_tablet_in(name: &str, database: &crate::tablets::Database) -> Result<TabletSpec, String> {
+    use crate::tablets::{Entry, ParserSupport, parser_support};
+    let configuration = database
         .entries()
         .iter()
         .filter_map(Entry::usable)
@@ -515,6 +557,24 @@ impl Profile {
         }
     }
 
+    /// Only this tablet's saved profile. Absence permits defaults; a rejected
+    /// profile is an error and must never silently activate different output.
+    pub fn load_otd_tablet(tablet: &str) -> Result<Option<Self>, String> {
+        let Some(path) = otd_settings_path() else { return Ok(None); };
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
+        };
+        let settings: OtdSettings = serde_json::from_str(&text)
+            .map_err(|error| format!("invalid OpenTabletDriver settings: {error}"))?;
+        let Some(index) = settings.profiles.iter().position(|profile| {
+            profile.get("Tablet").and_then(serde_json::Value::as_str) == Some(tablet)
+        }) else { return Ok(None); };
+        let database = configured_tablets()?;
+        Self::from_otd_settings(&settings, &text, &path, index, ImportOptions::default(), &database).map(Some)
+    }
+
     pub fn load_otd(path: &Path) -> Result<Self, String> {
         Self::load_otd_with_options(path, ImportOptions::default())
     }
@@ -561,6 +621,7 @@ impl Profile {
                     .unwrap_or("")
             })
             .collect();
+        let database = configured_tablets()?;
         let selected_index = connected
             .iter()
             .find_map(|name| tablets.iter().position(|tablet| tablet == name))
@@ -568,10 +629,10 @@ impl Profile {
             .or_else(|| {
                 tablets
                     .iter()
-                    .position(|tablet| runtime_tablet(tablet).is_ok())
+                    .position(|tablet| runtime_tablet_in(tablet, &database).is_ok())
             })
             .ok_or("OpenTabletDriver settings have no profile for a tablet this driver supports")?;
-        Self::from_otd_profile_text(text, path, selected_index, options)
+        Self::from_otd_settings(&settings, text, path, selected_index, options, &database)
     }
 
     /// Import a chosen profile without claiming that its tablet is supported by
@@ -584,6 +645,18 @@ impl Profile {
     ) -> Result<Self, String> {
         let settings: OtdSettings = serde_json::from_str(text)
             .map_err(|e| format!("invalid OpenTabletDriver settings {}: {e}", path.display()))?;
+        let database = configured_tablets()?;
+        Self::from_otd_settings(&settings, text, path, selected_index, options, &database)
+    }
+
+    fn from_otd_settings(
+        settings: &OtdSettings,
+        text: &str,
+        path: &Path,
+        selected_index: usize,
+        options: ImportOptions,
+        database: &crate::tablets::Database,
+    ) -> Result<Self, String> {
         let selected_value = settings
             .profiles
             .get(selected_index)
@@ -596,7 +669,7 @@ impl Profile {
         let selected: OtdProfile = serde_json::from_value(selected_value.clone())
             .map_err(|e| format!("invalid {tablet_name} profile: {e}"))?;
         // Thresholds and relative scaling depend on the tablet's ranges.
-        let tablet = spec_for_tablet(tablet_name);
+        let tablet = spec_for_tablet_in(tablet_name, database)?;
         let mut diagnostics = schema::import_diagnostics(text, selected_index)?;
         if !selected.output_mode.enable {
             return Err(format!(
@@ -895,7 +968,7 @@ impl Profile {
         };
         profile.tablet = profile
             .tablet_name()?
-            .map_or(TabletSpec::PTH_660, |name| spec_for_tablet(&name));
+            .map(|name| spec_for_tablet(&name)).transpose()?.unwrap_or(TabletSpec::PTH_660);
         for threshold in [
             profile.contact.tip_threshold_raw,
             profile.contact.eraser_threshold_raw,
@@ -961,8 +1034,12 @@ impl Profile {
     /// configuration exists and its parser and specifications are supported.
     /// Profiles without a tablet name run on whichever tablet is selected.
     pub fn validate_runtime_tablet(&self) -> Result<(), String> {
+        self.validate_runtime_tablet_in(configured_tablets()?.as_ref())
+    }
+
+    pub fn validate_runtime_tablet_in(&self, database: &crate::tablets::Database) -> Result<(), String> {
         if let Some(name) = self.tablet_name()? {
-            runtime_tablet(&name)?;
+            runtime_tablet_in(&name, database)?;
         }
         Ok(())
     }
@@ -1363,7 +1440,7 @@ mod tests {
         assert!(text.contains("tablet = \"Wacom CTL-4100\""), "{text}");
         let loaded = Profile::from_toml_text(&text, Path::new("driver.toml")).unwrap();
         assert_eq!(loaded.target_tablet.as_deref(), Some("Wacom CTL-4100"));
-        assert_eq!(loaded.tablet, spec_for_tablet("Wacom CTL-4100"));
+        assert_eq!(loaded.tablet, spec_for_tablet("Wacom CTL-4100").unwrap());
         assert_ne!(loaded.tablet, TabletSpec::PTH_660);
         // Earlier profiles have no tablet and keep the PTH-660's ranges.
         let old = Profile::from_toml_text("", Path::new("driver.toml")).unwrap();

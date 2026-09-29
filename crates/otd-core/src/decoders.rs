@@ -3,10 +3,10 @@
 //!
 //! `ReportParser` covers every parser type the pinned configurations name and
 //! yields upstream's full report values (pen, auxiliary, touch, wheel, mouse).
-//! `PenDecoder` turns one transport packet into the `PenReport` the report
-//! pipeline consumes. IntuosV2 tablets keep the checked PTH-660 decoder with
-//! their own ranges; every other parser goes through `ReportParser` and
-//! `pen_from_values`. Neither allocates per report.
+//! Runtime decoding preserves that envelope for the pipeline. IntuosV2
+//! tablets keep the compact checked PTH-660 decoder with their own ranges;
+//! `PenDecoder::decode` remains the legacy position-only view for callers that
+//! need it. Neither path allocates per report.
 
 use std::time::Duration;
 
@@ -315,11 +315,41 @@ pub struct DecodedPen<'a> {
     pub buttons: Option<Buttons>,
 }
 
-/// Turns device packets into pen reports for the report pipeline.
+/// A compact IntuosV2 input, or the original capabilities of another parser.
+/// The report owns inline values and borrows only its canonical raw payload.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)] // Inline report values keep decoding allocation-free.
+pub enum DecodedInput<'a> {
+    Pen(DecodedPen<'a>),
+    Report {
+        kind: ReportKind,
+        report: ReportEnvelope<'a>,
+        /// Legacy pen view for capture and position-only filter callers. It
+        /// never replaces the parser's values when dispatching the report.
+        pen: Option<PenReport>,
+    },
+}
+
+impl DecodedInput<'_> {
+    pub fn pen(&self) -> Option<PenReport> {
+        match self {
+            Self::Pen(decoded) => Some(decoded.pen),
+            Self::Report { pen, .. } => *pen,
+        }
+    }
+}
+
+/// Turns device packets into synchronous pipeline input.
 pub trait PenDecoder {
-    /// `Ok(None)` for packets that carry no pen position (auxiliary, touch,
-    /// status and unknown reports), which the session ignores.
+    /// Legacy pen view: `Ok(None)` for auxiliary, touch, status and unknown
+    /// packets without a pen position. Runtime callers use `decode_input`.
     fn decode<'a>(&mut self, raw: &'a [u8]) -> Result<Option<DecodedPen<'a>>, DecodeError>;
+    /// Runtime decoding preserves complete parser capabilities. Existing pen
+    /// sources keep their compact decoder and report construction path.
+    #[inline]
+    fn decode_input<'a>(&mut self, raw: &'a [u8]) -> Result<Option<DecodedInput<'a>>, DecodeError> {
+        self.decode(raw).map(|decoded| decoded.map(DecodedInput::Pen))
+    }
     /// Clears parser state when a session ends.
     fn reset(&mut self) {}
 }
@@ -341,7 +371,7 @@ pub fn intuos_v2_pen_buttons(raw: &[u8]) -> Option<Buttons> {
 pub enum TabletDecoder {
     /// The checked IntuosV2 pen layout (PTH-660 and other IntuosV2 tablets).
     IntuosV2 { spec: TabletSpec, prefixed: bool },
-    /// Any other parser, adapted from its report values.
+    /// Any other parser, retaining complete report values at runtime.
     /// Boxed: stateful parsers such as the touch ones are large.
     Values {
         parser: Box<ReportParser>,
@@ -418,6 +448,22 @@ impl PenDecoder for TabletDecoder {
                         }
                     }),
                 )
+            }
+        }
+    }
+
+    #[inline]
+    fn decode_input<'a>(&mut self, raw: &'a [u8]) -> Result<Option<DecodedInput<'a>>, DecodeError> {
+        match self {
+            Self::IntuosV2 { .. } => {
+                self.decode(raw).map(|decoded| decoded.map(DecodedInput::Pen))
+            }
+            Self::Values { parser, spec } => {
+                let (kind, report) = parser
+                    .parse(raw, SESSION_METADATA)
+                    .map_err(DecodeError::Report)?;
+                let pen = pen_from_values(kind, &report.values, report.raw, *spec);
+                Ok(Some(DecodedInput::Report { kind, report, pen }))
             }
         }
     }

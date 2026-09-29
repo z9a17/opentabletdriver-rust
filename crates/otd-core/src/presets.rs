@@ -3,8 +3,7 @@
 use crate::config::Profile;
 use crate::storage::{self, FileSnapshot, SaveMode};
 use serde::Serialize;
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -222,7 +221,7 @@ impl PresetStore {
         }
         fs::create_dir_all(&self.directory)
             .map_err(|error| format!("cannot create preset directory: {error}"))?;
-        let _lock = DirectoryLock::acquire(&self.directory)?;
+        let _lock = storage::WriterLock::acquire(&self.directory.join(".presets.lock"))?;
         let existing = self.resolve(name)?;
         let (path, mode) = match (existing, previous) {
             (Some(_), None) => {
@@ -292,35 +291,3 @@ impl PresetStore {
     }
 }
 
-/// A shared lock across preset names makes case-collision checks consistent
-/// between cooperating creators even on case-sensitive filesystems.
-struct DirectoryLock {
-    path: PathBuf,
-    file: Option<File>,
-}
-
-impl DirectoryLock {
-    fn acquire(directory: &Path) -> Result<Self, String> {
-        let path = directory.join(".presets.lock");
-        let file = OpenOptions::new().write(true).create_new(true).open(&path)
-            .map_err(|error| format!("cannot acquire preset lock {}: {error}; remove a stale lock only after confirming no preset save is running", path.display()))?;
-        let mut guard = Self {
-            path,
-            file: Some(file),
-        };
-        writeln!(
-            guard.file.as_mut().expect("lock file exists"),
-            "pid={}",
-            std::process::id()
-        )
-        .map_err(|error| format!("cannot initialize preset lock: {error}"))?;
-        Ok(guard)
-    }
-}
-
-impl Drop for DirectoryLock {
-    fn drop(&mut self) {
-        drop(self.file.take());
-        let _ = fs::remove_file(&self.path);
-    }
-}

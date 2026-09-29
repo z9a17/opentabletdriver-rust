@@ -193,15 +193,14 @@ mod app {
             STOP.store(true, Ordering::Release);
         }));
         install_stop_handler()?;
-        let profile = Profile::load(profile_path.as_deref())?;
-        profile.validate_runtime_tablet()?;
-        if profile.plugins.iter().any(|plugin| plugin.enabled) {
-            return Err(
-                "external plugins are not supported by the Linux runtime; disable them explicitly"
-                    .into(),
-            );
+        let profile = profile_path.as_deref().map(|path| Profile::load(Some(path))).transpose()?;
+        let profile_tablet = profile.as_ref().map(Profile::tablet_name).transpose()?.flatten();
+        if let (Some(requested), Some(saved)) = (&tablet, &profile_tablet) {
+            if requested != saved {
+                return Err(format!("--tablet {requested} conflicts with the profile for {saved}"));
+            }
         }
-        let tablet = tablet.or(profile.tablet_name()?);
+        let tablet = tablet.or(profile_tablet);
         let screen = Rect {
             left: 0,
             top: 0,
@@ -212,12 +211,12 @@ mod app {
             virtual_screen: screen,
             monitors: vec![screen],
         });
-        let database = Database::builtin();
+        let database = otd_core::config::configured_tablets()?;
         let mut waiting = false;
         while !STOP.load(Ordering::Acquire) {
             let devices =
-                linux::enumerate(database).map_err(|e| format!("hidraw discovery failed: {e}"))?;
-            let Some(selected) = select(&devices, database, tablet.as_deref())? else {
+                linux::enumerate(&database).map_err(|e| format!("hidraw discovery failed: {e}"))?;
+            let Some(selected) = select(&devices, &database, tablet.as_deref())? else {
                 if !waiting {
                     eprintln!(
                         "Waiting for {}.",
@@ -229,44 +228,91 @@ mod app {
                 continue;
             };
             waiting = false;
+            let profile = match &profile {
+                Some(profile) => profile.clone(),
+                None => Profile::load_otd_tablet(&selected.configuration.name)?.unwrap_or_default(),
+            }.for_tablet(selected.spec)?;
+            profile.validate_runtime_tablet_in(&database)?;
+            if profile.plugins.iter().any(|plugin| plugin.enabled) {
+                return Err("external plugins are not supported by the Linux runtime; disable them explicitly".into());
+            }
+            // Reject deterministic mapping/output errors before initialization
+            // writes, and do not repeatedly reinitialize on an unchanged fault.
+            let _ = otd_core::pipeline::ReportPipeline::new(&profile)?;
+            if profile.relative.is_none() { displays.0.mapper(&profile)?; }
             if let Err(error) = run_session(&selected, &profile, &mut displays) {
-                eprintln!("{} stopped: {error}", selected.configuration.name);
+                if STOP.load(Ordering::Acquire) { break; }
+                match error {
+                    SessionError::Fatal(error) => {
+                        return Err(format!("{} stopped: {error}", selected.configuration.name));
+                    }
+                    SessionError::Retry(error) => {
+                        eprintln!("{} stopped: {error}; retrying after a device scan", selected.configuration.name);
+                    }
+                }
             }
             pause();
         }
         Ok(())
     }
 
+    enum SessionError {
+        Fatal(std::io::Error),
+        Retry(std::io::Error),
+    }
+
+    impl SessionError {
+        fn hardware(error: std::io::Error) -> Self {
+            // Hotplug and udev permission races can recover on a new scan.
+            // Invalid requests and unreleased output ownership cannot.
+            if session::is_cleanup_failure(&error)
+                || matches!(error.kind(),
+                    std::io::ErrorKind::InvalidInput
+                        | std::io::ErrorKind::InvalidData
+                        | std::io::ErrorKind::Unsupported)
+            {
+                Self::Fatal(error)
+            } else {
+                Self::Retry(error)
+            }
+        }
+    }
+
     fn run_session(
         selected: &Selected<'_>,
         profile: &Profile,
         displays: &mut StaticDisplays,
-    ) -> std::io::Result<()> {
+    ) -> Result<(), SessionError> {
+        let mut decoder = TabletDecoder::for_parser(selected.identifier.parser(), selected.spec)
+            .ok_or_else(|| SessionError::Fatal(std::io::Error::other("unsupported parser")))?;
         let label = format!(
             "{} ({})",
             selected.configuration.name,
             selected.device.node.display()
         );
-        let mut source = Hidraw::open(selected.device, label, &STOP)?;
+        let mut source = Hidraw::open(selected.device, label, &STOP)
+            .map_err(SessionError::hardware)?;
+        // Output creation can fail for missing uinput permissions. Establish it
+        // before performing any device initialization writes.
+        let pen = if profile.output == OutputKind::Pen {
+            Some(VirtualTablet::create(displays.0.virtual_screen).map_err(SessionError::Fatal)?)
+        } else { None };
+        let output = if pen.is_none() {
+            Some(Uinput::create(profile.relative.is_some()).map_err(SessionError::Fatal)?)
+        } else { None };
         linux::initialize(
             selected.device,
             source.file(),
             &selected.identifier,
             &selected.configuration,
             &STOP,
-        )?;
-        let profile = profile
-            .for_tablet(selected.spec)
-            .map_err(std::io::Error::other)?;
-        let mut decoder = TabletDecoder::for_parser(selected.identifier.parser(), selected.spec)
-            .ok_or_else(|| std::io::Error::other("unsupported parser"))?;
-        if profile.output == OutputKind::Pen {
+        ).map_err(SessionError::hardware)?;
+        if let Some(tablet) = pen {
             // Artist Mode: the virtual tablet replaces the pointer.
-            let tablet = VirtualTablet::create(displays.0.virtual_screen)?;
             return session::run_gated_with_pen(
                 &mut source,
                 displays,
-                &profile,
+                profile,
                 Mode::Driver,
                 &mut decoder,
                 &mut NoFilters,
@@ -274,19 +320,19 @@ mod app {
                 Some(Box::new(tablet)),
                 &|line| eprintln!("{line}"),
                 || Ok(true),
-            );
+            ).map_err(SessionError::hardware);
         }
-        let output = Uinput::create(profile.relative.is_some())?;
+        let output = output.ok_or_else(|| SessionError::Fatal(std::io::Error::other("mouse output was not created")))?;
         session::run(
             &mut source,
             displays,
-            &profile,
+            profile,
             Mode::Driver,
             &mut decoder,
             &mut NoFilters,
             |packet| output.send(packet),
             &|line| eprintln!("{line}"),
-        )
+        ).map_err(SessionError::hardware)
     }
 
     /// Waits two seconds between device scans, waking early on a stop.

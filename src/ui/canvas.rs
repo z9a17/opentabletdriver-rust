@@ -336,7 +336,7 @@ impl Canvas {
         let mut rect = rect;
         let mut wide = wide_text(text);
         unsafe {
-            SelectObject(self.dc, font);
+            let previous = SelectObject(self.dc, font);
             SetTextColor(self.dc, color.colorref());
             DrawTextW(
                 self.dc,
@@ -345,6 +345,7 @@ impl Canvas {
                 &mut rect,
                 format,
             );
+            SelectObject(self.dc, previous);
         }
         self.gdi_pending = true;
     }
@@ -353,11 +354,12 @@ impl Canvas {
     pub fn text_at(&mut self, point: (i32, i32), text: &str, font: HFONT, color: Rgb, align: u32) {
         let wide = wide_text(text);
         unsafe {
-            SelectObject(self.dc, font);
+            let previous_font = SelectObject(self.dc, font);
             SetTextColor(self.dc, color.colorref());
             let previous = SetTextAlign(self.dc, align);
             TextOutW(self.dc, point.0, point.1, wide.as_ptr(), wide.len() as i32);
             SetTextAlign(self.dc, previous);
+            SelectObject(self.dc, previous_font);
         }
         self.gdi_pending = true;
     }

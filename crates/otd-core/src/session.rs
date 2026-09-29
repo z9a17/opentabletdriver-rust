@@ -213,6 +213,7 @@ struct Layout {
     snapshot: Option<DisplaySnapshot>,
     fingerprint: DisplayFingerprint,
     mapper: Option<Mapper>,
+    snapshot_failed: bool,
 }
 
 impl Layout {
@@ -230,13 +231,25 @@ impl Layout {
             return;
         };
         let fingerprint = displays.fingerprint();
-        let Ok(current) = displays.snapshot() else {
-            return;
+        let current = match displays.snapshot() {
+            Ok(current) => current,
+            Err(error) => {
+                self.mapper = None;
+                if !self.snapshot_failed {
+                    if let Err(release_error) = pipeline.release_all(send) {
+                        eprintln!("could not release buttons after display failure: {release_error}");
+                    }
+                    eprintln!("display mapping paused: {error}");
+                }
+                self.snapshot_failed = true;
+                return;
+            }
         };
         self.fingerprint = fingerprint;
-        if current == *snapshot {
+        if current == *snapshot && !self.snapshot_failed {
             return;
         }
+        self.snapshot_failed = false;
         match current.mapper(profile) {
             Ok(mapper) => {
                 self.mapper = Some(mapper);
@@ -347,6 +360,7 @@ pub fn run_gated_with_pen(
         snapshot,
         fingerprint: displays.fingerprint(),
         mapper,
+        snapshot_failed: false,
     };
     let start = source.now();
     let mut next_refresh = start + Duration::from_secs(1);
@@ -364,7 +378,7 @@ pub fn run_gated_with_pen(
     let outcome = (|| -> io::Result<()> {
         loop {
             // Timer-driven filters tick on this thread, between reads.
-            let tick = match mode {
+            let mut tick = match mode {
                 Mode::Driver if pipeline.is_relative() || layout.mapper.is_some() => {
                     filters.next_tick()
                 }
@@ -399,6 +413,10 @@ pub fn run_gated_with_pen(
                 }
                 // Always reach the input/stop poll after one tick, even if a
                 // slow or failed timer still reports an overdue deadline.
+                tick = match mode {
+                    Mode::Driver if pipeline.is_relative() || layout.mapper.is_some() => filters.next_tick(),
+                    _ => None,
+                };
             }
             let timeout = match mode {
                 Mode::Capture { deadline, limit } => {
@@ -442,21 +460,20 @@ pub fn run_gated_with_pen(
             }
             counters.read += 1;
             crate::debug::record(bytes);
-            match decoder.decode(bytes) {
+            match decoder.decode_input(bytes) {
                 Ok(Some(decoded)) => {
-                    let pen = decoded.pen;
                     counters.accepted += 1;
                     if let Mode::Capture { .. } = mode {
-                        capture_trace.pen(bytes, pen);
+                        if let Some(pen) = decoded.pen() {
+                            capture_trace.pen(bytes, pen);
+                        } else {
+                            capture_trace.ignored(bytes);
+                        }
                     } else {
                         // Paused mappings still enter the pipeline's cleanup
                         // gate, which retries failed releases without filters.
-                        let emitted = pipeline.process_pen(
-                            pen,
-                            decoded.raw,
-                            // Upstream pen reports always carry a button
-                            // array; a parser without buttons has an empty one.
-                            decoded.buttons.or(Some(crate::reports::Buttons::default())),
+                        let emitted = pipeline.process_input(
+                            decoded,
                             ready,
                             layout.mapper,
                             filters,
@@ -510,7 +527,9 @@ pub fn run_gated_with_pen(
             // fingerprint changed; the idle wait compares the full layout.
             let now = source.now();
             if now >= next_refresh {
-                if layout.snapshot.is_some() && displays.fingerprint() != layout.fingerprint {
+                if layout.snapshot.is_some()
+                    && (layout.snapshot_failed || displays.fingerprint() != layout.fingerprint)
+                {
                     layout.refresh(displays, profile, &mut pipeline, &mut send);
                 }
                 next_refresh = source.now() + Duration::from_secs(1);

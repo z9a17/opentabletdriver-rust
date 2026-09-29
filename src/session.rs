@@ -228,7 +228,8 @@ impl ReportSource for HidSource<'_> {
             self.pending = true;
         }
         let until = Instant::now() + timeout;
-        let precise = timeout < PRECISE_WAIT;
+        // An already-due deadline is an input/stop poll, not a new timer wakeup.
+        let precise = !timeout.is_zero() && timeout < PRECISE_WAIT;
         let timer = if precise {
             self.arm_timer(timeout)?
         } else {

@@ -1,7 +1,6 @@
 //! Offline area operations shared with the graphical editor.
 use otd_core::areas::{Bounds, Conversion, fit_aspect, full_area, validate_area};
 use otd_core::mapping::OtdArea;
-use otd_core::tablets::Database;
 use std::path::PathBuf;
 
 pub fn usage() -> &'static str {
@@ -94,8 +93,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         }
     }
     let tablet = tablet.as_deref().unwrap_or("Wacom PTH-660");
-    let (custom, _) = crate::load_tablets(directory.as_deref())?;
-    let database = custom.as_ref().unwrap_or_else(|| Database::builtin());
+    let (database, _) = otd_core::config::tablets_from_directory(directory.as_deref())?;
     let configuration = database
         .entries()
         .iter()

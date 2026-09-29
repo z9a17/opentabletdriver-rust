@@ -134,7 +134,7 @@ pub(super) fn message_box(
 }
 
 pub(super) fn confirm_discard(window: HWND) -> bool {
-    !with_app(|app| app.dirty).unwrap_or(false)
+    !with_app(|app| app.dirty || !app.invalid.is_empty() || app.json_error.is_some()).unwrap_or(false)
         || message_box(
             window,
             "Discard unsaved profile edits?",
@@ -722,30 +722,7 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
                 "Export diagnostics",
                 "opentabletdriver-rust-diagnostics.json",
             ) {
-                Ok(Some(path)) => with_app(|app| {
-                    let written = crate::diagnostics::bundle(Some(&app.editor.profile), false)
-                        .and_then(|bundle| {
-                            serde_json::to_vec_pretty(&bundle).map_err(|error| error.to_string())
-                        })
-                        .and_then(|bytes| {
-                            std::fs::write(&path, bytes).map_err(|error| error.to_string())
-                        });
-                    match written {
-                        Ok(()) => app.log(
-                            Level::Info,
-                            "UI",
-                            format!(
-                                "Saved diagnostics to {}. Paths, plugin settings and log text are left out.",
-                                path.display()
-                            ),
-                        ),
-                        Err(error) => app.log(
-                            Level::Error,
-                            "UI",
-                            format!("Cannot export diagnostics: {error}"),
-                        ),
-                    }
-                })
+                Ok(Some(path)) => with_app(|app| app.export_diagnostics(Some(path)))
                 .unwrap_or(()),
                 Ok(None) => {}
                 Err(error) => {
@@ -754,24 +731,7 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
             }
         }
         CMD_COPY_DIAGNOSTICS => {
-            with_app(|app| {
-                let text = crate::diagnostics::bundle(Some(&app.editor.profile), false).and_then(
-                    |bundle| serde_json::to_string_pretty(&bundle).map_err(|e| e.to_string()),
-                );
-                match text {
-                    Ok(text) if copy_to_clipboard(window, &text) => app.log(
-                        Level::Info,
-                        "UI",
-                        "Copied diagnostics to the clipboard. Paths, plugin settings and log text are left out.",
-                    ),
-                    Ok(_) => app.log(Level::Error, "UI", "Cannot open the clipboard."),
-                    Err(error) => app.log(
-                        Level::Error,
-                        "UI",
-                        format!("Cannot export diagnostics: {error}"),
-                    ),
-                }
-            });
+            with_app(|app| app.export_diagnostics(None));
         }
         CMD_DEVICE_STRINGS => {
             with_app(App::read_device_strings);
