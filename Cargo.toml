@@ -1,9 +1,9 @@
 [package]
 name = "opentabletdriver-rust"
-version = "0.14.3"
+version = "0.14.4"
 edition = "2024"
 license = "GPL-3.0-only"
-description = "User-mode USB tablet driver for Wacom PTH-660 on Windows 11"
+description = "User-mode tablet driver using OpenTabletDriver configurations on Windows"
 
 [workspace]
 members = ["crates/otd-core", "crates/otd-linux", "crates/otd-plugin-api", "plugins/ema"]

@@ -557,6 +557,9 @@ impl App {
     // ----- Synchronizing controls with the editor ------------------------------
 
     pub(super) fn sync_all(&mut self) {
+        if let Err(error) = self.editor.update_detected_tablet(&self.connected_tablets) {
+            self.log(Level::Warning, "Tablet", format!("Could not use the detected tablet's dimensions: {error}"));
+        }
         self.invalid.clear();
         self.sync_mode();
         self.sync_areas(None);
@@ -1097,14 +1100,9 @@ impl App {
         unsafe { SetWindowTextW(self.hwnd, wide(&title).as_ptr()) };
     }
 
-    /// The tablet the profile is for, or the default tablet.
+    /// The profile target or the sole detected tablet, never a fixed model.
     pub(super) fn tablet_label(&self) -> String {
-        self.editor
-            .profile
-            .tablet_name()
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| TABLET_NAME.into())
+        self.editor.tablet_label(&self.connected_tablets)
     }
 
     /// Makes the profile target a tablet (`None`: whichever is connected).

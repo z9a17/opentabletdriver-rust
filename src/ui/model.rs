@@ -19,6 +19,7 @@ use crate::plugins::{PluginConfig, PluginKind};
 use crate::protocol::{MAX_PRESSURE, WIDTH_MM};
 use crate::radial_follow::{FILTER_NAME, RadialFollowSettings};
 use crate::relative::RelativeSettings;
+#[cfg(test)]
 use otd_core::spec::TabletSpec;
 
 /// PTH-660 active area, the default tablet's.
@@ -441,12 +442,39 @@ impl Editor {
         }
     }
 
+    /// The saved target, or the sole detected model. Never invent a model.
+    pub fn tablet_label(&self, connected: &[String]) -> String {
+        match self.profile.tablet_name() {
+            Ok(Some(name)) => name,
+            Ok(None) => match connected {
+                [name] => name.clone(),
+                [] => "No tablet detected".into(),
+                _ => "Multiple tablets".into(),
+            },
+            Err(_) => "Unknown tablet".into(),
+        }
+    }
+
+    /// Resolve the editor's transient geometry without naming/saving a target.
+    pub fn update_detected_tablet(&mut self, connected: &[String]) -> Result<bool, String> {
+        if self.profile.tablet_name()?.is_some() {
+            return Ok(false);
+        }
+        let [name] = connected else { return Ok(false); };
+        let spec = otd_core::config::spec_for_tablet(name)?;
+        if self.profile.tablet == spec {
+            return Ok(false);
+        }
+        self.profile = self.profile.for_tablet(spec)?;
+        Ok(true)
+    }
+
     /// Makes the profile target a tablet, or any tablet with `None`. Areas
     /// that no longer fit the tablet become its full area.
     pub fn set_tablet(&mut self, name: Option<String>) -> Result<(), String> {
         let spec = name
             .as_deref()
-            .map(otd_core::config::spec_for_tablet).transpose()?.unwrap_or(TabletSpec::PTH_660);
+            .map(otd_core::config::spec_for_tablet).transpose()?.unwrap_or(self.profile.tablet);
         self.profile.target_tablet = name;
         if spec == self.profile.tablet {
             return Ok(());
@@ -941,7 +969,7 @@ Minimum: 0, Maximum: 2"
             Some("Wacom CTL-4100")
         );
         editor.set_tablet(None).unwrap();
-        assert_eq!(editor.profile.tablet, TabletSpec::PTH_660);
+        assert_eq!(editor.profile.tablet, spec);
         assert_eq!(editor.profile.tablet_name().unwrap(), None);
     }
 
