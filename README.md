@@ -18,7 +18,7 @@ The Windows build offers:
 - **Several tablets at once,** each with its own profile.
 - **Native control panel** in OpenTabletDriver's layout, with light and dark themes, a tray icon, and a tablet debugger that shows raw and decoded pen data live.
 - **Command line and background service** for scripting: profiles, presets, diagnostics and area conversion all work headless.
-- **Pen side buttons** click or press keys and shortcuts, like OpenTabletDriver's: right and middle click by default, or anything you set. See [pen side buttons](docs/PEN_BUTTONS.md).
+- **Pen side buttons** click or press keys and shortcuts, with right and middle click defaults and configurable mouse buttons or keyboard chords. See [pen side buttons](docs/PEN_BUTTONS.md).
 
 Not done yet: tablet express keys, and a settings panel editor for the side buttons.
 
@@ -95,6 +95,7 @@ Every future release must include Windows, Linux and both Mac architectures. The
 
 ## Learn more
 
+- [Release 0.15.1](docs/RELEASE_0.15.1.md): pen side buttons, startup update prompts and all-platform packages
 - [Reference](docs/REFERENCE.md): every command, profile format, the daemon and troubleshooting notes
 - [Plugins and UI](docs/PLUGINS_AND_UI.md) Â· [Pen output](docs/PEN_OUTPUT.md) Â· [Relative mode](docs/RELATIVE_MODE.md)
 - [Performance](docs/PERFORMANCE.md) and [input latency](docs/INPUT_LATENCY.md), compared with OpenTabletDriver 0.6.7
