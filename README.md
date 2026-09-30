@@ -66,6 +66,7 @@ Windows 11 is the main platform. An experimental Linux build (hidraw input, uinp
 - [Performance and usability audit, 0.14.1](docs/AUDIT_FIXES_0.14.1.md): source findings, fixes and remaining limits
 - [Debugger crash and panel cleanup, 0.14.2](docs/DEBUGGER_AND_UI_0.14.2.md): captured crash cause, UI changes and native/.NET settings comparison
 - [Plugin manager and menu cleanup, 0.14.3](docs/UI_CLEANUP_0.14.3.md): header theme, compact filter controls and dropdown click-to-close
+- [Tablet identity correction, 0.14.4](docs/TABLET_IDENTITY_0.14.4.md): detected labels, editor dimensions and PTK-470 support limits
 - [Hardware validation checklist](docs/HARDWARE_VALIDATION.md): what has and hasn't been tested on a real tablet
 - [Porting status](docs/PORTING_STATUS.md) and the [full parity roadmap](docs/FULL_PARITY_PLAN.md) (65 tasks, [tracked on GitHub](docs/parity/GITHUB_TRACKING.md))
 

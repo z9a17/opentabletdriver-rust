@@ -206,6 +206,21 @@ impl App {
                                 );
                             }
                             self.connected_tablets = pens;
+                            // Detection updates labels immediately, but never
+                            // replaces unsaved or invalid editor values.
+                            if !self.dirty && self.invalid.is_empty() && !self.editing_controls() {
+                                match self.editor.update_detected_tablet(&self.connected_tablets) {
+                                    Ok(true) => {
+                                        self.sync_areas(None);
+                                        self.sync_pen(None);
+                                        self.layout();
+                                    }
+                                    Ok(false) => {}
+                                    Err(error) => self.log(Level::Warning, "Tablet", format!("Could not use the detected tablet's dimensions: {error}")),
+                                }
+                            }
+                            self.update_title();
+                            self.set_driver_state(self.driver);
                         }
                         Err(error) => self.log(
                             Level::Error,

@@ -211,7 +211,6 @@ const RELATIVE_FIELDS: [(&str, &str); 4] = [
 ];
 const MENUS: [&str; 5] = ["&File", "&Tablets", "&Plugins", "&View", "&Help"];
 const DOCS_URL: &str = "https://github.com/z9a17/opentabletdriver-rust#readme";
-const TABLET_NAME: &str = "Wacom PTH-660";
 const LOG_LIMIT: usize = 1_000;
 
 /// Set by `ui --tray`, as the sign-in entry starts the panel.
