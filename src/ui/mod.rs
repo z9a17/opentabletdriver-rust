@@ -741,7 +741,7 @@ struct App {
     edit_revision: u64,
     background_tx: std::sync::mpsc::Sender<BackgroundResult>,
     background_rx: std::sync::mpsc::Receiver<BackgroundResult>,
-    device_scan_pending: bool,
+    device_scan: background::DeviceScan,
     device_strings_pending: bool,
     import_pending: bool,
     diagnostics_pending: bool,
@@ -1340,6 +1340,15 @@ pub fn run() -> Result<(), String> {
         Err(error) => {
             unsafe { DestroyWindow(window) };
             return Err(error);
+        }
+    };
+    let _device_notifications = match crate::hid::WindowNotification::register(window) {
+        Ok(notification) => Some(notification),
+        Err(error) => {
+            app.log(Level::Warning, "Tablet", format!(
+                "HID arrival notifications are unavailable: {error}. Use Tablets > Detect tablet if a model does not appear."
+            ));
+            None
         }
     };
     let path = directory.join("driver.toml");

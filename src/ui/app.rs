@@ -209,7 +209,7 @@ impl App {
             edit_revision: 0,
             background_tx,
             background_rx,
-            device_scan_pending: false,
+            device_scan: background::DeviceScan::default(),
             device_strings_pending: false,
             import_pending: false,
             diagnostics_pending: false,

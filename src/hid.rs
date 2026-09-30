@@ -29,7 +29,7 @@ use windows_sys::Win32::Devices::HumanInterfaceDevice::{
 };
 use windows_sys::Win32::Foundation::{
     CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_NO_MORE_ITEMS, GENERIC_READ,
-    GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    GENERIC_WRITE, HANDLE, HWND, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_OVERLAPPED, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, WriteFile,
@@ -37,6 +37,10 @@ use windows_sys::Win32::Storage::FileSystem::{
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Threading::{
     CreateEventW, GetCurrentProcess, SetEvent, WaitForMultipleObjects, WaitForSingleObject,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    DBT_DEVTYP_DEVICEINTERFACE, DEVICE_NOTIFY_WINDOW_HANDLE, DEV_BROADCAST_DEVICEINTERFACE_W,
+    HDEVNOTIFY, RegisterDeviceNotificationW, UnregisterDeviceNotification,
 };
 use windows_sys::core::GUID;
 
@@ -207,7 +211,7 @@ fn hid_guid() -> GUID {
 fn detail_path(
     set: HDEVINFO,
     interface: &SP_DEVICE_INTERFACE_DATA,
-) -> io::Result<(Vec<u16>, String)> {
+) -> io::Result<(Vec<u16>, u32)> {
     let mut required = 0u32;
     unsafe {
         SetupDiGetDeviceInterfaceDetailW(
@@ -258,7 +262,43 @@ fn detail_path(
     };
     let mut out = raw[..end].to_vec();
     out.push(0);
-    Ok((out, physical_id(device.DevInst)))
+    Ok((out, device.DevInst))
+}
+
+fn instance_id(instance: u32) -> Option<String> {
+    let mut buffer = [0u16; 512];
+    if unsafe { CM_Get_Device_IDW(instance, buffer.as_mut_ptr(), buffer.len() as u32, 0) }
+        != CR_SUCCESS
+    {
+        return None;
+    }
+    let length = buffer.iter().position(|&c| c == 0)?;
+    Some(String::from_utf16_lossy(&buffer[..length]))
+}
+
+/// Only use standard USB HID instance IDs as a negative prefilter. Unknown
+/// formats still take the descriptor path; interface paths are opaque here.
+fn usb_hid_ids(instance: &str) -> Option<(u16, u16)> {
+    let instance = instance.to_ascii_uppercase();
+    let hardware = instance.strip_prefix("HID\\")?.split('\\').next()?;
+    let mut vendor = None;
+    let mut product = None;
+    for part in hardware.split('&') {
+        if let Some(value) = part.strip_prefix("VID_") {
+            if value.len() != 4 { return None; }
+            vendor = Some(u16::from_str_radix(value, 16).ok()?);
+        } else if let Some(value) = part.strip_prefix("PID_") {
+            if value.len() != 4 { return None; }
+            product = Some(u16::from_str_radix(value, 16).ok()?);
+        }
+    }
+    vendor.zip(product)
+}
+
+fn should_inspect(instance: Option<&str>, database: &Database) -> bool {
+    instance.and_then(usb_hid_ids).is_none_or(|(vendor, product)| {
+        database.find(vendor, product).next().is_some()
+    })
 }
 
 // Walk collection/interface ancestors to the physical USB device. Never pair
@@ -300,7 +340,10 @@ fn indexed_string(handle: HANDLE, index: u8) -> io::Result<String> {
     Ok(String::from_utf16_lossy(&buffer[..length]))
 }
 
-fn inspect(path: &[u16], physical_id: String, database: &Database) -> Option<Candidate> {
+fn inspect(path: &[u16], instance: u32, database: &Database) -> Option<Candidate> {
+    if !should_inspect(instance_id(instance).as_deref(), database) {
+        return None;
+    }
     let handle = OwnedHandle::new(unsafe {
         CreateFileW(
             path.as_ptr(),
@@ -334,25 +377,6 @@ fn inspect(path: &[u16], physical_id: String, database: &Database) -> Option<Can
         return None;
     }
     let path_text = String::from_utf16_lossy(&path[..path.len().saturating_sub(1)]);
-    let indices: BTreeSet<u8> = database
-        .find(attrs.VendorID, attrs.ProductID)
-        .flat_map(|found| {
-            found
-                .identifier
-                .device_strings
-                .iter()
-                .flat_map(|strings| strings.keys())
-        })
-        .filter_map(|index| index.parse().ok())
-        .collect();
-    let strings = indices
-        .into_iter()
-        .filter_map(|index| {
-            indexed_string(handle.raw(), index)
-                .ok()
-                .map(|value| (index, value))
-        })
-        .collect();
     let mut attributes = BTreeMap::new();
     if let Some((_, after)) = path_text.to_ascii_lowercase().split_once("&mi_")
         && let Some(value) = after
@@ -361,9 +385,9 @@ fn inspect(path: &[u16], physical_id: String, database: &Database) -> Option<Can
     {
         attributes.insert("USB_INTERFACE_NUMBER".into(), value.to_string());
     }
-    let endpoint = Endpoint {
+    let mut endpoint = Endpoint {
         path: path_text,
-        physical_id,
+        physical_id: physical_id(instance),
         transport: Transport::UsbHid,
         vendor_id: attrs.VendorID,
         product_id: attrs.ProductID,
@@ -371,9 +395,10 @@ fn inspect(path: &[u16], physical_id: String, database: &Database) -> Option<Can
         input_length: u32::from(caps.InputReportByteLength),
         output_length: u32::from(caps.OutputReportByteLength),
         feature_length: u32::from(caps.FeatureReportByteLength),
-        strings,
+        strings: BTreeMap::new(),
         attributes: Some(attributes),
     };
+    read_matching_strings(&mut endpoint, database, |index| indexed_string(handle.raw(), index));
     Some(Candidate {
         path: path.to_vec(),
         vendor: attrs.VendorID,
@@ -383,6 +408,24 @@ fn inspect(path: &[u16], physical_id: String, database: &Database) -> Option<Can
         usage: caps.Usage,
         endpoint,
     })
+}
+
+/// Probe only strings used by identifiers whose report sizes fit this
+/// collection. A failed string read is still a missing-string rejection.
+fn read_matching_strings(
+    endpoint: &mut Endpoint,
+    database: &Database,
+    mut read: impl FnMut(u8) -> io::Result<String>,
+) {
+    let indices: BTreeSet<u8> = database
+        .find(endpoint.vendor_id, endpoint.product_id)
+        .filter(|found| endpoint_match::matches_report_lengths(endpoint, found.identifier))
+        .flat_map(|found| found.identifier.device_strings.iter().flat_map(|strings| strings.keys()))
+        .filter_map(|index| index.parse().ok())
+        .collect();
+    endpoint.strings = indices.into_iter().filter_map(|index| {
+        read(index).ok().map(|value| (index, value))
+    }).collect();
 }
 
 pub fn enumerate() -> io::Result<Vec<Candidate>> {
@@ -419,8 +462,8 @@ pub fn enumerate_with_database(database: &Database) -> io::Result<Vec<Candidate>
             }
             return Err(error);
         }
-        if let Ok((path, physical_id)) = detail_path(set, &interface)
-            && let Some(candidate) = inspect(&path, physical_id, database)
+        if let Ok((path, instance)) = detail_path(set, &interface)
+            && let Some(candidate) = inspect(&path, instance, database)
         {
             found.push(candidate);
         }
@@ -794,6 +837,39 @@ pub struct Notification {
     event: Event,
 }
 
+/// HID interface arrival/removal messages for the panel, including late
+/// collections created after the generic device-tree change broadcast.
+pub struct WindowNotification(HDEVNOTIFY);
+
+impl WindowNotification {
+    pub fn register(window: HWND) -> io::Result<Self> {
+        let filter = DEV_BROADCAST_DEVICEINTERFACE_W {
+            dbcc_size: size_of::<DEV_BROADCAST_DEVICEINTERFACE_W>() as u32,
+            dbcc_devicetype: DBT_DEVTYP_DEVICEINTERFACE,
+            dbcc_classguid: hid_guid(),
+            ..Default::default()
+        };
+        let registration = unsafe {
+            RegisterDeviceNotificationW(
+                window,
+                ptr::addr_of!(filter).cast(),
+                DEVICE_NOTIFY_WINDOW_HANDLE,
+            )
+        };
+        if registration.is_null() {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(Self(registration))
+        }
+    }
+}
+
+impl Drop for WindowNotification {
+    fn drop(&mut self) {
+        unsafe { UnregisterDeviceNotification(self.0) };
+    }
+}
+
 impl Notification {
     pub fn register() -> io::Result<Self> {
         let event = Event::create(false)?;
@@ -842,6 +918,56 @@ impl Drop for Notification {
 mod tests {
     use super::*;
     use otd_core::tablets::{Database, Role};
+
+    #[test]
+    fn unrelated_usb_hid_devices_are_rejected_before_opening_descriptors() {
+        let database = Database::builtin();
+        assert!(!should_inspect(Some(r"HID\VID_FFFF&PID_FFFF&MI_00\7&123&0&0000"), database));
+        assert!(should_inspect(Some(r"hid\vid_056a&pid_0357&mi_00&col01\7&123&0&0000"), database));
+        assert_eq!(usb_hid_ids(r"HID\VID_056A&PID_0357&COL01\7&123"), Some((0x056a, 0x0357)));
+        // Unrecognized buses, failed metadata and malformed IDs must fall
+        // back to descriptor inspection instead of hiding a tablet.
+        for unknown in [None, Some(r"BTHENUM\VID_056A&PID_0357"), Some(r"HID\VID_056A&PID_0357_EXTRA\1")] {
+            assert!(should_inspect(unknown, database));
+        }
+    }
+
+    #[test]
+    fn discovery_does_not_query_strings_for_impossible_report_lengths() {
+        let files = vec![("discovery-fixture.json".into(), serde_json::json!({
+            "Name": "Discovery fixture",
+            "Specifications": {"Digitizer": {"Width": 100, "Height": 100, "MaxX": 1000, "MaxY": 1000}, "Pen": {"MaxPressure": 1000}},
+            "DigitizerIdentifiers": [
+                {"VendorID": 65534, "ProductID": 65534, "InputReportLength": 64, "DeviceStrings": {"201": "^slow$"}},
+                {"VendorID": 65534, "ProductID": 65534, "OutputReportLength": 64, "DeviceStrings": {"202": "^slow$"}},
+                {"VendorID": 65534, "ProductID": 65534, "FeatureReportLength": 64, "DeviceStrings": {"203": "^slow$"}},
+                {"VendorID": 65534, "ProductID": 65534, "InputReportLength": 8, "DeviceStrings": {"1": "^tablet$"}},
+                {"VendorID": 65534, "ProductID": 65534, "DeviceStrings": {"1": "^tablet$", "2": "^model$"}}
+            ]
+        }).to_string())];
+        let database = Database::with_overrides(&files);
+        let mut endpoint = Endpoint {
+            path: "fixture".into(), physical_id: "physical-fixture".into(),
+            transport: Transport::UsbHid, vendor_id: 65534, product_id: 65534,
+            can_open: true, input_length: 8, output_length: 0, feature_length: 0,
+            strings: BTreeMap::new(), attributes: None,
+        };
+        let mut requested = Vec::new();
+        read_matching_strings(&mut endpoint, &database, |index| {
+            requested.push(index);
+            match index {
+                1 => Ok("tablet".into()),
+                2 => Err(io::Error::other("string unavailable")),
+                _ => panic!("slow string probe on a collection that cannot match"),
+            }
+        });
+        assert_eq!(requested, [1, 2]);
+        assert_eq!(endpoint.strings.get(&1).map(String::as_str), Some("tablet"));
+        assert!(!endpoint.strings.contains_key(&2));
+        let candidate = database.find(65534, 65534)
+            .find(|candidate| candidate.identifier.input_report_length == Some(8)).unwrap();
+        assert_eq!(endpoint_match::matches(&endpoint, &candidate), Ok(()));
+    }
 
     /// The interfaces this driver opens are the ones OpenTabletDriver's
     /// PTH-660 configuration declares.
