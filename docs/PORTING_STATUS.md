@@ -1,5 +1,7 @@
 # OpenTabletDriver Rust port status
 
+The Windows panel opens the existing update screen when the enabled-by-default launch check finds a newer release, including launches minimized to the tray. Installation and restart remain user choices. Current-version launches stay quiet and failed startup checks log to the Console. The launch-check preference remains available in Help. The owner-disabled check suite and live UI/updater validation were not run.
+
 Release 0.15.0 adds Linux x64 and Intel/Apple Silicon macOS CLI packages alongside Windows. Linux uses hidraw/uinput, startup monitor discovery and bounded capture; macOS uses IOKit/CoreGraphics. The publish command requires all four packages from one clean merged revision. [Platform scope and evidence](PLATFORM_RELEASE_0.15.0.md). These CLI backends do not include the Windows panel or external plugin hosting; macOS physical validation and Linux pen/cursor/drawing validation remain open.
 
 Release 0.14.6 fixes delayed Windows tablet identification by subscribing the panel to HID interface notifications, retaining changes received during discovery, and avoiding unrelated HID opens and impossible-identifier string requests. [Diagnosis and validation limits](TABLET_DISCOVERY_0.14.6.md). The 357-device catalog and all 53 registered native parsers from 0.14.5 remain included. [Source coverage and remaining compatibility limits](TABLET_CATALOG_0.14.5.md). No new physical tablet support is certified.
