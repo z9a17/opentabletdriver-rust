@@ -109,11 +109,23 @@ def build(args):
         for name in ['LICENSE.txt', 'ThirdPartyNotices.txt']:
             if (dotnet_directory / name).is_file():
                 shutil.copy2(dotnet_directory / name, compat / ('DOTNET-' + name))
+    license_directory = binaries / 'runtime-licenses'
+    license_directory.mkdir(exist_ok=True)
+    rust_documentation = Path(command(rustc, '--print', 'sysroot')) / 'share/doc/rust'
+    shutil.copy2(rust_documentation / 'COPYRIGHT-library.html', license_directory / 'RUST-COPYRIGHT.html')
+    for name in ['MIT.txt', 'Apache-2.0.txt', 'LLVM-exception.txt', 'GCC-exception-3.1.txt', 'GPL-3.0-or-later.txt']:
+        shutil.copy2(rust_documentation / 'licenses' / name, license_directory / name)
+    if platform == 'linux-x64':
+        shutil.copy2(ROOT / 'packaging/linux/MUSL-COPYRIGHT.txt', license_directory)
+    elif platform == 'win-x64' and target.endswith('-gnu'):
+        for path in (ROOT / 'packaging/windows').glob('*.txt'):
+            shutil.copy2(path, license_directory)
     after = source_state()
     if before != after:
         raise ValueError('source changed during the release build; rebuild the final source')
     metadata = dict(after, platform=platform, rust_target=target, rustc=command(rustc, '--version'),
                     binaries={name: digest((binaries / name).read_bytes()) for name in MATRIX[platform]['binaries']})
+    metadata['licenses'] = {path.name: digest(path.read_bytes()) for path in sorted(license_directory.iterdir()) if path.is_file()}
     if platform == 'win-x64':
         metadata['compat'] = {path.relative_to(binaries / 'compat').as_posix(): digest(path.read_bytes())
                               for path in sorted((binaries / 'compat').rglob('*')) if path.is_file()}
@@ -149,6 +161,10 @@ def make_package(args):
                 shutil.copytree(source, stage / name, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
             else:
                 shutil.copy2(source, stage / name)
+        licenses = binaries / 'runtime-licenses'
+        if {path.name: digest(path.read_bytes()) for path in sorted(licenses.iterdir()) if path.is_file()} != metadata['licenses']:
+            raise ValueError('runtime license files changed since recorded build')
+        shutil.copytree(licenses, stage / 'runtime-licenses')
         for backend in ['otd-linux', 'otd-macos']:
             guide_dir = stage / 'crates' / backend
             guide_dir.mkdir(parents=True)
@@ -257,6 +273,9 @@ def verify(directory, require_clean):
             check_binary(platform, name, binary)
             if digest(binary) != metadata['binaries'][name]:
                 raise ValueError(f'binary provenance mismatch: {name}')
+        for name, expected_hash in metadata['licenses'].items():
+            if digest(files[prefix + 'runtime-licenses/' + name]) != expected_hash:
+                raise ValueError(f'runtime license mismatch: {name}')
         if platform == 'win-x64':
             for name, expected_hash in metadata['compat'].items():
                 if digest(files[prefix + 'compat/' + name]) != expected_hash:

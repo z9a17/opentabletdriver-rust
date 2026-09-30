@@ -9,7 +9,7 @@ Every release ships these packages from the same merged source commit. Linux and
 | `macos-x64.tar.gz` | Intel Mac | IOKit/CoreGraphics driver |
 | `macos-arm64.tar.gz` | Apple Silicon Mac | IOKit/CoreGraphics driver |
 
-Names start with `opentabletdriver-rust-v<version>-`. Each archive has a SHA256 sidecar and `BUILD-INFO.json` with its commit, lockfile hash and binary hashes. The required set lives in [the release matrix](../packaging/release-matrix.json). Do not remove a platform to make a release pass.
+Names start with `opentabletdriver-rust-v<version>-`. Each archive includes Rust standard-library dependency notices and the applicable musl or GNU Windows runtime licenses. Keep the corresponding source links in NOTICE.md current when changing those toolchains. Each archive has a SHA256 sidecar and `BUILD-INFO.json` with its commit, lockfile hash and binary hashes. The required set lives in [the release matrix](../packaging/release-matrix.json). Do not remove a platform to make a release pass.
 
 There are no GitHub Actions runners. The owner requested manual testing after releases; do not run a separate fmt/Clippy/test/build-check suite. Building the actual release binaries and verifying their archive contents, architecture, version and checksums are required to produce the downloads. State the distinction in release notes. Do not claim macOS hardware support from a cross-build or live pen/cursor behavior from a device listing.
 
