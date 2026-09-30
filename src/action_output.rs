@@ -1,7 +1,7 @@
 //! Windows adapter for the portable shared action state (B01 foundation),
 //! and the key and button output of the pen side buttons.
 //!
-//! This does not replace the existing combined mouse motion/tip packet path.
+//! Left-button actions share ownership with the combined mouse motion/tip path.
 //! All sessions share one `ActionState` for their synthetic held actions, so
 //! two tablets holding the same key press it once. Physical user input and
 //! other injectors are outside that ownership model.
@@ -96,6 +96,23 @@ pub fn encode_transition(transition: ActionTransition) -> io::Result<INPUT> {
 /// Emit exactly one transition. A successful return means SendInput accepted
 /// the event, not that any particular foreground application processed it.
 pub fn send_transition(transition: ActionTransition) -> io::Result<()> {
+    if transition.action == Action::Mouse(MouseButton::Left) {
+        // Share the tip's acknowledged left-button ownership. A side-button
+        // release must not lift another session's tip or left binding.
+        let output = LEFT_ACTION_OUTPUT.lock()
+            .map_err(|_| io::Error::other("left action output lock poisoned"))?;
+        let output = output.as_ref()
+            .ok_or_else(|| io::Error::other("left action output was not prepared"))?;
+        return output.send(otd_core::output::MousePacket {
+            dx: 0,
+            dy: 0,
+            flags: if transition.pressed {
+                otd_core::output::flags::LEFTDOWN
+            } else {
+                otd_core::output::flags::LEFTUP
+            },
+        });
+    }
     let input = encode_transition(transition)?;
     // SendInput may report zero without setting an error (including UIPI cases).
     // Clear stale thread error state and provide an honest fallback diagnostic.
@@ -209,6 +226,9 @@ fn keyboard_scan_code(key: KeyboardUsage) -> Option<(u16, bool)> {
 
 /// Every session's held actions.
 static HELD: Mutex<ActionState> = Mutex::new(ActionState::new());
+// Created during session setup, so registration never allocates in a report.
+// One owner represents the combined left holds in HELD across every session.
+static LEFT_ACTION_OUTPUT: Mutex<Option<crate::output::SessionOutput>> = Mutex::new(None);
 static NEXT_DEVICE: AtomicU64 = AtomicU64::new(1);
 
 fn held() -> io::Result<std::sync::MutexGuard<'static, ActionState>> {
@@ -223,16 +243,15 @@ pub struct SessionActions {
 }
 
 impl SessionActions {
-    pub fn new() -> Self {
-        Self {
-            device: NEXT_DEVICE.fetch_add(1, Ordering::Relaxed),
+    pub fn new() -> io::Result<Self> {
+        let mut output = LEFT_ACTION_OUTPUT.lock()
+            .map_err(|_| io::Error::other("left action output lock poisoned"))?;
+        if output.is_none() {
+            *output = Some(crate::output::SessionOutput::new()?);
         }
-    }
-}
-
-impl Default for SessionActions {
-    fn default() -> Self {
-        Self::new()
+        Ok(Self {
+            device: NEXT_DEVICE.fetch_add(1, Ordering::Relaxed),
+        })
     }
 }
 

@@ -423,6 +423,8 @@ const BUS_VIRTUAL: u16 = 0x06;
 /// all screens.
 pub struct Uinput {
     file: File,
+    tip_held: std::cell::Cell<bool>,
+    side_left_held: std::cell::Cell<bool>,
 }
 
 impl Uinput {
@@ -478,7 +480,7 @@ impl Uinput {
         if unsafe { libc::ioctl(fd, UI_DEV_CREATE as _) } < 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(Self { file })
+        Ok(Self { file, tip_held: std::cell::Cell::new(false), side_left_held: std::cell::Cell::new(false) })
     }
 
     /// Sends one packet as a single evdev frame, without allocating.
@@ -502,10 +504,13 @@ impl Uinput {
             push(kind, 0, packet.dx);
             push(kind, 1, packet.dy);
         }
-        if packet.flags & flags::LEFTDOWN != 0 {
-            push(EV_KEY, BTN_LEFT, 1);
-        } else if packet.flags & flags::LEFTUP != 0 {
-            push(EV_KEY, BTN_LEFT, 0);
+        let tip = if packet.flags & flags::LEFTDOWN != 0 { true }
+            else if packet.flags & flags::LEFTUP != 0 { false }
+            else { self.tip_held.get() };
+        let was_left = self.tip_held.get() || self.side_left_held.get();
+        let left = tip || self.side_left_held.get();
+        if was_left != left {
+            push(EV_KEY, BTN_LEFT, i32::from(left));
         }
         push(EV_SYN, 0, 0);
         // SAFETY: `events[..count]` is initialized plain data.
@@ -515,13 +520,22 @@ impl Uinput {
                 count * size_of::<libc::input_event>(),
             )
         };
-        (&self.file).write_all(bytes)
+        (&self.file).write_all(bytes)?;
+        self.tip_held.set(tip);
+        Ok(())
     }
 }
 
 impl Uinput {
     /// Presses or releases a mouse button as its own evdev frame.
     pub fn send_button(&self, button: MouseButton, pressed: bool) -> io::Result<()> {
+        if button == MouseButton::Left {
+            let was_left = self.tip_held.get() || self.side_left_held.get();
+            let left = self.tip_held.get() || pressed;
+            if was_left != left { write_key(&self.file, BTN_LEFT, left)?; }
+            self.side_left_held.set(pressed);
+            return Ok(());
+        }
         write_key(&self.file, crate::keymap::mouse_code(button), pressed)
     }
 }
@@ -556,7 +570,7 @@ impl VirtualKeyboard {
         let file = OpenOptions::new()
             .write(true)
             .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
-            .open("/dev/uinput")?;
+            .open("/dev/uinput").map_err(|error| access_error("/dev/uinput", error))?;
         let fd = file.as_raw_fd();
         let set = |request: u32, value: u16| -> io::Result<()> {
             // SAFETY: these requests take an int argument by value.

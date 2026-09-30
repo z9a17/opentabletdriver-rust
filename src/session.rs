@@ -325,7 +325,7 @@ pub fn run(
         plugins,
         |packet| output.as_ref().map_or(Ok(()), |output| output.send(packet)),
         pen,
-        action_sink(mode),
+        action_sink(mode)?,
         status,
         || Ok(true),
     );
@@ -338,9 +338,12 @@ pub fn run(
 }
 
 /// Key and button output for a driving session's pen side buttons.
-fn action_sink(mode: Mode) -> Option<Box<dyn otd_core::output::buttons::ActionSink>> {
-    matches!(mode, Mode::Driver)
-        .then(|| Box::new(crate::action_output::SessionActions::new()) as Box<_>)
+fn action_sink(mode: Mode) -> io::Result<Option<Box<dyn otd_core::output::buttons::ActionSink>>> {
+    if matches!(mode, Mode::Driver) {
+        Ok(Some(Box::new(crate::action_output::SessionActions::new()?)))
+    } else {
+        Ok(None)
+    }
 }
 
 /// The synthetic pen for a driving session whose profile has pen output.
@@ -478,7 +481,7 @@ impl<'a> PreparedSession<'a> {
             plugins,
             |packet| output.send(packet),
             pen,
-            action_sink(Mode::Driver),
+            action_sink(Mode::Driver)?,
             status,
             gate,
         );

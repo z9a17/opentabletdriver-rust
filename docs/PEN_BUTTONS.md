@@ -75,14 +75,26 @@ for pen buttons yet; it keeps them when it saves.
 - A chord presses its modifiers first and releases them last.
 - Report processing stays allocation-free (there is a test for it).
 
-## Windows and Linux
+## Platform output
 
 Windows sends keys with `SendInput` as scan codes, so they are physical key
 positions: the keyboard layout decides the character. Linux presses evdev keys on
 a virtual keyboard, created when a profile has a key binding. Not every name works
 on every platform: the driver lists the ones it cannot press at start-up
 (`Pen button not applied: ...`) and those buttons do nothing. `F13` to `F24`, `Help`, `Pause`
-and `KeypadEqual` are supported on Linux only.
+and `KeypadEqual` are supported on Linux. macOS also supports F13 through F20
+and `KeypadEqual`, but rejects F21 through F24, Help, Pause, PrintScreen,
+ScrollLock, CapsLock, NumberLock, Insert and ContextMenu at startup. macOS uses
+physical Carbon key positions through CoreGraphics. `Application` is Command,
+`Alt` is Option, and `Control` stays Control; use `keys:Application+Z` for Mac
+undo. Mouse movement carries held right/middle/other buttons as drag events.
+Native Mac validation of shortcuts, modifiers and dragging remains pending.
+
+On all three platforms, a left-click side binding and tip contact share
+ownership. Releasing one does not release the other. macOS tracks synthetic
+modifier flags because system snapshots may lag. Physical/synthetic overlap
+of the same modifier cannot be distinguished from that snapshot and needs
+native validation; see [the macOS guide](../crates/otd-macos/README.md).
 
 ## Not done
 
