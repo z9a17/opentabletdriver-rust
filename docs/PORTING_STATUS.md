@@ -1,5 +1,7 @@
 # OpenTabletDriver Rust port status
 
+Release 0.14.3 corrects plugin-manager header painting, uses the panel icon and available list width, removes Move up / Move down filter controls and the long top description, and closes anchored dropdowns on a second click. Filter names/settings remain available on hover; saved execution order and report processing are unchanged. [Details and validation limits](UI_CLEANUP_0.14.3.md). This supersedes the historical filter reorder UI described below. No interactive UI or hardware checks, or owner-disabled validation suite, were run.
+
 Release 0.14.2 fixes the captured debugger DrawTextW access violation, themes the plugin manager, removes per-property default/raw JSON UI, retains filter selection after Save/Apply and stops the driver on panel close. [Details and native/.NET settings comparison](DEBUGGER_AND_UI_0.14.2.md). This supersedes the historical detach-on-close and raw-editor behavior described below. Source review and release compilation are separate from live evidence: the validation suite and interactive/hardware checks were not run. Core smoothing mathematics is unchanged.
 
 The long-term goal is broader OpenTabletDriver functionality with efficient native Rust report processing. The [original implementation plan](IMPLEMENTATION_PLAN.md) describes the first PTH-660 milestone; its exclusions are historical milestone boundaries, not the final project scope.

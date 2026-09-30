@@ -529,39 +529,6 @@ impl Editor {
         }
     }
 
-    /// Built-in filters precede DLLs; each group keeps its own saved order.
-    /// DLL execution also respects the stage declared by the plugin.
-    pub fn filter_move_target(&self, target: FilterRef, down: bool) -> Option<FilterRef> {
-        let (index, count) = match target {
-            FilterRef::Radial(index) => (index, self.profile.radial_follow.len()),
-            FilterRef::Plugin(index) => (index, self.profile.plugins.len()),
-        };
-        let next = if down {
-            index.checked_add(1)?
-        } else {
-            index.checked_sub(1)?
-        };
-        if index >= count || next >= count {
-            return None;
-        }
-        Some(match target {
-            FilterRef::Radial(_) => FilterRef::Radial(next),
-            FilterRef::Plugin(_) => FilterRef::Plugin(next),
-        })
-    }
-
-    pub fn move_filter(&mut self, target: FilterRef, down: bool) -> Option<FilterRef> {
-        let next = self.filter_move_target(target, down)?;
-        match (target, next) {
-            (FilterRef::Radial(from), FilterRef::Radial(to)) => {
-                self.profile.radial_follow.swap(from, to)
-            }
-            (FilterRef::Plugin(from), FilterRef::Plugin(to)) => self.profile.plugins.swap(from, to),
-            _ => unreachable!("filter moves stay within their group"),
-        }
-        Some(next)
-    }
-
     /// Reset only settings. Identity, order and enabled state are preserved.
     pub fn reset_filter(
         &mut self,
@@ -1205,56 +1172,6 @@ Minimum: 0, Maximum: 2"
         for text in ["[1]", "{}", "not json"] {
             assert!(parse_property(text, &previous).is_err(), "accepted {text}");
         }
-    }
-
-    #[test]
-    fn filter_controls_reorder_round_trip_preserves_identity_and_settings() {
-        let mut editor = Editor::new(Profile::default());
-        editor.profile.radial_follow = vec![
-            RadialFollowSettings {
-                outer_radius: 2.0,
-                ..Default::default()
-            },
-            RadialFollowSettings {
-                outer_radius: 4.0,
-                ..Default::default()
-            },
-        ];
-        editor.profile.plugins = (0..3)
-            .map(|index| PluginConfig {
-                path: "filter.dll".into(),
-                kind: PluginKind::Dotnet,
-                enabled: index != 1,
-                type_name: format!("Filter{index}"),
-                settings_json: format!("{{\"Value\":{index}}}"),
-            })
-            .collect();
-        assert_eq!(editor.move_filter(FilterRef::Plugin(0), false), None);
-        assert_eq!(editor.move_filter(FilterRef::Plugin(2), true), None);
-        assert_eq!(editor.move_filter(FilterRef::Plugin(99), false), None);
-        assert_eq!(editor.move_filter(FilterRef::Radial(1), true), None);
-        assert_eq!(
-            editor.move_filter(FilterRef::Plugin(1), false),
-            Some(FilterRef::Plugin(0))
-        );
-        assert_eq!(
-            editor.move_filter(FilterRef::Radial(0), true),
-            Some(FilterRef::Radial(1))
-        );
-        let saved = editor.profile.to_toml().unwrap();
-        let loaded = Profile::from_toml_text(&saved, Path::new("profile.toml")).unwrap();
-        assert_eq!(
-            loaded
-                .plugins
-                .iter()
-                .map(|p| p.type_name.as_str())
-                .collect::<Vec<_>>(),
-            ["Filter1", "Filter0", "Filter2"]
-        );
-        assert!(!loaded.plugins[0].enabled);
-        assert_eq!(loaded.plugins[0].settings_json, r#"{"Value":1}"#);
-        assert_eq!(loaded.radial_follow[0].outer_radius, 4.0);
-        assert_eq!(loaded.radial_follow[1].outer_radius, 2.0);
     }
 
     #[test]

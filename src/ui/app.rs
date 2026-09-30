@@ -172,8 +172,6 @@ impl App {
                 add_dotnet: null,
                 add_native: null,
                 remove_filter: null,
-                filter_up: null,
-                filter_down: null,
                 filter_defaults: null,
                 property_prev: null,
                 property_next: null,
@@ -290,9 +288,6 @@ impl App {
             self.button("Add native…", CMD_ADD_NATIVE, Kind::Button, Surface::Page)?;
         self.c.remove_filter =
             self.button("Remove", CMD_REMOVE_FILTER, Kind::Button, Surface::Page)?;
-        self.c.filter_up = self.button("Move up", CMD_FILTER_UP, Kind::Button, Surface::Page)?;
-        self.c.filter_down =
-            self.button("Move down", CMD_FILTER_DOWN, Kind::Button, Surface::Page)?;
         self.c.filter_defaults =
             self.button("Defaults", CMD_FILTER_DEFAULTS, Kind::Button, Surface::Page)?;
         self.c.property_prev =
@@ -379,8 +374,6 @@ impl App {
             c.add_dotnet,
             c.add_native,
             c.remove_filter,
-            c.filter_up,
-            c.filter_down,
             c.filter_defaults,
             c.property_prev,
             c.property_next,
@@ -720,6 +713,7 @@ impl App {
                     if filter.enabled { "Enabled" } else { "Disabled" });
                 if let FilterRef::Plugin(index) = filter.target {
                     let Some(plugin) = self.editor.profile.plugins.get(index) else { return String::new(); };
+                    text.push_str(&format!("\n{}\n{}", plugin.type_name, plugin.path.display()));
                     if let Some(metadata) = self.metadata_for(plugin) {
                         if let Some(fields) = model::plugin_editor_fields(&plugin.settings_json, Some(metadata)) {
                             let total = fields.len();
@@ -742,6 +736,10 @@ impl App {
                         text.push_str(error.map_or("Settings information is loading or unavailable.", String::as_str));
                     }
                 } else if let FilterRef::Radial(index) = filter.target {
+                    text.push_str("\nTablet coordinates, before mapping. No .NET runtime required.");
+                    if self.editor.profile.auto_enabled_radial_follow > 0 {
+                        text.push_str("\nThis legacy profile auto-enabled imported Radial Follow settings.");
+                    }
                     let settings = self.editor.radial(index);
                     for (field, label, unit, _) in RADIAL_FIELDS {
                         text.push_str(&format!("\n{label}: {} {unit}", model::format_number(field.get(&settings), 6)));
@@ -853,9 +851,7 @@ impl App {
         let Some(target) = self.selected_target() else {
             return;
         };
-        let name =
-            with_look(|look| look.filters[self.selected_filter].name.clone()).unwrap_or_default();
-        set_text(self.c.filter_enable, &format!("Enable {name}"));
+        set_text(self.c.filter_enable, "Enabled");
         unsafe {
             SendMessageW(
                 self.c.filter_enable,
@@ -866,20 +862,6 @@ impl App {
             EnableWindow(
                 self.c.remove_filter,
                 matches!(target, FilterRef::Plugin(_)).into(),
-            );
-            EnableWindow(
-                self.c.filter_up,
-                self.editor
-                    .filter_move_target(target, false)
-                    .is_some()
-                    .into(),
-            );
-            EnableWindow(
-                self.c.filter_down,
-                self.editor
-                    .filter_move_target(target, true)
-                    .is_some()
-                    .into(),
             );
             let can_reset = match target {
                 FilterRef::Radial(_) => true,
@@ -1565,35 +1547,6 @@ impl App {
         } else {
             true
         }
-    }
-
-    pub(super) fn move_filter(&mut self, down: bool) {
-        // Rebuilding controls would discard invalid text, so retain it until corrected.
-        if self
-            .properties
-            .iter()
-            .any(|row| self.invalid.contains(&(row.hwnd as isize)))
-        {
-            self.show_status(
-                "Correct the selected filter's invalid settings before moving it.".into(),
-                Level::Warning,
-                true,
-            );
-            return;
-        }
-        let Some(target) = self.selected_target() else {
-            return;
-        };
-        let Some(next) = self.editor.move_filter(target, down) else {
-            return;
-        };
-        self.selected_filter = match next {
-            FilterRef::Radial(index) => index,
-            FilterRef::Plugin(index) => self.editor.profile.radial_follow.len().max(1) + index,
-        };
-        self.mark_dirty();
-        self.refresh_filters();
-        self.layout();
     }
 
     pub(super) fn reset_filter(&mut self) {

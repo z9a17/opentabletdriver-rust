@@ -432,7 +432,7 @@ Provide raw/decoded report debugger, input/output statistics, device strings, cu
 
 ## U: Desktop user interface
 
-Sources: UP-UI, UP-SETTINGS, UP-CATALOG. Deliver workflows accessible without editing TOML/JSON; keep advanced editors available.
+Sources: UP-UI, UP-SETTINGS, UP-CATALOG. Deliver workflows accessible without editing TOML/JSON. Preserve unsupported saved properties without requiring a raw-settings editor.
 
 <a id="u01"></a>
 ### U01 - Specify workflows and choose the frontend strategy
@@ -466,7 +466,7 @@ Add tablet selection, output-mode selection, pen/eraser thresholds, side/aux/mou
 
 **Depends on:** U01, P02, P08, S02. **Start:** current plugin list and property editor.
 
-Add typed property controls, defaults, units/tooltips/actions/validation, stage/order visualization, enable/disable/reorder/reset, catalog search/details, local install, update/uninstall and compatibility diagnostics. Show package version and restart requirements. Keep JSON editing as an advanced escape hatch, not the only supported UI.
+Add typed property controls, defaults, units/tooltips/actions/validation, stage information, enable/disable/reset, catalog search/details, local install, update/uninstall and compatibility diagnostics. Show package version and restart requirements. The owner requested removal of raw JSON/per-property reset UI in 0.14.2 and filter reorder controls in 0.14.3. Retain selected-filter Defaults, saved execution order and unknown settings; do not reintroduce the removed controls as parity work.
 
 **Accept:** Install/configure/update/remove a representative unchanged .NET plugin through the UI with settings preserved. Unsupported platform/version and failed download are intelligible; editing a disabled entry does not run it. Multi-class packages are represented correctly.
 
