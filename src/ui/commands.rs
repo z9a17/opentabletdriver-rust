@@ -301,7 +301,7 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                 );
                 // The profile's tablet: whichever is connected, a connected
                 // tablet, or the one it already names.
-                let target = app.editor.profile.target_tablet.clone();
+                let target = app.editor.profile.tablet_name().ok().flatten();
                 app.refresh_tablets(false);
                 let mut choices = app.connected_tablets.clone();
                 if let Some(name) = &target

@@ -1,5 +1,8 @@
 //! Stateless Giano and Inspiroy report decoding.
 //!
+//! Current catalog parser updates: a126f7b241e417399be6c6a760c0a9d4b987ecfd.
+//! Older unchanged fields retain the 0.6.7 reference below.
+//!
 //! Source pin: OpenTabletDriver 0.6.7, 736003ed72c8bbb28033b039d5a0bb76c344145c.
 //! OpenTabletDriver.Configurations/Parsers/Huion/
 //! {GianoReportParser,GianoReport,KamvasRelWheelReport,InspiroyReportParser,
@@ -34,6 +37,8 @@ pub fn parse_huion_giano(
             deltas[usize::from(raw[3] - 1)] = wheel_delta(raw[5]);
         }
         relative_wheels(&deltas)?
+    } else if raw[1] == 0xf0 {
+        auxiliary_relative_wheels(raw)?
     } else if raw[1] & 0x60 == 0x60 {
         auxiliary(raw)?
     } else {
@@ -82,6 +87,37 @@ pub fn parse_huion_inspiroy(
             values,
         },
     ))
+}
+
+/// Current upstream Kamvas offset layout; auxiliary dispatch matches Giano.
+pub fn parse_huion_kamvas_offset(
+    raw: &[u8],
+    metadata: ReportMetadata,
+) -> Result<(ReportKind, ReportEnvelope<'_>), ReportError> {
+    require_length(raw, 2)?;
+    if raw[1] == 0xf1 || raw[1] == 0xf0 || raw[1] & 0x60 == 0x60 {
+        return parse_huion_giano(raw, metadata);
+    }
+    require_length(raw, 12)?;
+    let x = u32::from(u16::from_le_bytes([raw[2], raw[3]])) | (u32::from(raw[4] & 1) << 16);
+    Ok((ReportKind::Data, ReportEnvelope {
+        metadata,
+        raw,
+        values: ReportValues {
+            position: Some([x as f32, f32::from(u16::from_le_bytes([raw[5], raw[6]]))]),
+            pressure: Some(u32::from(u16::from_le_bytes([raw[7], raw[8]]))),
+            tilt: Some([-f32::from(i16::from(raw[10] as i8)), -f32::from(i16::from(raw[11] as i8))]),
+            pen_buttons: Some(Buttons::from_bits(u64::from(raw[1] >> 1), 3)?),
+            ..ReportValues::default()
+        },
+    }))
+}
+
+fn auxiliary_relative_wheels(raw: &[u8]) -> Result<ReportValues, ReportError> {
+    require_length(raw, 7)?;
+    let mut values = relative_wheels(&[i32::from(raw[5] as i8), i32::from(raw[6] as i8)])?;
+    values.aux_buttons = Some(Buttons::from_bits(u64::from(raw[4]), 8)?);
+    Ok(values)
 }
 
 fn tilt_pen(raw: &[u8], giano: bool) -> Result<ReportValues, ReportError> {

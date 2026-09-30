@@ -143,7 +143,7 @@ impl Daemon {
         .and_then(|profile| {
             profile.validate_runtime_tablet()?;
             profile.validate_filter_execution()?;
-            if profile.relative.is_none() {
+            if profile.tablet_name()?.is_some() && profile.relative.is_none() {
                 crate::display::read_snapshot()?.mapper(&profile)?;
             }
             Ok(profile)

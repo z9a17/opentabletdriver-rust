@@ -4,7 +4,7 @@ A fast, lightweight drawing-tablet driver written in Rust, compatible with [Open
 
 It turns your pen tablet into a precise mouse or a pressure-sensitive pen. Core native report processing keeps storage inline and borrowed; managed plugins can add allocation and processing costs. If you already use OpenTabletDriver, it imports supported settings.
 
-> **Status: early.** It includes OpenTabletDriver's pinned device database and report parsers. Only the **Wacom PTH-660 (Intuos Pro M)** has been confirmed on real hardware; parser coverage does not establish working transport, initialization or output on every tablet. If you try another tablet, please open an issue and tell us how it went.
+> **Status: early.** It includes all 357 configurations from OpenTabletDriver's current 0.6.x catalog and native entries for all 53 referenced parsers ([coverage and remaining limits](docs/TABLET_CATALOG_0.14.5.md)). Only the **Wacom PTH-660 (Intuos Pro M)** has been confirmed on real hardware; parser coverage does not establish working transport, initialization or output on every tablet. If you try another tablet, please open an issue and tell us how it went.
 
 ## What it does
 

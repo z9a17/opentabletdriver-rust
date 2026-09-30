@@ -296,7 +296,7 @@ pub enum ParserSupport {
 }
 
 /// What the live driver does with a parser's reports.
-pub const LIVE_SUPPORT: &str = "every upstream report variant is decoded; the live driver uses pen position, pressure, tip, eraser and proximity, while buttons, wheels, strips and touch have no bindings yet";
+pub const LIVE_SUPPORT: &str = "native decoder registered; the live driver uses pen position, pressure, tip, eraser and proximity, while separate auxiliary collections, buttons, wheels, strips and touch have no bindings yet; physical compatibility is unverified";
 
 /// Passthrough produces raw reports only, so it cannot drive input.
 pub fn parser_support(type_name: &str) -> ParserSupport {
@@ -957,7 +957,7 @@ mod tests {
 
     fn inventory() -> Value {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../docs/parity/upstream-inventory.json");
+            .join("../../docs/parity/device-catalog.json");
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
     }
 
@@ -996,7 +996,7 @@ mod tests {
         let records = inventory["configurations"].as_array().unwrap();
         let database = Database::builtin();
         assert_eq!(database.entries().len(), records.len());
-        assert_eq!(records.len(), 339);
+        assert_eq!(records.len(), 357);
         let revision = inventory["upstream"]["revision"].as_str().unwrap();
         assert_eq!(
             source_revision(),
@@ -1082,7 +1082,7 @@ mod tests {
         }
     }
 
-    /// Every one of the 52 referenced parser types has a decoder.
+    /// Every one of the 53 referenced parser types has a decoder.
     #[test]
     fn referenced_parsers_resolve_to_partial_or_missing() {
         let inventory = inventory();
@@ -1093,7 +1093,7 @@ mod tests {
             .map(|parser| parser["type"].as_str().unwrap())
             .collect();
         referenced.sort_unstable();
-        assert_eq!(referenced.len(), 52);
+        assert_eq!(referenced.len(), 53);
         let database = Database::builtin();
         let used: Vec<&str> = database.parsers().into_keys().collect();
         assert_eq!(used, referenced);

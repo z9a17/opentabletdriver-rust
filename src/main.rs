@@ -599,7 +599,7 @@ fn load_profile(
 
 fn show_settings(config: Option<PathBuf>, otd_settings: Option<PathBuf>) -> Result<(), String> {
     let profile = load_profile(config.as_ref(), otd_settings.as_ref())?;
-    if profile.relative.is_none() {
+    if profile.tablet_name()?.is_some() && profile.relative.is_none() {
         display::read_snapshot()?.mapper(&profile)?;
     }
     profile.print_summary();
@@ -632,7 +632,7 @@ fn drive(
     profile.validate_runtime_tablet_in(database)?;
     profile.validate_filter_execution()?;
     let tablet_name = profile.tablet_name()?;
-    if profile.relative.is_none() {
+    if tablet_name.is_some() && profile.relative.is_none() {
         display::read_snapshot()?.mapper(&profile)?;
     }
     println!(

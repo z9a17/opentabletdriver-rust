@@ -1,5 +1,8 @@
 //! Complete stateless XP-Pen parser variants from the pinned baseline.
 //!
+//! Current catalog parser updates: a126f7b241e417399be6c6a760c0a9d4b987ecfd.
+//! Older unchanged fields retain the 0.6.7 reference below.
+//!
 //! Source: OpenTabletDriver 0.6.7, 736003ed72c8bbb28033b039d5a0bb76c344145c,
 //! OpenTabletDriver.Configurations/Parsers/XP_Pen/
 //! {XP_PenReportParser,XP_PenGen2ReportParser,XP_PenOffsetPressureReportParser,
@@ -97,7 +100,9 @@ impl Deco03Parser {
     ) -> Result<(ReportKind, ReportEnvelope<'a>), ReportError> {
         require_length(raw, 2)?;
         if raw[1] != 0xf0 {
-            return parse(raw, metadata, Parser::Base);
+            let kind = if raw[1] == 0xc0 { ReportKind::OutOfRange } else { ReportKind::Data };
+            let values = if kind == ReportKind::OutOfRange { ReportValues::default() } else { pen(raw, false, true)? };
+            return Ok((kind, ReportEnvelope { metadata, raw, values }));
         }
         require_length(raw, 8)?;
         let wheel = raw[7];
@@ -113,6 +118,7 @@ impl Deco03Parser {
                 metadata,
                 raw,
                 values: ReportValues {
+                    aux_buttons: Some(Buttons::from_bits(u64::from(raw[2]), 6)?),
                     relative_analog: Some(RelativeAnalogReport {
                         kind: AnalogKind::Wheel,
                         deltas: RelativeAnalog::from_slice(&[delta])?,
@@ -214,9 +220,8 @@ fn gen2_pen(raw: &[u8]) -> Result<ReportValues, ReportError> {
     require_length(raw, 14)?;
     let mut values = pen(raw, false, true)?;
     let pressure = u32::from(u16::from_le_bytes([raw[6], raw[7]]));
-    // Keep the exact pinned mask and OR: bit 15 survives, bit 14 is cleared,
-    // and byte 13 bit 0 is ORed into bit 13 rather than replacing that bit.
-    values.pressure = Some((pressure & 0xbfff) | (u32::from(raw[13] & 1) << 13));
+    // Current upstream strips status bits before supplying the high pressure bit.
+    values.pressure = Some((pressure & 0x1fff) | (u32::from(raw[13] & 1) << 13));
     Ok(values)
 }
 

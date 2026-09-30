@@ -475,7 +475,7 @@ impl Editor {
         let spec = name
             .as_deref()
             .map(otd_core::config::spec_for_tablet).transpose()?.unwrap_or(self.profile.tablet);
-        self.profile.target_tablet = name;
+        self.profile.target_tablet = Some(name.unwrap_or_else(|| "*".into()));
         if spec == self.profile.tablet {
             return Ok(());
         }
@@ -866,7 +866,7 @@ pub fn set_plugin_property(
 /// Serializes and reloads a profile exactly as Save and Start do, so the
 /// panel reports the same validation errors the file loader would.
 pub fn validated(profile: &Profile, path: &Path) -> Result<Profile, String> {
-    Profile::from_toml_text(&profile.to_toml()?, path)
+    Profile::from_toml_text(&profile.to_toml()?, path)?.for_tablet(profile.tablet)
 }
 
 pub fn format_number(value: f64, decimals: usize) -> String {

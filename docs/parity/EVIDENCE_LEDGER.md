@@ -4,6 +4,10 @@ The [source inventory](upstream-inventory.json) lists what the pinned OpenTablet
 
 The first ledger has one row for each of the 52 capability IDs, 339 device configurations, 52 referenced parser types and 98 catalog records. Of those catalog records, metadata marks 57 eligible for the baseline. Eligible rows start `open`; the other 41 start `not_applicable` because their catalog metadata excludes this baseline. Neither state proves that a DLL runs. Plugin class rows are added when a real package is inspected; an incomplete package inventory keeps the package itself open while individual classes can record bounded results.
 
+## Current device catalog
+
+Release 0.14.5 uses [device-catalog.json](device-catalog.json) for the current 0.6.x device snapshot, while this inventory, ledger and managed plugin API retain the stable 0.6.7 baseline. Every current-catalog hardware field remains unverified. Importing newer device definitions does not advance this ledger or certify old results against changed parsers. See [the source audit](../TABLET_CATALOG_0.14.5.md).
+
 ## Record evidence
 
 Each row has `state`, `owner`, `pull_request`, `release`, `evidence` and `blockers`. The owner and links are null until known. Use a stable task ID from [WORK_ITEMS.md](WORK_ITEMS.md). `implemented` requires a merged PR and a passing automated test; `verified` needs the extra evidence appropriate to the row. `blocked` requires a reason. A catalog record may be `not_applicable` only when its pinned metadata excludes the baseline. All other untested records stay `open` or `blocked`.
