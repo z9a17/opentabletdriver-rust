@@ -6,7 +6,7 @@ use std::{collections::BTreeMap, sync::LazyLock};
 
 use regex::Regex;
 
-use crate::tablets::{Database, Match, ParserSupport, Role};
+use crate::tablets::{Database, DeviceIdentifier, Match, ParserSupport, Role};
 
 const DOTNET_DATE_PREFIX_EXCLUSION: &str = r"^(?!202\d-\d{2}-\d{2})";
 static DATE_PREFIX: LazyLock<Regex> =
@@ -85,16 +85,7 @@ pub fn matches(endpoint: &Endpoint, candidate: &Match<'_>) -> Result<(), Rejecti
     {
         return Err(Rejection::Unavailable);
     }
-    if id
-        .input_report_length
-        .is_some_and(|n| n != endpoint.input_length)
-        || id
-            .output_report_length
-            .is_some_and(|n| n != endpoint.output_length)
-        || id
-            .feature_report_length
-            .is_some_and(|n| n != endpoint.feature_length)
-    {
+    if !matches_report_lengths(endpoint, id) {
         return Err(Rejection::WrongLength);
     }
     if let Some(strings) = &id.device_strings {
@@ -147,6 +138,14 @@ pub fn matches(endpoint: &Endpoint, candidate: &Match<'_>) -> Result<(), Rejecti
         return Err(Rejection::WrongInterface);
     }
     Ok(())
+}
+
+/// Shared by descriptor discovery and selection so impossible collections
+/// never need indexed USB string requests. Omitted sizes remain wildcards.
+pub fn matches_report_lengths(endpoint: &Endpoint, id: &DeviceIdentifier) -> bool {
+    id.input_report_length.is_none_or(|n| n == endpoint.input_length)
+        && id.output_report_length.is_none_or(|n| n == endpoint.output_length)
+        && id.feature_report_length.is_none_or(|n| n == endpoint.feature_length)
 }
 
 /// Regex patterns in a loaded database which Rust cannot parse. Run at setup
