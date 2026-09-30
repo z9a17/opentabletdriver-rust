@@ -1,6 +1,6 @@
 # OpenTabletDriver Rust port status
 
-Release 0.14.5 imports the current 357-device catalog and registers all 53 referenced native parsers, fixes current parser dispatch/pressure/rotation differences and removes PTH-660 range assumptions from automatic-profile validation. [Source coverage and remaining compatibility limits](TABLET_CATALOG_0.14.5.md). No new physical tablet support is certified.
+Release 0.14.6 fixes delayed Windows tablet identification by subscribing the panel to HID interface notifications, retaining changes received during discovery, and avoiding unrelated HID opens and impossible-identifier string requests. [Diagnosis and validation limits](TABLET_DISCOVERY_0.14.6.md). The 357-device catalog and all 53 registered native parsers from 0.14.5 remain included. [Source coverage and remaining compatibility limits](TABLET_CATALOG_0.14.5.md). No new physical tablet support is certified.
 
 Release 0.14.4 removes the unnamed-profile PTH-660 label fallback and uses the sole detected tablet's editor dimensions. Saved profile targets and unsaved/invalid edits are preserved. [Diagnosis and PTK-470 qualification](TABLET_IDENTITY_0.14.4.md). This follows the UI cleanup in 0.14.3. Source review and release compilation do not establish physical tablet compatibility.
 

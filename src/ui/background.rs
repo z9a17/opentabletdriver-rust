@@ -1,6 +1,40 @@
 //! Background inspection and device discovery, with UI-owned completions.
 use super::*;
 
+#[derive(Default)]
+pub(super) enum DeviceScan {
+    #[default]
+    Idle,
+    Running { again: Option<bool> },
+}
+
+impl DeviceScan {
+    pub(super) fn is_running(&self) -> bool {
+        matches!(self, Self::Running { .. })
+    }
+
+    /// Coalesce notifications during enumeration into one follow-up scan.
+    fn request(&mut self, announce: bool) -> bool {
+        match self {
+            Self::Idle => {
+                *self = Self::Running { again: None };
+                true
+            }
+            Self::Running { again } => {
+                *again.get_or_insert(false) |= announce;
+                false
+            }
+        }
+    }
+
+    fn complete(&mut self) -> Option<bool> {
+        match std::mem::take(self) {
+            Self::Idle => None,
+            Self::Running { again } => again,
+        }
+    }
+}
+
 impl App {
     pub(super) fn background(
         &mut self,
@@ -188,7 +222,10 @@ impl App {
                     }
                 }
                 BackgroundResult::Devices { announce, result } => {
-                    self.device_scan_pending = false;
+                    // Publish identified models immediately. An arrival
+                    // during enumeration also needs a fresh snapshot, since
+                    // its pen collection may have appeared after this scan.
+                    let again = self.device_scan.complete();
                     match result {
                         Ok(pens) => {
                             self.tablet_present = Some(!pens.is_empty());
@@ -227,6 +264,9 @@ impl App {
                             "Tablet",
                             format!("HID discovery failed: {error}"),
                         ),
+                    }
+                    if let Some(again) = again {
+                        self.refresh_tablets(announce || again);
                     }
                 }
                 BackgroundResult::Import {
@@ -440,18 +480,47 @@ impl App {
     }
 
     pub(super) fn refresh_tablets(&mut self, announce: bool) {
-        if self.device_scan_pending {
+        if !self.device_scan.request(announce) {
             return;
         }
-        self.device_scan_pending =
-            self.background("tablet-discovery", move || BackgroundResult::Devices {
-                announce,
-                result: crate::hid::connected_tablets()
-                    .map(|mut names| {
-                        names.sort();
-                        names
-                    }),
-            });
+        if !self.background("tablet-discovery", move || BackgroundResult::Devices {
+            announce,
+            result: crate::hid::connected_tablets().map(|mut names| {
+                names.sort();
+                names
+            }),
+        }) {
+            self.device_scan.complete();
+        }
+    }
+}
+
+#[cfg(test)]
+mod device_scan_tests {
+    use super::DeviceScan;
+
+    #[test]
+    fn late_pen_arrival_runs_a_follow_up_scan_instead_of_losing_detection() {
+        let mut scan = DeviceScan::default();
+        assert!(scan.request(false));
+        // The first enumeration began before the pen collection existed.
+        assert!(!scan.request(false));
+        assert!(!scan.request(false));
+        assert_eq!(scan.complete(), Some(false));
+        assert!(scan.request(false));
+        assert_eq!(scan.complete(), None);
+        assert!(scan.request(false));
+    }
+
+    #[test]
+    fn manual_detect_is_preserved_when_notifications_coalesce() {
+        let mut scan = DeviceScan::default();
+        assert!(scan.request(false));
+        assert!(!scan.request(true));
+        assert!(!scan.request(false));
+        assert_eq!(scan.complete(), Some(true));
+        assert!(scan.request(true));
+        assert_eq!(scan.complete(), None);
     }
 }
 

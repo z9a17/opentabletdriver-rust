@@ -317,7 +317,7 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                     CMD_TABLET_ANY,
                     "Any connected tablet",
                 );
-                if app.device_scan_pending && app.connected_tablets.is_empty() {
+                if app.device_scan.is_running() && app.connected_tablets.is_empty() {
                     append(
                         tablets,
                         MF_GRAYED,
