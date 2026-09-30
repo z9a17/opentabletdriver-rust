@@ -1,5 +1,7 @@
 # OpenTabletDriver Rust port status
 
+Release 0.14.7 opens the existing update screen when the enabled-by-default launch check finds a newer release, including launches minimized to the tray. Installation and restart remain user choices. Current-version launches stay quiet and failed startup checks log to the Console. The launch-check preference remains available in Help. Windows asset compilation and package inspection are the release validation; the owner-disabled check suite and live UI/updater validation were not run.
+
 Release 0.14.6 fixes delayed Windows tablet identification by subscribing the panel to HID interface notifications, retaining changes received during discovery, and avoiding unrelated HID opens and impossible-identifier string requests. [Diagnosis and validation limits](TABLET_DISCOVERY_0.14.6.md). The 357-device catalog and all 53 registered native parsers from 0.14.5 remain included. [Source coverage and remaining compatibility limits](TABLET_CATALOG_0.14.5.md). No new physical tablet support is certified.
 
 Release 0.14.4 removes the unnamed-profile PTH-660 label fallback and uses the sole detected tablet's editor dimensions. Saved profile targets and unsaved/invalid edits are preserved. [Diagnosis and PTK-470 qualification](TABLET_IDENTITY_0.14.4.md). This follows the UI cleanup in 0.14.3. Source review and release compilation do not establish physical tablet compatibility.

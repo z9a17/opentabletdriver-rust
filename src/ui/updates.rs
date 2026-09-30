@@ -1,4 +1,4 @@
-//! Help > Check for updates, and the optional check when the panel opens.
+//! Help > Check for updates, and the enabled-by-default startup check.
 //! Network and file work runs on background threads; results come back to
 //! the panel as `WM_UPDATE` messages.
 use super::commands::message_box;
@@ -32,8 +32,8 @@ fn send(window: isize, event: Event) {
     unsafe { PostMessageW(window as HWND, WM_UPDATE, 0, 0) };
 }
 
-/// Looks for a newer release. A manual check reports every outcome; the
-/// check when the panel opens only mentions a newer release in the Console.
+/// Looks for a newer release and prompts when one is available. Manual
+/// checks also report up-to-date and error outcomes in a dialog.
 pub(super) fn check(window: HWND, manual: bool) {
     let target = window as isize;
     if let Err(error) = std::thread::Builder::new()
@@ -136,18 +136,16 @@ fn log(level: Level, message: String) {
 }
 
 fn checked(window: HWND, manual: bool, result: Result<Release, String>) {
+    if with_app(|app| app.closing).unwrap_or(true) {
+        return;
+    }
     let current = env!("CARGO_PKG_VERSION");
     match result {
         Ok(release) if release.version > update::current_version() => {
             if !manual {
-                log(
-                    Level::Info,
-                    format!(
-                        "{} is available. Help > Check for updates installs it.",
-                        release.tag
-                    ),
-                );
-                return;
+                // A launch minimized to the tray still needs a visible owner
+                // for the update screen. Current/offline launches stay hidden.
+                tray::show_panel(window);
             }
             let answer = message_box(
                 window,
