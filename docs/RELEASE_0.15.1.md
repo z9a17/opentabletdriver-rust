@@ -6,7 +6,7 @@ This release combines the pen side-button implementation from PR #52 and the Win
 
 The first two pen side buttons default to right-click and middle-click in mouse output. The third defaults to no mouse action. Profiles can override these with mouse buttons, keyboard chords or no action, and supported OpenTabletDriver pen bindings import into the shared Rust profile. See [the pen-button guide](PEN_BUTTONS.md) for configuration and remaining binding limits.
 
-Windows Ink and Linux Artist Mode carry adaptive bindings as pen barrel buttons. macOS uses CoreGraphics mouse output and has no pressure-sensitive pen output. Unsupported platform key usages produce startup diagnostics.
+Windows Ink and Linux Artist Mode carry adaptive bindings as pen barrel buttons. macOS uses CoreGraphics mouse output and has no pressure-sensitive pen output. Unsupported platform key usages produce startup diagnostics. macOS bounds stale modifier-release suppression to 50 ms; physical and synthetic holds of the same modifier are not independently owned.
 
 Mouse-left side bindings share ownership with tip contact, so releasing either hold does not release the other. Sessions release held bindings on range loss and shutdown. This is implemented behavior; physical button and drawing-app validation remains open.
 
