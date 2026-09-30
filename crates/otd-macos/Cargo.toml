@@ -1,0 +1,17 @@
+[package]
+name = "otd-macos"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "macOS IOKit HID and CoreGraphics mouse backend for OpenTabletDriver Rust"
+publish = false
+
+[[bin]]
+name = "opentabletdriver-rust-macos"
+path = "src/main.rs"
+
+[dependencies]
+otd-core = { path = "../otd-core" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2.189"
