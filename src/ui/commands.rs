@@ -134,7 +134,7 @@ pub(super) fn message_box(
 }
 
 pub(super) fn confirm_discard(window: HWND) -> bool {
-    !with_app(|app| app.dirty || !app.invalid.is_empty() || app.json_error.is_some()).unwrap_or(false)
+    !with_app(|app| app.dirty || !app.invalid.is_empty()).unwrap_or(false)
         || message_box(
             window,
             "Discard unsaved profile edits?",
@@ -315,13 +315,9 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                 );
                 append(
                     menu,
-                    MF_STRING,
+                    if running || app.control_busy { MF_GRAYED } else { MF_STRING },
                     CMD_START_STOP,
-                    if running {
-                        "Stop driver"
-                    } else {
-                        "Start driver"
-                    },
+                    "Start driver",
                 );
                 unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null()) };
                 append(
@@ -613,9 +609,6 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         CMD_FILTER_DEFAULTS => {
             with_app(App::reset_filter);
         }
-        CMD_FILTER_JSON => {
-            with_app(App::toggle_filter_json);
-        }
         CMD_PROPERTY_PREV | CMD_PROPERTY_NEXT => {
             with_app(|app| {
                 app.property_page = if id == CMD_PROPERTY_NEXT {
@@ -638,12 +631,7 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         CMD_ABOUT => about(window),
         CMD_START_STOP => {
             with_app(|app| {
-                if app.running.is_some() {
-                    // The daemon cancels any pending restart when Stop is accepted.
-                    app.stop();
-                } else {
-                    app.start();
-                }
+                app.start();
             });
         }
         CMD_AUTOSTART => {
@@ -794,18 +782,6 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         }
         ID_FILTER_ENABLE => {
             with_app(App::filter_toggled);
-        }
-        id if (ID_PROPERTY_DEFAULT..ID_PROPERTY_DEFAULT + MAX_PROPERTY_ROWS).contains(&id) => {
-            with_app(|app| {
-                if let Some(hwnd) = app
-                    .properties
-                    .iter()
-                    .find(|row| row.default_control == Some(control))
-                    .map(|row| row.hwnd)
-                {
-                    app.choose_property(hwnd, serde_json::Value::Null);
-                }
-            });
         }
         id if (ID_PROPERTY..ID_PROPERTY + MAX_PROPERTY_ROWS).contains(&id) => {
             let choices = with_app(|app| {

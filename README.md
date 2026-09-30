@@ -29,7 +29,7 @@ If you have OpenTabletDriver installed, your settings are imported on first run.
 
 Using `.NET` plugins needs the bundled `compat` folder and an installed x64 [.NET 8 or newer runtime](https://dotnet.microsoft.com/download). Without plugins, or with only the built-in filter, .NET isn't needed.
 
-To remove it, close the driver and delete the folder. It doesn't change Windows drivers or startup settings (unless you turn on **Tablets > Start with Windows**).
+Closing the panel stops tablet input. Minimizing keeps it running in the tray. To remove it, close the panel and delete the folder. It doesn't change Windows drivers or startup settings (unless you turn on **Tablets > Start with Windows**).
 
 ### Prefer the console?
 
@@ -64,6 +64,7 @@ Windows 11 is the main platform. An experimental Linux build (hidraw input, uinp
 - [Plugins and UI](docs/PLUGINS_AND_UI.md) Â· [Pen output](docs/PEN_OUTPUT.md) Â· [Relative mode](docs/RELATIVE_MODE.md)
 - [Performance](docs/PERFORMANCE.md) and [input latency](docs/INPUT_LATENCY.md), compared with OpenTabletDriver 0.6.7
 - [Performance and usability audit, 0.14.1](docs/AUDIT_FIXES_0.14.1.md): source findings, fixes and remaining limits
+- [Debugger crash and panel cleanup, 0.14.2](docs/DEBUGGER_AND_UI_0.14.2.md): captured crash cause, UI changes and native/.NET settings comparison
 - [Hardware validation checklist](docs/HARDWARE_VALIDATION.md): what has and hasn't been tested on a real tablet
 - [Porting status](docs/PORTING_STATUS.md) and the [full parity roadmap](docs/FULL_PARITY_PLAN.md) (65 tasks, [tracked on GitHub](docs/parity/GITHUB_TRACKING.md))
 

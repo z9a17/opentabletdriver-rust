@@ -39,7 +39,6 @@ impl App {
                         Tone::Text => p.text,
                         Tone::Muted => p.muted,
                         Tone::Warning => p.warning,
-                        Tone::Error => p.error,
                     };
                     canvas.text(*r, text, fonts.ui, color, *format | DT_NOPREFIX);
                 }
@@ -251,14 +250,6 @@ pub(super) fn custom_draw(draw: &mut NMCUSTOMDRAW) -> LRESULT {
                             == BST_CHECKED as isize;
                         draw::checkbox(&mut canvas, client, &label, &style, surface, state);
                     }
-                    Kind::StartStop => {
-                        let glyph = if look.running {
-                            Glyph::Stop
-                        } else {
-                            Glyph::Play
-                        };
-                        draw::button(&mut canvas, client, &label, &style, surface, state, glyph);
-                    }
                     Kind::Button => draw::button(
                         &mut canvas,
                         client,
@@ -266,7 +257,6 @@ pub(super) fn custom_draw(draw: &mut NMCUSTOMDRAW) -> LRESULT {
                         &style,
                         surface,
                         state,
-                        Glyph::None,
                     ),
                     _ => return Some(CDRF_DODEFAULT as LRESULT),
                 }

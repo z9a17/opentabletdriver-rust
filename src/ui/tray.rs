@@ -86,13 +86,9 @@ fn menu(window: HWND, (x, y): (i32, i32)) {
     append(menu, MF_STRING, CMD_SHOW, "Show Window");
     append(
         menu,
-        if busy { MF_GRAYED } else { MF_STRING },
+        if busy || running { MF_GRAYED } else { MF_STRING },
         CMD_START_STOP,
-        if running {
-            "Stop driver"
-        } else {
-            "Start driver"
-        },
+        "Start driver",
     );
     unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null()) };
     append(menu, MF_STRING, CMD_QUIT, "Close");

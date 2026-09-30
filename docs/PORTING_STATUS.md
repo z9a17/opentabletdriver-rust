@@ -1,5 +1,7 @@
 # OpenTabletDriver Rust port status
 
+Release 0.14.2 fixes the captured debugger DrawTextW access violation, themes the plugin manager, removes per-property default/raw JSON UI, retains filter selection after Save/Apply and stops the driver on panel close. [Details and native/.NET settings comparison](DEBUGGER_AND_UI_0.14.2.md). This supersedes the historical detach-on-close and raw-editor behavior described below. Source review and release compilation are separate from live evidence: the validation suite and interactive/hardware checks were not run. Core smoothing mathematics is unchanged.
+
 The long-term goal is broader OpenTabletDriver functionality with efficient native Rust report processing. The [original implementation plan](IMPLEMENTATION_PLAN.md) describes the first PTH-660 milestone; its exclusions are historical milestone boundaries, not the final project scope.
 
 The [full parity roadmap](FULL_PARITY_PLAN.md) defines the target against OpenTabletDriver v0.6.7, with [65 scoped tasks](parity/WORK_ITEMS.md), a [capability/source matrix](parity/CAPABILITY_MATRIX.md), a reproducible upstream inventory, an [evidence ledger](parity/EVIDENCE_LEDGER.md) and [GitHub tracking](parity/GITHUB_TRACKING.md).
