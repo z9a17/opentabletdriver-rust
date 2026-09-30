@@ -26,7 +26,7 @@ mod wacom;
 mod xp_pen;
 pub use bamboo::{parse_bamboo, parse_bamboo_pad, parse_bamboo_v2_auxiliary};
 pub use generic::{TransportReport, parse_auxiliary, parse_skip_byte_tablet, parse_tablet};
-pub use huion::{parse_huion_giano, parse_huion_inspiroy};
+pub use huion::{parse_huion_giano, parse_huion_inspiroy, parse_huion_kamvas_offset};
 pub use intuos_touch::{IntuosV2TouchParser, WacomDriverIntuosV2TouchParser, WacomDriverReport};
 pub use intuos_v3::parse_intuos_v3;
 pub use uc_logic::{

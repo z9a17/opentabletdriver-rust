@@ -161,9 +161,11 @@ fn run(
     }
     // Exercise deterministic pipeline construction before old output pauses.
     // A fresh output/relative pipeline is used on activation and rollback.
-    let _ = otd_core::pipeline::ReportPipeline::new(&profile)?;
-    if profile.relative.is_none() {
-        crate::display::read_snapshot()?.mapper(&profile)?;
+    if tablet_name.is_some() {
+        let _ = otd_core::pipeline::ReportPipeline::new(&profile)?;
+        if profile.relative.is_none() {
+            crate::display::read_snapshot()?.mapper(&profile)?;
+        }
     }
     let notification = Notification::register().map_err(|error| error.to_string())?;
     let mut waiting = false;

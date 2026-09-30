@@ -1,5 +1,8 @@
 //! Complete stateless Veikk parser variants.
 //!
+//! Current catalog parser updates: a126f7b241e417399be6c6a760c0a9d4b987ecfd.
+//! Older unchanged fields retain the 0.6.7 reference below.
+//!
 //! Source pin: OpenTabletDriver 0.6.7, 736003ed72c8bbb28033b039d5a0bb76c344145c,
 //! OpenTabletDriver.Configurations/Parsers/Veikk/
 //! {VeikkReportParser,VeikkA15ReportParser,VeikkTiltReportParser,VeikkV1ReportParser,
@@ -70,7 +73,10 @@ fn parse(
                     pen(raw, false, true)?
                 }
             }
-            0x42 => auxiliary(raw)?,
+            0x42 => {
+                require_length(raw, 3)?;
+                if raw[2] == 3 { wheel(raw)? } else { auxiliary(raw)? }
+            },
             _ => ReportValues::default(),
         },
         Parser::Base | Parser::A15 => {

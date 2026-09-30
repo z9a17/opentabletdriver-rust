@@ -601,23 +601,20 @@ pub fn select_device<'a>(
                     continue;
                 }
             };
-            let auxiliary = database
-                .find(device.vendor, device.product)
-                .filter(|aux| {
+            let auxiliary = found.configuration.auxiliary_identifiers().iter().find_map(|identifier| {
+                let (vendor, product) = identifier.vendor_id().zip(identifier.product_id())?;
+                let aux = database.find(vendor, product).find(|aux| {
                     aux.role == Role::Auxiliary
                         && std::ptr::eq(aux.configuration, found.configuration)
-                })
-                .find_map(|aux| {
-                    devices
-                        .iter()
-                        .find(|other| {
-                            other.path != device.path
-                                && !other.endpoint.physical_id.is_empty()
-                                && other.endpoint.physical_id == device.endpoint.physical_id
-                                && endpoint_match::matches(&other.endpoint, &aux).is_ok()
-                        })
-                        .map(|endpoint| (endpoint, aux.identifier.clone()))
-                });
+                        && std::ptr::eq(aux.identifier, identifier)
+                })?;
+                devices.iter().find(|other| {
+                    other.path != device.path
+                        && !other.endpoint.physical_id.is_empty()
+                        && other.endpoint.physical_id == device.endpoint.physical_id
+                        && endpoint_match::matches(&other.endpoint, &aux).is_ok()
+                }).map(|endpoint| (endpoint, aux.identifier.clone()))
+            });
             let mut configuration = found.configuration.clone();
             // The managed TabletReference constructor receives the actual selected identifier.
             configuration.digitizer_identifiers = vec![found.identifier.clone()];

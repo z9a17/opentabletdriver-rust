@@ -96,9 +96,9 @@ pub struct Profile {
     pub auto_enabled_radial_follow: usize,
     pub ignored_filters: usize,
     pub source: String,
-    /// The tablet a native profile is for, by configuration name, or `None`
-    /// for whichever tablet is connected. Imported profiles name their
-    /// tablet in the preserved OpenTabletDriver document instead.
+    /// Configuration name, or `"*"` for explicit automatic selection.
+    /// `None` preserves legacy behavior: imported profiles inherit their
+    /// document's tablet name; other profiles select any connected tablet.
     pub target_tablet: Option<String>,
     /// The tablet this profile drives. Not saved: an imported profile takes
     /// it from its tablet's configuration, and the runtime sets it for the
@@ -938,7 +938,7 @@ impl Profile {
                     reset_delay: Duration::try_from_secs_f64(settings.reset_delay_ms / 1000.0)
                         .map_err(|_| "relative reset delay must be finite and nonnegative")?,
                 }
-                .validate()
+                .validate_values()
             })
             .transpose()?;
         let target_tablet = raw.tablet;
@@ -966,29 +966,14 @@ impl Profile {
             target_tablet,
             ..Self::default()
         };
-        profile.tablet = profile
-            .tablet_name()?
-            .map(|name| spec_for_tablet(&name)).transpose()?.unwrap_or(TabletSpec::PTH_660);
-        for threshold in [
-            profile.contact.tip_threshold_raw,
-            profile.contact.eraser_threshold_raw,
-        ]
-        .into_iter()
-        .flatten()
+        if profile.crop.width == 0 || profile.crop.height == 0
+            || profile.crop.x.checked_add(profile.crop.width).is_none()
+            || profile.crop.y.checked_add(profile.crop.height).is_none()
         {
-            if threshold > profile.tablet.max_pressure {
-                return Err("binding threshold exceeds tablet pressure range".into());
-            }
+            return Err("crop must be nonzero without coordinate overflow".into());
         }
-        // The default crop means the whole digitizer of any tablet.
-        if profile.crop != Crop::default() && !profile.crop.valid_for(profile.tablet) {
-            return Err(format!(
-                "crop must be nonzero and within 0..{} X, 0..{} Y",
-                profile.tablet.max_x, profile.tablet.max_y
-            ));
-        }
-        if let Some(relative) = profile.relative {
-            relative.validate_for(profile.tablet)?;
+        if let Some(name) = profile.tablet_name()? {
+            profile = profile.for_tablet(spec_for_tablet(&name)?)?;
         }
         if !matches!(profile.rotation, 0 | 90 | 180 | 270) {
             return Err("rotation must be 0, 90, 180, or 270".into());
@@ -1013,7 +998,9 @@ impl Profile {
 
     pub fn tablet_name(&self) -> Result<Option<String>, String> {
         if let Some(name) = &self.target_tablet {
-            return Ok(Some(name.clone()));
+            // Explicit automatic selection overrides an imported document's name.
+            // None retains the legacy imported-identity fallback on older profiles.
+            return Ok((name != "*").then(|| name.clone()));
         }
         let Some(imported) = &self.imported_otd else {
             return Ok(None);
@@ -1060,6 +1047,9 @@ impl Profile {
                     spec.max_pressure
                 ));
             }
+        }
+        if self.crop != Crop::default() && !self.crop.valid_for(spec) {
+            return Err(format!("crop must be nonzero and within 0..{} X, 0..{} Y", spec.max_x, spec.max_y));
         }
         if let Some(relative) = self.relative {
             relative.validate_for(spec)?;

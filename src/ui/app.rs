@@ -1107,7 +1107,7 @@ impl App {
 
     /// Makes the profile target a tablet (`None`: whichever is connected).
     pub(super) fn choose_tablet(&mut self, name: Option<String>) {
-        if self.editor.profile.target_tablet == name {
+        if self.editor.profile.tablet_name().is_ok_and(|target| target == name) {
             return;
         }
         if let Err(error) = self.editor.set_tablet(name) {

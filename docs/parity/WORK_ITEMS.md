@@ -69,6 +69,8 @@ Sources: UP-DEVICE, UP-CONFIG, UP-REPORT. Split parser work by exact type names 
 <a id="d01"></a>
 ### D01 - Load the complete upstream device configuration schema
 
+Release 0.14.5 adds a separately pinned [current device catalog](device-catalog.json): 357 configurations and 53 referenced parser names. [Source audit and compatibility limits](../TABLET_CATALOG_0.14.5.md). The stable baseline criteria below and historical evidence are unchanged; the current catalog's hardware evidence remains unverified.
+
 **Depends on:** F02, F03. **Start:** `crates/otd-core/src/config.rs`, `crates/otd-core/src/protocol.rs`; new device-specification module distinct from user profiles.
 
 Represent digitizer/pen/button/wheel/analog specifications, all identifiers, attributes, device-string predicates, optional lengths and initialization declarations. Preserve documented legacy field aliases and custom overrides. Load/index the pinned database at startup, retain provenance, validate unsupported or contradictory declarations and keep regex work out of report processing.

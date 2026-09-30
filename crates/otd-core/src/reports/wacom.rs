@@ -1,5 +1,8 @@
 //! Wacom parser families other than IntuosV2, IntuosV3 and Bamboo.
 //!
+//! Current catalog parser updates: a126f7b241e417399be6c6a760c0a9d4b987ecfd.
+//! Older unchanged fields retain the 0.6.7 reference below.
+//!
 //! Source: OpenTabletDriver 0.6.7, commit
 //! 736003ed72c8bbb28033b039d5a0bb76c344145c,
 //! OpenTabletDriver.Configurations/Parsers/Wacom/{Intuos,IntuosV1,Intuos3,
@@ -100,6 +103,7 @@ pub struct IntuosV1State {
     pressure: u32,
     tilt: [f32; 2],
     buttons: Buttons,
+    rotation: i16,
 }
 
 fn v1_tablet(raw: &[u8], state: &mut IntuosV1State) -> Result<ReportValues, ReportError> {
@@ -115,8 +119,10 @@ fn v1_tablet(raw: &[u8], state: &mut IntuosV1State) -> Result<ReportValues, Repo
         pressure,
         tilt,
         buttons,
+        rotation: state.rotation,
     };
     Ok(ReportValues {
+        rotation: Some(state.rotation),
         position: Some(high_resolution_position(raw)),
         tilt: Some(tilt),
         pressure: Some(pressure),
@@ -127,9 +133,12 @@ fn v1_tablet(raw: &[u8], state: &mut IntuosV1State) -> Result<ReportValues, Repo
     })
 }
 
-fn v1_rotation(raw: &[u8], state: &IntuosV1State) -> Result<ReportValues, ReportError> {
+fn v1_rotation(raw: &[u8], state: &mut IntuosV1State) -> Result<ReportValues, ReportError> {
     require_length(raw, 10)?;
+    let magnitude = (i16::from(raw[6]) << 2) | i16::from(raw[7] >> 6);
+    state.rotation = if raw[7] & 0x20 != 0 { magnitude } else { -magnitude };
     Ok(ReportValues {
+        rotation: Some(state.rotation),
         position: Some(high_resolution_position(raw)),
         tilt: Some(state.tilt),
         pressure: Some(state.pressure),
@@ -411,7 +420,7 @@ impl Intuos3Parser {
                 require_length(raw, 2)?;
                 let flags = raw[1];
                 if flags == 0xea || flags == 0xaa {
-                    v1_rotation(raw, &self.state)?
+                    v1_rotation(raw, &mut self.state)?
                 } else if matches!(flags & 0xf0, 0xe0 | 0xa0) {
                     v1_tablet(raw, &mut self.state)?
                 } else if matches!(flags & 0xf0, 0xf0 | 0xb0) {

@@ -1,5 +1,8 @@
 //! Stateless UCLogic base/tilt generations and Huion tilt report dispatch.
 //!
+//! Current catalog parser updates: a126f7b241e417399be6c6a760c0a9d4b987ecfd.
+//! Older unchanged fields retain the 0.6.7 reference below.
+//!
 //! Pinned source: OpenTabletDriver 0.6.7, commit
 //! 736003ed72c8bbb28033b039d5a0bb76c344145c,
 //! OpenTabletDriver.Configurations/Parsers/UCLogic/
@@ -18,7 +21,7 @@
 
 use super::{
     AbsoluteAnalog, AbsoluteAnalogReport, AnalogKind, Buttons, ReportEnvelope, ReportError,
-    ReportKind, ReportMetadata, ReportValues, WheelButtons,
+    ReportKind, ReportMetadata, ReportValues, WheelButtons, RelativeAnalog, RelativeAnalogReport,
 };
 
 /// Decode `OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicReportParser`.
@@ -85,6 +88,7 @@ enum Layout {
     Auxiliary,
     HuionAuxiliary,
     Wheel,
+    RelativeWheel,
     Raw,
     OutOfRange,
 }
@@ -114,8 +118,11 @@ fn parse(
             }
         }
         Parser::V1 => {
-            if flags == 0xe0 {
+            if flags == 0xe0 { require_length(raw, 4)?; }
+            if flags == 0xe0 && raw[3] == 1 {
                 Layout::Auxiliary
+            } else if flags == 0xe0 && raw[3] == 0x10 {
+                Layout::RelativeWheel
             } else if flags & 0x40 != 0 {
                 Layout::Pen
             } else {
@@ -144,6 +151,16 @@ fn parse(
         Layout::Auxiliary => auxiliary(raw, false)?,
         Layout::HuionAuxiliary => auxiliary(raw, true)?,
         Layout::Wheel => wheel(raw)?,
+        Layout::RelativeWheel => {
+            require_length(raw, 5)?;
+            ReportValues {
+                relative_analog: Some(RelativeAnalogReport {
+                    kind: AnalogKind::Wheel,
+                    deltas: RelativeAnalog::from_slice(&[i32::from(raw[4] as i8)])?,
+                }),
+                ..ReportValues::default()
+            }
+        },
         Layout::Raw | Layout::OutOfRange => ReportValues::default(),
     };
     Ok((

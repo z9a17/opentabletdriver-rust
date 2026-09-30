@@ -624,13 +624,15 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
         serde_json::from_str(&imported.settings_json).map_err(|error| error.to_string())?;
     let mut document = original.clone();
     let selected = &mut document["Profiles"][imported.selected_profile];
+    let target = profile.tablet_name()?.ok_or("OTD export requires a named tablet; choose a tablet before exporting an automatic profile")?;
+    selected["Tablet"] = Value::String(target);
     let target_mode;
     let pen = profile.output == super::OutputKind::Pen;
     if let Some(relative) = profile.relative {
         if profile.otd_mapping.is_some() || pen {
             return Err("OTD export requires exactly one output mode".into());
         }
-        relative.validate()?;
+        relative.validate_for(profile.tablet)?;
         target_mode = "OpenTabletDriver.Desktop.Output.RelativeMode";
         let old = baseline.relative;
         let settings = &mut selected["RelativeModeSettings"];
