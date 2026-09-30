@@ -6,7 +6,8 @@ use super::*;
 use crate::plugin_catalog::{self, PluginMetadata};
 use std::sync::mpsc::{self, Receiver, Sender};
 use windows_sys::Win32::UI::Controls::{
-    CDDS_ITEMPREPAINT, CDRF_NOTIFYITEMDRAW, EM_SETRECT, HDITEMW, HDI_TEXT, HDM_GETITEMCOUNT,
+    CDDS_ITEMPREPAINT, CDDS_POSTPAINT, CDRF_NOTIFYITEMDRAW, CDRF_NOTIFYPOSTPAINT,
+    EM_SETRECT, HDITEMW, HDI_TEXT, HDM_GETITEMCOUNT,
     HDM_GETITEMRECT, HDM_GETITEMW, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW, LVIF_TEXT,
     LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS, LVM_GETCOLUMNWIDTH,
     LVM_GETHEADER, LVM_GETITEMSTATE, LVM_GETITEMTEXTW, LVM_GETNEXTITEM,
@@ -76,6 +77,17 @@ struct Manager {
     dpi: u32,
     dark_mode: theme::DarkMode,
     _fonts: FontSet,
+    icons: [HICON; 2],
+}
+
+impl Drop for Manager {
+    fn drop(&mut self) {
+        for icon in self.icons {
+            if !icon.is_null() {
+                unsafe { DestroyIcon(icon) };
+            }
+        }
+    }
 }
 
 thread_local! {
@@ -191,7 +203,7 @@ pub(super) fn open() -> Result<(), String> {
     }
     let details = child(
         "EDIT",
-        "",
+        "Select a plugin to see its details.",
         DETAILS,
         WS_VSCROLL | (ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL) as u32,
     );
@@ -229,9 +241,11 @@ pub(super) fn open() -> Result<(), String> {
             dpi,
             dark_mode: theme::DarkMode::load(),
             _fonts: fonts,
+            icons: [ptr::null_mut(); 2],
         })
     });
     with_manager(|manager| {
+        manager.set_icons();
         manager.apply_theme();
         manager.layout();
         manager.refresh_catalog();
@@ -319,6 +333,13 @@ impl Manager {
             width - s(34),
             details_height - s(2),
         );
+        // Use the available width for names instead of an empty header tail.
+        // Other column widths retain native drag/resize behavior.
+        let columns_width: i32 = (1..5)
+            .map(|column| unsafe { SendMessageW(self.list, LVM_GETCOLUMNWIDTH, column, 0) } as i32)
+            .sum();
+        let name_width = (client_rect(self.list).right - columns_width).max(s(260));
+        unsafe { SendMessageW(self.list, LVM_SETCOLUMNWIDTH, 0, name_width as isize) };
         let format = draw::inset(client_rect(self.details), s(9), s(7));
         unsafe { SendMessageW(self.details, EM_SETRECT, 0, &format as *const RECT as isize) };
         let mut x = s(16);
@@ -351,6 +372,19 @@ impl Manager {
             SendMessageW(self.list, LVM_SETTEXTBKCOLOR, 0, palette.field.colorref() as isize);
             SendMessageW(self.list, LVM_SETTEXTCOLOR, 0, palette.text.colorref() as isize);
             RedrawWindow(self.window, ptr::null(), ptr::null_mut(), RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
+        }
+    }
+
+    fn set_icons(&mut self) {
+        for (index, (kind, metric)) in [(ICON_BIG, SM_CXICON), (ICON_SMALL, SM_CXSMICON)]
+            .into_iter().enumerate()
+        {
+            let size = unsafe { GetSystemMetricsForDpi(metric, self.dpi) }.max(16);
+            let icon = canvas::app_icon(size, Palette::light().accent);
+            if icon.is_null() { continue; }
+            unsafe { SendMessageW(self.window, WM_SETICON, kind as usize, icon as isize) };
+            let previous = std::mem::replace(&mut self.icons[index], icon);
+            if !previous.is_null() { unsafe { DestroyIcon(previous) }; }
         }
     }
 
@@ -396,6 +430,7 @@ impl Manager {
         unsafe { SendMessageW(header, WM_SETFONT, fonts.fonts.bold as usize, 0) };
         self.dpi = dpi;
         self._fonts = fonts;
+        self.set_icons();
         self.apply_theme();
     }
 
@@ -532,7 +567,7 @@ impl Manager {
     }
 
     fn selection_changed(&self) {
-        let text = self.selected().map_or(String::new(), |row| {
+        let text = self.selected().map_or_else(|| "Select a plugin to see its details.".into(), |row| {
             let plugin = &row.plugin;
             let mut text = format!(
                 "{} {} by {}\r\n\r\n",
@@ -862,7 +897,12 @@ fn draw_catalog_row(custom: &NMCUSTOMDRAW) -> LRESULT {
 }
 
 fn draw_catalog_header(custom: &NMCUSTOMDRAW) -> LRESULT {
-    if custom.dwDrawStage != CDDS_PREPAINT {
+    if custom.dwDrawStage == CDDS_PREPAINT {
+        // Header SKIPDEFAULT is only supported at ITEMPREPAINT. Painting the
+        // whole header here lets native painting overwrite it with white.
+        return CDRF_NOTIFYPOSTPAINT as LRESULT;
+    }
+    if custom.dwDrawStage != CDDS_POSTPAINT {
         return CDRF_DODEFAULT as LRESULT;
     }
     with_look(|look| {
@@ -895,7 +935,7 @@ fn draw_catalog_header(custom: &NMCUSTOMDRAW) -> LRESULT {
         }
         canvas.fill(RECT { top: bounds.bottom - 1, ..bounds }, p.border);
         canvas.present(custom.hdc);
-        CDRF_SKIPDEFAULT as LRESULT
+        CDRF_DODEFAULT as LRESULT
     }).unwrap_or(CDRF_DODEFAULT as LRESULT)
 }
 

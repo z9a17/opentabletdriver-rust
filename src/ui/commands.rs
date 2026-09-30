@@ -178,6 +178,32 @@ pub(super) fn shell_open(window: HWND, target: &str) {
     }
 }
 
+thread_local! {
+    static POPUP_ANCHOR: Cell<HWND> = const { Cell::new(ptr::null_mut()) };
+}
+
+// TrackPopupMenu runs its own message loop. Consume a second anchor click
+// there, before the native button can turn it into a new BN_CLICKED command.
+unsafe extern "system" fn popup_input_filter(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code == MSGF_MENU as i32 && lparam != 0 {
+        let message = unsafe { &*(lparam as *const MSG) };
+        if matches!(message.message, WM_LBUTTONDOWN | WM_LBUTTONDBLCLK) {
+            let anchor = POPUP_ANCHOR.try_with(Cell::get).unwrap_or(ptr::null_mut());
+            let mut bounds = RECT::default();
+            if !anchor.is_null()
+                && unsafe { GetWindowRect(anchor, &mut bounds) } != 0
+                && message.pt.x >= bounds.left && message.pt.x < bounds.right
+                && message.pt.y >= bounds.top && message.pt.y < bounds.bottom
+                && unsafe { EndMenu() } != 0
+            {
+                unsafe { SendMessageW(anchor, WM_CANCELMODE, 0, 0) };
+                return 1;
+            }
+        }
+    }
+    unsafe { CallNextHookEx(ptr::null_mut(), code, wparam, lparam) }
+}
+
 /// Shows a popup menu below `anchor` and returns the chosen command.
 pub(super) fn popup(window: HWND, menu: HMENU, anchor: HWND) -> u16 {
     let mut r = RECT::default();
@@ -188,6 +214,17 @@ pub(super) fn popup(window: HWND, menu: HMENU, anchor: HWND) -> u16 {
         cbSize: size_of::<TPMPARAMS>() as u32,
         rcExclude: r,
     };
+    let previous_anchor = POPUP_ANCHOR.replace(anchor);
+    let hook = unsafe {
+        SetWindowsHookExW(
+            WH_MSGFILTER, Some(popup_input_filter), ptr::null_mut(),
+            windows_sys::Win32::System::Threading::GetCurrentThreadId(),
+        )
+    };
+    if hook.is_null() {
+        let error = std::io::Error::last_os_error();
+        with_app(|app| app.log(Level::Warning, "UI", format!("Could not enable click-to-close menus: {error}")));
+    }
     let command = unsafe {
         TrackPopupMenuEx(
             menu,
@@ -198,7 +235,9 @@ pub(super) fn popup(window: HWND, menu: HMENU, anchor: HWND) -> u16 {
             &params,
         )
     };
-    update_look(|look| look.menu_open = 0);
+    if !hook.is_null() { unsafe { UnhookWindowsHookEx(hook) }; }
+    POPUP_ANCHOR.set(previous_anchor);
+    update_look(|look| look.menu_open = previous_anchor as isize);
     unsafe {
         InvalidateRect(anchor, ptr::null(), 0);
         DestroyMenu(menu);
@@ -602,9 +641,6 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         }
         CMD_REMOVE_FILTER => {
             with_app(App::remove_filter);
-        }
-        CMD_FILTER_UP | CMD_FILTER_DOWN => {
-            with_app(|app| app.move_filter(id == CMD_FILTER_DOWN));
         }
         CMD_FILTER_DEFAULTS => {
             with_app(App::reset_filter);

@@ -121,8 +121,6 @@ const CMD_ADD_DOTNET: u16 = 220;
 const CMD_ADD_NATIVE: u16 = 221;
 const CMD_PLUGIN_MANAGER: u16 = 229;
 const CMD_REMOVE_FILTER: u16 = 222;
-const CMD_FILTER_UP: u16 = 223;
-const CMD_FILTER_DOWN: u16 = 224;
 const CMD_FILTER_DEFAULTS: u16 = 225;
 const CMD_PROPERTY_PREV: u16 = 227;
 const CMD_PROPERTY_NEXT: u16 = 228;
@@ -655,8 +653,6 @@ struct Controls {
     add_dotnet: HWND,
     add_native: HWND,
     remove_filter: HWND,
-    filter_up: HWND,
-    filter_down: HWND,
     filter_defaults: HWND,
     property_prev: HWND,
     property_next: HWND,

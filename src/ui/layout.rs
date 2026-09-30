@@ -360,32 +360,23 @@ impl App {
         let s = |value: i32| scale(value, self.dpi);
         let style = self.style();
         let list_width = s(290).min((content.right - content.left) / 2);
-        let buttons_top = content.bottom - s(30);
+        let buttons_top = content.bottom - s(66);
         let list_box = rect(
             content.left,
             content.top,
             content.left + list_width,
-            buttons_top - s(46),
+            buttons_top - s(12),
         );
         items.push(Item::Group(list_box));
         shown.push((self.c.filter_list, draw::inset(list_box, 1, s(4))));
-        let width = (list_width - s(12)) / 3;
-        for (index, hwnd) in [self.c.filter_up, self.c.filter_down, self.c.filter_defaults]
+        let width = (list_width - s(6)) / 2;
+        for (index, hwnd) in [self.c.add_dotnet, self.c.add_native, self.c.remove_filter, self.c.filter_defaults]
             .into_iter()
             .enumerate()
         {
-            let left = content.left + index as i32 * (width + s(6));
-            shown.push((
-                hwnd,
-                rect(left, buttons_top - s(36), left + width, buttons_top - s(6)),
-            ));
-        }
-        for (index, hwnd) in [self.c.add_dotnet, self.c.add_native, self.c.remove_filter]
-            .into_iter()
-            .enumerate()
-        {
-            let left = content.left + index as i32 * (width + s(6));
-            shown.push((hwnd, rect(left, buttons_top, left + width, content.bottom)));
+            let left = content.left + (index % 2) as i32 * (width + s(6));
+            let top = buttons_top + (index / 2) as i32 * s(36);
+            shown.push((hwnd, rect(left, top, left + width, top + s(30))));
         }
 
         let panel = rect(
@@ -405,40 +396,6 @@ impl App {
             rect(inner.left, y, inner.right, y + s(26)),
         ));
         y += s(30);
-        let detail = match target {
-            FilterRef::Radial(_) => {
-                let mut text = "Built-in Rust port of AbstractQbit's RadialFollow 0.3.0. It runs in tablet coordinates before any DLL filters and loads no .NET code.".to_owned();
-                if self.editor.profile.auto_enabled_radial_follow > 0 {
-                    text.push_str(" OpenTabletDriver had this filter disabled; this driver enables imported Radial Follow settings automatically.");
-                }
-                text
-            }
-            FilterRef::Plugin(index) => {
-                let plugin = &self.editor.profile.plugins[index];
-                match plugin.kind {
-                    PluginKind::Dotnet => format!(
-                        ".NET filter {} from {}. Saved order applies within each pipeline stage; tablet filters run before mapping and pixel filters after it.",
-                        plugin.type_name,
-                        plugin.path.display()
-                    ),
-                    PluginKind::DotnetTool => format!(
-                        ".NET tool {} from {}. Tools run beside the pen pipeline: the driver starts them with the tablet and stops them with it.",
-                        plugin.type_name,
-                        plugin.path.display()
-                    ),
-                    PluginKind::Native => format!("Native filter DLL {}", plugin.path.display()),
-                }
-            }
-        };
-        let detail_height =
-            canvas::wrapped_height(dc, style.fonts.ui, &detail, inner.right - inner.left);
-        items.push(Item::Label(
-            rect(inner.left, y, inner.right, y + detail_height),
-            detail,
-            Tone::Muted,
-            DT_LEFT | DT_WORDBREAK | DT_NOPREFIX,
-        ));
-        y += detail_height + s(14);
 
         let toolbar_y = y;
 
