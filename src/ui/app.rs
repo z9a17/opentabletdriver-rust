@@ -139,7 +139,6 @@ impl App {
                 controls: HashMap::new(),
                 tab: Tab::Output,
                 menu_open: 0,
-                running: false,
                 filters: Vec::new(),
                 log: VecDeque::new(),
                 log_columns: [0; 3],
@@ -159,6 +158,8 @@ impl App {
             prefs_path,
             process_dpi,
             tooltip: null,
+            filter_tip: vec![0],
+            hovered_filter: None,
             accelerators,
             c: Controls {
                 menus: Vec::new(),
@@ -171,14 +172,10 @@ impl App {
                 add_dotnet: null,
                 add_native: null,
                 remove_filter: null,
-                filter_up: null,
-                filter_down: null,
                 filter_defaults: null,
-                filter_json_toggle: null,
                 property_prev: null,
                 property_next: null,
                 filter_enable: null,
-                filter_json: null,
                 tip_binding: null,
                 tip_slider: null,
                 tip_field: null,
@@ -188,7 +185,6 @@ impl App {
                 log: null,
                 copy_log: null,
                 clear_log: null,
-                start: null,
                 save: null,
                 apply: null,
             },
@@ -207,19 +203,19 @@ impl App {
             properties: Vec::new(),
             plugin_metadata: HashMap::new(),
             metadata_pending: HashMap::new(),
+            metadata_versions: HashMap::new(),
             metadata_generation: 0,
+            metadata_refresh_deferred: false,
             edit_revision: 0,
             background_tx,
             background_rx,
-            device_scan_pending: false,
+            device_scan: background::DeviceScan::default(),
             device_strings_pending: false,
             import_pending: false,
+            diagnostics_pending: false,
             connected_tablets: Vec::new(),
             labels: HashMap::new(),
-            json_visible: false,
-            json_mode: false,
             property_page: 0,
-            json_error: None,
             invalid: HashSet::new(),
             drag: None,
             context_area: AreaKind::Display,
@@ -229,10 +225,16 @@ impl App {
             daemon_instance: None,
             daemon_log_sequence: 0,
             closing: false,
+            close_ready: false,
+            update_restart_pending: false,
+            update_close_approved: false,
             driver: DriverState::Stopped,
             tablet_present: None,
             tablet_choices: Vec::new(),
             preset_choices: Vec::new(),
+            preset_names: Vec::new(),
+            preset_scan_pending: false,
+            presets_loaded: false,
             status: String::new(),
             status_level: Level::Info,
             validation_status: false,
@@ -241,6 +243,7 @@ impl App {
         };
         app.create_controls()?;
         app.create_tooltips();
+        app.refresh_presets();
         Ok(app)
     }
 
@@ -285,13 +288,8 @@ impl App {
             self.button("Add native…", CMD_ADD_NATIVE, Kind::Button, Surface::Page)?;
         self.c.remove_filter =
             self.button("Remove", CMD_REMOVE_FILTER, Kind::Button, Surface::Page)?;
-        self.c.filter_up = self.button("Move up", CMD_FILTER_UP, Kind::Button, Surface::Page)?;
-        self.c.filter_down =
-            self.button("Move down", CMD_FILTER_DOWN, Kind::Button, Surface::Page)?;
         self.c.filter_defaults =
             self.button("Defaults", CMD_FILTER_DEFAULTS, Kind::Button, Surface::Page)?;
-        self.c.filter_json_toggle =
-            self.button("Edit JSON", CMD_FILTER_JSON, Kind::Button, Surface::Group)?;
         self.c.property_prev =
             self.button("Previous", CMD_PROPERTY_PREV, Kind::Button, Surface::Group)?;
         self.c.property_next =
@@ -304,15 +302,6 @@ impl App {
             Kind::Check,
             Surface::Group,
         )?;
-        self.c.filter_json = self.control(
-            "EDIT",
-            "",
-            ID_FILTER_JSON,
-            WS_TABSTOP | WS_VSCROLL | (ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN) as u32,
-            Kind::Memo,
-            Surface::Group,
-        )?;
-        unsafe { SendMessageW(self.c.filter_json, EM_LIMITTEXT, 65_536, 0) };
         let label = self.label("Tip Binding")?;
         self.c.tip_binding = self.button("Tip", ID_TIP_BINDING, Kind::Dropdown, Surface::Group)?;
         self.labels.insert(self.c.tip_binding as isize, label);
@@ -345,12 +334,6 @@ impl App {
         )?;
         self.c.copy_log = self.button("Copy All", CMD_COPY_LOG, Kind::Button, Surface::Page)?;
         self.c.clear_log = self.button("Clear", CMD_CLEAR_LOG, Kind::Button, Surface::Page)?;
-        self.c.start = self.button(
-            "Start driver",
-            CMD_START_STOP,
-            Kind::StartStop,
-            Surface::Window,
-        )?;
         self.c.save = self.button("Save", CMD_SAVE, Kind::Button, Surface::Window)?;
         self.c.apply = self.button("Apply", CMD_APPLY, Kind::Button, Surface::Window)?;
         self.set_item_heights();
@@ -391,14 +374,10 @@ impl App {
             c.add_dotnet,
             c.add_native,
             c.remove_filter,
-            c.filter_up,
-            c.filter_down,
             c.filter_defaults,
-            c.filter_json_toggle,
             c.property_prev,
             c.property_next,
             c.filter_enable,
-            c.filter_json,
             c.tip_binding,
             c.tip_slider,
             c.tip_field,
@@ -408,7 +387,6 @@ impl App {
             c.log,
             c.copy_log,
             c.clear_log,
-            c.start,
             c.save,
             c.apply,
         ];
@@ -508,6 +486,15 @@ impl App {
         self.add_tool(self.hwnd, 1, "You can right click the area editor to set the area to a display, adjust alignment, or resize the area.");
         self.add_tool(self.hwnd, 2, "You can right click the area editor to enable aspect ratio locking, adjust alignment, or resize the area.");
         self.add_tool(self.hwnd, 3, "Driver status");
+        let filter_tip = TTTOOLINFOW {
+            cbSize: size_of::<TTTOOLINFOW>() as u32,
+            uFlags: TTF_SUBCLASS | TTF_IDISHWND,
+            hwnd: self.hwnd,
+            uId: self.c.filter_list as usize,
+            lpszText: -1isize as *mut u16,
+            ..Default::default()
+        };
+        unsafe { SendMessageW(self.tooltip, TTM_ADDTOOLW, 0, &filter_tip as *const _ as isize) };
         let c = &self.c;
         let unit = |index: usize, unit: &str| match index {
             0 => format!("Area width in {unit}"),
@@ -558,10 +545,6 @@ impl App {
             "Add a native Rust filter DLL (otd_filter_v1).".into(),
         ));
         tips.push((
-            c.start,
-            "Start or stop reading the tablet with the current settings.".into(),
-        ));
-        tips.push((
             c.apply,
             "Restart the running driver with the current settings.".into(),
         ));
@@ -574,6 +557,9 @@ impl App {
     // ----- Synchronizing controls with the editor ------------------------------
 
     pub(super) fn sync_all(&mut self) {
+        if let Err(error) = self.editor.update_detected_tablet(&self.connected_tablets) {
+            self.log(Level::Warning, "Tablet", format!("Could not use the detected tablet's dimensions: {error}"));
+        }
         self.invalid.clear();
         self.sync_mode();
         self.sync_areas(None);
@@ -711,7 +697,90 @@ impl App {
         self.rebuild_properties();
     }
 
+    pub(super) fn filter_tooltip(&mut self, tip: &mut NMTTDISPINFOW) {
+        if tip.hdr.hwndFrom != self.tooltip || tip.hdr.idFrom != self.c.filter_list as usize {
+            return;
+        }
+        let mut point = POINT::default();
+        unsafe { GetCursorPos(&mut point); ScreenToClient(self.c.filter_list, &mut point); }
+        let item = unsafe {
+            SendMessageW(self.c.filter_list, LB_ITEMFROMPOINT, 0,
+                ((point.y as u32 & 0xffff) << 16 | (point.x as u32 & 0xffff)) as isize)
+        };
+        let text = if item < 0 || (item as usize >> 16) != 0 {
+            String::new()
+        } else {
+            let index = item as usize & 0xffff;
+            with_look(|look| look.filters.get(index).cloned()).flatten().map_or_else(String::new, |filter| {
+                let mut text = format!("{}\n{}\n{}", filter.name, filter.detail,
+                    if filter.enabled { "Enabled" } else { "Disabled" });
+                if let FilterRef::Plugin(index) = filter.target {
+                    let Some(plugin) = self.editor.profile.plugins.get(index) else { return String::new(); };
+                    text.push_str(&format!("\n{}\n{}", plugin.type_name, plugin.path.display()));
+                    if let Some(metadata) = self.metadata_for(plugin) {
+                        if let Some(fields) = model::plugin_editor_fields(&plugin.settings_json, Some(metadata)) {
+                            let total = fields.len();
+                            for field in fields.into_iter().take(12) {
+                                let value = if field.value.uses_default() {
+                                    field.value.default_cue()
+                                } else {
+                                    field.value.display_text()
+                                };
+                                let value: String = value.chars().take(160).collect();
+                                text.push_str(&format!("\n{}: {}{}", field.label, value,
+                                    if field.unit.is_empty() { String::new() } else { format!(" {}", field.unit) }));
+                            }
+                            if total > 12 { text.push_str("\nSelect the filter to see all settings."); }
+                        }
+                    } else {
+                        let error = self.plugin_metadata.get(&plugin.path)
+                            .and_then(|metadata| metadata.as_ref().err());
+                        text.push('\n');
+                        text.push_str(error.map_or("Settings information is loading or unavailable.", String::as_str));
+                    }
+                } else if let FilterRef::Radial(index) = filter.target {
+                    text.push_str("\nTablet coordinates, before mapping. No .NET runtime required.");
+                    if self.editor.profile.auto_enabled_radial_follow > 0 {
+                        text.push_str("\nThis legacy profile auto-enabled imported Radial Follow settings.");
+                    }
+                    let settings = self.editor.radial(index);
+                    for (field, label, unit, _) in RADIAL_FIELDS {
+                        text.push_str(&format!("\n{label}: {} {unit}", model::format_number(field.get(&settings), 6)));
+                    }
+                }
+                text
+            })
+        };
+        self.filter_tip = wide(&text);
+        tip.lpszText = self.filter_tip.as_mut_ptr();
+    }
+
+    pub(super) fn filter_hover_changed(&mut self, window: HWND, point: LPARAM) -> Option<HWND> {
+        let hovered = if window == self.c.filter_list {
+            let item = unsafe { SendMessageW(window, LB_ITEMFROMPOINT, 0, point) };
+            (item >= 0 && (item as usize >> 16) == 0).then_some(item as usize & 0xffff)
+        } else { None };
+        if hovered == self.hovered_filter { return None; }
+        self.hovered_filter = hovered;
+        Some(self.tooltip)
+    }
+
+    pub(super) fn refresh_deferred_metadata(&mut self) {
+        if self.metadata_refresh_deferred && !self.closing && !self.update_restart_pending && !self.editing_controls() {
+            self.metadata_refresh_deferred = false;
+            self.rebuild_properties();
+            self.layout();
+        }
+    }
+
+    pub(super) fn metadata_changed(&mut self) {
+        self.refresh_filter_list();
+        self.metadata_refresh_deferred = true;
+        self.refresh_deferred_metadata();
+    }
+
     pub(super) fn refresh_filter_list(&mut self) {
+        self.hovered_filter = None;
         if self.tab == Tab::Filters {
             self.ensure_plugin_metadata();
         }
@@ -750,7 +819,7 @@ impl App {
         let focus = unsafe { GetFocus() };
         !self.invalid.is_empty()
             || self.drag.is_some()
-            || [self.c.filter_json, self.c.tip_field, self.c.eraser_field].contains(&focus)
+            || [self.c.tip_field, self.c.eraser_field].contains(&focus)
             || self.c.display.contains(&focus)
             || self.c.tablet.contains(&focus)
             || self.c.relative.contains(&focus)
@@ -767,10 +836,11 @@ impl App {
     }
 
     pub(super) fn rebuild_properties(&mut self) {
+        self.metadata_refresh_deferred = false;
         for row in std::mem::take(&mut self.properties) {
             self.remove_tool(row.hwnd);
             self.invalid.remove(&(row.hwnd as isize));
-            for hwnd in [Some(row.hwnd), row.label_control, row.default_control]
+            for hwnd in [Some(row.hwnd), row.label_control]
                 .into_iter()
                 .flatten()
             {
@@ -781,15 +851,10 @@ impl App {
                 unsafe { DestroyWindow(hwnd) };
             }
         }
-        self.json_visible = false;
-        self.json_error = None;
-        self.set_invalid(self.c.filter_json, false, None);
         let Some(target) = self.selected_target() else {
             return;
         };
-        let name =
-            with_look(|look| look.filters[self.selected_filter].name.clone()).unwrap_or_default();
-        set_text(self.c.filter_enable, &format!("Enable {name}"));
+        set_text(self.c.filter_enable, "Enabled");
         unsafe {
             SendMessageW(
                 self.c.filter_enable,
@@ -800,20 +865,6 @@ impl App {
             EnableWindow(
                 self.c.remove_filter,
                 matches!(target, FilterRef::Plugin(_)).into(),
-            );
-            EnableWindow(
-                self.c.filter_up,
-                self.editor
-                    .filter_move_target(target, false)
-                    .is_some()
-                    .into(),
-            );
-            EnableWindow(
-                self.c.filter_down,
-                self.editor
-                    .filter_move_target(target, true)
-                    .is_some()
-                    .into(),
             );
             let can_reset = match target {
                 FilterRef::Radial(_) => true,
@@ -841,29 +892,25 @@ impl App {
             FilterRef::Plugin(index) => {
                 let plugin = &self.editor.profile.plugins[index];
                 let metadata = self.metadata_for(plugin).cloned();
-                let properties = (plugin.kind.is_managed()
-                    && metadata.is_some()
-                    && !self.json_mode)
-                    .then(|| model::plugin_editor_fields(&plugin.settings_json, metadata.as_ref()))
-                    .flatten()
+                let properties = model::plugin_editor_fields(&plugin.settings_json, metadata.as_ref())
                     .filter(|properties| properties.len() < MAX_PROPERTY_ROWS as usize);
                 match properties {
                     Some(properties) => {
                         for field in properties {
-                            let shown = field.value.display_text();
-                            let tooltip = if matches!(&field.value, PropertyValue::JsonScalar) {
-                                let guidance = "Enter a JSON scalar: null, true or false, a number, or a quoted string.";
-                                Some(match field.tooltip {
-                                    Some(tip) if !tip.is_empty() => format!("{tip}\n{guidance}"),
-                                    _ => guidance.to_owned(),
-                                })
-                            } else if let PropertyValue::Typed { metadata, .. } = &field.value {
-                                let state = "Omitted settings keep constructor values. Use default restores the declared default, or the constructor value when no default is declared.";
-                                Some(format!(
-                                    "{}\n{}\n{state}",
-                                    field.tooltip.as_deref().unwrap_or(""),
-                                    metadata.property_type
-                                ))
+                            let shown = if matches!(&field.value, PropertyValue::JsonScalar | PropertyValue::Json(_)) {
+                                "Configured".into()
+                            } else {
+                                field.value.display_text()
+                            };
+                            let tooltip = if !field.value.field_writable() {
+                                Some("This plugin setting is preserved in the profile and cannot be edited here.".into())
+                            } else if let PropertyValue::Typed { .. } = &field.value {
+                                let state = if field.value.uses_default() {
+                                    field.value.default_cue()
+                                } else {
+                                    "Changes take effect with Save or Apply.".into()
+                                };
+                                Some(format!("{}\n\n{state}", field.tooltip.as_deref().unwrap_or("")))
                             } else {
                                 field.tooltip
                             };
@@ -876,13 +923,7 @@ impl App {
                             ));
                         }
                     }
-                    None => {
-                        self.json_visible = true;
-                        set_text(
-                            self.c.filter_json,
-                            &plugin.settings_json.replace('\n', "\r\n"),
-                        );
-                    }
+                    None => {}
                 }
             }
         }
@@ -916,35 +957,9 @@ impl App {
             let Ok(hwnd) = created else {
                 continue;
             };
-            let default_control = if matches!(
-                &target,
-                PropertyTarget::Plugin(_, PropertyValue::Typed { .. })
-            ) {
-                let reset = self
-                    .button(
-                        "Use default",
-                        ID_PROPERTY_DEFAULT + index as u16,
-                        Kind::Button,
-                        Surface::Group,
-                    )
-                    .ok();
-                if let Some(reset) = reset {
-                    let writable = match &target {
-                        PropertyTarget::Plugin(_, value) => value.writable(),
-                        _ => false,
-                    };
-                    unsafe {
-                        EnableWindow(reset, writable.into());
-                    }
-                    self.add_tool(reset, 0, "Use the plugin's declared default, or its constructor value if no default is declared.");
-                }
-                reset
-            } else {
-                None
-            };
             if let PropertyTarget::Plugin(_, value) = &target {
                 unsafe {
-                    EnableWindow(hwnd, value.writable().into());
+                    EnableWindow(hwnd, value.field_writable().into());
                 }
                 if value.uses_default() && !dropdown {
                     unsafe {
@@ -952,12 +967,12 @@ impl App {
                             hwnd,
                             EM_SETCUEBANNER,
                             0,
-                            wide("Use default").as_ptr() as isize,
+                            wide(&value.default_cue()).as_ptr() as isize,
                         );
                     }
                 }
             }
-            for control in [label_control, Some(hwnd), default_control]
+            for control in [label_control, Some(hwnd)]
                 .into_iter()
                 .flatten()
             {
@@ -982,10 +997,12 @@ impl App {
             }
             if let Some(tip) = tip {
                 self.add_tool(hwnd, 0, &tip);
+                if let Some(label) = label_control {
+                    self.add_tool(label, 0, &tip);
+                }
             }
             self.properties.push(PropertyRow {
                 hwnd,
-                default_control,
                 label_control,
                 label,
                 unit,
@@ -1083,22 +1100,20 @@ impl App {
         unsafe { SetWindowTextW(self.hwnd, wide(&title).as_ptr()) };
     }
 
-    /// The tablet the profile is for, or the default tablet.
+    /// The profile target or the sole detected tablet, never a fixed model.
     pub(super) fn tablet_label(&self) -> String {
-        self.editor
-            .profile
-            .tablet_name()
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| TABLET_NAME.into())
+        self.editor.tablet_label(&self.connected_tablets)
     }
 
     /// Makes the profile target a tablet (`None`: whichever is connected).
     pub(super) fn choose_tablet(&mut self, name: Option<String>) {
-        if self.editor.profile.target_tablet == name {
+        if self.editor.profile.tablet_name().is_ok_and(|target| target == name) {
             return;
         }
-        self.editor.set_tablet(name);
+        if let Err(error) = self.editor.set_tablet(name) {
+            self.log(Level::Error, "Tablet", format!("Could not select the tablet: {error}. Current settings were kept."));
+            return;
+        }
         self.mark_dirty();
         self.sync_all();
         self.layout();
@@ -1166,8 +1181,6 @@ impl App {
             self.edit_relative(index, hwnd, &value);
         } else if hwnd == self.c.tip_field || hwnd == self.c.eraser_field {
             self.edit_threshold(hwnd == self.c.eraser_field, hwnd, &value);
-        } else if hwnd == self.c.filter_json {
-            self.edit_json(&value);
         } else if let Some(index) = self.properties.iter().position(|row| row.hwnd == hwnd) {
             self.edit_property(index, &value);
         }
@@ -1181,6 +1194,9 @@ impl App {
             self.sync_relative(None);
         } else if hwnd == self.c.tip_field || hwnd == self.c.eraser_field {
             self.sync_pen(None);
+        }
+        if self.metadata_refresh_deferred {
+            unsafe { PostMessageW(self.hwnd, WM_METADATA_REFRESH, 0, 0); }
         }
     }
 
@@ -1320,27 +1336,6 @@ impl App {
         unsafe { InvalidateRect(slider, ptr::null(), 0) };
     }
 
-    pub(super) fn edit_json(&mut self, value: &str) {
-        let Some(FilterRef::Plugin(index)) = self.selected_target() else {
-            return;
-        };
-        let candidate = PluginConfig {
-            settings_json: value.replace("\r\n", "\n"),
-            ..self.editor.profile.plugins[index].clone()
-        };
-        let error = candidate.validate().err();
-        let changed = error != self.json_error;
-        if error.is_none() {
-            self.editor.profile.plugins[index] = candidate;
-            self.mark_dirty();
-        }
-        self.json_error = error;
-        if changed {
-            self.set_invalid(self.c.filter_json, self.json_error.is_some(), None);
-            self.layout();
-        }
-    }
-
     pub(super) fn edit_property(&mut self, index: usize, value: &str) {
         let Some(filter) = self.selected_target() else {
             return;
@@ -1436,6 +1431,8 @@ impl App {
         if !previous.writable() {
             return;
         }
+        // The default menu action writes a known attribute/editor default.
+        let value = if value.is_null() { previous.reset_value() } else { value };
         let config = &self.editor.profile.plugins[plugin];
         let result = model::set_plugin_property(&config.settings_json, key, value.clone())
             .and_then(|settings_json| {
@@ -1470,13 +1467,9 @@ impl App {
         if let PropertyTarget::Plugin(_, value) = &row.target
             && value.choices().is_empty()
         {
-            let cue = if value.uses_default() {
-                "Use default"
-            } else {
-                ""
-            };
+            let cue = value.default_cue();
             unsafe {
-                SendMessageW(row.hwnd, EM_SETCUEBANNER, 0, wide(cue).as_ptr() as isize);
+                SendMessageW(row.hwnd, EM_SETCUEBANNER, 0, wide(&cue).as_ptr() as isize);
             }
         }
     }
@@ -1516,8 +1509,7 @@ impl App {
                 return;
             }
             self.selected_filter = index as usize;
-            self.json_mode = false;
-            self.property_page = 0;
+                self.property_page = 0;
             self.rebuild_properties();
             self.layout();
         }
@@ -1538,8 +1530,7 @@ impl App {
     }
 
     pub(super) fn can_leave_filter(&mut self) -> bool {
-        if self.json_error.is_some()
-            || self
+        if self
                 .properties
                 .iter()
                 .any(|row| self.invalid.contains(&(row.hwnd as isize)))
@@ -1556,75 +1547,6 @@ impl App {
         }
     }
 
-    pub(super) fn toggle_filter_json(&mut self) {
-        if !self.can_leave_filter() {
-            return;
-        }
-        let Some(FilterRef::Plugin(index)) = self.selected_target() else {
-            return;
-        };
-        let plugin = &self.editor.profile.plugins[index];
-        if !plugin.kind.is_managed() || self.metadata_for(plugin).is_none() {
-            return;
-        }
-        if self.json_visible {
-            let fields =
-                model::plugin_editor_fields(&plugin.settings_json, self.metadata_for(plugin));
-            if fields
-                .as_ref()
-                .is_none_or(|fields| fields.len() >= MAX_PROPERTY_ROWS as usize)
-            {
-                self.show_status(
-                    "This settings object requires the JSON editor.".into(),
-                    Level::Info,
-                    false,
-                );
-                return;
-            }
-        }
-        self.json_mode = !self.json_visible;
-        self.property_page = 0;
-        self.rebuild_properties();
-        self.layout();
-        unsafe {
-            SetFocus(if self.json_visible {
-                self.c.filter_json
-            } else {
-                self.c.filter_json_toggle
-            });
-        }
-    }
-
-    pub(super) fn move_filter(&mut self, down: bool) {
-        // Rebuilding controls would discard invalid text, so retain it until corrected.
-        if self
-            .properties
-            .iter()
-            .any(|row| self.invalid.contains(&(row.hwnd as isize)))
-            || self.json_error.is_some()
-        {
-            self.show_status(
-                "Correct the selected filter's invalid settings before moving it.".into(),
-                Level::Warning,
-                true,
-            );
-            return;
-        }
-        let Some(target) = self.selected_target() else {
-            return;
-        };
-        let Some(next) = self.editor.move_filter(target, down) else {
-            return;
-        };
-        self.selected_filter = match next {
-            FilterRef::Radial(index) => index,
-            FilterRef::Plugin(index) => self.editor.profile.radial_follow.len().max(1) + index,
-        };
-        self.mark_dirty();
-        self.refresh_filters();
-        self.layout();
-    }
-
     pub(super) fn reset_filter(&mut self) {
         let Some(target) = self.selected_target() else {
             return;
@@ -1637,9 +1559,8 @@ impl App {
         };
         match self.editor.reset_filter(target, metadata.as_ref()) {
             Ok(()) => {
-                // Defaults intentionally replace invalid edits, including raw JSON.
-                self.set_invalid(self.c.filter_json, false, None);
-                self.mark_dirty();
+                // Defaults intentionally replace invalid property edits.
+                        self.mark_dirty();
                 self.refresh_filters();
                 self.layout();
                 self.log(
@@ -1961,7 +1882,9 @@ impl App {
         });
         self.dark_mode.apply_app(palette.dark);
         self.dark_mode.apply_title_bar(self.hwnd, palette.dark);
-        let mut scrolling = vec![self.c.filter_json, self.c.filter_list, self.c.log];
+        plugin_manager::apply_theme();
+        debugger::refresh_theme();
+        let mut scrolling = vec![self.c.filter_list, self.c.log];
         if !self.tooltip.is_null() {
             scrolling.push(self.tooltip);
         }
@@ -1998,11 +1921,7 @@ impl App {
                 .flatten(),
         );
         for hwnd in all {
-            let font = if hwnd == self.c.filter_json {
-                fonts.fonts.mono
-            } else {
-                fonts.fonts.ui
-            };
+            let font = fonts.fonts.ui;
             unsafe { SendMessageW(hwnd, WM_SETFONT, font as usize, 0) };
         }
         update_look(|look| {
@@ -2071,7 +1990,9 @@ impl App {
         self.editor = Editor::new(profile);
         self.plugin_metadata.clear();
         self.metadata_pending.clear();
+        self.metadata_versions.clear();
         self.metadata_generation = self.metadata_generation.wrapping_add(1);
+        self.metadata_refresh_deferred = false;
         self.import_pending = false;
         if let Some(path) = path {
             self.profile_path = path;
@@ -2081,7 +2002,6 @@ impl App {
         }
         self.dirty = dirty;
         self.selected_filter = 0;
-        self.json_mode = false;
         self.property_page = 0;
         self.drag = None;
         self.sync_all();
@@ -2096,9 +2016,54 @@ impl App {
         }
     }
 
+    /// A Save/Apply echo should leave the editor exactly where the user was.
+    /// Matching snapshots need no control rebuild or metadata rediscovery.
+    fn load_active_profile(&mut self, profile: Profile) {
+        if let (Ok(current), Ok(incoming)) = (self.editor.profile.to_toml(), profile.to_toml())
+            && current == incoming
+        {
+            return;
+        }
+        let target = self.selected_target();
+        let selected_plugin = match target {
+            Some(FilterRef::Plugin(index)) => self.editor.profile.plugins.get(index).cloned(),
+            _ => None,
+        };
+        let top = unsafe { SendMessageW(self.c.filter_list, LB_GETTOPINDEX, 0, 0) }.max(0) as usize;
+        let page = self.property_page;
+        self.editor = Editor::new(profile);
+        self.metadata_generation = self.metadata_generation.wrapping_add(1);
+        self.metadata_pending.clear();
+        self.metadata_versions.clear();
+        self.metadata_refresh_deferred = false;
+        self.import_pending = false;
+        if let Some(plugin) = selected_plugin {
+            let same = |candidate: &PluginConfig| candidate.kind == plugin.kind
+                && candidate.path == plugin.path && candidate.type_name == plugin.type_name;
+            let previous = match target { Some(FilterRef::Plugin(index)) => index, _ => 0 };
+            let index = if self.editor.profile.plugins.get(previous).is_some_and(same) {
+                Some(previous)
+            } else {
+                self.editor.profile.plugins.iter().position(same)
+            };
+            if let Some(index) = index {
+                self.selected_filter = self.editor.profile.radial_follow.len().max(1) + index;
+            }
+        } else if let Some(FilterRef::Radial(index)) = target {
+            self.selected_filter = index;
+        }
+        self.property_page = page;
+        self.drag = None;
+        self.sync_all();
+        self.layout();
+        let count = self.editor.filters().len();
+        unsafe { SendMessageW(self.c.filter_list, LB_SETTOPINDEX, top.min(count.saturating_sub(1)), 0); }
+        self.update_title();
+    }
+
     /// The profile exactly as Save and Start will use it.
     pub(super) fn checked_profile(&self) -> Result<Profile, String> {
-        if !self.invalid.is_empty() || self.json_error.is_some() {
+        if !self.invalid.is_empty() {
             return Err("Correct invalid editor values before saving or applying settings.".into());
         }
         model::validated(&self.editor.profile, &self.profile_path)
@@ -2192,7 +2157,8 @@ impl App {
             self.background("settings-import", move || BackgroundResult::Import {
                 generation,
                 edit_revision,
-                result: Profile::load_connected(None, &crate::hid::connected_tablets())
+                result: crate::hid::connected_tablets()
+                    .and_then(|names| Profile::load_connected(None, &names))
                     .map(Box::new),
             });
     }
@@ -2255,17 +2221,7 @@ impl App {
         let was_connected = self.driver == DriverState::Connected;
         self.driver = state;
         let running = self.running.is_some();
-        update_look(|look| look.running = running);
-        let label = match state {
-            DriverState::Starting if self.control_busy => "Starting…",
-            DriverState::Stopping => "Stopping…",
-            _ if running => "Stop driver",
-            _ => "Start driver",
-        };
-        set_text(self.c.start, label);
         unsafe {
-            EnableWindow(self.c.start, (!self.control_busy).into());
-            InvalidateRect(self.c.start, ptr::null(), 0);
             EnableWindow(
                 self.c.apply,
                 (running && !self.control_busy && state != DriverState::Stopping).into(),
@@ -2314,7 +2270,7 @@ impl App {
     }
 
     fn submit_control(&mut self, command: client::ClientCommand) -> bool {
-        if self.closing {
+        if self.closing || self.update_restart_pending {
             return false;
         }
         if self.control_busy {
@@ -2341,7 +2297,7 @@ impl App {
     }
 
     pub(super) fn auto_start(&mut self) {
-        if !self.closing && self.running.is_none() && !self.control_busy {
+        if !self.closing && !self.update_restart_pending && self.running.is_none() && !self.control_busy {
             match self.checked_profile() {
                 Ok(profile) => self.start_with_intent(profile, true),
                 Err(error) => self.log(Level::Error, "Settings", error),
@@ -2379,24 +2335,6 @@ impl App {
                 Level::Info,
                 "Daemon",
                 "Connecting to the daemon; an existing driver keeps its active settings.",
-            );
-        }
-    }
-
-    pub(super) fn stop(&mut self) {
-        let Some(identity) = self
-            .running
-            .as_ref()
-            .map(|running| running.identity.clone())
-        else {
-            return;
-        };
-        if self.submit_control(client::ClientCommand::Stop(identity)) {
-            self.set_driver_state(DriverState::Stopping);
-            self.log(
-                Level::Info,
-                "Daemon",
-                "Stop requested; waiting for daemon input cleanup.",
             );
         }
     }
@@ -2440,6 +2378,7 @@ impl App {
     }
 
     pub(super) fn driver_status(&mut self) {
+        if self.update_restart_pending { return; }
         let events = self
             .daemon_client
             .as_ref()
@@ -2447,8 +2386,28 @@ impl App {
             .unwrap_or_default();
         for event in events {
             match event {
+                client::ClientEvent::CloseFinished(result) => {
+                    match result {
+                        Ok(warning) => {
+                            if let Some(warning) = warning {
+                                self.log(Level::Warning, "Daemon", warning);
+                            }
+                            self.close_ready = true;
+                            self.save_prefs();
+                            unsafe { PostMessageW(self.hwnd, WM_CLOSE, 0, 0); }
+                        }
+                        Err(error) => {
+                            self.closing = false;
+                            self.control_busy = false;
+                            unsafe { EnableWindow(self.hwnd, 1); }
+                            plugin_manager::set_restart_pending(false);
+                            self.log(Level::Error, "Daemon", error);
+                            self.set_driver_state(self.driver);
+                        }
+                    }
+                }
                 client::ClientEvent::ActionFinished(result) => {
-                    self.control_busy = false;
+                    if !self.closing { self.control_busy = false; }
                     if let Err(error) = result {
                         self.log(Level::Error, "Daemon", error);
                     }
@@ -2461,7 +2420,7 @@ impl App {
                     self.running = None;
                     self.set_driver_state(DriverState::Disconnected);
                     self.log(if error.is_some() { Level::Warning } else { Level::Info }, "Daemon",
-                        error.unwrap_or_else(|| "No daemon is available. Start driver launches it; closing this panel does not stop daemon input.".into()));
+                        error.unwrap_or_else(|| "No daemon is available. Start driver launches it; closing this panel stops tablet input.".into()));
                 }
                 client::ClientEvent::Snapshot { status, profile } => {
                     let identity = status.identity();
@@ -2470,11 +2429,11 @@ impl App {
                         self.daemon_log_sequence = 0;
                     }
                     self.running = client::active(status.state).then_some(Running { identity });
-                    if let Some(profile) = profile {
-                        if self.dirty {
+                    if let Some(profile) = profile.filter(|_| !self.closing) {
+                        if self.dirty || !self.invalid.is_empty() {
                             self.log(Level::Warning, "Settings", "Daemon configuration changed. Unsaved local edits were kept; Apply deliberately replaces the active configuration.");
                         } else {
-                            self.replace_profile(*profile, None, false);
+                            self.load_active_profile(*profile);
                             self.log(Level::Info, "Settings", "Loaded the daemon's active configuration. Save writes it to the local profile file.");
                         }
                     }
@@ -2520,12 +2479,31 @@ impl App {
         }
     }
 
-    /// Closing the panel detaches immediately; the daemon retains its worker.
+    /// Close waits for driver cleanup without blocking the window thread.
     pub(super) fn begin_close(&mut self) -> bool {
-        self.closing = true;
-        self.save_prefs();
-        self.daemon_client.take();
-        true
+        if self.update_close_approved {
+            self.closing = true;
+            self.save_prefs();
+            return true;
+        }
+        self.connect_daemon();
+        let result = self.daemon_client.as_ref()
+            .ok_or_else(|| "Daemon client unavailable; input cleanup could not be confirmed.".to_owned())
+            .and_then(|client| client.submit(client::ClientCommand::Close));
+        match result {
+            Ok(()) => {
+                self.closing = true;
+                self.control_busy = true;
+                self.drag = None;
+                debugger::close();
+                self.set_driver_state(DriverState::Stopping);
+                self.show_status("Stopping the driver before closing…".into(), Level::Info, false);
+                unsafe { EnableWindow(self.hwnd, 0); }
+                plugin_manager::set_restart_pending(true);
+            }
+            Err(error) => self.log(Level::Error, "Daemon", error),
+        }
+        false
     }
     // ----- Console -------------------------------------------------------------------
 

@@ -11,23 +11,21 @@ pub(super) const PRESET_CHOICES: u16 = 64;
 pub(super) const CMD_PRESET_SAVE: u16 = 6200;
 pub(super) const CMD_PRESET_FOLDER: u16 = 6201;
 
+/// Called by the background worker; menu creation only uses its cached result.
+pub(super) fn list_names() -> Result<Vec<String>, String> {
+    PresetStore::user().and_then(|store| store.list()).map(|listing| {
+        listing.presets.into_iter().filter(|preset| preset.error.is_none())
+            .map(|preset| preset.name).take(usize::from(PRESET_CHOICES)).collect()
+    })
+}
+
 /// Appends the Presets submenu and remembers the listed names.
 pub(super) fn append_menu(menu: HMENU, app: &mut App) {
     let presets = unsafe { CreatePopupMenu() };
-    let names: Vec<String> = PresetStore::user()
-        .and_then(|store| store.list())
-        .map(|listing| {
-            listing
-                .presets
-                .into_iter()
-                .filter(|preset| preset.error.is_none())
-                .map(|preset| preset.name)
-                .take(usize::from(PRESET_CHOICES))
-                .collect()
-        })
-        .unwrap_or_default();
+    let names = app.preset_names.clone();
+    app.refresh_presets();
     if names.is_empty() {
-        append(presets, MF_GRAYED, 0, "No presets saved");
+        append(presets, MF_GRAYED, 0, if !app.presets_loaded && app.preset_scan_pending { "Loading presets..." } else { "No presets saved" });
     }
     for (index, name) in names.iter().enumerate() {
         append(presets, MF_STRING, CMD_PRESET_FIRST + index as u16, name);
@@ -40,6 +38,8 @@ pub(super) fn append_menu(menu: HMENU, app: &mut App) {
         "Save settings as preset...",
     );
     append(presets, MF_STRING, CMD_PRESET_FOLDER, "Open presets folder");
+    // Keep the command mapping fixed while a menu is open. A worker may
+    // update preset_names during the modal Windows menu message loop.
     app.preset_choices = names;
     unsafe { AppendMenuW(menu, MF_POPUP, presets as usize, wide("Presets").as_ptr()) };
 }
@@ -95,7 +95,10 @@ pub(super) fn save(window: HWND) {
         Ok(Some(name.as_str().to_owned()))
     })();
     with_app(|app| match result {
-        Ok(Some(name)) => app.log(Level::Info, "Presets", format!("Saved preset {name}.")),
+        Ok(Some(name)) => {
+            app.log(Level::Info, "Presets", format!("Saved preset {name}."));
+            app.refresh_presets();
+        }
         Ok(None) => {}
         Err(error) => app.log(Level::Error, "Presets", error),
     });

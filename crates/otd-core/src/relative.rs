@@ -20,13 +20,18 @@ impl RelativeSettings {
         self.validate_for(TabletSpec::PTH_660)
     }
 
-    pub fn validate_for(self, spec: TabletSpec) -> Result<Self, String> {
+    pub fn validate_values(self) -> Result<Self, String> {
         if ![self.sensitivity.0, self.sensitivity.1, self.rotation]
             .into_iter()
             .all(f64::is_finite)
         {
             return Err("relative sensitivity and rotation must be finite".into());
         }
+        Ok(self)
+    }
+
+    pub fn validate_for(self, spec: TabletSpec) -> Result<Self, String> {
+        self.validate_values()?;
         let [a, b, c, d] = self.transform(spec);
         // A full-diagonal movement plus fractional carry must fit a LONG.
         let (width, height) = (f64::from(spec.max_x), f64::from(spec.max_y));

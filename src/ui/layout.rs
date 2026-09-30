@@ -52,7 +52,7 @@ impl App {
         let bar_top = client.bottom - s(48);
         let button_top = bar_top + s(9);
         let mut right = client.right - s(10);
-        for (hwnd, width) in [(self.c.apply, 92), (self.c.save, 92), (self.c.start, 124)] {
+        for (hwnd, width) in [(self.c.apply, 92), (self.c.save, 92)] {
             shown.push((
                 hwnd,
                 rect(right - s(width), button_top, right, button_top + s(30)),
@@ -80,7 +80,7 @@ impl App {
         all.extend(
             self.properties
                 .iter()
-                .flat_map(|row| [Some(row.hwnd), row.label_control, row.default_control])
+                .flat_map(|row| [Some(row.hwnd), row.label_control])
                 .flatten(),
         );
         unsafe {
@@ -360,32 +360,23 @@ impl App {
         let s = |value: i32| scale(value, self.dpi);
         let style = self.style();
         let list_width = s(290).min((content.right - content.left) / 2);
-        let buttons_top = content.bottom - s(30);
+        let buttons_top = content.bottom - s(66);
         let list_box = rect(
             content.left,
             content.top,
             content.left + list_width,
-            buttons_top - s(46),
+            buttons_top - s(12),
         );
         items.push(Item::Group(list_box));
         shown.push((self.c.filter_list, draw::inset(list_box, 1, s(4))));
-        let width = (list_width - s(12)) / 3;
-        for (index, hwnd) in [self.c.filter_up, self.c.filter_down, self.c.filter_defaults]
+        let width = (list_width - s(6)) / 2;
+        for (index, hwnd) in [self.c.add_dotnet, self.c.add_native, self.c.remove_filter, self.c.filter_defaults]
             .into_iter()
             .enumerate()
         {
-            let left = content.left + index as i32 * (width + s(6));
-            shown.push((
-                hwnd,
-                rect(left, buttons_top - s(36), left + width, buttons_top - s(6)),
-            ));
-        }
-        for (index, hwnd) in [self.c.add_dotnet, self.c.add_native, self.c.remove_filter]
-            .into_iter()
-            .enumerate()
-        {
-            let left = content.left + index as i32 * (width + s(6));
-            shown.push((hwnd, rect(left, buttons_top, left + width, content.bottom)));
+            let left = content.left + (index % 2) as i32 * (width + s(6));
+            let top = buttons_top + (index / 2) as i32 * s(36);
+            shown.push((hwnd, rect(left, top, left + width, top + s(30))));
         }
 
         let panel = rect(
@@ -405,64 +396,17 @@ impl App {
             rect(inner.left, y, inner.right, y + s(26)),
         ));
         y += s(30);
-        let detail = match target {
-            FilterRef::Radial(_) => {
-                let mut text = "Built-in Rust port of AbstractQbit's RadialFollow 0.3.0. It runs in tablet coordinates before any DLL filters and loads no .NET code.".to_owned();
-                if self.editor.profile.auto_enabled_radial_follow > 0 {
-                    text.push_str(" OpenTabletDriver had this filter disabled; this driver enables imported Radial Follow settings automatically.");
-                }
-                text
-            }
-            FilterRef::Plugin(index) => {
-                let plugin = &self.editor.profile.plugins[index];
-                match plugin.kind {
-                    PluginKind::Dotnet => format!(
-                        ".NET filter {} from {}. Saved order applies within each pipeline stage; tablet filters run before mapping and pixel filters after it.",
-                        plugin.type_name,
-                        plugin.path.display()
-                    ),
-                    PluginKind::DotnetTool => format!(
-                        ".NET tool {} from {}. Tools run beside the pen pipeline: the driver starts them with the tablet and stops them with it.",
-                        plugin.type_name,
-                        plugin.path.display()
-                    ),
-                    PluginKind::Native => format!("Native filter DLL {}", plugin.path.display()),
-                }
-            }
-        };
-        let detail_height =
-            canvas::wrapped_height(dc, style.fonts.ui, &detail, inner.right - inner.left);
-        items.push(Item::Label(
-            rect(inner.left, y, inner.right, y + detail_height),
-            detail,
-            Tone::Muted,
-            DT_LEFT | DT_WORDBREAK | DT_NOPREFIX,
-        ));
-        y += detail_height + s(14);
 
-        // This toolbar stays outside the property rows, so switching pages never
-        // destroys edits or takes space from a row's Use default button.
         let toolbar_y = y;
-        if let FilterRef::Plugin(index) = target {
-            let plugin = &self.editor.profile.plugins[index];
-            let editable = plugin.kind.is_managed() && self.metadata_for(plugin).is_some();
-            set_text(
-                self.c.filter_json_toggle,
-                if self.json_visible {
-                    "Properties"
-                } else {
-                    "Edit JSON"
-                },
-            );
-            unsafe {
-                EnableWindow(self.c.filter_json_toggle, editable.into());
-            }
-            shown.push((
-                self.c.filter_json_toggle,
-                rect(inner.right - s(104), y, inner.right, y + s(28)),
+
+        if self.properties.is_empty() {
+            items.push(Item::Label(
+                rect(inner.left, y, inner.right, y + s(28)),
+                "No editable settings are available for this filter.".into(),
+                Tone::Muted,
+                draw::TEXT_LEFT,
             ));
         }
-        y += s(36);
 
         let mut notes: Vec<(String, Tone)> = Vec::new();
         if let FilterRef::Plugin(_) = target {
@@ -495,7 +439,7 @@ impl App {
             .min(s(180))
             .min((inner.right - inner.left - s(230)).max(s(60)));
         // Rows tighten when many properties would run into the notes.
-        let room = inner.bottom - notes_total - s(12) - y;
+        let room = inner.bottom - notes_total - s(12) - y - s(36);
         let page_size = (room / s(32)).max(1) as usize;
         let pages = self.properties.len().div_ceil(page_size).max(1);
         self.property_page = self.property_page.min(pages - 1);
@@ -525,6 +469,7 @@ impl App {
                 draw::TEXT_LEFT,
             ));
         }
+        if pages > 1 { y += s(36); }
         let visible_count = self
             .properties
             .len()
@@ -542,15 +487,7 @@ impl App {
             .skip(self.property_page * page_size)
             .take(page_size)
         {
-            let mut line = rect(inner.left, y, inner.right, y + row_height);
-            if let Some(reset) = row.default_control {
-                let reset_width = s(94);
-                shown.push((
-                    reset,
-                    rect(line.right - reset_width, line.top, line.right, line.bottom),
-                ));
-                line.right -= reset_width + s(6);
-            }
+            let line = rect(inner.left, y, inner.right, y + row_height);
             items.push(Item::Unit(line));
             let is_check = with_look(|look| look.info(row.hwnd).map(|i| i.kind)).flatten()
                 == Some(Kind::Check);
@@ -607,30 +544,6 @@ impl App {
                 }
             }
             y += pitch;
-        }
-
-        if self.json_visible {
-            items.push(Item::Label(
-                rect(inner.left, y, inner.right, y + s(20)),
-                "Settings (JSON)".into(),
-                Tone::Text,
-                draw::TEXT_LEFT,
-            ));
-            y += s(24);
-            let error_height = if self.json_error.is_some() { s(22) } else { 0 };
-            let bottom = (inner.bottom - notes_total - s(12) - error_height).max(y + s(80));
-            let frame = rect(inner.left, y, inner.right, bottom);
-            items.push(Item::Frame(frame, self.c.filter_json));
-            shown.push((self.c.filter_json, draw::inset(frame, s(6), s(5))));
-            y = bottom + s(4);
-            if let Some(error) = &self.json_error {
-                items.push(Item::Label(
-                    rect(inner.left, y, inner.right, y + s(18)),
-                    error.clone(),
-                    Tone::Error,
-                    draw::TEXT_LEFT | DT_NOPREFIX,
-                ));
-            }
         }
 
         let mut y = inner.bottom - notes_total;
@@ -759,7 +672,10 @@ impl App {
         }
 
         let top = content.top + height + gap;
-        let text = "Pen button bindings are not implemented in this build; the side buttons do nothing while this driver runs. Mouse output does not carry pressure or tilt, and Windows Ink output is not available yet.";
+        let text = match self.editor.profile.output {
+            crate::config::OutputKind::Pen => "Pen output carries pressure, tilt and eraser state through Windows Ink. Pen button bindings are not implemented; the side buttons have no assigned actions.",
+            crate::config::OutputKind::Mouse => "Mouse output moves the cursor and maps tip or eraser contact to the left mouse button. Pen button bindings are not implemented; the side buttons have no assigned actions.",
+        };
         let text_height = canvas::wrapped_height(
             dc,
             style.fonts.ui,

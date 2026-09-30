@@ -190,23 +190,100 @@ pub fn plugins_directory() -> Result<PathBuf, String> {
     Ok(otd_core::storage::data_directory()?.join("Plugins"))
 }
 
-/// Installed plugins, from each folder's `metadata.json`.
-pub fn installed() -> Vec<(PathBuf, PluginMetadata)> {
-    let Ok(directory) = plugins_directory() else {
-        return Vec::new();
+fn internal_folder(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.starts_with(".otd-") || name.ends_with(".old-update")
+}
+
+/// Complete interrupted promotion; false means another installer owns it.
+/// Callers loading DLLs must defer on false. Inventory itself stays read-only.
+pub fn recover_installations() -> Result<bool, String> {
+    let root = plugins_directory()?;
+    if !root.try_exists().map_err(|error| error.to_string())? { return Ok(true); }
+    let Some(_lock) = crate::update::transaction::InstallLock::try_acquire(&root, ".otd-plugins.lock")? else {
+        eprintln!("Plugin recovery deferred while another installer owns the directory.");
+        return Ok(false);
     };
-    let mut found: Vec<(PathBuf, PluginMetadata)> = fs::read_dir(&directory)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|entry| {
-            let folder = entry.path();
-            let bytes = fs::read(folder.join("metadata.json")).ok()?;
-            Some((folder, serde_json::from_slice(&bytes).ok()?))
-        })
-        .collect();
+    recover_locked(&root).map(|()| true)
+}
+
+fn recover_locked(root: &Path) -> Result<(), String> {
+    for entry in fs::read_dir(root).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        if !entry.file_type().map_err(|error| error.to_string())?.is_dir() { continue; }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // place() creates and consumes root staging only while holding this
+        // same install lock. Network download/extraction work lives elsewhere,
+        // so a root stage observed here belongs to an interrupted installation.
+        if name.starts_with(".otd-plugin-stage-") || name.starts_with(".otd-plugin-removed-") {
+            let _ = fs::remove_dir_all(entry.path());
+            continue;
+        }
+        let Some(target_name) = name.strip_suffix(".old-update") else { continue; };
+        if target_name.is_empty() || internal_folder(target_name) { continue; }
+        let target = root.join(target_name);
+        let validated = (|| {
+            // Only metadata proves that this is our interrupted promotion.
+            let bytes = fs::read(entry.path().join("metadata.json")).map_err(|error| error.to_string())?;
+            let metadata: PluginMetadata = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+            if !metadata.folder().eq_ignore_ascii_case(target_name) {
+                return Err("recovery folder does not match metadata".to_owned());
+            }
+            Ok(())
+        })();
+        if let Err(error) = validated {
+            // Retain hidden backups for manual repair without preventing
+            // unrelated plugins from recovering or being inventoried.
+            eprintln!("Plugin {target_name} recovery failed; backup kept at {}: {error}", entry.path().display());
+            continue;
+        }
+        if !target.try_exists().map_err(|error| error.to_string())? {
+            fs::rename(entry.path(), &target).map_err(|error| format!("cannot restore plugin {target_name}: {error}"))?;
+        } else {
+            // A loaded old DLL may keep the backup alive. It stays hidden and
+            // another startup retries its cleanup after handles are released.
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+    Ok(())
+}
+
+/// Installed plugins, from each folder's `metadata.json`.
+pub fn installed() -> Result<Vec<(PathBuf, PluginMetadata)>, String> {
+    let directory = plugins_directory()?;
+    if !directory.try_exists().map_err(|error| error.to_string())? { return Ok(Vec::new()); }
+    // Serialize the read with directory promotion, without creating files or
+    // doing recovery. A transient rename gap is not an empty installation.
+    let _lock = crate::update::transaction::InstallLock::try_acquire(&directory, ".otd-plugins.lock")?
+        .ok_or("Plugin inventory is busy while an installation is being changed.")?;
+    let entries = match fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("cannot list plugins in {}: {error}", directory.display())),
+    };
+    let mut found = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("cannot read plugin directory entry: {error}"))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if internal_folder(&name) || !entry.file_type().map_err(|error| error.to_string())?.is_dir() { continue; }
+        let folder = entry.path();
+        let bytes = match fs::read(folder.join("metadata.json")) {
+            Ok(bytes) => bytes,
+            // Manually copied plugin folders need not be catalog installs.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("cannot read plugin metadata in {}: {error}", folder.display())),
+        };
+        let metadata: PluginMetadata = match serde_json::from_slice(&bytes) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                eprintln!("Skipping invalid plugin metadata in {}: {error}", folder.display());
+                continue;
+            }
+        };
+        if metadata.folder().eq_ignore_ascii_case(&name) { found.push((folder, metadata)); }
+    }
     found.sort_by_key(|(_, plugin)| plugin.name.to_lowercase());
-    found
+    Ok(found)
 }
 
 /// Downloads, verifies and installs a catalog entry, replacing an installed
@@ -324,7 +401,11 @@ fn install_file_into(file: &Path, root: &Path, work: &Path) -> Result<PathBuf, S
 
 /// Moves a staged plugin folder to `root/<plugin name>` with its metadata.
 fn place(entry: &PluginMetadata, staged: &Path, root: &Path) -> Result<PathBuf, String> {
+    if entry.folder().is_empty() || internal_folder(&entry.folder()) {
+        return Err("plugin name conflicts with a reserved installation folder".into());
+    }
     let _lock = crate::update::transaction::InstallLock::acquire(root, ".otd-plugins.lock")?;
+    recover_locked(root)?;
     let local = crate::update::unique_directory(root, ".otd-plugin-stage")?;
     let result = (|| {
         copy_tree(staged, &local)?;
@@ -336,12 +417,7 @@ fn place(entry: &PluginMetadata, staged: &Path, root: &Path) -> Result<PathBuf, 
         let target = root.join(entry.folder());
         let previous = root.join(format!("{}.old-update", entry.folder()));
         if previous.exists() {
-            if !target.exists() {
-                fs::rename(&previous, &target).map_err(|error| error.to_string())?;
-            } else {
-                fs::remove_dir_all(&previous)
-                    .map_err(|error| format!("previous plugin backup is still in use: {error}"))?;
-            }
+            return Err(format!("plugin backup remains at {}; close users of the old DLL or repair the backup before reinstalling", previous.display()));
         }
         if target.exists() {
             fs::rename(&target, &previous)
@@ -385,15 +461,23 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
 pub fn uninstall(folder: &Path) -> Result<(), String> {
     let root = plugins_directory()?;
     let _lock = crate::update::transaction::InstallLock::acquire(&root, ".otd-plugins.lock")?;
-    if folder.parent() != Some(root.as_path()) {
+    if folder.parent() != Some(root.as_path())
+        || folder.file_name().is_none_or(|name| internal_folder(&name.to_string_lossy())) {
         return Err("only plugins in the plugin folder can be removed".into());
     }
-    fs::remove_dir_all(folder).map_err(|error| {
-        format!(
-            "cannot remove {}: {error}. Stop the driver if it uses this plugin, then try again.",
-            folder.display()
-        )
-    })
+    recover_locked(&root)?;
+    let name = folder.file_name().ok_or("plugin folder has no name")?.to_string_lossy();
+    let backup = root.join(format!("{name}.old-update"));
+    if backup.exists() {
+        return Err(format!("plugin backup remains at {}; close users of the old DLL or repair the backup before removal", backup.display()));
+    }
+    let retired = crate::update::unique_directory(&root, ".otd-plugin-removed")?;
+    if let Err(error) = fs::rename(folder, retired.join("payload")) {
+        let _ = fs::remove_dir(&retired);
+        return Err(format!("cannot remove {}: {error}", folder.display()));
+    }
+    let _ = fs::remove_dir_all(retired);
+    Ok(())
 }
 
 /// The DLLs in a plugin folder, for adding its filters to settings.
@@ -429,7 +513,7 @@ pub fn run(arguments: Vec<String>) -> Result<(), String> {
     let matches = |plugin: &PluginMetadata, name: &str| plugin.name.eq_ignore_ascii_case(name);
     match (command.as_str(), name) {
         ("catalog", None) => {
-            let installed = installed();
+            let installed = installed()?;
             for plugin in fetch()? {
                 let state = installed
                     .iter()
@@ -448,7 +532,7 @@ pub fn run(arguments: Vec<String>) -> Result<(), String> {
             Ok(())
         }
         ("installed", None) => {
-            for (folder, plugin) in installed() {
+            for (folder, plugin) in installed()? {
                 println!(
                     "{} {} ({})",
                     plugin.name,
@@ -486,7 +570,7 @@ pub fn run(arguments: Vec<String>) -> Result<(), String> {
             Ok(())
         }
         ("remove", Some(name)) => {
-            let (folder, plugin) = installed()
+            let (folder, plugin) = installed()?
                 .into_iter()
                 .find(|(_, plugin)| matches(plugin, &name))
                 .ok_or_else(|| format!("no installed plugin is named {name}"))?;

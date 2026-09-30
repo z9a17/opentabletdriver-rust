@@ -134,7 +134,7 @@ pub(super) fn message_box(
 }
 
 pub(super) fn confirm_discard(window: HWND) -> bool {
-    !with_app(|app| app.dirty).unwrap_or(false)
+    !with_app(|app| app.dirty || !app.invalid.is_empty()).unwrap_or(false)
         || message_box(
             window,
             "Discard unsaved profile edits?",
@@ -178,6 +178,32 @@ pub(super) fn shell_open(window: HWND, target: &str) {
     }
 }
 
+thread_local! {
+    static POPUP_ANCHOR: Cell<HWND> = const { Cell::new(ptr::null_mut()) };
+}
+
+// TrackPopupMenu runs its own message loop. Consume a second anchor click
+// there, before the native button can turn it into a new BN_CLICKED command.
+unsafe extern "system" fn popup_input_filter(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code == MSGF_MENU as i32 && lparam != 0 {
+        let message = unsafe { &*(lparam as *const MSG) };
+        if matches!(message.message, WM_LBUTTONDOWN | WM_LBUTTONDBLCLK) {
+            let anchor = POPUP_ANCHOR.try_with(Cell::get).unwrap_or(ptr::null_mut());
+            let mut bounds = RECT::default();
+            if !anchor.is_null()
+                && unsafe { GetWindowRect(anchor, &mut bounds) } != 0
+                && message.pt.x >= bounds.left && message.pt.x < bounds.right
+                && message.pt.y >= bounds.top && message.pt.y < bounds.bottom
+                && unsafe { EndMenu() } != 0
+            {
+                unsafe { SendMessageW(anchor, WM_CANCELMODE, 0, 0) };
+                return 1;
+            }
+        }
+    }
+    unsafe { CallNextHookEx(ptr::null_mut(), code, wparam, lparam) }
+}
+
 /// Shows a popup menu below `anchor` and returns the chosen command.
 pub(super) fn popup(window: HWND, menu: HMENU, anchor: HWND) -> u16 {
     let mut r = RECT::default();
@@ -188,6 +214,17 @@ pub(super) fn popup(window: HWND, menu: HMENU, anchor: HWND) -> u16 {
         cbSize: size_of::<TPMPARAMS>() as u32,
         rcExclude: r,
     };
+    let previous_anchor = POPUP_ANCHOR.replace(anchor);
+    let hook = unsafe {
+        SetWindowsHookExW(
+            WH_MSGFILTER, Some(popup_input_filter), ptr::null_mut(),
+            windows_sys::Win32::System::Threading::GetCurrentThreadId(),
+        )
+    };
+    if hook.is_null() {
+        let error = std::io::Error::last_os_error();
+        with_app(|app| app.log(Level::Warning, "UI", format!("Could not enable click-to-close menus: {error}")));
+    }
     let command = unsafe {
         TrackPopupMenuEx(
             menu,
@@ -198,7 +235,9 @@ pub(super) fn popup(window: HWND, menu: HMENU, anchor: HWND) -> u16 {
             &params,
         )
     };
-    update_look(|look| look.menu_open = 0);
+    if !hook.is_null() { unsafe { UnhookWindowsHookEx(hook) }; }
+    POPUP_ANCHOR.set(previous_anchor);
+    update_look(|look| look.menu_open = previous_anchor as isize);
     unsafe {
         InvalidateRect(anchor, ptr::null(), 0);
         DestroyMenu(menu);
@@ -262,7 +301,7 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                 );
                 // The profile's tablet: whichever is connected, a connected
                 // tablet, or the one it already names.
-                let target = app.editor.profile.target_tablet.clone();
+                let target = app.editor.profile.tablet_name().ok().flatten();
                 app.refresh_tablets(false);
                 let mut choices = app.connected_tablets.clone();
                 if let Some(name) = &target
@@ -278,7 +317,7 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                     CMD_TABLET_ANY,
                     "Any connected tablet",
                 );
-                if app.device_scan_pending && app.connected_tablets.is_empty() {
+                if app.device_scan.is_running() && app.connected_tablets.is_empty() {
                     append(
                         tablets,
                         MF_GRAYED,
@@ -315,13 +354,9 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                 );
                 append(
                     menu,
-                    MF_STRING,
+                    if running || app.control_busy { MF_GRAYED } else { MF_STRING },
                     CMD_START_STOP,
-                    if running {
-                        "Stop driver"
-                    } else {
-                        "Start driver"
-                    },
+                    "Start driver",
                 );
                 unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null()) };
                 append(
@@ -607,14 +642,8 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         CMD_REMOVE_FILTER => {
             with_app(App::remove_filter);
         }
-        CMD_FILTER_UP | CMD_FILTER_DOWN => {
-            with_app(|app| app.move_filter(id == CMD_FILTER_DOWN));
-        }
         CMD_FILTER_DEFAULTS => {
             with_app(App::reset_filter);
-        }
-        CMD_FILTER_JSON => {
-            with_app(App::toggle_filter_json);
         }
         CMD_PROPERTY_PREV | CMD_PROPERTY_NEXT => {
             with_app(|app| {
@@ -638,12 +667,7 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         CMD_ABOUT => about(window),
         CMD_START_STOP => {
             with_app(|app| {
-                if app.running.is_some() {
-                    // The daemon cancels any pending restart when Stop is accepted.
-                    app.stop();
-                } else {
-                    app.start();
-                }
+                app.start();
             });
         }
         CMD_AUTOSTART => {
@@ -722,30 +746,7 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
                 "Export diagnostics",
                 "opentabletdriver-rust-diagnostics.json",
             ) {
-                Ok(Some(path)) => with_app(|app| {
-                    let written = crate::diagnostics::bundle(Some(&app.editor.profile), false)
-                        .and_then(|bundle| {
-                            serde_json::to_vec_pretty(&bundle).map_err(|error| error.to_string())
-                        })
-                        .and_then(|bytes| {
-                            std::fs::write(&path, bytes).map_err(|error| error.to_string())
-                        });
-                    match written {
-                        Ok(()) => app.log(
-                            Level::Info,
-                            "UI",
-                            format!(
-                                "Saved diagnostics to {}. Paths, plugin settings and log text are left out.",
-                                path.display()
-                            ),
-                        ),
-                        Err(error) => app.log(
-                            Level::Error,
-                            "UI",
-                            format!("Cannot export diagnostics: {error}"),
-                        ),
-                    }
-                })
+                Ok(Some(path)) => with_app(|app| app.export_diagnostics(Some(path)))
                 .unwrap_or(()),
                 Ok(None) => {}
                 Err(error) => {
@@ -754,24 +755,7 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
             }
         }
         CMD_COPY_DIAGNOSTICS => {
-            with_app(|app| {
-                let text = crate::diagnostics::bundle(Some(&app.editor.profile), false).and_then(
-                    |bundle| serde_json::to_string_pretty(&bundle).map_err(|e| e.to_string()),
-                );
-                match text {
-                    Ok(text) if copy_to_clipboard(window, &text) => app.log(
-                        Level::Info,
-                        "UI",
-                        "Copied diagnostics to the clipboard. Paths, plugin settings and log text are left out.",
-                    ),
-                    Ok(_) => app.log(Level::Error, "UI", "Cannot open the clipboard."),
-                    Err(error) => app.log(
-                        Level::Error,
-                        "UI",
-                        format!("Cannot export diagnostics: {error}"),
-                    ),
-                }
-            });
+            with_app(|app| app.export_diagnostics(None));
         }
         CMD_DEVICE_STRINGS => {
             with_app(App::read_device_strings);
@@ -834,18 +818,6 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         }
         ID_FILTER_ENABLE => {
             with_app(App::filter_toggled);
-        }
-        id if (ID_PROPERTY_DEFAULT..ID_PROPERTY_DEFAULT + MAX_PROPERTY_ROWS).contains(&id) => {
-            with_app(|app| {
-                if let Some(hwnd) = app
-                    .properties
-                    .iter()
-                    .find(|row| row.default_control == Some(control))
-                    .map(|row| row.hwnd)
-                {
-                    app.choose_property(hwnd, serde_json::Value::Null);
-                }
-            });
         }
         id if (ID_PROPERTY..ID_PROPERTY + MAX_PROPERTY_ROWS).contains(&id) => {
             let choices = with_app(|app| {

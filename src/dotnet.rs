@@ -296,6 +296,12 @@ pub struct PropertyMetadata {
     /// A `[BooleanProperty]`'s description.
     #[serde(default)]
     pub description: Option<String>,
+    /// Known attribute/editor default; inspection never constructs the plugin.
+    #[serde(default)]
+    pub default_value: Option<serde_json::Value>,
+    /// Explicit null selects only an attribute default, not a slider placeholder.
+    #[serde(default)]
+    pub default_is_attribute: bool,
 }
 
 /// `[SliderProperty]`: upstream shows the range as a tool tip.
@@ -413,7 +419,10 @@ pub fn inspect_details(path: &Path) -> Result<Vec<InspectedFilter>, String> {
             metadata: FilterMetadata {
                 type_name: entry.type_name,
                 display_name: entry.display_name,
-                properties: entry.properties,
+                properties: entry.properties.into_iter().map(|mut property| {
+                    property.default_value = entry.settings.get(&property.name).cloned();
+                    property
+                }).collect(),
                 default_settings_json: entry.settings.to_string(),
             },
         })

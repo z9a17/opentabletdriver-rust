@@ -6,7 +6,9 @@ use std::sync::{
     atomic::{AtomicU32, AtomicU64, Ordering},
 };
 
-pub const MAX_BYTES: usize = 512;
+// HID report lengths are u16. Keep complete packets from the larger
+// configured endpoints too; truncation makes debugger decoding misleading.
+pub const MAX_BYTES: usize = u16::MAX as usize;
 pub const ARM_REPORTS: u32 = 2_000;
 static ARMED: AtomicU32 = AtomicU32::new(0);
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);

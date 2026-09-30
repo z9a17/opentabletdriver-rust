@@ -1,0 +1,89 @@
+# Releasing all platforms
+
+Every release ships these packages from the same merged source commit. Linux and macOS packages contain a CLI driver; the Windows package also contains the native panel and managed plugin bridge.
+
+| Package | Architecture | Contents |
+| --- | --- | --- |
+| `win-x64.zip` | Windows x64 | Console driver, panel, EMA sample DLL, .NET bridge |
+| `linux-x64.tar.gz` | Linux x64 | hidraw/uinput driver, permission/setup files |
+| `macos-x64.tar.gz` | Intel Mac | IOKit/CoreGraphics driver |
+| `macos-arm64.tar.gz` | Apple Silicon Mac | IOKit/CoreGraphics driver |
+
+Names start with `opentabletdriver-rust-v<version>-`. Each archive includes Rust standard-library dependency notices and the applicable musl or GNU Windows runtime licenses. Keep the corresponding source links in NOTICE.md current when changing those toolchains. Each archive has a SHA256 sidecar and `BUILD-INFO.json` with its commit, lockfile hash and binary hashes. The required set lives in [the release matrix](../packaging/release-matrix.json). Do not remove a platform to make a release pass.
+
+There are no GitHub Actions runners. The owner requested manual testing after releases; do not run a separate fmt/Clippy/test/build-check suite. Building the actual release binaries and verifying their archive contents, architecture, version and checksums are required to produce the downloads. State the distinction in release notes. Do not claim macOS hardware support from a cross-build or live pen/cursor behavior from a device listing.
+
+## Prepare the source
+
+Update the root Cargo package version and root package entry in Cargo.lock, finish the platform/backend edits, and merge the reviewed PR. Package a clean checkout of the exact `origin/main` commit. The Linux/macOS CLI version comes from the root Cargo.toml at build time. The build command records source state before and after compilation and refuses changes during a build. Clean builds hash the canonical Git tree, so Windows line endings do not prevent collecting packages from native build hosts. The packager consumes the resulting `OTD-BUILD.json` and verifies the source and binary hashes, so repackaging an older same-version executable cannot stamp it with a newer commit.
+
+## Linux
+
+On Linux x64 with Rust stable and Python 3.11 or newer. The static musl binary avoids a dependency on the build host's glibc version:
+
+```sh
+rustup target add x86_64-unknown-linux-musl
+scripts/package-unix.sh linux-x64
+```
+
+The package has no .NET runtime requirement. Its udev setup is documented in [the Linux guide](../crates/otd-linux/README.md).
+
+## macOS
+
+On a Mac, install the appropriate Rust targets and use the platform SDK:
+
+```sh
+rustup target add x86_64-apple-darwin aarch64-apple-darwin
+MACOSX_DEPLOYMENT_TARGET=11.0 scripts/package-unix.sh macos-x64
+MACOSX_DEPLOYMENT_TARGET=11.0 scripts/package-unix.sh macos-arm64
+```
+
+The supported package minimum is macOS 11.0. These are terminal applications, unsigned and not notarized. Native validation requires a Mac, Input Monitoring and Accessibility permissions, and a connected tablet. See [the macOS guide](../crates/otd-macos/README.md).
+
+For local cross-builds on Linux, provide a legally obtained macOS 11+ SDK and Clang. Rust supplies the Mach-O linker. Build each architecture sequentially:
+
+```sh
+export SDKROOT=/absolute/path/to/MacOSX.sdk
+export MACOSX_DEPLOYMENT_TARGET=11.0
+export CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER="$PWD/scripts/apple-linker.sh"
+export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER="$PWD/scripts/apple-linker.sh"
+OTD_APPLE_TARGET=x86_64-apple-darwin scripts/package-unix.sh macos-x64
+OTD_APPLE_TARGET=aarch64-apple-darwin scripts/package-unix.sh macos-arm64
+```
+
+`apple-linker.sh` is for a Linux x64 build host. `RUSTC` and `CARGO` may select explicit toolchain paths when a version-manager shim is unavailable.
+
+## Windows
+
+On Windows with Rust stable MSVC, Python 3.11+ and the .NET 8+ SDK:
+
+```powershell
+python scripts/release.py build --platform win-x64 --rust-target x86_64-pc-windows-msvc
+```
+
+The existing `package.ps1` remains a single-platform developer packager. Publishing uses the recorded builds in `target/releases` and requires all platforms.
+
+For a Linux cross-build, provide a GNU [MinGW-w64 toolchain](https://www.mingw-w64.org/) with GCC, binutils, CRT, headers and winpthreads, a .NET 8+ SDK, and `nethost.dll` from Microsoft's Windows x64 host pack. Obtain the host pack from the installed Windows SDK or the official `Microsoft.NETCore.App.Host.win-x64` NuGet package for that SDK's runtime version. Preserve its licenses. No system package installation is needed.
+
+```sh
+rustup target add x86_64-pc-windows-gnu
+export MINGW_ROOT=/absolute/path/to/mingw-prefix
+export DOTNET=/absolute/path/to/dotnet
+export NETHOST_DLL=/absolute/path/to/nethost.dll
+scripts/package-windows-cross.sh
+```
+
+This produces GNU-target Windows binaries rather than MSVC binaries. Document that in the release notes. The managed bridge stays on the pinned OpenTabletDriver 0.6.7 contracts.
+
+## Publish
+
+Collect the four archives and their checksum files in `target/releases`. Assets built on separate hosts must come from the same clean merged commit and lockfile. Write release notes with executed checks and remaining hardware/platform limitations, then run:
+
+```sh
+python3 scripts/release.py verify
+python3 scripts/release.py publish --notes /absolute/path/to/release-notes.md
+```
+
+Verification reads every archive, checks its required files and binary headers, compares its embedded version, commit and hashes, and refuses dirty-source packages. Publish also requires the exact fetched `origin/main` commit. It creates a new annotated tag, uploads every asset to a draft, verifies GitHub's asset digests against local SHA256 values, then publishes it as the latest release. Published tags are never rewritten. A failed upload verification leaves the release as a draft for inspection.
+
+If an existing tag belongs to a failed draft, inspect the tag and draft before retrying; the publisher will never silently overwrite a release or its assets.

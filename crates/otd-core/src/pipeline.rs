@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use crate::actions::Action;
 use crate::config::{ContactPolicy, OutputKind, Profile};
+use crate::decoders::DecodedInput;
 use crate::mapping::Mapper;
 use crate::output::buttons::{ActionSink, ButtonOutput};
 use crate::output::pen::{PenOutput, PenSample, PenSink};
@@ -15,7 +16,7 @@ use crate::plugins::{DispatchInput, Filters, PipelineRuntime};
 use crate::protocol::PenReport;
 use crate::radial_follow::RadialFollowSmoothingTabletSpace;
 use crate::relative::RelativeMapper;
-use crate::reports::{Buttons, ReportKind, ReportValues};
+use crate::reports::{Buttons, ReportKind, ReportValues, ToolType};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DispatchStats {
@@ -137,8 +138,44 @@ impl ReportPipeline {
         self.process_pen(pen, raw, buttons, now, mapper, plugins, send)
     }
 
-    /// `process_with_raw` with the decoder's pen buttons, so managed filters
-    /// see `ITabletReport` on every tablet, not only IntuosV2 layouts.
+    /// Dispatch runtime decoder input without reducing generic reports to the
+    /// compact IntuosV2 pen layout. Missing interfaces remain missing.
+    #[inline]
+    pub fn process_input(
+        &mut self,
+        input: DecodedInput<'_>,
+        now: Instant,
+        mapper: Option<Mapper>,
+        plugins: &mut impl Filters,
+        send: impl FnMut(MousePacket) -> io::Result<()>,
+    ) -> io::Result<DispatchStats> {
+        match input {
+            DecodedInput::Pen(decoded) => self.process_pen(
+                decoded.pen,
+                decoded.raw,
+                decoded.buttons.or(Some(Buttons::default())),
+                now,
+                mapper,
+                plugins,
+                send,
+            ),
+            DecodedInput::Report { kind, report, pen } => self.process_report(
+                DispatchInput {
+                    kind,
+                    values: report.values,
+                    raw: report.raw,
+                    pen,
+                    now,
+                },
+                mapper,
+                plugins,
+                send,
+            ),
+        }
+    }
+
+    /// `process_with_raw` with an IntuosV2 decoder's pen buttons. Generic
+    /// runtime reports use `process_input` to retain their original interfaces.
     #[allow(clippy::too_many_arguments)] // Mirrors process_with_raw's seams.
     pub fn process_pen(
         &mut self,
@@ -399,10 +436,17 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
             return Ok(());
         }
         self.stats.reports += 1;
-        if let Some(eraser) = values.eraser {
+        if let Some(eraser) = values
+            .eraser
+            .or_else(|| values.tool.map(|tool| tool.tool == ToolType::Eraser))
+        {
             self.pipeline.is_eraser = eraser;
         }
         if kind == ReportKind::OutOfRange {
+            self.pipeline.desired_contact = false;
+        } else if values.mouse_buttons.is_some() && values.pressure.is_none() {
+            // Switching from a pen to a puck must release the pen's tip.
+            // Preserve the absent pressure interface seen by plugins.
             self.pipeline.desired_contact = false;
         } else if let Some(pressure) = values.pressure {
             let policy = self.pipeline.contact;
@@ -429,6 +473,11 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
                 io::ErrorKind::InvalidData,
                 "nonfinite post-transform output",
             ));
+        }
+        if kind == ReportKind::Data && position.is_none() && values.pressure.is_none() {
+            // Tool/aux/wheel/touch packets remain visible to filters, but must
+            // not replay an old pointer position or emit unrelated contact.
+            return Ok(());
         }
         let contact = self.pipeline.desired_contact;
         // Side buttons follow the report after the pointer has moved, so a

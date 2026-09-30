@@ -11,7 +11,7 @@ mod state;
 use state::Daemon;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Own resources until driver cleanup and original-driver restoration finish.
+/// Own resources until all driver output cleanup finishes.
 pub fn serve() -> Result<(), String> {
     println!(
         "Daemon control endpoint: {}",

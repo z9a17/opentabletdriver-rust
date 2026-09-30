@@ -7,7 +7,7 @@ use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::HICON;
 
 use super::theme::Rgb;
-use super::wide_text;
+use super::{wide, wide_text};
 
 pub type Point = (f32, f32);
 
@@ -334,17 +334,20 @@ impl Canvas {
             return;
         }
         let mut rect = rect;
-        let mut wide = wide_text(text);
+        // DrawText's wrapping code may inspect the terminator even with an
+        // explicit length. Keep it in allocated storage at the FFI boundary.
+        let mut wide = wide(text);
         unsafe {
-            SelectObject(self.dc, font);
+            let previous = SelectObject(self.dc, font);
             SetTextColor(self.dc, color.colorref());
             DrawTextW(
                 self.dc,
                 wide.as_mut_ptr(),
-                wide.len() as i32,
+                (wide.len() - 1) as i32,
                 &mut rect,
                 format,
             );
+            SelectObject(self.dc, previous);
         }
         self.gdi_pending = true;
     }
@@ -353,11 +356,12 @@ impl Canvas {
     pub fn text_at(&mut self, point: (i32, i32), text: &str, font: HFONT, color: Rgb, align: u32) {
         let wide = wide_text(text);
         unsafe {
-            SelectObject(self.dc, font);
+            let previous_font = SelectObject(self.dc, font);
             SetTextColor(self.dc, color.colorref());
             let previous = SetTextAlign(self.dc, align);
             TextOutW(self.dc, point.0, point.1, wide.as_ptr(), wide.len() as i32);
             SetTextAlign(self.dc, previous);
+            SelectObject(self.dc, previous_font);
         }
         self.gdi_pending = true;
     }
@@ -498,7 +502,12 @@ pub fn measure_font_height(font: HFONT) -> i32 {
 
 /// Height of word-wrapped text in `width` pixels.
 pub fn wrapped_height(dc: HDC, font: HFONT, text: &str, width: i32) -> i32 {
-    let mut wide = wide_text(text);
+    // DrawTextW can read the input pointer for an empty, length-counted
+    // string. An empty Vec<u16> has address 0x2, not readable storage.
+    if text.is_empty() {
+        return 0;
+    }
+    let mut wide = wide(text);
     let mut rect = RECT {
         left: 0,
         top: 0,
@@ -510,7 +519,7 @@ pub fn wrapped_height(dc: HDC, font: HFONT, text: &str, width: i32) -> i32 {
         DrawTextW(
             dc,
             wide.as_mut_ptr(),
-            wide.len() as i32,
+            (wide.len() - 1) as i32,
             &mut rect,
             DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX,
         );

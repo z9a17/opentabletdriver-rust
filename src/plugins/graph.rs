@@ -199,16 +199,13 @@ impl PluginChain {
             .as_nanos()
             .min(u128::from(u64::MAX)) as u64;
         if let Some(graph) = &self.graph {
-            // Any tablet's packet: the decoder supplies its parser's pen
-            // buttons; IntuosV2 packets without them are read as before.
+            // Runtime decoders supply their exact interfaces, including
+            // IntuosV2 pen buttons. Positional puck reports remain mouse reports.
             if input.pen.is_some() {
-                if raw.is_empty() || raw.len() > 192 {
+                if raw.is_empty() || raw.len() > usize::from(u16::MAX) {
                     return Err(io::Error::other(
                         "managed dispatch requires the complete raw pen packet",
                     ));
-                }
-                if input.kind == ReportKind::Data && values.pen_buttons.is_none() {
-                    values.pen_buttons = otd_core::decoders::intuos_v2_pen_buttons(raw);
                 }
             }
             let frame = GraphReport::new(input.kind, &values, raw)?;

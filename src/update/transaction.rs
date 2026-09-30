@@ -7,7 +7,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 use windows_sys::Win32::{
-    Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0},
+    Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT},
     System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject},
 };
 
@@ -20,6 +20,10 @@ pub(crate) struct InstallLock {
 impl InstallLock {
     pub fn acquire(root: &Path, name: &str) -> Result<Self, String> {
         fs::create_dir_all(root).map_err(|error| error.to_string())?;
+        Self::try_acquire(root, name)?.ok_or_else(|| "another process is updating or recovering this installation".into())
+    }
+
+    pub fn try_acquire(root: &Path, name: &str) -> Result<Option<Self>, String> {
         let canonical = root.canonicalize().map_err(|error| error.to_string())?;
         let identity = format!("{}:{name}", canonical.to_string_lossy().to_lowercase());
         let hash = identity.bytes().fold(0xcbf29ce484222325u64, |hash, byte| {
@@ -34,11 +38,12 @@ impl InstallLock {
         })
         .map_err(|error| error.to_string())?;
         match unsafe { WaitForSingleObject(handle.raw(), 0) } {
-            WAIT_OBJECT_0 | WAIT_ABANDONED => Ok(Self {
+            WAIT_OBJECT_0 | WAIT_ABANDONED => Ok(Some(Self {
                 handle,
                 _thread_bound: std::marker::PhantomData,
-            }),
-            _ => Err("another process is updating or recovering this installation".into()),
+            })),
+            WAIT_TIMEOUT => Ok(None),
+            _ => Err(format!("cannot wait for installation lock: {}", std::io::Error::last_os_error())),
         }
     }
 }

@@ -349,6 +349,7 @@ impl OtdSettingsDocument {
     }
 
     pub fn profiles(&self) -> Vec<OtdProfileSummary> {
+        let database = super::configured_tablets();
         self.document["Profiles"]
             .as_array()
             .into_iter()
@@ -358,7 +359,9 @@ impl OtdSettingsDocument {
                 let tablet = profile["Tablet"].as_str().unwrap_or("").to_owned();
                 OtdProfileSummary {
                     index,
-                    runtime_tablet_supported: super::runtime_tablet(&tablet).is_ok(),
+                    runtime_tablet_supported: database.as_ref().is_ok_and(|database| {
+                        super::runtime_tablet_in(&tablet, database).is_ok()
+                    }),
                     tablet,
                     output_mode: profile["OutputMode"]["Path"]
                         .as_str()
@@ -633,13 +636,15 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
         serde_json::from_str(&imported.settings_json).map_err(|error| error.to_string())?;
     let mut document = original.clone();
     let selected = &mut document["Profiles"][imported.selected_profile];
+    let target = profile.tablet_name()?.ok_or("OTD export requires a named tablet; choose a tablet before exporting an automatic profile")?;
+    selected["Tablet"] = Value::String(target);
     let target_mode;
     let pen = profile.output == super::OutputKind::Pen;
     if let Some(relative) = profile.relative {
         if profile.otd_mapping.is_some() || pen {
             return Err("OTD export requires exactly one output mode".into());
         }
-        relative.validate()?;
+        relative.validate_for(profile.tablet)?;
         target_mode = "OpenTabletDriver.Desktop.Output.RelativeMode";
         let old = baseline.relative;
         let settings = &mut selected["RelativeModeSettings"];

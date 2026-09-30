@@ -6,7 +6,7 @@ use std::{collections::BTreeMap, sync::LazyLock};
 
 use regex::Regex;
 
-use crate::tablets::{Database, Match, ParserSupport, Role};
+use crate::tablets::{Database, DeviceIdentifier, Match, ParserSupport, Role};
 
 const DOTNET_DATE_PREFIX_EXCLUSION: &str = r"^(?!202\d-\d{2}-\d{2})";
 static DATE_PREFIX: LazyLock<Regex> =
@@ -54,8 +54,8 @@ pub struct Endpoint {
     pub output_length: u32,
     pub feature_length: u32,
     pub strings: BTreeMap<u8, String>,
-    /// `None` means the backend supplied no attribute dictionary. Upstream
-    /// skips the Interface predicate in that case; an empty map fails it.
+    /// Discovery attributes. A constrained interface must be present; a HID
+    /// report pattern is checked only on backends providing HID_REPORTS.
     pub attributes: Option<BTreeMap<String, String>>,
 }
 
@@ -67,6 +67,7 @@ pub enum Rejection {
     InvalidPattern(String),
     WrongString(u8),
     WrongCollection,
+    WrongHidReports,
     WrongInterface,
     UnsupportedTransport,
 }
@@ -84,16 +85,7 @@ pub fn matches(endpoint: &Endpoint, candidate: &Match<'_>) -> Result<(), Rejecti
     {
         return Err(Rejection::Unavailable);
     }
-    if id
-        .input_report_length
-        .is_some_and(|n| n != endpoint.input_length)
-        || id
-            .output_report_length
-            .is_some_and(|n| n != endpoint.output_length)
-        || id
-            .feature_report_length
-            .is_some_and(|n| n != endpoint.feature_length)
-    {
+    if !matches_report_lengths(endpoint, id) {
         return Err(Rejection::WrongLength);
     }
     if let Some(strings) = &id.device_strings {
@@ -134,12 +126,26 @@ pub fn matches(endpoint: &Endpoint, candidate: &Match<'_>) -> Result<(), Rejecti
             return Err(Rejection::WrongCollection);
         }
     }
-    if let (Some(interface), Some(attributes)) = (attribute("Interface"), &endpoint.attributes)
-        && attributes.get("USB_INTERFACE_NUMBER") != Some(interface)
+    if let Some(pattern) = attribute("HidReports")
+        && let Some(reports) = endpoint.attributes.as_ref().and_then(|a| a.get("HID_REPORTS"))
+    {
+        let regex = Regex::new(pattern).map_err(|_| Rejection::InvalidPattern(pattern.clone()))?;
+        if !regex.is_match(reports) { return Err(Rejection::WrongHidReports); }
+    }
+    if let Some(interface) = attribute("Interface")
+        && endpoint.attributes.as_ref().and_then(|a| a.get("USB_INTERFACE_NUMBER")) != Some(interface)
     {
         return Err(Rejection::WrongInterface);
     }
     Ok(())
+}
+
+/// Shared by descriptor discovery and selection so impossible collections
+/// never need indexed USB string requests. Omitted sizes remain wildcards.
+pub fn matches_report_lengths(endpoint: &Endpoint, id: &DeviceIdentifier) -> bool {
+    id.input_report_length.is_none_or(|n| n == endpoint.input_length)
+        && id.output_report_length.is_none_or(|n| n == endpoint.output_length)
+        && id.feature_report_length.is_none_or(|n| n == endpoint.feature_length)
 }
 
 /// Regex patterns in a loaded database which Rust cannot parse. Run at setup
@@ -161,6 +167,12 @@ pub fn unsupported_patterns(database: &Database) -> Vec<(String, String)> {
                         unsupported.push((entry.path.clone(), pattern.clone()));
                     }
                 }
+            }
+            if let Some(pattern) = id.attributes.as_ref().and_then(|a| a.get("HidReports"))
+                .or_else(|| config.attributes.as_ref().and_then(|a| a.get("HidReports")))
+                && Regex::new(pattern).is_err()
+            {
+                unsupported.push((entry.path.clone(), pattern.clone()));
             }
             let usage = id
                 .attributes
@@ -328,7 +340,7 @@ mod tests {
         ep.attributes.as_mut().unwrap().clear();
         assert_eq!(matches(&ep, &candidate), Err(Rejection::WrongInterface));
         ep.attributes = None;
-        assert_eq!(matches(&ep, &candidate), Ok(()));
+        assert_eq!(matches(&ep, &candidate), Err(Rejection::WrongInterface));
         ep.attributes = Some(BTreeMap::new());
         ep.attributes
             .as_mut()
@@ -364,7 +376,7 @@ mod tests {
         }
         assert_eq!(
             (strings, usages),
-            (198, 0),
+            (216, 0),
             "review changed pinned regex inventory"
         );
         let unsupported = unsupported_patterns(Database::builtin());

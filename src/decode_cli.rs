@@ -5,7 +5,7 @@ use std::{fs::File, io::Read, path::PathBuf, time::Duration};
 
 const MAX_INPUT_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_REPORTS: usize = 4096;
-const MAX_PACKET_BYTES: usize = 192;
+const MAX_PACKET_BYTES: usize = otd_core::debug::MAX_BYTES;
 
 const USAGE: &str = "Offline report decoding:
   decode --parser NAME --hex HEX_BYTES
@@ -22,7 +22,7 @@ or any OpenTabletDriver parser type, such as Wacom.IntuosV1.IntuosV1ReportParser
 or OpenTabletDriver.Plugin.Tablet.TabletReportParser.
 Hex may contain ASCII whitespace or colons. Files contain one packet per line;
 blank lines and lines starting with # are ignored. Limits: 4 MiB, 4096 reports,
-192 bytes per packet. Each output line is one JSON snapshot; a later error does
+65535 bytes per packet. Each output line is one JSON snapshot; a later error does
 not retract earlier lines. Touch state lasts only for this command.
 This command never opens a tablet, loads a plugin, or injects input.";
 
@@ -224,7 +224,7 @@ fn parse_hex(text: &str) -> Result<Vec<u8>, String> {
 }
 
 fn parse_hex_within(text: &str, maximum: usize) -> Result<Vec<u8>, String> {
-    let mut bytes = Vec::with_capacity(maximum.min(MAX_PACKET_BYTES));
+    let mut bytes = Vec::with_capacity(maximum.min(MAX_PACKET_BYTES).min(text.len() / 2));
     let mut high = None;
     for character in text.chars() {
         if character.is_ascii_whitespace() || character == ':' {

@@ -208,24 +208,49 @@ fn parse_release(body: &[u8]) -> Result<Release, String> {
 
 /// SHA-256 of a file, as lowercase hex, with the Windows CNG provider.
 pub fn sha256(path: &Path) -> Result<String, String> {
-    use windows_sys::Win32::Security::Cryptography::{BCRYPT_SHA256_ALG_HANDLE, BCryptHash};
-    let data = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let mut digest = [0u8; 32];
+    use std::io::Read;
+    use windows_sys::Win32::Security::Cryptography::{
+        BCRYPT_HASH_HANDLE, BCRYPT_SHA256_ALG_HANDLE, BCryptCreateHash,
+        BCryptDestroyHash, BCryptFinishHash, BCryptHashData,
+    };
+    struct Hash(BCRYPT_HASH_HANDLE);
+    impl Drop for Hash {
+        fn drop(&mut self) { unsafe { BCryptDestroyHash(self.0) }; }
+    }
+    let mut file = fs::File::open(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let mut handle = std::ptr::null_mut();
+    // CNG owns the hash object buffer and releases it with BCryptDestroyHash.
     let status = unsafe {
-        BCryptHash(
-            BCRYPT_SHA256_ALG_HANDLE,
-            std::ptr::null(),
-            0,
-            data.as_ptr(),
-            u32::try_from(data.len()).map_err(|_| "package is too large")?,
-            digest.as_mut_ptr(),
-            digest.len() as u32,
+        BCryptCreateHash(
+            BCRYPT_SHA256_ALG_HANDLE, &mut handle, std::ptr::null_mut(), 0,
+            std::ptr::null(), 0, 0,
         )
     };
     if status != 0 {
         return Err(format!("SHA-256 failed with status {status:#x}"));
     }
-    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+    let hash = Hash(handle);
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let length = match file.read(&mut buffer) {
+            Ok(length) => length,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(format!("{}: {error}", path.display())),
+        };
+        if length == 0 { break; }
+        let status = unsafe { BCryptHashData(hash.0, buffer.as_ptr(), length as u32, 0) };
+        if status != 0 { return Err(format!("SHA-256 failed with status {status:#x}")); }
+    }
+    let mut digest = [0u8; 32];
+    let status = unsafe { BCryptFinishHash(hash.0, digest.as_mut_ptr(), digest.len() as u32, 0) };
+    if status != 0 { return Err(format!("SHA-256 failed with status {status:#x}")); }
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut text = String::with_capacity(64);
+    for byte in digest {
+        text.push(HEX[usize::from(byte >> 4)] as char);
+        text.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    Ok(text)
 }
 
 /// Every file under `root`, relative to it.

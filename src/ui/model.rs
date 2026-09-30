@@ -19,6 +19,7 @@ use crate::plugins::{PluginConfig, PluginKind};
 use crate::protocol::{MAX_PRESSURE, WIDTH_MM};
 use crate::radial_follow::{FILTER_NAME, RadialFollowSettings};
 use crate::relative::RelativeSettings;
+#[cfg(test)]
 use otd_core::spec::TabletSpec;
 
 /// PTH-660 active area, the default tablet's.
@@ -97,7 +98,7 @@ impl PropertyValue {
         } else {
             return Vec::new();
         };
-        choices.insert(0, ("Use default".into(), serde_json::Value::Null));
+        choices.insert(0, (self.default_label(), serde_json::Value::Null));
         choices
     }
 
@@ -105,7 +106,9 @@ impl PropertyValue {
         let Self::Typed { saved, metadata } = self else {
             return false;
         };
-        let saved = saved.as_ref().unwrap_or(&serde_json::Value::Null);
+        let Some(saved) = saved.as_ref().filter(|value| !value.is_null()) else {
+            return false;
+        };
         saved == value
             || metadata.enum_choices.iter().any(|choice| {
                 saved == &choice.value && value.as_str() == Some(choice.name.as_str())
@@ -113,6 +116,26 @@ impl PropertyValue {
     }
 
     pub fn display_text(&self) -> String {
+        if let Self::Typed { saved, metadata } = self {
+            if saved.is_none() {
+                return if self.choices().is_empty() { String::new() } else { "Constructor value".into() };
+            }
+            if saved.as_ref().is_some_and(serde_json::Value::is_null) {
+                return if metadata.default_is_attribute {
+                    metadata.default_value.as_ref().map_or_else(
+                        || "Declared default".into(),
+                        |value| match value {
+                            serde_json::Value::String(text) => text.clone(),
+                            _ => value.to_string(),
+                        },
+                    )
+                } else if self.choices().is_empty() {
+                    String::new()
+                } else {
+                    "Constructor value".into()
+                };
+            }
+        }
         if let Some((label, _)) = self
             .choices()
             .into_iter()
@@ -133,6 +156,8 @@ impl PropertyValue {
                         || matches!(
                             metadata.property_type.as_str(),
                             "System.String"
+                                | "System.TimeSpan"
+                                | "System.DateTime"
                                 | "System.Boolean"
                                 | "System.SByte"
                                 | "System.Byte"
@@ -157,6 +182,22 @@ impl PropertyValue {
         !matches!(self, Self::Typed { metadata, .. } if !metadata.writable)
     }
 
+    /// Only properties with a supported field/choice control are editable.
+    /// Keep complex values in the profile without exposing a raw JSON editor.
+    pub fn field_writable(&self) -> bool {
+        match self {
+            Self::JsonScalar | Self::Json(_) => false,
+            Self::Typed { metadata, .. } => metadata.writable
+                && (metadata.enum_underlying_type.is_some() || !metadata.enum_choices.is_empty()
+                    || matches!(metadata.property_type.as_str(),
+                        "System.String" | "System.Boolean" | "System.TimeSpan" | "System.DateTime"
+                        | "System.SByte" | "System.Byte" | "System.Int16" | "System.UInt16"
+                        | "System.Int32" | "System.UInt32" | "System.Int64" | "System.UInt64"
+                        | "System.Single" | "System.Double")),
+            _ => true,
+        }
+    }
+
     pub fn uses_default(&self) -> bool {
         matches!(
             self,
@@ -165,6 +206,40 @@ impl PropertyValue {
                 ..
             }
         )
+    }
+
+    pub fn reset_value(&self) -> serde_json::Value {
+        match self {
+            Self::Typed { metadata, .. } => metadata.default_value.clone().unwrap_or(serde_json::Value::Null),
+            _ => serde_json::Value::Null,
+        }
+    }
+
+    pub fn default_label(&self) -> String {
+        match self {
+            Self::Typed { metadata, .. } => metadata.default_value.as_ref().map_or_else(
+                || "Constructor value".into(),
+                |value| format!("Default: {}", scalar_text(value)),
+            ),
+            _ => "Use default".into(),
+        }
+    }
+
+    pub fn default_cue(&self) -> String {
+        match self {
+            Self::Typed { saved: None, .. } => "Constructor value".into(),
+            Self::Typed { saved: Some(value), metadata } if value.is_null() => {
+                if metadata.default_is_attribute { self.default_label() } else { "Constructor value".into() }
+            }
+            _ => String::new(),
+        }
+    }
+}
+
+fn scalar_text(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => format!("{text:?}"),
+        _ => value.to_string(),
     }
 }
 
@@ -367,15 +442,42 @@ impl Editor {
         }
     }
 
+    /// The saved target, or the sole detected model. Never invent a model.
+    pub fn tablet_label(&self, connected: &[String]) -> String {
+        match self.profile.tablet_name() {
+            Ok(Some(name)) => name,
+            Ok(None) => match connected {
+                [name] => name.clone(),
+                [] => "No tablet detected".into(),
+                _ => "Multiple tablets".into(),
+            },
+            Err(_) => "Unknown tablet".into(),
+        }
+    }
+
+    /// Resolve the editor's transient geometry without naming/saving a target.
+    pub fn update_detected_tablet(&mut self, connected: &[String]) -> Result<bool, String> {
+        if self.profile.tablet_name()?.is_some() {
+            return Ok(false);
+        }
+        let [name] = connected else { return Ok(false); };
+        let spec = otd_core::config::spec_for_tablet(name)?;
+        if self.profile.tablet == spec {
+            return Ok(false);
+        }
+        self.profile = self.profile.for_tablet(spec)?;
+        Ok(true)
+    }
+
     /// Makes the profile target a tablet, or any tablet with `None`. Areas
     /// that no longer fit the tablet become its full area.
-    pub fn set_tablet(&mut self, name: Option<String>) {
+    pub fn set_tablet(&mut self, name: Option<String>) -> Result<(), String> {
         let spec = name
             .as_deref()
-            .map_or(TabletSpec::PTH_660, otd_core::config::spec_for_tablet);
-        self.profile.target_tablet = name;
+            .map(otd_core::config::spec_for_tablet).transpose()?.unwrap_or(self.profile.tablet);
+        self.profile.target_tablet = Some(name.unwrap_or_else(|| "*".into()));
         if spec == self.profile.tablet {
-            return;
+            return Ok(());
         }
         self.profile.tablet = spec;
         if let Some(mapping) = &mut self.profile.otd_mapping {
@@ -393,6 +495,7 @@ impl Editor {
         {
             *raw = (*raw).min(spec.max_pressure);
         }
+        Ok(())
     }
 
     pub fn set_threshold_percent(
@@ -452,39 +555,6 @@ impl Editor {
             FilterRef::Radial(index) => index < self.profile.radial_follow.len(),
             FilterRef::Plugin(index) => self.profile.plugins.get(index).is_some_and(|p| p.enabled),
         }
-    }
-
-    /// Built-in filters precede DLLs; each group keeps its own saved order.
-    /// DLL execution also respects the stage declared by the plugin.
-    pub fn filter_move_target(&self, target: FilterRef, down: bool) -> Option<FilterRef> {
-        let (index, count) = match target {
-            FilterRef::Radial(index) => (index, self.profile.radial_follow.len()),
-            FilterRef::Plugin(index) => (index, self.profile.plugins.len()),
-        };
-        let next = if down {
-            index.checked_add(1)?
-        } else {
-            index.checked_sub(1)?
-        };
-        if index >= count || next >= count {
-            return None;
-        }
-        Some(match target {
-            FilterRef::Radial(_) => FilterRef::Radial(next),
-            FilterRef::Plugin(_) => FilterRef::Plugin(next),
-        })
-    }
-
-    pub fn move_filter(&mut self, target: FilterRef, down: bool) -> Option<FilterRef> {
-        let next = self.filter_move_target(target, down)?;
-        match (target, next) {
-            (FilterRef::Radial(from), FilterRef::Radial(to)) => {
-                self.profile.radial_follow.swap(from, to)
-            }
-            (FilterRef::Plugin(from), FilterRef::Plugin(to)) => self.profile.plugins.swap(from, to),
-            _ => unreachable!("filter moves stay within their group"),
-        }
-        Some(next)
     }
 
     /// Reset only settings. Identity, order and enabled state are preserved.
@@ -603,6 +673,7 @@ fn property_tooltip(descriptor: &PropertyMetadata) -> Option<String> {
     let parts: Vec<String> = [
         descriptor.tooltip.clone(),
         descriptor.description.clone(),
+        descriptor.default_value.as_ref().map(|value| format!("Default: {}", scalar_text(value))),
         descriptor
             .slider
             .as_ref()
@@ -795,7 +866,7 @@ pub fn set_plugin_property(
 /// Serializes and reloads a profile exactly as Save and Start do, so the
 /// panel reports the same validation errors the file loader would.
 pub fn validated(profile: &Profile, path: &Path) -> Result<Profile, String> {
-    Profile::from_toml_text(&profile.to_toml()?, path)
+    Profile::from_toml_text(&profile.to_toml()?, path)?.for_tablet(profile.tablet)
 }
 
 pub fn format_number(value: f64, decimals: usize) -> String {
@@ -851,7 +922,7 @@ mod tests {
             .into_iter()
             .map(|(label, _)| label)
             .collect();
-        assert_eq!(labels, ["Use default", "Linear", "Smooth"]);
+        assert_eq!(labels, ["Constructor value", "Linear", "Smooth"]);
         assert_eq!(value.display_text(), "Smooth");
         let strength = crate::dotnet::PropertyMetadata {
             name: "Strength".into(),
@@ -886,9 +957,9 @@ Minimum: 0, Maximum: 2"
         mapping.tablet.width = 200.0;
         editor.set_absolute(mapping);
         editor.set_threshold_percent(false, Some(50.0)).unwrap();
-        editor.set_tablet(Some("Wacom CTL-4100".into()));
+        editor.set_tablet(Some("Wacom CTL-4100".into())).unwrap();
         let spec = editor.profile.tablet;
-        assert_eq!(spec, otd_core::config::spec_for_tablet("Wacom CTL-4100"));
+        assert_eq!(spec, otd_core::config::spec_for_tablet("Wacom CTL-4100").unwrap());
         assert!(spec.width_mm < 200.0);
         let area = editor.profile.otd_mapping.unwrap().tablet;
         assert!(area.width <= spec.width_mm, "{area:?}");
@@ -897,8 +968,8 @@ Minimum: 0, Maximum: 2"
             editor.profile.tablet_name().unwrap().as_deref(),
             Some("Wacom CTL-4100")
         );
-        editor.set_tablet(None);
-        assert_eq!(editor.profile.tablet, TabletSpec::PTH_660);
+        editor.set_tablet(None).unwrap();
+        assert_eq!(editor.profile.tablet, spec);
         assert_eq!(editor.profile.tablet_name().unwrap(), None);
     }
 
@@ -1129,56 +1200,6 @@ Minimum: 0, Maximum: 2"
         for text in ["[1]", "{}", "not json"] {
             assert!(parse_property(text, &previous).is_err(), "accepted {text}");
         }
-    }
-
-    #[test]
-    fn filter_controls_reorder_round_trip_preserves_identity_and_settings() {
-        let mut editor = Editor::new(Profile::default());
-        editor.profile.radial_follow = vec![
-            RadialFollowSettings {
-                outer_radius: 2.0,
-                ..Default::default()
-            },
-            RadialFollowSettings {
-                outer_radius: 4.0,
-                ..Default::default()
-            },
-        ];
-        editor.profile.plugins = (0..3)
-            .map(|index| PluginConfig {
-                path: "filter.dll".into(),
-                kind: PluginKind::Dotnet,
-                enabled: index != 1,
-                type_name: format!("Filter{index}"),
-                settings_json: format!("{{\"Value\":{index}}}"),
-            })
-            .collect();
-        assert_eq!(editor.move_filter(FilterRef::Plugin(0), false), None);
-        assert_eq!(editor.move_filter(FilterRef::Plugin(2), true), None);
-        assert_eq!(editor.move_filter(FilterRef::Plugin(99), false), None);
-        assert_eq!(editor.move_filter(FilterRef::Radial(1), true), None);
-        assert_eq!(
-            editor.move_filter(FilterRef::Plugin(1), false),
-            Some(FilterRef::Plugin(0))
-        );
-        assert_eq!(
-            editor.move_filter(FilterRef::Radial(0), true),
-            Some(FilterRef::Radial(1))
-        );
-        let saved = editor.profile.to_toml().unwrap();
-        let loaded = Profile::from_toml_text(&saved, Path::new("profile.toml")).unwrap();
-        assert_eq!(
-            loaded
-                .plugins
-                .iter()
-                .map(|p| p.type_name.as_str())
-                .collect::<Vec<_>>(),
-            ["Filter1", "Filter0", "Filter2"]
-        );
-        assert!(!loaded.plugins[0].enabled);
-        assert_eq!(loaded.plugins[0].settings_json, r#"{"Value":1}"#);
-        assert_eq!(loaded.radial_follow[0].outer_radius, 4.0);
-        assert_eq!(loaded.radial_follow[1].outer_radius, 2.0);
     }
 
     #[test]

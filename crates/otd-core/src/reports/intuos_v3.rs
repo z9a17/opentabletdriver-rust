@@ -1,5 +1,8 @@
 //! Stateless decoding of the three IntuosV3 report variants.
 //!
+//! Current catalog parser updates: a126f7b241e417399be6c6a760c0a9d4b987ecfd.
+//! Older unchanged fields retain the 0.6.7 reference below.
+//!
 //! Source: OpenTabletDriver 0.6.7, commit
 //! 736003ed72c8bbb28033b039d5a0bb76c344145c,
 //! OpenTabletDriver.Configurations/Parsers/Wacom/IntuosV3/
@@ -100,6 +103,7 @@ fn tilt_byte(value: u8) -> f32 {
 
 fn extended_pen(raw: &[u8]) -> Result<ReportValues, ReportError> {
     Ok(ReportValues {
+        rotation: Some(i16::from_le_bytes([raw[15], raw[16]])),
         position: Some([
             u32::from_le_bytes([raw[3], raw[4], raw[5], 0]) as f32,
             u32::from_le_bytes([raw[6], raw[7], raw[8], 0]) as f32,

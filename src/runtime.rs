@@ -12,31 +12,22 @@ use windows_sys::Win32::System::Threading::ResetEvent;
 
 use crate::config::Profile;
 use crate::hid::{Event, Notification, OwnedHandle};
-use crate::original_driver::OriginalDriverGuard;
 use crate::plugins::PluginChain;
 use crate::session::PreparedSession;
-use otd_core::tablets::Database;
 
 /// Held by the daemon across candidate preparation, quiesce and rollback.
 /// Foreground run/capture retain their existing local ownership guard.
 pub struct Ownership {
-    original: OriginalDriverGuard,
     _instance: OwnedHandle,
 }
 impl Ownership {
     pub fn acquire() -> Result<Self, String> {
         let instance = crate::single_instance()?;
-        let original = OriginalDriverGuard::pause()
-            .map_err(|error| format!("could not pause original driver: {error}"))?;
+        crate::original_driver::ensure_stopped()
+            .map_err(|error| format!("driver coexistence check failed: {error}"))?;
         Ok(Self {
-            original,
             _instance: instance,
         })
-    }
-    pub fn restore(&mut self) -> Result<(), String> {
-        self.original
-            .restore()
-            .map_err(|error| format!("could not restore original driver: {error}"))
     }
 }
 
@@ -149,6 +140,8 @@ fn run(
     notices: SyncSender<Notice>,
     logs: SyncSender<String>,
 ) -> Result<(), String> {
+    let companions = std::cell::RefCell::new(None::<crate::companions::Companions>);
+    let outcome = (|| {
     let log = |line: &str| {
         let _ = logs.try_send(line.to_owned());
     };
@@ -157,20 +150,29 @@ fn run(
             .send(notice)
             .map_err(|_| "daemon control owner disconnected".to_owned())
     };
-    profile.validate_runtime_tablet()?;
+    let configured_tablets = crate::check_tablet_configurations()?;
+    let database = configured_tablets.as_ref();
+    profile.validate_runtime_tablet_in(database)?;
     profile.validate_filter_execution()?;
     let tablet_name = profile.tablet_name()?;
+    if profile.plugins.iter().any(|plugin| plugin.enabled)
+        && !crate::plugin_catalog::recover_installations()? {
+        return Err("Plugins are being installed or recovered; retry starting the driver after that finishes.".into());
+    }
     // Exercise deterministic pipeline construction before old output pauses.
     // A fresh output/relative pipeline is used on activation and rollback.
-    let _ = otd_core::pipeline::ReportPipeline::new(&profile)?;
-    if profile.relative.is_none() {
-        crate::display::read_snapshot()?.mapper(&profile)?;
+    if tablet_name.is_some() {
+        let _ = otd_core::pipeline::ReportPipeline::new(&profile)?;
+        if profile.relative.is_none() {
+            crate::display::read_snapshot()?.mapper(&profile)?;
+        }
     }
-    let custom = crate::check_tablet_configurations()?;
-    let database = custom.as_ref().unwrap_or_else(|| Database::builtin());
     let notification = Notification::register().map_err(|error| error.to_string())?;
     let mut waiting = false;
     'connect: loop {
+        if let Some(companions) = &mut *companions.borrow_mut() {
+            companions.check_finished()?;
+        }
         if cancelled.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -194,12 +196,16 @@ fn run(
             if !crate::session::wait_for_retry(&notification, interrupt)
                 .map_err(|error| error.to_string())?
             {
+                if let Some(companions) = &mut *companions.borrow_mut() {
+                    companions.check_finished()?;
+                }
                 if cancelled.load(Ordering::Acquire) {
                     return Ok(());
                 }
                 // A quiesce while disconnected has no live report resources.
                 match receive(&commands, cancelled).map_err(|error| error.to_string())? {
                     Directive::Quiesce => {
+                        finish_companions(&companions)?;
                         notify(Notice::Quiesced)?;
                         match receive(&commands, cancelled).map_err(|error| error.to_string())? {
                             Directive::Stop => return Ok(()),
@@ -217,6 +223,9 @@ fn run(
             continue;
         };
         waiting = false;
+        if let Some(companions) = &mut *companions.borrow_mut() {
+            companions.reserve_primary(&selected.pen.path_text(), &selected.configuration.name)?;
+        }
         // These stay on this thread and survive a quiesce/failed replacement.
         // Construction/reset executes trusted plugin code (including its
         // reset/range-loss callback), but has no live input or host output sink.
@@ -236,6 +245,7 @@ fn run(
                 Directive::Stop => return Ok(()),
                 Directive::Quiesce => {
                     prepared = None;
+                    finish_companions(&companions)?;
                     reset_plugins(&mut plugins)?;
                     notify(Notice::Quiesced)?;
                     continue;
@@ -245,6 +255,9 @@ fn run(
             }
             if unsafe { ResetEvent(interrupt.raw()) } == 0 {
                 return Err(io::Error::last_os_error().to_string());
+            }
+            if let Some(companions) = &mut *companions.borrow_mut() {
+                companions.check_finished()?;
             }
             if cancelled.load(Ordering::Acquire) {
                 return Ok(());
@@ -270,6 +283,7 @@ fn run(
                 // acknowledge that command after closing the prepared handle.
                 match commands.try_recv() {
                     Ok(Directive::Quiesce) => {
+                        finish_companions(&companions)?;
                         reset_plugins(&mut plugins)?;
                         notify(Notice::Quiesced)?;
                         continue;
@@ -290,25 +304,30 @@ fn run(
             let quiesced = Cell::new(false);
             // Tools run while this worker owns the output, like the tablet.
             let tools = std::cell::RefCell::new(None);
-            let companions = std::cell::RefCell::new(None);
             let result = source.run(&profile, &mut plugins, &log, || {
+                if let Some(companions) = &mut *companions.borrow_mut() {
+                    companions.check_finished().map_err(io::Error::other)?;
+                }
                 notify(Notice::ActivationReady).map_err(io::Error::other)?;
                 match receive(&commands, cancelled)? {
                     Directive::Run if !cancelled.load(Ordering::Acquire) => {
                         running.set(true);
                         let companion_logs = logs.clone();
-                        *companions.borrow_mut() = Some(
+                        if companions.borrow().is_none() {
+                            *companions.borrow_mut() = Some(
                             crate::companions::Companions::start(
                                 profile.clone(),
                                 database.clone(),
                                 selected.pen.path_text(),
+                                selected.configuration.name.clone(),
                                 interrupt,
                                 move |line| {
                                     let _ = companion_logs.try_send(line.to_owned());
                                 },
                             )
                             .map_err(io::Error::other)?,
-                        );
+                            );
+                        }
                         notify(Notice::Running).map_err(io::Error::other)?;
                         *tools.borrow_mut() =
                             Some(crate::plugins::Tools::start(&profile.plugins, |line| {
@@ -324,11 +343,10 @@ fn run(
                     _ => Err(io::Error::other("unexpected activation gate command")),
                 }
             });
-            let companion_cleanup = companions
-                .take()
-                .map_or(Ok(()), |mut companions| companions.finish());
             drop(tools.take());
-            companion_cleanup?;
+            if let Some(companions) = &mut *companions.borrow_mut() {
+                companions.check_finished()?;
+            }
             // source has drained its read and core output cleanup has completed.
             if let Err(error) = &result
                 && otd_core::session::is_cleanup_failure(error)
@@ -347,6 +365,7 @@ fn run(
                 return Ok(());
             }
             if matches!(requested, Some(Directive::Quiesce)) {
+                finish_companions(&companions)?;
                 reset_plugins(&mut plugins)?;
                 notify(Notice::Quiesced)?;
                 continue;
@@ -371,9 +390,13 @@ fn run(
             if !crate::session::wait_for_retry(&notification, interrupt)
                 .map_err(|error| error.to_string())?
             {
+                if let Some(companions) = &mut *companions.borrow_mut() {
+                    companions.check_finished()?;
+                }
                 match receive(&commands, cancelled).map_err(|error| error.to_string())? {
                     Directive::Stop => return Ok(()),
                     Directive::Quiesce => {
+                        finish_companions(&companions)?;
                         reset_plugins(&mut plugins)?;
                         notify(Notice::Quiesced)?;
                         // Retain this graph while the daemon attempts apply.
@@ -386,4 +409,10 @@ fn run(
             continue 'connect;
         }
     }
+    })();
+    finish_companions(&companions).and(outcome)
+}
+
+fn finish_companions(companions: &std::cell::RefCell<Option<crate::companions::Companions>>) -> Result<(), String> {
+    companions.take().map_or(Ok(()), |mut companions| companions.finish())
 }

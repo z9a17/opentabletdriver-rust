@@ -61,10 +61,10 @@ use windows_sys::Win32::UI::Controls::{
     BST_CHECKED, CDDS_PREPAINT, CDIS_DISABLED, CDIS_FOCUS, CDIS_HOT, CDIS_SELECTED,
     CDIS_SHOWKEYBOARDCUES, CDRF_DODEFAULT, CDRF_SKIPDEFAULT, DRAWITEMSTRUCT, EM_SETCUEBANNER,
     EM_SETMARGINS, ICC_BAR_CLASSES, ICC_STANDARD_CLASSES, ICC_TAB_CLASSES, INITCOMMONCONTROLSEX,
-    InitCommonControlsEx, MEASUREITEMSTRUCT, NM_CUSTOMDRAW, NMCUSTOMDRAW, NMHDR, ODS_FOCUS,
+    InitCommonControlsEx, MEASUREITEMSTRUCT, NM_CUSTOMDRAW, NMCUSTOMDRAW, NMHDR, NMTTDISPINFOW, ODS_FOCUS,
     ODS_SELECTED, ODT_LISTBOX, TBS_BOTH, TBS_HORZ, TBS_NOTICKS, TTF_IDISHWND, TTF_SUBCLASS,
     TTM_ADDTOOLW, TTM_DELTOOLW, TTM_NEWTOOLRECTW, TTM_SETMAXTIPWIDTH, TTM_UPDATETIPTEXTW,
-    TTS_ALWAYSTIP, TTS_NOPREFIX, TTTOOLINFOW,
+    TTS_ALWAYSTIP, TTS_NOPREFIX, TTTOOLINFOW, TTN_GETDISPINFOW, TTM_UPDATE,
 };
 use windows_sys::Win32::UI::HiDpi::{
     AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE,
@@ -89,7 +89,7 @@ use area::AreaView;
 use commands::{
     accelerator_table, append, checked, confirm_discard, copy_to_clipboard, on_command,
 };
-use draw::{Glyph, State, Style};
+use draw::{State, Style};
 use model::{Align, AspectSource, Bounds, Editor, FilterRef, OutputMode, PropertyValue};
 use paint::{ctl_color, custom_draw, draw_item};
 use theme::{Palette, Rgb, ThemeMode, UiPrefs};
@@ -121,10 +121,7 @@ const CMD_ADD_DOTNET: u16 = 220;
 const CMD_ADD_NATIVE: u16 = 221;
 const CMD_PLUGIN_MANAGER: u16 = 229;
 const CMD_REMOVE_FILTER: u16 = 222;
-const CMD_FILTER_UP: u16 = 223;
-const CMD_FILTER_DOWN: u16 = 224;
 const CMD_FILTER_DEFAULTS: u16 = 225;
-const CMD_FILTER_JSON: u16 = 226;
 const CMD_PROPERTY_PREV: u16 = 227;
 const CMD_PROPERTY_NEXT: u16 = 228;
 const CMD_THEME_SYSTEM: u16 = 230;
@@ -149,10 +146,8 @@ const ID_TABLET: u16 = 320;
 const ID_RELATIVE: u16 = 330;
 const ID_FILTER_LIST: u16 = 400;
 const ID_FILTER_ENABLE: u16 = 401;
-const ID_FILTER_JSON: u16 = 402;
 const ID_PROPERTY: u16 = 2000;
 const MAX_PROPERTY_ROWS: u16 = 1000;
-const ID_PROPERTY_DEFAULT: u16 = 4000;
 const ID_TIP_BINDING: u16 = 500;
 const ID_TIP_SLIDER: u16 = 501;
 const ID_TIP_FIELD: u16 = 502;
@@ -181,6 +176,7 @@ const WM_AUTOSTART: u32 = WM_APP + 4;
 const WM_SHOW_PANEL: u32 = WM_APP + 5;
 const WM_TRAY: u32 = WM_APP + 6;
 const WM_BACKGROUND: u32 = WM_APP + 7;
+const WM_METADATA_REFRESH: u32 = WM_APP + 8;
 
 const PANEL_CLASS: &str = "OpenTabletDriverRustControlPanel";
 const PANEL_MUTEX: &str = "Local\\OpenTabletDriverRustPanel";
@@ -205,17 +201,16 @@ const TABLET_FIELDS: [(&str, &str); 5] = [
     ("Height", "mm"),
     ("X", "mm"),
     ("Y", "mm"),
-    ("Rotation", "°"),
+    ("Rotation", "Â°"),
 ];
 const RELATIVE_FIELDS: [(&str, &str); 4] = [
     ("X Sensitivity", "px/mm"),
     ("Y Sensitivity", "px/mm"),
-    ("Rotation", "°"),
+    ("Rotation", "Â°"),
     ("Reset Time", "ms"),
 ];
 const MENUS: [&str; 5] = ["&File", "&Tablets", "&Plugins", "&View", "&Help"];
 const DOCS_URL: &str = "https://github.com/z9a17/opentabletdriver-rust#readme";
-const TABLET_NAME: &str = "Wacom PTH-660";
 const LOG_LIMIT: usize = 1_000;
 
 /// Set by `ui --tray`, as the sign-in entry starts the panel.
@@ -399,7 +394,6 @@ enum Kind {
     Menu,
     Tab(Tab),
     Button,
-    StartStop,
     Dropdown,
     Check,
     Field,
@@ -447,7 +441,6 @@ struct Look {
     controls: HashMap<isize, ControlInfo>,
     tab: Tab,
     menu_open: isize,
-    running: bool,
     filters: Vec<model::FilterItem>,
     log: VecDeque<LogEntry>,
     log_columns: [i32; 3],
@@ -515,7 +508,6 @@ enum Tone {
     Text,
     Muted,
     Warning,
-    Error,
 }
 
 /// Display list built by `layout` and drawn by `paint`.
@@ -604,7 +596,6 @@ enum PropertyTarget {
 
 struct PropertyRow {
     hwnd: HWND,
-    default_control: Option<HWND>,
     /// Static text before the field, which also names it for screen readers.
     label_control: Option<HWND>,
     label: String,
@@ -661,14 +652,10 @@ struct Controls {
     add_dotnet: HWND,
     add_native: HWND,
     remove_filter: HWND,
-    filter_up: HWND,
-    filter_down: HWND,
     filter_defaults: HWND,
-    filter_json_toggle: HWND,
     property_prev: HWND,
     property_next: HWND,
     filter_enable: HWND,
-    filter_json: HWND,
     tip_binding: HWND,
     tip_slider: HWND,
     tip_field: HWND,
@@ -678,7 +665,6 @@ struct Controls {
     log: HWND,
     copy_log: HWND,
     clear_log: HWND,
-    start: HWND,
     save: HWND,
     apply: HWND,
 }
@@ -686,8 +672,10 @@ struct Controls {
 enum BackgroundResult {
     Metadata {
         generation: u64,
+        revision: u64,
         path: PathBuf,
         result: Result<Vec<crate::dotnet::InspectedFilter>, String>,
+        aliases: Vec<(PathBuf, PathBuf)>,
     },
     Devices {
         announce: bool,
@@ -695,10 +683,13 @@ enum BackgroundResult {
     },
     PluginFolder {
         generation: u64,
+        revision: u64,
+        select_added: bool,
         folder: PathBuf,
         name: String,
         entries: Vec<crate::dotnet::InspectedFilter>,
         errors: Vec<String>,
+        aliases: Vec<(PathBuf, PathBuf)>,
     },
     Import {
         generation: u64,
@@ -706,6 +697,13 @@ enum BackgroundResult {
         result: Result<Box<Profile>, String>,
     },
     Strings(String),
+    Presets(Result<Vec<String>, String>),
+    Diagnostics(Result<DiagnosticExport, String>),
+}
+
+enum DiagnosticExport {
+    Clipboard(String),
+    Saved(PathBuf),
 }
 struct App {
     hwnd: HWND,
@@ -716,6 +714,9 @@ struct App {
     prefs_path: PathBuf,
     process_dpi: isize,
     tooltip: HWND,
+    /// Tooltip callback storage lives until the next hover notification.
+    filter_tip: Vec<u16>,
+    hovered_filter: Option<usize>,
     accelerators: HACCEL,
     c: Controls,
     tab: Tab,
@@ -734,20 +735,20 @@ struct App {
     /// Discovery results are UI-only; they are never written into profiles.
     plugin_metadata: HashMap<PathBuf, Result<Vec<FilterMetadata>, String>>,
     metadata_pending: HashMap<PathBuf, bool>,
+    metadata_versions: HashMap<PathBuf, u64>,
     metadata_generation: u64,
+    metadata_refresh_deferred: bool,
     edit_revision: u64,
     background_tx: std::sync::mpsc::Sender<BackgroundResult>,
     background_rx: std::sync::mpsc::Receiver<BackgroundResult>,
-    device_scan_pending: bool,
+    device_scan: background::DeviceScan,
     device_strings_pending: bool,
     import_pending: bool,
+    diagnostics_pending: bool,
     connected_tablets: Vec<String>,
     /// Label controls keyed by the control they name.
     labels: HashMap<isize, HWND>,
-    json_visible: bool,
-    json_mode: bool,
     property_page: usize,
-    json_error: Option<String>,
     invalid: HashSet<isize>,
     drag: Option<Drag>,
     context_area: AreaKind,
@@ -757,12 +758,19 @@ struct App {
     daemon_instance: Option<String>,
     daemon_log_sequence: u64,
     closing: bool,
+    close_ready: bool,
+    update_restart_pending: bool,
+    update_close_approved: bool,
     driver: DriverState,
     tablet_present: Option<bool>,
     /// The tablets listed in the last Tablets menu, by command offset.
     tablet_choices: Vec<String>,
     /// The presets listed in the last File menu, by command offset.
     preset_choices: Vec<String>,
+    /// Worker cache; it never changes the command mapping of an open menu.
+    preset_names: Vec<String>,
+    preset_scan_pending: bool,
+    presets_loaded: bool,
     status: String,
     status_level: Level,
     validation_status: bool,
@@ -774,7 +782,7 @@ struct App {
 
 impl Drop for App {
     fn drop(&mut self) {
-        // The daemon owns input; closing this client only detaches.
+        // Normal close waits for input cleanup before dropping the client.
         self.daemon_client.take();
         unsafe {
             DestroyAcceleratorTable(self.accelerators);
@@ -916,6 +924,8 @@ unsafe extern "system" fn window_proc(
     let default = || unsafe { DefWindowProcW(window, message, wp, lp) };
     match message {
         WM_DESTROY => {
+            debugger::close();
+            plugin_manager::close();
             tray::remove(window);
             unsafe { PostQuitMessage(0) };
             0
@@ -994,6 +1004,16 @@ unsafe extern "system" fn window_proc(
         }
         WM_NOTIFY => {
             let header = unsafe { &*(lp as *const NMHDR) };
+            if header.code == TTN_GETDISPINFOW {
+                if !with_app(|app| header.hwndFrom == app.tooltip && header.idFrom == app.c.filter_list as usize).unwrap_or(false) {
+                    return default();
+                }
+                let tip = unsafe { &mut *(lp as *mut NMTTDISPINFOW) };
+                tip.szText[0] = 0;
+                tip.lpszText = tip.szText.as_mut_ptr();
+                with_app(|app| app.filter_tooltip(tip));
+                return 0;
+            }
             if header.code == NM_CUSTOMDRAW {
                 return custom_draw(unsafe { &mut *(lp as *mut NMCUSTOMDRAW) });
             }
@@ -1017,15 +1037,22 @@ unsafe extern "system" fn window_proc(
             1
         }
         WM_COMMAND => {
+            if with_app(|app| app.closing || app.update_restart_pending).unwrap_or(false) { return 0; }
             on_command(
                 window,
                 (wp & 0xFFFF) as u16,
                 ((wp >> 16) & 0xFFFF) as u32,
                 lp as HWND,
             );
+            with_app(|app| {
+                if app.metadata_refresh_deferred {
+                    unsafe { PostMessageW(window, WM_METADATA_REFRESH, 0, 0); }
+                }
+            });
             0
         }
         WM_HSCROLL => {
+            if with_app(|app| app.closing || app.update_restart_pending).unwrap_or(false) { return 0; }
             let slider = lp as HWND;
             with_app(|app| app.slider_moved(slider));
             0
@@ -1119,6 +1146,10 @@ unsafe extern "system" fn window_proc(
             }
             0
         }
+        WM_METADATA_REFRESH => {
+            with_app(App::refresh_deferred_metadata);
+            0
+        }
         WM_DETECT => {
             with_app(App::detect_tablet);
             0
@@ -1164,14 +1195,21 @@ unsafe extern "system" fn window_proc(
         }
         WM_CLOSE => {
             if with_app(|app| app.closing).unwrap_or(false) {
+                if with_app(|app| app.close_ready).unwrap_or(false) {
+                    unsafe { DestroyWindow(window) };
+                }
+                return 0;
+            }
+            let approved_restart = with_app(|app| app.update_close_approved).unwrap_or(false);
+            if !approved_restart && with_app(|app| app.update_restart_pending).unwrap_or(false) {
                 return 0;
             }
             // Close from the tray asks about unsaved edits with the panel shown.
-            if with_app(|app| app.dirty).unwrap_or(false) && unsafe { IsWindowVisible(window) } == 0
+            if !approved_restart && with_app(|app| app.dirty || !app.invalid.is_empty()).unwrap_or(false) && unsafe { IsWindowVisible(window) } == 0
             {
                 tray::show_panel(window);
             }
-            if !confirm_discard(window) {
+            if !approved_restart && !confirm_discard(window) {
                 return 0;
             }
             if with_app(App::begin_close).unwrap_or(true) {
@@ -1304,6 +1342,15 @@ pub fn run() -> Result<(), String> {
             return Err(error);
         }
     };
+    let _device_notifications = match crate::hid::WindowNotification::register(window) {
+        Ok(notification) => Some(notification),
+        Err(error) => {
+            app.log(Level::Warning, "Tablet", format!(
+                "HID arrival notifications are unavailable: {error}. Use Tablets > Detect tablet if a model does not appear."
+            ));
+            None
+        }
+    };
     let path = directory.join("driver.toml");
     let mut profile_snapshot = None;
     let (profile, loaded) = if path.exists() {
@@ -1396,6 +1443,13 @@ pub fn run() -> Result<(), String> {
         unsafe {
             if TranslateAcceleratorW(window, accelerators, &message) != 0 {
                 continue;
+            }
+            if message.message == WM_MOUSEMOVE {
+                // Updating a live tooltip may ask the owner for its text, so
+                // finish borrowing App before calling the tooltip window.
+                if let Some(Some(tooltip)) = with_app(|app| app.filter_hover_changed(message.hwnd, message.lParam)) {
+                    SendMessageW(tooltip, TTM_UPDATE, 0, 0);
+                }
             }
             if IsDialogMessageW(window, &message) == 0 {
                 TranslateMessage(&message);

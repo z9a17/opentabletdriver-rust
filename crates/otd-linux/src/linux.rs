@@ -29,13 +29,22 @@ pub struct Device {
     pub node: PathBuf,
     pub usb: Option<PathBuf>,
     pub uses_report_ids: bool,
+    pub kernel_driver: Option<String>,
+    /// Discovery must preserve string-read errors so denied USB access does
+    /// not disappear as a configuration miss and endless reconnect wait.
+    pub string_errors: BTreeMap<u8, String>,
 }
 
 /// Every hidraw node, by sysfs path. Device strings are read only for the
 /// indices a configuration for the same IDs asks for.
 pub fn enumerate(database: &Database) -> io::Result<Vec<Device>> {
     let mut devices = Vec::new();
-    for entry in fs::read_dir("/sys/class/hidraw")? {
+    let entries = match fs::read_dir("/sys/class/hidraw") {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(devices),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
         let entry = entry?;
         let Ok(sys) = fs::canonicalize(entry.path()) else {
             continue;
@@ -58,6 +67,7 @@ pub fn enumerate(database: &Database) -> io::Result<Vec<Device>> {
         let node = Path::new("/dev").join(entry.file_name());
         let usb = sysfs::usb_device(&sys);
         let mut strings = BTreeMap::new();
+        let mut string_errors = BTreeMap::new();
         if let Some(usb) = &usb {
             let indices: std::collections::BTreeSet<u8> = database
                 .find(id.vendor, id.product)
@@ -66,8 +76,9 @@ pub fn enumerate(database: &Database) -> io::Result<Vec<Device>> {
                 .filter_map(|index| index.parse().ok())
                 .collect();
             for index in indices {
-                if let Ok(text) = usb_string(usb, index) {
-                    strings.insert(index, text);
+                match usb_string(usb, index) {
+                    Ok(text) => { strings.insert(index, text); }
+                    Err(error) => { string_errors.insert(index, error.to_string()); }
                 }
             }
         }
@@ -99,6 +110,10 @@ pub fn enumerate(database: &Database) -> io::Result<Vec<Device>> {
             node,
             usb,
             uses_report_ids: lengths.uses_report_ids,
+            kernel_driver: fs::read_to_string(hid.join("uevent")).ok().and_then(|uevent| {
+                uevent.lines().find_map(|line| line.strip_prefix("DRIVER=").map(str::to_owned))
+            }).filter(|driver| matches!(driver.as_str(), "wacom" | "hid_uclogic")),
+            string_errors,
         });
     }
     devices.sort_by(|a, b| a.endpoint.path.cmp(&b.endpoint.path));
@@ -145,7 +160,8 @@ pub fn usb_string(usb: &Path, index: u8) -> io::Result<String> {
         number("busnum")?,
         number("devnum")?
     );
-    let file = OpenOptions::new().read(true).write(true).open(&node)?;
+    let file = OpenOptions::new().read(true).write(true).open(&node)
+        .map_err(|error| access_error(&node, error))?;
     let mut buffer = [0u8; 255];
     let mut transfer = ControlTransfer {
         request_type: 0x80,
@@ -201,7 +217,8 @@ pub fn initialize(
         .transpose()?
         .unwrap_or(0);
     if delay == u32::MAX {
-        return Err(io::Error::other(
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
             "infinite feature initialization delay is unsupported",
         ));
     }
@@ -214,7 +231,10 @@ pub fn initialize(
         let usb = device
             .usb
             .as_deref()
-            .ok_or_else(|| io::Error::other("initialization strings need a USB device"))?;
+            .ok_or_else(|| io::Error::new(
+                io::ErrorKind::Unsupported,
+                "initialization strings need a USB device",
+            ))?;
         usb_string(usb, index).map_err(|error| {
             io::Error::new(
                 error.kind(),
@@ -286,7 +306,8 @@ impl<'a> Hidraw<'a> {
             .read(true)
             .write(true)
             .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
-            .open(&device.node)?;
+            .open(&device.node)
+            .map_err(|error| access_error(&device.node.display().to_string(), error))?;
         Ok(Self {
             file,
             label,
@@ -299,6 +320,15 @@ impl<'a> Hidraw<'a> {
     pub fn file(&self) -> &File {
         &self.file
     }
+}
+
+fn access_error(node: &str, error: io::Error) -> io::Error {
+    let hint = if error.kind() == io::ErrorKind::PermissionDenied {
+        "; run sudo ./setup/install.sh install from the extracted release (source: packaging/linux/install.sh), replug the tablet, and run as your normal user"
+    } else if node == "/dev/uinput" && error.kind() == io::ErrorKind::NotFound {
+        "; run sudo ./setup/install.sh install from the extracted release (source: packaging/linux/install.sh) to load uinput"
+    } else { "" };
+    io::Error::new(error.kind(), format!("cannot open {node}: {error}{hint}"))
 }
 
 impl ReportSource for Hidraw<'_> {
@@ -400,7 +430,7 @@ impl Uinput {
         let file = OpenOptions::new()
             .write(true)
             .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
-            .open("/dev/uinput")?;
+            .open("/dev/uinput").map_err(|error| access_error("/dev/uinput", error))?;
         let fd = file.as_raw_fd();
         let set = |request: u32, value: u16| -> io::Result<()> {
             // SAFETY: these requests take an int argument by value.
@@ -617,7 +647,7 @@ impl VirtualTablet {
         let file = OpenOptions::new()
             .write(true)
             .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
-            .open("/dev/uinput")?;
+            .open("/dev/uinput").map_err(|error| access_error("/dev/uinput", error))?;
         let fd = file.as_raw_fd();
         let set = |request: u32, value: u16| -> io::Result<()> {
             // SAFETY: these requests take an int argument by value.

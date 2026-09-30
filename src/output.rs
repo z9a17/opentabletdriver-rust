@@ -1,6 +1,7 @@
 //! Sends the core's mouse packets with `SendInput`.
 
 use std::mem::size_of;
+use windows_sys::Win32::Foundation::SetLastError;
 
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
@@ -80,8 +81,14 @@ pub fn send_input(packet: MousePacket) -> Result<(), std::io::Error> {
             },
         },
     };
+    unsafe { SetLastError(0) };
     if unsafe { SendInput(1, &input, size_of::<INPUT>() as i32) } != 1 {
-        return Err(std::io::Error::last_os_error());
+        let error = std::io::Error::last_os_error();
+        return Err(if error.raw_os_error().is_some_and(|code| code != 0) {
+            error
+        } else {
+            std::io::Error::other("SendInput accepted no mouse event; input may be blocked")
+        });
     }
     Ok(())
 }

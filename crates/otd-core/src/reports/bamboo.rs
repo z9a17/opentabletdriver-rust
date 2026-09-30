@@ -1,5 +1,8 @@
 //! Complete stateless Bamboo, BambooPad and BambooV2 auxiliary dispatch.
 //!
+//! Current catalog parser updates: a126f7b241e417399be6c6a760c0a9d4b987ecfd.
+//! Older unchanged fields retain the 0.6.7 reference below.
+//!
 //! Pinned source: OpenTabletDriver 0.6.7, commit
 //! 736003ed72c8bbb28033b039d5a0bb76c344145c,
 //! OpenTabletDriver.Configurations/Parsers/Wacom/
@@ -38,6 +41,14 @@ pub fn parse_bamboo(
     })
 }
 
+fn bamboo_wheel(raw: &[u8]) -> Result<AbsoluteAnalogReport, ReportError> {
+    require_length(raw, 9)?;
+    Ok(AbsoluteAnalogReport {
+        kind: AnalogKind::Wheel,
+        positions: AbsoluteAnalog::from_slice(&[(raw[8] & 0x80 != 0).then_some(u32::from(raw[8] & 0x7f))])?,
+    })
+}
+
 fn bamboo_tool(raw: &[u8]) -> Result<ReportValues, ReportError> {
     let pressure = u32::from(raw[6]) | (u32::from(raw[7] & 0x03) << 8);
     let mut values = ReportValues {
@@ -50,7 +61,7 @@ fn bamboo_tool(raw: &[u8]) -> Result<ReportValues, ReportError> {
     let has_position =
         raw[1] & 0x80 != 0 || raw[2..6].iter().any(|&byte| byte != 0) || pressure != 0;
     if !has_position {
-        // Upstream leaves the potential wheel in byte 8 as a comment only.
+        values.absolute_analog = Some(bamboo_wheel(raw)?);
         return Ok(values);
     }
     values.position = Some([
@@ -67,6 +78,7 @@ fn bamboo_tool(raw: &[u8]) -> Result<ReportValues, ReportError> {
         // BambooMouseReport exposes neither pressure nor proximity, even on
         // Graphire WACOM_MO devices that might encode a mouse hover distance.
     } else {
+        values.absolute_analog = Some(bamboo_wheel(raw)?);
         values.pressure = Some(if raw[1] & 1 != 0 { pressure } else { 0 });
         values.eraser = Some(raw[1] & 0x20 != 0);
         values.pen_buttons = Some(Buttons::from_bits(u64::from(raw[1] >> 1), 2)?);
