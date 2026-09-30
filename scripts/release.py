@@ -175,6 +175,7 @@ def make_package(args):
                          'nethost.dll', 'THIRD_PARTY_NOTICES.txt']:
                 if not (compat / name).is_file():
                     raise ValueError(f'missing Windows compatibility component: {compat / name}')
+            check_binary('win-x64', 'nethost.dll', (compat / 'nethost.dll').read_bytes())
             actual_compat = {path.relative_to(compat).as_posix(): digest(path.read_bytes())
                              for path in sorted(compat.rglob('*')) if path.is_file()}
             if actual_compat != metadata.get('compat'):
@@ -277,6 +278,7 @@ def verify(directory, require_clean):
             if digest(files[prefix + 'runtime-licenses/' + name]) != expected_hash:
                 raise ValueError(f'runtime license mismatch: {name}')
         if platform == 'win-x64':
+            check_binary('win-x64', 'nethost.dll', files[prefix + 'compat/nethost.dll'])
             for name, expected_hash in metadata['compat'].items():
                 if digest(files[prefix + 'compat/' + name]) != expected_hash:
                     raise ValueError(f'compatibility bridge provenance mismatch: {name}')
