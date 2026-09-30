@@ -26,9 +26,8 @@ pub const BTN_STYLUS3: u16 = 0x149;
 pub const INPUT_PROP_POINTER: u16 = 0x00;
 pub const INPUT_PROP_DIRECT: u16 = 0x01;
 
-/// Keys the virtual tablet declares, as upstream does. Stylus buttons are
-/// declared for applications' capability checks; bindings do not press them
-/// yet.
+/// Keys the virtual tablet declares, as upstream does. Barrel buttons 1, 2
+/// and 3 are `BTN_STYLUS`, `BTN_STYLUS2` and `BTN_STYLUS3`.
 pub const KEYS: [u16; 6] = [
     BTN_TOUCH,
     BTN_STYLUS,
@@ -37,6 +36,8 @@ pub const KEYS: [u16; 6] = [
     BTN_TOOL_PEN,
     BTN_TOOL_RUBBER,
 ];
+/// The stylus key of each barrel button, button 1 first.
+pub const BARREL_KEYS: [u16; 3] = [BTN_STYLUS, BTN_STYLUS2, BTN_STYLUS3];
 /// Subpixels per screen pixel on the position axes.
 pub const RESOLUTION: i32 = 1000;
 pub const MAX_PRESSURE: i32 = u16::MAX as i32;
@@ -63,9 +64,13 @@ pub fn axes(screen: Rect) -> [Axis; 5] {
     ]
 }
 
+/// The most events one packet needs: tool, X, Y, touch, pressure, two tilt
+/// axes, three barrel buttons and the sync.
+pub const FRAME_EVENTS: usize = 11;
+
 /// A fixed-size evdev frame; one packet never needs more events.
 pub struct Frame {
-    pub events: [(u16, u16, i32); 10],
+    pub events: [(u16, u16, i32); FRAME_EVENTS],
     pub count: usize,
 }
 
@@ -83,7 +88,7 @@ impl Frame {
 /// The frame for one pen packet, ending with `SYN_REPORT`.
 pub fn frame(packet: PenPacket, screen: Rect) -> Frame {
     let mut frame = Frame {
-        events: [(0, 0, 0); 10],
+        events: [(0, 0, 0); FRAME_EVENTS],
         count: 0,
     };
     let tool = if packet.eraser {
@@ -98,6 +103,9 @@ pub fn frame(packet: PenPacket, screen: Rect) -> Frame {
         frame.push(EV_KEY, BTN_TOUCH, 0);
         frame.push(EV_ABS, ABS_PRESSURE, 0);
         frame.push(EV_KEY, tool, 0);
+        for key in BARREL_KEYS {
+            frame.push(EV_KEY, key, 0);
+        }
     } else {
         let scaled = |value: f64, origin: i32, span: i32| {
             ((value - f64::from(origin)) * f64::from(RESOLUTION))
@@ -119,6 +127,10 @@ pub fn frame(packet: PenPacket, screen: Rect) -> Frame {
             let tilt = |value: f32| (value.round() as i32).clamp(TILT_RANGE.0, TILT_RANGE.1);
             frame.push(EV_ABS, ABS_TILT_X, tilt(x));
             frame.push(EV_ABS, ABS_TILT_Y, tilt(y));
+        }
+        // The kernel drops a key event that repeats a key's state.
+        for (index, key) in BARREL_KEYS.into_iter().enumerate() {
+            frame.push(EV_KEY, key, i32::from(packet.barrel & (1 << index) != 0));
         }
     }
     frame.push(EV_SYN, SYN_REPORT, 0);
@@ -144,6 +156,7 @@ mod tests {
             pressure: 0.5,
             tilt: Some([12.4, -80.0]),
             eraser,
+            barrel: 0,
         }
     }
 
@@ -160,6 +173,9 @@ mod tests {
                 (EV_ABS, ABS_PRESSURE, 0),
                 (EV_ABS, ABS_TILT_X, 12),
                 (EV_ABS, ABS_TILT_Y, -64),
+                (EV_KEY, BTN_STYLUS, 0),
+                (EV_KEY, BTN_STYLUS2, 0),
+                (EV_KEY, BTN_STYLUS3, 0),
                 (EV_SYN, SYN_REPORT, 0),
             ]
         );
@@ -177,9 +193,52 @@ mod tests {
                 (EV_KEY, BTN_TOUCH, 0),
                 (EV_ABS, ABS_PRESSURE, 0),
                 (EV_KEY, BTN_TOOL_RUBBER, 0),
+                (EV_KEY, BTN_STYLUS, 0),
+                (EV_KEY, BTN_STYLUS2, 0),
+                (EV_KEY, BTN_STYLUS3, 0),
                 (EV_SYN, SYN_REPORT, 0),
             ]
         );
+    }
+
+    #[test]
+    fn barrel_buttons_are_the_stylus_keys_and_a_leave_releases_them() {
+        let held = frame(
+            PenPacket {
+                barrel: 0b101,
+                ..packet(PenPhase::Hover, false)
+            },
+            SCREEN,
+        );
+        let keys: Vec<_> = held
+            .as_slice()
+            .iter()
+            .filter(|(kind, code, _)| *kind == EV_KEY && BARREL_KEYS.contains(code))
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                &(EV_KEY, BTN_STYLUS, 1),
+                &(EV_KEY, BTN_STYLUS2, 0),
+                &(EV_KEY, BTN_STYLUS3, 1)
+            ]
+        );
+        let leave = frame(
+            PenPacket {
+                barrel: 0b111,
+                ..packet(PenPhase::Leave, false)
+            },
+            SCREEN,
+        );
+        assert!(
+            leave
+                .as_slice()
+                .iter()
+                .filter(|(_, code, _)| BARREL_KEYS.contains(code))
+                .all(|(_, _, value)| *value == 0),
+            "leaving range lets go of every barrel button"
+        );
+        assert!(held.count <= FRAME_EVENTS);
     }
 
     #[test]
@@ -208,6 +267,9 @@ mod tests {
                 (EV_ABS, ABS_Y, 0),
                 (EV_KEY, BTN_TOUCH, 1),
                 (EV_ABS, ABS_PRESSURE, 1),
+                (EV_KEY, BTN_STYLUS, 0),
+                (EV_KEY, BTN_STYLUS2, 0),
+                (EV_KEY, BTN_STYLUS3, 0),
                 (EV_SYN, SYN_REPORT, 0),
             ]
         );

@@ -13,7 +13,7 @@ The Rust driver handles one device session on one thread, with no queue and no l
 3. `ReportPipeline` (`crates/otd-core/src/pipeline.rs`) runs the rest for each decoded report:
    1. Input/proximity and relative timeout gates, then built-in Radial Follow and enabled PreTransform DLL filters in profile order.
    2. For each synchronous emitted report, absolute or relative mapping, then enabled Pixels/PostTransform DLL filters in profile order. Zero emissions suppress downstream processing.
-   3. Existing tip/eraser contact policy uses supported post-filter pressure/eraser values. General side-button/auxiliary binding integration remains open.
+   3. Existing tip/eraser contact policy uses supported post-filter pressure/eraser values. Pen side buttons then press their mouse, key or barrel bindings ([pen buttons](../PEN_BUTTONS.md)); auxiliary and mouse-button binding integration remains open.
    4. At most one combined move/button `SendInput` packet per output emission. Several emissions can produce several packets from one input report.
 
 Upstream runs each endpoint on a [`DeviceReader`][DeviceReader] thread. It parses the report, takes the tablet's [lock][InputDeviceTree], and passes it to the output mode ([`OutputMode.Read`][OutputMode]):
@@ -183,7 +183,7 @@ S05 diagnostic JSON is an explicit static snapshot of build/display information,
 | BC-01 | Filter order | enabled PreTransform filters in profile order | built-in Radial Follow first, then DLL filters in profile order | P04 |
 | BC-02 | Pixel-space filters | PostTransform (`Pixels`) filters run after the transform | synchronous zero/multiple Emit and PostTransform after absolute or relative mapping implemented; current execution evidence remains open | P04 |
 | BC-03 | Binding input | `BindingHandler` runs after filters and the transform, so a filter can change the pressure it sees | existing tip contact uses supported post-filter pressure/eraser values; broad bindings remain open | P04, B02; current plugin execution evidence pending |
-| BC-04 | Pen barrel buttons | bits `0x02`/`0x04` (`0x1E`: three buttons) drive pen bindings | ignored | B02 |
+| BC-04 | Pen barrel buttons | bits `0x02`/`0x04` (`0x1E`: three buttons) drive pen bindings | drive `Bindings.PenButtons` (mouse, key, chord, barrel); released on range loss; replay-tested, no hardware evidence | B02 (pen part); [pen buttons](../PEN_BUTTONS.md) |
 | BC-05 | Auxiliary and touch | `0x11` and `0x21`/`0xD2` parsed; auxiliary endpoint opened | auxiliary endpoint not opened; those IDs ignored | D04 |
 | BC-06 | Report validation | any value accepted | out-of-range position or pressure is malformed and ignored | Record: a working tablet never sends them; ignoring one avoids a jump |
 | BC-07 | Neither hover bit set | position used | not detected: no move, button released | Record: see [input latency](../INPUT_LATENCY.md#hover-tracking); not yet observed from this tablet |

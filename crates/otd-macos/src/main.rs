@@ -6,6 +6,8 @@ mod descriptor;
 mod ffi;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "macos")]
+mod keymap;
 
 const USAGE: &str = "OpenTabletDriver Rust macOS CLI\n\
 Usage: opentabletdriver-rust-macos list\n\
@@ -215,16 +217,19 @@ mod app {
             .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "unsupported tablet parser"))?;
         let mut source = HidSource::open(selected.device, format!("{} ({})", selected.configuration.name, selected.device.endpoint.path), &STOP)?;
         // Establish output permission/resources before any hardware init writes.
-        let mut mouse = if matches!(mode, Mode::Driver) { Some(Mouse::new(displays.geometry.clone())?) } else { None };
+        let mouse = if matches!(mode, Mode::Driver) {
+            Some(std::rc::Rc::new(std::cell::RefCell::new(Mouse::new(displays.geometry.clone())?)))
+        } else { None };
+        let actions = mouse.as_ref().map(|mouse| crate::macos::action_sink(std::rc::Rc::clone(mouse)));
         source.initialize(&selected.identifier, &selected.configuration,
             match mode { Mode::Capture { deadline, .. } => Some(deadline), Mode::Driver => None })?;
         if let ParserSupport::Partial(reason) = parser_support(selected.identifier.parser()) {
             eprintln!("Partial parser support: {reason}");
         }
         eprintln!("macOS native CLI: hardware validation pending; Ctrl+C stops and releases contact.");
-        session::run(&mut source, displays, profile, mode, &mut decoder, &mut NoFilters,
-            |packet| match &mut mouse { Some(mouse) => mouse.send(packet), None => Ok(()) },
-            &|line| eprintln!("{line}"))
+        session::run_gated_with_devices(&mut source, displays, profile, mode, &mut decoder, &mut NoFilters,
+            |packet| match &mouse { Some(mouse) => mouse.borrow_mut().send(packet), None => Ok(()) },
+            None, actions, &|line| eprintln!("{line}"), || Ok(true))
     }
 
     fn pause(deadline: Option<Instant>) {

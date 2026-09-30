@@ -41,6 +41,8 @@ pub struct PenPacket {
     pub tilt: Option<[f32; 2]>,
     /// The eraser end, or the pen tip inverted.
     pub eraser: bool,
+    /// Barrel buttons held: bit 0 is barrel button 1, bit 2 is button 3.
+    pub barrel: u8,
 }
 
 /// A platform pen device.
@@ -64,6 +66,8 @@ pub struct PenSample {
     pub eraser: bool,
     /// The tip (or eraser) binding holds contact.
     pub contact: bool,
+    /// Barrel buttons held, as `PenPacket::barrel`.
+    pub barrel: u8,
 }
 
 pub struct PenOutput {
@@ -123,6 +127,7 @@ impl PenOutput {
             pressure,
             tilt,
             eraser: sample.eraser,
+            barrel: sample.barrel,
         };
         // Contact starts in range, as a physical pen reaches the surface.
         if sample.contact && self.last.is_none() {
@@ -150,7 +155,12 @@ impl PenOutput {
 
     /// A report without a position: only contact can change, where the pen
     /// was last. Out of range there is nothing to touch.
-    pub fn contact(&mut self, contact: bool, pressure: Option<u32>) -> io::Result<bool> {
+    pub fn contact(
+        &mut self,
+        contact: bool,
+        pressure: Option<u32>,
+        barrel: u8,
+    ) -> io::Result<bool> {
         let Some(last) = self.last else {
             return Ok(false);
         };
@@ -163,6 +173,7 @@ impl PenOutput {
             tilt: last.tilt,
             eraser: last.eraser,
             contact,
+            barrel,
         })
     }
 
@@ -178,9 +189,11 @@ impl PenOutput {
                 ..last
             })?;
         }
+        // Leaving range lets go of the barrel buttons as well.
         let leave = PenPacket {
             phase: PenPhase::Leave,
             pressure: 0.0,
+            barrel: 0,
             ..last
         };
         self.sink.send(leave)?;
@@ -195,7 +208,7 @@ impl PenOutput {
     }
 }
 
-/// Unchanged position, pressure, tilt and tool.
+/// Unchanged position, pressure, tilt, tool and barrel buttons.
 fn same_state(last: PenPacket, next: PenPacket) -> bool {
     let contact = |phase| matches!(phase, PenPhase::Down | PenPhase::Contact);
     contact(last.phase) == contact(next.phase)
@@ -204,6 +217,7 @@ fn same_state(last: PenPacket, next: PenPacket) -> bool {
         && last.pressure == next.pressure
         && last.tilt == next.tilt
         && last.eraser == next.eraser
+        && last.barrel == next.barrel
 }
 
 #[cfg(test)]
@@ -235,6 +249,7 @@ mod tests {
             tilt: Some([10.0, -120.0]),
             eraser: false,
             contact,
+            barrel: 0,
         }
     }
 
@@ -310,14 +325,71 @@ mod tests {
     fn positionless_reports_change_contact_where_the_pen_is() {
         use PenPhase::*;
         let (mut pen, packets) = output();
-        assert!(!pen.contact(true, Some(10)).unwrap(), "no pen, no contact");
+        assert!(
+            !pen.contact(true, Some(10), 0).unwrap(),
+            "no pen, no contact"
+        );
         pen.sample(at(7.0, 0, false)).unwrap();
-        pen.contact(true, Some(250)).unwrap();
-        pen.contact(true, None).unwrap();
-        pen.contact(false, None).unwrap();
+        pen.contact(true, Some(250), 0).unwrap();
+        pen.contact(true, None, 0).unwrap();
+        pen.contact(false, None, 0).unwrap();
         let sent = packets.borrow().clone();
         assert_eq!(phases(&packets), [Hover, Down, Up]);
         assert_eq!((sent[1].x, sent[1].pressure), (7.0, 0.25));
+    }
+
+    #[test]
+    fn a_barrel_button_change_sends_a_packet_and_leaves_the_rest_alone() {
+        use PenPhase::*;
+        let (mut pen, packets) = output();
+        pen.sample(at(1.0, 0, false)).unwrap();
+        pen.sample(PenSample {
+            barrel: 0b001,
+            ..at(1.0, 0, false)
+        })
+        .unwrap();
+        assert!(
+            !pen.sample(PenSample {
+                barrel: 0b001,
+                ..at(1.0, 0, false)
+            })
+            .unwrap(),
+            "a held barrel button is not resent"
+        );
+        pen.sample(at(1.0, 0, false)).unwrap();
+        let sent = packets.borrow().clone();
+        assert_eq!(phases(&packets), [Hover, Hover, Hover]);
+        assert_eq!(
+            sent.iter().map(|packet| packet.barrel).collect::<Vec<_>>(),
+            [0, 1, 0]
+        );
+        assert!(
+            sent.iter()
+                .all(|packet| (packet.x, packet.y) == (1.0, 20.0))
+        );
+    }
+
+    #[test]
+    fn leaving_range_releases_the_barrel_buttons() {
+        use PenPhase::*;
+        let (mut pen, packets) = output();
+        pen.sample(PenSample {
+            barrel: 0b011,
+            ..at(1.0, 0, false)
+        })
+        .unwrap();
+        pen.release().unwrap();
+        let sent = packets.borrow().clone();
+        assert_eq!(phases(&packets), [Hover, Leave]);
+        assert_eq!((sent[0].barrel, sent[1].barrel), (0b011, 0));
+    }
+
+    #[test]
+    fn a_positionless_report_carries_the_barrel_state() {
+        let (mut pen, packets) = output();
+        pen.sample(at(4.0, 0, false)).unwrap();
+        pen.contact(false, None, 0b100).unwrap();
+        assert_eq!(packets.borrow().last().unwrap().barrel, 0b100);
     }
 
     #[test]

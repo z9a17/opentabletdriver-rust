@@ -27,8 +27,8 @@ use windows_sys::Win32::UI::Input::Pointer::{
     POINTER_PEN_INFO,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, PEN_FLAG_ERASER, PEN_FLAG_INVERTED, PEN_FLAG_NONE, PEN_MASK_PRESSURE,
-    PEN_MASK_TILT_X, PEN_MASK_TILT_Y, PT_PEN,
+    GetForegroundWindow, PEN_FLAG_BARREL, PEN_FLAG_ERASER, PEN_FLAG_INVERTED, PEN_FLAG_NONE,
+    PEN_MASK_PRESSURE, PEN_MASK_TILT_X, PEN_MASK_TILT_Y, PT_PEN,
 };
 
 /// Windows pen pressure runs 0..=1024.
@@ -108,11 +108,17 @@ pub fn pointer_info(packet: PenPacket) -> POINTER_TYPE_INFO {
     };
     let contact = matches!(packet.phase, PenPhase::Down | PenPhase::Contact);
     // The eraser end is "inverted"; touching with it also erases.
-    let pen_flags = match (packet.eraser, contact) {
+    let mut pen_flags = match (packet.eraser, contact) {
         (true, true) => PEN_FLAG_INVERTED | PEN_FLAG_ERASER,
         (true, false) => PEN_FLAG_INVERTED,
         (false, _) => PEN_FLAG_NONE,
     };
+    // Windows pens have one barrel button. The Windows Pen Pointer plugin
+    // sets its flag for each of OpenTabletDriver's three barrel buttons, and
+    // so does this.
+    if packet.barrel != 0 {
+        pen_flags |= PEN_FLAG_BARREL;
+    }
     let mut info = pen_info(
         flags | POINTER_FLAG_PRIMARY,
         change,
@@ -179,6 +185,7 @@ mod tests {
             pressure: 0.5,
             tilt: Some([12.4, -90.0]),
             eraser,
+            barrel: 0,
         }
     }
 
@@ -249,6 +256,25 @@ mod tests {
         assert_eq!(
             read(pointer_info(packet(PenPhase::Contact, false))).penFlags,
             PEN_FLAG_NONE
+        );
+    }
+
+    #[test]
+    fn any_barrel_button_sets_the_pens_barrel_flag() {
+        let flags = |phase, barrel, eraser| {
+            read(pointer_info(PenPacket {
+                barrel,
+                ..packet(phase, eraser)
+            }))
+            .penFlags
+        };
+        assert_eq!(flags(PenPhase::Hover, 0b001, false), PEN_FLAG_BARREL);
+        assert_eq!(flags(PenPhase::Contact, 0b100, false), PEN_FLAG_BARREL);
+        assert_eq!(flags(PenPhase::Hover, 0b110, false), PEN_FLAG_BARREL);
+        assert_eq!(flags(PenPhase::Hover, 0, false), PEN_FLAG_NONE);
+        assert_eq!(
+            flags(PenPhase::Down, 0b001, true),
+            PEN_FLAG_BARREL | PEN_FLAG_INVERTED | PEN_FLAG_ERASER
         );
     }
 

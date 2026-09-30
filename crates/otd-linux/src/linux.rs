@@ -13,7 +13,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use otd_core::actions::{Action, ActionTransition, KeyboardUsage, MouseButton};
 use otd_core::endpoint_match::{Endpoint, Transport};
+use otd_core::output::buttons::{ActionSink, LocalActions};
 use otd_core::output::{MousePacket, flags};
 use otd_core::session::{Read, ReportSource};
 use otd_core::tablets::{Database, DeviceIdentifier, TabletConfiguration};
@@ -421,6 +423,8 @@ const BUS_VIRTUAL: u16 = 0x06;
 /// all screens.
 pub struct Uinput {
     file: File,
+    tip_held: std::cell::Cell<bool>,
+    side_left_held: std::cell::Cell<bool>,
 }
 
 impl Uinput {
@@ -439,7 +443,9 @@ impl Uinput {
             }
         };
         set(UI_SET_EVBIT, EV_KEY)?;
-        set(UI_SET_KEYBIT, BTN_LEFT)?;
+        for button in crate::keymap::MOUSE_BUTTONS {
+            set(UI_SET_KEYBIT, button)?;
+        }
         if relative {
             set(UI_SET_EVBIT, EV_REL)?;
             set(UI_SET_RELBIT, 0)?; // REL_X
@@ -474,7 +480,7 @@ impl Uinput {
         if unsafe { libc::ioctl(fd, UI_DEV_CREATE as _) } < 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(Self { file })
+        Ok(Self { file, tip_held: std::cell::Cell::new(false), side_left_held: std::cell::Cell::new(false) })
     }
 
     /// Sends one packet as a single evdev frame, without allocating.
@@ -498,10 +504,13 @@ impl Uinput {
             push(kind, 0, packet.dx);
             push(kind, 1, packet.dy);
         }
-        if packet.flags & flags::LEFTDOWN != 0 {
-            push(EV_KEY, BTN_LEFT, 1);
-        } else if packet.flags & flags::LEFTUP != 0 {
-            push(EV_KEY, BTN_LEFT, 0);
+        let tip = if packet.flags & flags::LEFTDOWN != 0 { true }
+            else if packet.flags & flags::LEFTUP != 0 { false }
+            else { self.tip_held.get() };
+        let was_left = self.tip_held.get() || self.side_left_held.get();
+        let left = tip || self.side_left_held.get();
+        if was_left != left {
+            push(EV_KEY, BTN_LEFT, i32::from(left));
         }
         push(EV_SYN, 0, 0);
         // SAFETY: `events[..count]` is initialized plain data.
@@ -511,8 +520,125 @@ impl Uinput {
                 count * size_of::<libc::input_event>(),
             )
         };
-        (&self.file).write_all(bytes)
+        (&self.file).write_all(bytes)?;
+        self.tip_held.set(tip);
+        Ok(())
     }
+}
+
+impl Uinput {
+    /// Presses or releases a mouse button as its own evdev frame.
+    pub fn send_button(&self, button: MouseButton, pressed: bool) -> io::Result<()> {
+        if button == MouseButton::Left {
+            let was_left = self.tip_held.get() || self.side_left_held.get();
+            let left = self.tip_held.get() || pressed;
+            if was_left != left { write_key(&self.file, BTN_LEFT, left)?; }
+            self.side_left_held.set(pressed);
+            return Ok(());
+        }
+        write_key(&self.file, crate::keymap::mouse_code(button), pressed)
+    }
+}
+
+/// One key event and its sync, as a single write so a frame is never split.
+fn write_key(mut file: &File, code: u16, pressed: bool) -> io::Result<()> {
+    // SAFETY: plain-data struct; zero is a valid value.
+    let blank: libc::input_event = unsafe { std::mem::zeroed() };
+    let mut events = [blank; 2];
+    events[0].type_ = EV_KEY;
+    events[0].code = code;
+    events[0].value = i32::from(pressed);
+    events[1].type_ = EV_SYN;
+    // SAFETY: `events` is initialized plain data.
+    let bytes = unsafe {
+        std::slice::from_raw_parts(
+            events.as_ptr().cast::<u8>(),
+            events.len() * size_of::<libc::input_event>(),
+        )
+    };
+    file.write_all(bytes)
+}
+
+/// A virtual keyboard for the keys pen buttons press, like upstream's
+/// `EvdevVirtualKeyboard`.
+pub struct VirtualKeyboard {
+    file: File,
+}
+
+impl VirtualKeyboard {
+    pub fn create() -> io::Result<Self> {
+        let file = OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open("/dev/uinput").map_err(|error| access_error("/dev/uinput", error))?;
+        let fd = file.as_raw_fd();
+        let set = |request: u32, value: u16| -> io::Result<()> {
+            // SAFETY: these requests take an int argument by value.
+            if unsafe { libc::ioctl(fd, request as _, libc::c_int::from(value)) } < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        };
+        set(UI_SET_EVBIT, EV_KEY)?;
+        for code in crate::keymap::key_codes() {
+            set(UI_SET_KEYBIT, code)?;
+        }
+        // SAFETY: plain-data struct; zero is a valid value.
+        let mut setup: libc::uinput_setup = unsafe { std::mem::zeroed() };
+        setup.id.bustype = BUS_VIRTUAL;
+        setup.id.version = 1;
+        for (slot, byte) in setup.name.iter_mut().zip(b"OpenTabletDriver Rust keyboard") {
+            *slot = *byte as libc::c_char;
+        }
+        // SAFETY: `setup` is a valid uinput_setup.
+        if unsafe { libc::ioctl(fd, UI_DEV_SETUP as _, &setup) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: no argument.
+        if unsafe { libc::ioctl(fd, UI_DEV_CREATE as _) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self { file })
+    }
+
+    pub fn send_key(&self, key: KeyboardUsage, pressed: bool) -> io::Result<()> {
+        let code = crate::keymap::key_code(key).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::Unsupported, "no evdev key for this usage")
+        })?;
+        write_key(&self.file, code, pressed)
+    }
+}
+
+impl Drop for VirtualKeyboard {
+    fn drop(&mut self) {
+        // SAFETY: no argument; the device was created by this handle.
+        unsafe { libc::ioctl(self.file.as_raw_fd(), UI_DEV_DESTROY as _) };
+    }
+}
+
+/// Key and button output for pen side buttons. A missing device means no
+/// binding of that kind was configured (`supports` refuses those actions).
+pub fn action_sink(
+    pointer: Option<std::rc::Rc<Uinput>>,
+    keyboard: Option<VirtualKeyboard>,
+) -> Box<dyn ActionSink> {
+    Box::new(LocalActions::new(
+        move |transition: ActionTransition| match transition.action {
+            Action::Mouse(button) => pointer
+                .as_ref()
+                .ok_or_else(|| io::Error::other("no virtual pointer for mouse buttons"))?
+                .send_button(button, transition.pressed),
+            Action::Key(key) => keyboard
+                .as_ref()
+                .ok_or_else(|| io::Error::other("no virtual keyboard for keys"))?
+                .send_key(key, transition.pressed),
+        },
+        |action| match action {
+            Action::Mouse(_) => true,
+            Action::Key(key) => crate::keymap::key_code(key).is_some(),
+        },
+    ))
 }
 
 impl Drop for Uinput {
@@ -594,7 +720,7 @@ impl otd_core::output::pen::PenSink for VirtualTablet {
         let frame = crate::artist::frame(packet, self.screen);
         // SAFETY: plain-data struct; zero is a valid value.
         let blank: libc::input_event = unsafe { std::mem::zeroed() };
-        let mut events = [blank; 10];
+        let mut events = [blank; crate::artist::FRAME_EVENTS];
         for (event, &(kind, code, value)) in events.iter_mut().zip(frame.as_slice()) {
             event.type_ = kind;
             event.code = code;
@@ -615,5 +741,28 @@ impl Drop for VirtualTablet {
     fn drop(&mut self) {
         // SAFETY: no argument; the device was created by this handle.
         unsafe { libc::ioctl(self.file.as_raw_fd(), UI_DEV_DESTROY as _) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Creates and destroys every virtual device without sending an event,
+    /// so a desktop session never receives input from the test. Needs write
+    /// access to /dev/uinput.
+    #[test]
+    #[ignore = "needs write access to /dev/uinput; creates virtual devices"]
+    fn virtual_devices_can_be_created() {
+        let screen = otd_core::mapping::Rect {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        let _pointer = Uinput::create(false).unwrap();
+        let _relative = Uinput::create(true).unwrap();
+        let _keyboard = VirtualKeyboard::create().unwrap();
+        let _tablet = VirtualTablet::create(screen).unwrap();
     }
 }

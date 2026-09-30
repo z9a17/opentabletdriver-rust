@@ -1,9 +1,10 @@
-//! Windows adapter for the portable shared action state (B01 foundation).
+//! Windows adapter for the portable shared action state (B01 foundation),
+//! and the key and button output of the pen side buttons.
 //!
-//! This does not replace the existing combined mouse motion/tip packet path.
-//! The future binding engine must use one shared `ActionState` for all its
-//! synthetic held actions. Physical user input and other injectors are outside
-//! that ownership model.
+//! Left-button actions share ownership with the combined mouse motion/tip path.
+//! All sessions share one `ActionState` for their synthetic held actions, so
+//! two tablets holding the same key press it once. Physical user input and
+//! other injectors are outside that ownership model.
 //!
 //! Each call sends exactly one INPUT and acknowledges only a return count of 1.
 //! See https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput
@@ -11,8 +12,13 @@
 
 use std::io;
 use std::mem::size_of;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use otd_core::actions::{Action, ActionState, ActionTransition, KeyboardUsage, MouseButton};
+use otd_core::actions::{
+    Action, ActionOwner, ActionState, ActionTransition, KeyboardUsage, MouseButton,
+};
+use otd_core::output::buttons::ActionSink;
 use windows_sys::Win32::Foundation::SetLastError;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
@@ -90,6 +96,23 @@ pub fn encode_transition(transition: ActionTransition) -> io::Result<INPUT> {
 /// Emit exactly one transition. A successful return means SendInput accepted
 /// the event, not that any particular foreground application processed it.
 pub fn send_transition(transition: ActionTransition) -> io::Result<()> {
+    if transition.action == Action::Mouse(MouseButton::Left) {
+        // Share the tip's acknowledged left-button ownership. A side-button
+        // release must not lift another session's tip or left binding.
+        let output = LEFT_ACTION_OUTPUT.lock()
+            .map_err(|_| io::Error::other("left action output lock poisoned"))?;
+        let output = output.as_ref()
+            .ok_or_else(|| io::Error::other("left action output was not prepared"))?;
+        return output.send(otd_core::output::MousePacket {
+            dx: 0,
+            dy: 0,
+            flags: if transition.pressed {
+                otd_core::output::flags::LEFTDOWN
+            } else {
+                otd_core::output::flags::LEFTUP
+            },
+        });
+    }
     let input = encode_transition(transition)?;
     // SendInput may report zero without setting an error (including UIPI cases).
     // Clear stale thread error state and provide an honest fallback diagnostic.
@@ -199,4 +222,77 @@ fn keyboard_scan_code(key: KeyboardUsage) -> Option<(u16, bool)> {
         _ => return None,
     };
     Some((code & 0xff, code & 0xff00 == 0xe000))
+}
+
+/// Every session's held actions.
+static HELD: Mutex<ActionState> = Mutex::new(ActionState::new());
+// Created during session setup, so registration never allocates in a report.
+// One owner represents the combined left holds in HELD across every session.
+static LEFT_ACTION_OUTPUT: Mutex<Option<crate::output::SessionOutput>> = Mutex::new(None);
+static NEXT_DEVICE: AtomicU64 = AtomicU64::new(1);
+
+fn held() -> io::Result<std::sync::MutexGuard<'static, ActionState>> {
+    HELD.lock()
+        .map_err(|_| io::Error::other("held action lock poisoned"))
+}
+
+/// One tablet session's share of the held actions. Dropping it lets go of
+/// what it still holds.
+pub struct SessionActions {
+    device: u64,
+}
+
+impl SessionActions {
+    pub fn new() -> io::Result<Self> {
+        let mut output = LEFT_ACTION_OUTPUT.lock()
+            .map_err(|_| io::Error::other("left action output lock poisoned"))?;
+        if output.is_none() {
+            *output = Some(crate::output::SessionOutput::new()?);
+        }
+        Ok(Self {
+            device: NEXT_DEVICE.fetch_add(1, Ordering::Relaxed),
+        })
+    }
+}
+
+impl ActionSink for SessionActions {
+    fn supports(&self, action: Action) -> bool {
+        supports(action)
+    }
+
+    fn hold(&mut self, binding: u32, action: Action, down: bool) -> io::Result<()> {
+        held()?
+            .set_held(
+                ActionOwner {
+                    device: self.device,
+                    binding,
+                },
+                action,
+                down,
+            )
+            .map(|_| ())
+            .map_err(io::Error::other)
+    }
+
+    fn flush(&mut self) -> io::Result<usize> {
+        let mut state = held()?;
+        flush_pending(&mut state)
+    }
+
+    fn release_all(&mut self) -> io::Result<usize> {
+        let mut state = held()?;
+        state.release_device(self.device);
+        flush_pending(&mut state)
+    }
+}
+
+impl Drop for SessionActions {
+    fn drop(&mut self) {
+        // Best effort: a release that fails stays pending, and the next flush
+        // by any session retries it.
+        if let Ok(mut state) = HELD.lock() {
+            state.release_device(self.device);
+            let _ = flush_pending(&mut state);
+        }
+    }
 }

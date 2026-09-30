@@ -1,7 +1,7 @@
 //! USB IOKit HID transport and CoreGraphics logical-coordinate mouse output.
 //! The single-threaded CFRunLoop owns every callback and its fixed queue.
 
-use std::cell::{Cell, UnsafeCell};
+use std::cell::{Cell, RefCell, UnsafeCell};
 use std::collections::BTreeMap;
 use std::ffi::{CString, c_void};
 use std::io;
@@ -11,6 +11,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use otd_core::display::{DisplayFingerprint, DisplaySnapshot};
+use otd_core::actions::{Action, ActionTransition, MouseButton};
+use otd_core::output::buttons::{ActionSink, LocalActions};
 use otd_core::endpoint_match::{Endpoint, Transport};
 use otd_core::mapping::Rect;
 use otd_core::output::{MousePacket, flags};
@@ -463,6 +465,8 @@ impl Displays for NativeDisplays {
 pub struct Mouse {
     _source: Owned, moved: Owned, dragged: Owned, down: Owned, up: Owned,
     geometry: Rc<Cell<Rect>>, contact: bool, last_absolute: Option<ffi::Point>,
+    last_position: Option<ffi::Point>, buttons: u8, modifiers: u8, pending_clear_flags: u64,
+    clear_flags_deadline: Option<Instant>,
 }
 
 impl Mouse {
@@ -480,7 +484,8 @@ impl Mouse {
         if [moved.0, dragged.0, down.0, up.0].iter().any(|event| event.is_null()) {
             return Err(io::Error::other("cannot create CoreGraphics mouse events"));
         }
-        Ok(Self { _source: source, moved, dragged, down, up, geometry, contact: false, last_absolute: None })
+        Ok(Self { _source: source, moved, dragged, down, up, geometry, contact: false, last_absolute: None,
+            last_position: None, buttons: 0, modifiers: 0, pending_clear_flags: 0, clear_flags_deadline: None })
     }
 
     pub fn send(&mut self, packet: MousePacket) -> io::Result<()> {
@@ -509,10 +514,20 @@ impl Mouse {
             }
             position
         };
-        let (event, kind, contact) = if packet.flags & flags::LEFTDOWN != 0 { (self.down.0, 1, true) }
-            else if packet.flags & flags::LEFTUP != 0 { (self.up.0, 2, false) }
-            else if self.contact { (self.dragged.0, 6, true) }
-            else { (self.moved.0, 5, false) };
+        let contact = if packet.flags & flags::LEFTDOWN != 0 { true }
+            else if packet.flags & flags::LEFTUP != 0 { false } else { self.contact };
+        let was_left = self.contact || self.buttons & 1 != 0;
+        let left = contact || self.buttons & 1 != 0;
+        if !moving && was_left == left {
+            self.contact = contact;
+            return Ok(());
+        }
+        let (event, kind, button) = if !was_left && left { (self.down.0, 1, 0) }
+            else if was_left && !left { (self.up.0, 2, 0) }
+            else if left { (self.dragged.0, 6, 0) }
+            else if self.buttons & 2 != 0 { (self.dragged.0, 7, 1) }
+            else if self.buttons & 0x1c != 0 { (self.dragged.0, 27, (self.buttons & 0x1c).trailing_zeros()) }
+            else { (self.moved.0, 5, 0) };
         let mut clock = libc::timespec { tv_sec: 0, tv_nsec: 0 };
         // SAFETY: writable timespec, nanoseconds since boot as required by
         // CGEventTimestamp. Refresh timestamps on the reusable event objects.
@@ -522,21 +537,113 @@ impl Mouse {
         let timestamp = (clock.tv_sec as u64).saturating_mul(1_000_000_000).saturating_add(clock.tv_nsec as u64);
         // SAFETY: valid reusable event; public fields 4/5 are delta X/Y,
         // 1 is click state, 3 is button number.
+        let event_flags = self.event_flags();
         unsafe {
             ffi::CGEventSetType(event, kind);
             ffi::CGEventSetLocation(event, position);
             ffi::CGEventSetDoubleValueField(event, 4, delta.x);
             ffi::CGEventSetDoubleValueField(event, 5, delta.y);
-            ffi::CGEventSetIntegerValueField(event, 3, 0);
+            ffi::CGEventSetIntegerValueField(event, 3, i64::from(button));
             ffi::CGEventSetIntegerValueField(event, 1, i64::from(kind == 1 || kind == 2));
-            ffi::CGEventSetFlags(event, ffi::CGEventSourceFlagsState(1));
+            ffi::CGEventSetFlags(event, event_flags);
             ffi::CGEventSetTimestamp(event, timestamp);
             ffi::CGEventPost(0, event);
         }
         self.contact = contact;
+        self.last_position = Some(position);
         if moving { self.last_absolute = absolute.then_some(position); }
         // CGEventPost has no return value; TCC acceptance/application delivery
         // remains a physical macOS validation gate, not an acknowledged write.
         Ok(())
     }
+
+    fn event_flags(&mut self) -> u64 {
+        // CGEventSourceFlagsState can lag behind a posted release. Suppress
+        // released synthetic flags while its snapshot catches up. Bound this
+        // to 50 ms so a newly pressed physical modifier cannot stay masked.
+        let observed = unsafe { ffi::CGEventSourceFlagsState(1) };
+        self.pending_clear_flags &= observed;
+        if self.pending_clear_flags == 0 || self.clear_flags_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            self.pending_clear_flags = 0;
+            self.clear_flags_deadline = None;
+        }
+        (observed & !self.pending_clear_flags) | crate::keymap::modifier_flags(self.modifiers)
+    }
+
+    fn send_action(&mut self, transition: ActionTransition) -> io::Result<()> {
+        match transition.action {
+            Action::Key(key) => {
+                let code = crate::keymap::key_code(key).ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "unsupported macOS keyboard usage"))?;
+                // Fresh native keyboard events translate the current key code;
+                // successful Rust-owned processing still allocates no heap.
+                let event = Owned(unsafe { ffi::CGEventCreateKeyboardEvent(self._source.0, code, transition.pressed) });
+                if event.0.is_null() { return Err(io::Error::other("cannot create CoreGraphics keyboard event")); }
+                let timestamp = event_timestamp()?;
+                let old_flags = crate::keymap::modifier_flags(self.modifiers);
+                if key.is_modifier() {
+                    let bit = 1 << (key.usage() - 0xe0);
+                    if transition.pressed { self.modifiers |= bit; } else { self.modifiers &= !bit; }
+                }
+                let released_flags = old_flags & !crate::keymap::modifier_flags(self.modifiers);
+                self.pending_clear_flags |= released_flags;
+                if released_flags != 0 { self.clear_flags_deadline = Some(Instant::now() + Duration::from_millis(50)); }
+                let event_flags = self.event_flags();
+                unsafe {
+                    ffi::CGEventSetIntegerValueField(event.0, 8, 0); // no autorepeat
+                    ffi::CGEventSetFlags(event.0, event_flags);
+                    ffi::CGEventSetTimestamp(event.0, timestamp);
+                    ffi::CGEventPost(0, event.0);
+                }
+            }
+            Action::Mouse(button) => {
+                let number = match button { MouseButton::Left => 0, MouseButton::Right => 1,
+                    MouseButton::Middle => 2, MouseButton::Backward => 3, MouseButton::Forward => 4 };
+                let next = if transition.pressed { self.buttons | (1 << number) } else { self.buttons & !(1 << number) };
+                let was_pressed = self.buttons & (1 << number) != 0 || number == 0 && self.contact;
+                let pressed = next & (1 << number) != 0 || number == 0 && self.contact;
+                if was_pressed == pressed { self.buttons = next; return Ok(()); }
+                let position = match self.last_position {
+                    Some(position) => position,
+                    None => {
+                        let query = Owned(unsafe { ffi::CGEventCreate(ptr::null()) });
+                        if query.0.is_null() { return Err(io::Error::other("cannot query current cursor position")); }
+                        unsafe { ffi::CGEventGetLocation(query.0) }
+                    }
+                };
+                let kind = match (number, pressed) { (0, true) => 1, (0, false) => 2,
+                    (1, true) => 3, (1, false) => 4, (_, true) => 25, (_, false) => 26 };
+                let event = if pressed { self.down.0 } else { self.up.0 };
+                let timestamp = event_timestamp()?;
+                let event_flags = self.event_flags();
+                unsafe {
+                    ffi::CGEventSetType(event, kind);
+                    ffi::CGEventSetLocation(event, position);
+                    ffi::CGEventSetIntegerValueField(event, 3, i64::from(number));
+                    ffi::CGEventSetIntegerValueField(event, 1, 1);
+                    ffi::CGEventSetDoubleValueField(event, 4, 0.0);
+                    ffi::CGEventSetDoubleValueField(event, 5, 0.0);
+                    ffi::CGEventSetFlags(event, event_flags);
+                    ffi::CGEventSetTimestamp(event, timestamp);
+                    ffi::CGEventPost(0, event);
+                }
+                self.buttons = next;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn event_timestamp() -> io::Result<u64> {
+    let mut clock = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    if unsafe { libc::clock_gettime(libc::CLOCK_UPTIME_RAW, &mut clock) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((clock.tv_sec as u64).saturating_mul(1_000_000_000).saturating_add(clock.tv_nsec as u64))
+}
+
+/// Shares native pointer state with tip output so one hold cannot release the
+/// other's left button, and drag events see the held side buttons/modifiers.
+pub fn action_sink(mouse: Rc<RefCell<Mouse>>) -> Box<dyn ActionSink> {
+    Box::new(LocalActions::new(move |transition| mouse.borrow_mut().send_action(transition),
+        |action| match action { Action::Mouse(_) => true, Action::Key(key) => crate::keymap::key_code(key).is_some() }))
 }
