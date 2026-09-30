@@ -30,6 +30,9 @@ impl OutputOwners {
     }
 
     pub fn register(&mut self) -> Owner {
+        // A new session must restore its position even when a persistent
+        // binding owner remains registered and the physical mouse has moved.
+        self.position = None;
         if let Some(index) = self.owners.iter().position(Option::is_none) {
             self.owners[index] = Some(State::default());
             Owner(index)

@@ -9,6 +9,12 @@ rotation = 0
 # instead of moving the mouse (absolute mode only). See docs/PEN_OUTPUT.md.
 # output = "pen"
 
+# What the pen side buttons do, button 1 first (the default is "barrel:1", "barrel:2",
+# "barrel:3": right click, middle click, nothing). Entries are "none", "barrel:N",
+# "mouse:left|right|middle|backward|forward" or "keys:Control+Shift+Z".
+# See docs/PEN_BUTTONS.md.
+# pen_buttons = ["mouse:right", "keys:Control+Z", "none"]
+
 # If more than one PTH-660 pen collection is attached, use a path from
 # opentabletdriver-rust list --paths. A TOML literal string avoids backslash escaping.
 # device_path = '\\?\hid#vid_056a&pid_0357...'

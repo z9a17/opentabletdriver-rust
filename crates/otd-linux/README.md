@@ -128,15 +128,24 @@ Ctrl+C or SIGTERM cancels the session and destroys its virtual output device.
 
 ## Artist Mode and remaining scope
 
+The profile's [pen button actions](../../docs/PEN_BUTTONS.md) use the virtual
+pointer for mouse buttons and a virtual keyboard for keys and chords. The
+keyboard is created before tablet initialization when a key binding is
+configured. Mouse output defaults to right and middle click. A side button
+bound to left click and the tip share the same held state; releasing either
+one preserves the other's press. Physical side-button and shortcut validation
+is still pending.
+
 A native profile with `output = "pen"`, or an imported Artist Mode profile,
 creates `OpenTabletDriver Virtual Artist Tablet`. It advertises position,
 pressure, tilt, touch and pen/eraser tool keys. Positions use thousandths of a
 pixel, pressure uses 0 through 65535, and tilt uses -64 through 63. Imported
 Artist Mode profiles touch at any positive pressure; native profiles follow
-their configured tip and eraser thresholds. Stylus button keys are declared but
-not emitted by this backend yet.
+their configured tip and eraser thresholds. Default barrel bindings emit
+`BTN_STYLUS`, `BTN_STYLUS2` and `BTN_STYLUS3` on the virtual tablet. Explicit
+mouse or key bindings use separate virtual pointer/keyboard output as needed.
 
-Pen/pad buttons, keyboard output, auxiliary collections, multiple simultaneous
+Pad buttons, auxiliary collections, multiple simultaneous
 tablets, Bluetooth, topology changes while running, a desktop UI, a persistent
 daemon and external plugin hosting remain open. Parser availability alone does
 not establish hardware support for every database entry. X02/X03 acceptance

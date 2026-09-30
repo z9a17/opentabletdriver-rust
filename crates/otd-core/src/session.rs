@@ -12,6 +12,7 @@ use crate::decoders::PenDecoder;
 use crate::display::{DisplayFingerprint, DisplaySnapshot};
 use crate::mapping::Mapper;
 use crate::output::MousePacket;
+use crate::output::buttons::ActionSink;
 use crate::output::pen::PenSink;
 use crate::pipeline::ReportPipeline;
 use crate::plugins::Filters;
@@ -327,12 +328,42 @@ pub fn run_gated_with_pen(
     mode: Mode,
     decoder: &mut impl PenDecoder,
     filters: &mut impl Filters,
-    mut send: impl FnMut(MousePacket) -> io::Result<()>,
+    send: impl FnMut(MousePacket) -> io::Result<()>,
     pen: Option<Box<dyn PenSink>>,
     status: &impl Fn(&str),
     gate: impl FnOnce() -> io::Result<bool>,
 ) -> io::Result<()> {
+    run_gated_with_devices(
+        source, displays, profile, mode, decoder, filters, send, pen, None, status, gate,
+    )
+}
+
+/// `run_gated_with_pen` with the platform's key and button output, which the
+/// profile's pen side buttons use. Without it they can only drive a pen
+/// device's barrel buttons.
+#[allow(clippy::too_many_arguments)]
+pub fn run_gated_with_devices(
+    source: &mut impl ReportSource,
+    displays: &mut impl Displays,
+    profile: &Profile,
+    mode: Mode,
+    decoder: &mut impl PenDecoder,
+    filters: &mut impl Filters,
+    mut send: impl FnMut(MousePacket) -> io::Result<()>,
+    pen: Option<Box<dyn PenSink>>,
+    actions: Option<Box<dyn ActionSink>>,
+    status: &impl Fn(&str),
+    gate: impl FnOnce() -> io::Result<bool>,
+) -> io::Result<()> {
     let mut pipeline = ReportPipeline::new(profile).map_err(io::Error::other)?;
+    if let Some(sink) = actions
+        && matches!(mode, Mode::Driver)
+    {
+        for message in pipeline.set_action_sink(sink) {
+            eprintln!("Pen button not applied: {message}");
+            status(&format!("Pen button not applied: {message}"));
+        }
+    }
     match pen {
         Some(sink) if pipeline.wants_pen() => pipeline.set_pen_sink(sink),
         None if pipeline.wants_pen() && matches!(mode, Mode::Driver) => {

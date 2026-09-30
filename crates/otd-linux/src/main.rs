@@ -10,6 +10,8 @@ mod artist;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod descriptor;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod keymap;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod sysfs;
 
 #[cfg(target_os = "linux")]
@@ -59,8 +61,9 @@ mod app {
     use otd_core::spec::TabletSpec;
     use otd_core::tablets::{Database, ParserSupport, Role, parser_support};
 
-    use crate::linux::{self, Device, Hidraw, Uinput, VirtualTablet};
+    use crate::linux::{self, Device, Hidraw, Uinput, VirtualKeyboard, VirtualTablet};
     use otd_core::config::OutputKind;
+    use otd_core::output::buttons::ButtonAction;
 
     static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -358,46 +361,35 @@ mod app {
         );
         let mut source = Hidraw::open(selected.device, label, &STOP)
             .map_err(SessionError::hardware)?;
-        // Output creation can fail for missing uinput permissions. Establish it
-        // before performing any device initialization writes.
+        // Establish every output resource before initialization writes. Permission
+        // failures are fatal; reconnect only retries actual hardware loss.
+        let keys = profile.pen_buttons.iter().any(|action| matches!(action, ButtonAction::Keys(_)));
+        let clicks = profile.pen_buttons.iter().any(|action| matches!(action, ButtonAction::Mouse(_)));
+        let keyboard = keys.then(VirtualKeyboard::create).transpose().map_err(SessionError::Fatal)?;
         let pen = if profile.output == OutputKind::Pen {
             Some(VirtualTablet::create(displays.0.virtual_screen).map_err(SessionError::Fatal)?)
         } else { None };
-        let output = if pen.is_none() {
-            Some(Uinput::create(profile.relative.is_some()).map_err(SessionError::Fatal)?)
+        let pointer = if pen.is_none() || clicks {
+            Some(std::rc::Rc::new(Uinput::create(pen.is_some() || profile.relative.is_some()).map_err(SessionError::Fatal)?))
         } else { None };
         linux::initialize(
-            selected.device,
-            source.file(),
-            &selected.identifier,
-            &selected.configuration,
-            &STOP,
+            selected.device, source.file(), &selected.identifier,
+            &selected.configuration, &STOP,
         ).map_err(SessionError::hardware)?;
         if let Some(tablet) = pen {
-            // Artist Mode: the virtual tablet replaces the pointer.
-            return session::run_gated_with_pen(
-                &mut source,
-                displays,
-                profile,
-                Mode::Driver,
-                &mut decoder,
-                &mut NoFilters,
-                |_| Ok(()),
-                Some(Box::new(tablet)),
-                &|line| eprintln!("{line}"),
-                || Ok(true),
+            return session::run_gated_with_devices(
+                &mut source, displays, profile, Mode::Driver,
+                &mut decoder, &mut NoFilters, |_| Ok(()), Some(Box::new(tablet)),
+                Some(linux::action_sink(pointer, keyboard)), &|line| eprintln!("{line}"), || Ok(true),
             ).map_err(SessionError::hardware);
         }
-        let output = output.ok_or_else(|| SessionError::Fatal(std::io::Error::other("mouse output was not created")))?;
-        session::run(
-            &mut source,
-            displays,
-            profile,
-            Mode::Driver,
-            &mut decoder,
-            &mut NoFilters,
-            |packet| output.send(packet),
-            &|line| eprintln!("{line}"),
+        let output = pointer.ok_or_else(|| SessionError::Fatal(std::io::Error::other("mouse output was not created")))?;
+        let sender = std::rc::Rc::clone(&output);
+        session::run_gated_with_devices(
+            &mut source, displays, profile, Mode::Driver, &mut decoder,
+            &mut NoFilters, move |packet| sender.send(packet), None,
+            Some(linux::action_sink(Some(output), keyboard)),
+            &|line| eprintln!("{line}"), || Ok(true),
         ).map_err(SessionError::hardware)
     }
 

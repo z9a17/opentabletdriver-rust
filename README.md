@@ -18,8 +18,9 @@ The Windows build offers:
 - **Several tablets at once,** each with its own profile.
 - **Native control panel** in OpenTabletDriver's layout, with light and dark themes, a tray icon, and a tablet debugger that shows raw and decoded pen data live.
 - **Command line and background service** for scripting: profiles, presets, diagnostics and area conversion all work headless.
+- **Pen side buttons** click or press keys and shortcuts, like OpenTabletDriver's: right and middle click by default, or anything you set. See [pen side buttons](docs/PEN_BUTTONS.md).
 
-Not done yet: pen side buttons and tablet express keys.
+Not done yet: tablet express keys, and a settings panel editor for the side buttons.
 
 ## Get started (Windows)
 
@@ -86,7 +87,7 @@ Download `opentabletdriver-rust-v<version>-macos-arm64.tar.gz` for Apple Silicon
 ./opentabletdriver-rust-macos run
 ```
 
-Grant your terminal Input Monitoring and Accessibility access in System Settings, then restart it. The driver uses IOKit HID input and CoreGraphics mouse output for absolute/relative positioning and tip clicks. Profiles and built-in Radial Follow use the shared Rust core. Press Ctrl+C to stop.
+Grant your terminal Input Monitoring and Accessibility access in System Settings, then restart it. The driver uses IOKit HID input and CoreGraphics output for absolute/relative positioning, tip clicks and pen side-button mouse/key/chord bindings. `Application` means Command and `Alt` means Option; physical pen-button and shortcut validation remains pending. Profiles and built-in Radial Follow use the shared Rust core. Press Ctrl+C to stop.
 
 The macOS backend is experimental. These packages are cross-built, unsigned and not notarized; we have no Mac hardware validation yet. There is no macOS control panel, external plugin host, pressure-sensitive drawing output or express-key support. See the [macOS guide](crates/otd-macos/README.md) for supported device initialization and permission troubleshooting.
 
