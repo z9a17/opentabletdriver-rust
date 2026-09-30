@@ -52,7 +52,7 @@ impl App {
         let bar_top = client.bottom - s(48);
         let button_top = bar_top + s(9);
         let mut right = client.right - s(10);
-        for (hwnd, width) in [(self.c.apply, 92), (self.c.save, 92), (self.c.start, 124)] {
+        for (hwnd, width) in [(self.c.apply, 92), (self.c.save, 92)] {
             shown.push((
                 hwnd,
                 rect(right - s(width), button_top, right, button_top + s(30)),
@@ -80,7 +80,7 @@ impl App {
         all.extend(
             self.properties
                 .iter()
-                .flat_map(|row| [Some(row.hwnd), row.label_control, row.default_control])
+                .flat_map(|row| [Some(row.hwnd), row.label_control])
                 .flatten(),
         );
         unsafe {
@@ -440,29 +440,16 @@ impl App {
         ));
         y += detail_height + s(14);
 
-        // This toolbar stays outside the property rows, so switching pages never
-        // destroys edits or takes space from a row's Use default button.
         let toolbar_y = y;
-        if let FilterRef::Plugin(index) = target {
-            let plugin = &self.editor.profile.plugins[index];
-            let editable = plugin.kind.is_managed() && self.metadata_for(plugin).is_some();
-            set_text(
-                self.c.filter_json_toggle,
-                if self.json_visible {
-                    "Properties"
-                } else {
-                    "Edit JSON"
-                },
-            );
-            unsafe {
-                EnableWindow(self.c.filter_json_toggle, editable.into());
-            }
-            shown.push((
-                self.c.filter_json_toggle,
-                rect(inner.right - s(104), y, inner.right, y + s(28)),
+
+        if self.properties.is_empty() {
+            items.push(Item::Label(
+                rect(inner.left, y, inner.right, y + s(28)),
+                "No editable settings are available for this filter.".into(),
+                Tone::Muted,
+                draw::TEXT_LEFT,
             ));
         }
-        y += s(36);
 
         let mut notes: Vec<(String, Tone)> = Vec::new();
         if let FilterRef::Plugin(_) = target {
@@ -495,7 +482,7 @@ impl App {
             .min(s(180))
             .min((inner.right - inner.left - s(230)).max(s(60)));
         // Rows tighten when many properties would run into the notes.
-        let room = inner.bottom - notes_total - s(12) - y;
+        let room = inner.bottom - notes_total - s(12) - y - s(36);
         let page_size = (room / s(32)).max(1) as usize;
         let pages = self.properties.len().div_ceil(page_size).max(1);
         self.property_page = self.property_page.min(pages - 1);
@@ -525,6 +512,7 @@ impl App {
                 draw::TEXT_LEFT,
             ));
         }
+        if pages > 1 { y += s(36); }
         let visible_count = self
             .properties
             .len()
@@ -542,15 +530,7 @@ impl App {
             .skip(self.property_page * page_size)
             .take(page_size)
         {
-            let mut line = rect(inner.left, y, inner.right, y + row_height);
-            if let Some(reset) = row.default_control {
-                let reset_width = s(94);
-                shown.push((
-                    reset,
-                    rect(line.right - reset_width, line.top, line.right, line.bottom),
-                ));
-                line.right -= reset_width + s(6);
-            }
+            let line = rect(inner.left, y, inner.right, y + row_height);
             items.push(Item::Unit(line));
             let is_check = with_look(|look| look.info(row.hwnd).map(|i| i.kind)).flatten()
                 == Some(Kind::Check);
@@ -607,30 +587,6 @@ impl App {
                 }
             }
             y += pitch;
-        }
-
-        if self.json_visible {
-            items.push(Item::Label(
-                rect(inner.left, y, inner.right, y + s(20)),
-                "Settings (JSON)".into(),
-                Tone::Text,
-                draw::TEXT_LEFT,
-            ));
-            y += s(24);
-            let error_height = if self.json_error.is_some() { s(22) } else { 0 };
-            let bottom = (inner.bottom - notes_total - s(12) - error_height).max(y + s(80));
-            let frame = rect(inner.left, y, inner.right, bottom);
-            items.push(Item::Frame(frame, self.c.filter_json));
-            shown.push((self.c.filter_json, draw::inset(frame, s(6), s(5))));
-            y = bottom + s(4);
-            if let Some(error) = &self.json_error {
-                items.push(Item::Label(
-                    rect(inner.left, y, inner.right, y + s(18)),
-                    error.clone(),
-                    Tone::Error,
-                    draw::TEXT_LEFT | DT_NOPREFIX,
-                ));
-            }
         }
 
         let mut y = inner.bottom - notes_total;

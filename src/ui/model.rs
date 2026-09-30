@@ -181,6 +181,22 @@ impl PropertyValue {
         !matches!(self, Self::Typed { metadata, .. } if !metadata.writable)
     }
 
+    /// Only properties with a supported field/choice control are editable.
+    /// Keep complex values in the profile without exposing a raw JSON editor.
+    pub fn field_writable(&self) -> bool {
+        match self {
+            Self::JsonScalar | Self::Json(_) => false,
+            Self::Typed { metadata, .. } => metadata.writable
+                && (metadata.enum_underlying_type.is_some() || !metadata.enum_choices.is_empty()
+                    || matches!(metadata.property_type.as_str(),
+                        "System.String" | "System.Boolean" | "System.TimeSpan" | "System.DateTime"
+                        | "System.SByte" | "System.Byte" | "System.Int16" | "System.UInt16"
+                        | "System.Int32" | "System.UInt32" | "System.Int64" | "System.UInt64"
+                        | "System.Single" | "System.Double")),
+            _ => true,
+        }
+    }
+
     pub fn uses_default(&self) -> bool {
         matches!(
             self,

@@ -139,7 +139,6 @@ impl App {
                 controls: HashMap::new(),
                 tab: Tab::Output,
                 menu_open: 0,
-                running: false,
                 filters: Vec::new(),
                 log: VecDeque::new(),
                 log_columns: [0; 3],
@@ -176,11 +175,9 @@ impl App {
                 filter_up: null,
                 filter_down: null,
                 filter_defaults: null,
-                filter_json_toggle: null,
                 property_prev: null,
                 property_next: null,
                 filter_enable: null,
-                filter_json: null,
                 tip_binding: null,
                 tip_slider: null,
                 tip_field: null,
@@ -190,7 +187,6 @@ impl App {
                 log: null,
                 copy_log: null,
                 clear_log: null,
-                start: null,
                 save: null,
                 apply: null,
             },
@@ -221,10 +217,7 @@ impl App {
             diagnostics_pending: false,
             connected_tablets: Vec::new(),
             labels: HashMap::new(),
-            json_visible: false,
-            json_mode: false,
             property_page: 0,
-            json_error: None,
             invalid: HashSet::new(),
             drag: None,
             context_area: AreaKind::Display,
@@ -234,6 +227,7 @@ impl App {
             daemon_instance: None,
             daemon_log_sequence: 0,
             closing: false,
+            close_ready: false,
             update_restart_pending: false,
             update_close_approved: false,
             driver: DriverState::Stopped,
@@ -301,8 +295,6 @@ impl App {
             self.button("Move down", CMD_FILTER_DOWN, Kind::Button, Surface::Page)?;
         self.c.filter_defaults =
             self.button("Defaults", CMD_FILTER_DEFAULTS, Kind::Button, Surface::Page)?;
-        self.c.filter_json_toggle =
-            self.button("Edit JSON", CMD_FILTER_JSON, Kind::Button, Surface::Group)?;
         self.c.property_prev =
             self.button("Previous", CMD_PROPERTY_PREV, Kind::Button, Surface::Group)?;
         self.c.property_next =
@@ -315,15 +307,6 @@ impl App {
             Kind::Check,
             Surface::Group,
         )?;
-        self.c.filter_json = self.control(
-            "EDIT",
-            "",
-            ID_FILTER_JSON,
-            WS_TABSTOP | WS_VSCROLL | (ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN) as u32,
-            Kind::Memo,
-            Surface::Group,
-        )?;
-        unsafe { SendMessageW(self.c.filter_json, EM_LIMITTEXT, 65_536, 0) };
         let label = self.label("Tip Binding")?;
         self.c.tip_binding = self.button("Tip", ID_TIP_BINDING, Kind::Dropdown, Surface::Group)?;
         self.labels.insert(self.c.tip_binding as isize, label);
@@ -356,12 +339,6 @@ impl App {
         )?;
         self.c.copy_log = self.button("Copy All", CMD_COPY_LOG, Kind::Button, Surface::Page)?;
         self.c.clear_log = self.button("Clear", CMD_CLEAR_LOG, Kind::Button, Surface::Page)?;
-        self.c.start = self.button(
-            "Start driver",
-            CMD_START_STOP,
-            Kind::StartStop,
-            Surface::Window,
-        )?;
         self.c.save = self.button("Save", CMD_SAVE, Kind::Button, Surface::Window)?;
         self.c.apply = self.button("Apply", CMD_APPLY, Kind::Button, Surface::Window)?;
         self.set_item_heights();
@@ -405,11 +382,9 @@ impl App {
             c.filter_up,
             c.filter_down,
             c.filter_defaults,
-            c.filter_json_toggle,
             c.property_prev,
             c.property_next,
             c.filter_enable,
-            c.filter_json,
             c.tip_binding,
             c.tip_slider,
             c.tip_field,
@@ -419,7 +394,6 @@ impl App {
             c.log,
             c.copy_log,
             c.clear_log,
-            c.start,
             c.save,
             c.apply,
         ];
@@ -576,10 +550,6 @@ impl App {
         tips.push((
             c.add_native,
             "Add a native Rust filter DLL (otd_filter_v1).".into(),
-        ));
-        tips.push((
-            c.start,
-            "Start or stop reading the tablet with the current settings.".into(),
         ));
         tips.push((
             c.apply,
@@ -795,7 +765,7 @@ impl App {
     }
 
     pub(super) fn refresh_deferred_metadata(&mut self) {
-        if self.metadata_refresh_deferred && !self.update_restart_pending && !self.editing_controls() {
+        if self.metadata_refresh_deferred && !self.closing && !self.update_restart_pending && !self.editing_controls() {
             self.metadata_refresh_deferred = false;
             self.rebuild_properties();
             self.layout();
@@ -848,7 +818,7 @@ impl App {
         let focus = unsafe { GetFocus() };
         !self.invalid.is_empty()
             || self.drag.is_some()
-            || [self.c.filter_json, self.c.tip_field, self.c.eraser_field].contains(&focus)
+            || [self.c.tip_field, self.c.eraser_field].contains(&focus)
             || self.c.display.contains(&focus)
             || self.c.tablet.contains(&focus)
             || self.c.relative.contains(&focus)
@@ -869,7 +839,7 @@ impl App {
         for row in std::mem::take(&mut self.properties) {
             self.remove_tool(row.hwnd);
             self.invalid.remove(&(row.hwnd as isize));
-            for hwnd in [Some(row.hwnd), row.label_control, row.default_control]
+            for hwnd in [Some(row.hwnd), row.label_control]
                 .into_iter()
                 .flatten()
             {
@@ -880,9 +850,6 @@ impl App {
                 unsafe { DestroyWindow(hwnd) };
             }
         }
-        self.json_visible = false;
-        self.json_error = None;
-        self.set_invalid(self.c.filter_json, false, None);
         let Some(target) = self.selected_target() else {
             return;
         };
@@ -940,27 +907,23 @@ impl App {
             FilterRef::Plugin(index) => {
                 let plugin = &self.editor.profile.plugins[index];
                 let metadata = self.metadata_for(plugin).cloned();
-                let properties = (plugin.kind.is_managed()
-                    && metadata.is_some()
-                    && !self.json_mode)
-                    .then(|| model::plugin_editor_fields(&plugin.settings_json, metadata.as_ref()))
-                    .flatten()
+                let properties = model::plugin_editor_fields(&plugin.settings_json, metadata.as_ref())
                     .filter(|properties| properties.len() < MAX_PROPERTY_ROWS as usize);
                 match properties {
                     Some(properties) => {
                         for field in properties {
-                            let shown = field.value.display_text();
-                            let tooltip = if matches!(&field.value, PropertyValue::JsonScalar) {
-                                let guidance = "Enter a JSON scalar: null, true or false, a number, or a quoted string.";
-                                Some(match field.tooltip {
-                                    Some(tip) if !tip.is_empty() => format!("{tip}\n{guidance}"),
-                                    _ => guidance.to_owned(),
-                                })
-                            } else if let PropertyValue::Typed { metadata, .. } = &field.value {
-                                let state = match &field.value {
-                                    PropertyValue::Typed { saved: None, .. } => "No value is saved; the plugin keeps its constructor value.",
-                                    PropertyValue::Typed { saved: Some(value), .. } if value.is_null() && !metadata.default_is_attribute => "The plugin keeps its constructor value; it does not declare a default attribute.",
-                                    _ => "Use default restores the known default. Changes take effect with Apply.",
+                            let shown = if matches!(&field.value, PropertyValue::JsonScalar | PropertyValue::Json(_)) {
+                                "Configured".into()
+                            } else {
+                                field.value.display_text()
+                            };
+                            let tooltip = if !field.value.field_writable() {
+                                Some("This plugin setting is preserved in the profile and cannot be edited here.".into())
+                            } else if let PropertyValue::Typed { .. } = &field.value {
+                                let state = if field.value.uses_default() {
+                                    field.value.default_cue()
+                                } else {
+                                    "Changes take effect with Save or Apply.".into()
                                 };
                                 Some(format!("{}\n\n{state}", field.tooltip.as_deref().unwrap_or("")))
                             } else {
@@ -975,13 +938,7 @@ impl App {
                             ));
                         }
                     }
-                    None => {
-                        self.json_visible = true;
-                        set_text(
-                            self.c.filter_json,
-                            &plugin.settings_json.replace('\n', "\r\n"),
-                        );
-                    }
+                    None => {}
                 }
             }
         }
@@ -1015,39 +972,9 @@ impl App {
             let Ok(hwnd) = created else {
                 continue;
             };
-            let default_control = if matches!(
-                &target,
-                PropertyTarget::Plugin(_, PropertyValue::Typed { .. })
-            ) {
-                let reset = self
-                    .button(
-                        "Use default",
-                        ID_PROPERTY_DEFAULT + index as u16,
-                        Kind::Button,
-                        Surface::Group,
-                    )
-                    .ok();
-                if let Some(reset) = reset {
-                    let writable = match &target {
-                        PropertyTarget::Plugin(_, value) => value.writable(),
-                        _ => false,
-                    };
-                    unsafe {
-                        EnableWindow(reset, writable.into());
-                    }
-                    let help = match &target {
-                        PropertyTarget::Plugin(_, value) => value.default_label(),
-                        _ => "Use default".into(),
-                    };
-                    self.add_tool(reset, 0, &help);
-                }
-                reset
-            } else {
-                None
-            };
             if let PropertyTarget::Plugin(_, value) = &target {
                 unsafe {
-                    EnableWindow(hwnd, value.writable().into());
+                    EnableWindow(hwnd, value.field_writable().into());
                 }
                 if value.uses_default() && !dropdown {
                     unsafe {
@@ -1060,7 +987,7 @@ impl App {
                     }
                 }
             }
-            for control in [label_control, Some(hwnd), default_control]
+            for control in [label_control, Some(hwnd)]
                 .into_iter()
                 .flatten()
             {
@@ -1091,7 +1018,6 @@ impl App {
             }
             self.properties.push(PropertyRow {
                 hwnd,
-                default_control,
                 label_control,
                 label,
                 unit,
@@ -1275,8 +1201,6 @@ impl App {
             self.edit_relative(index, hwnd, &value);
         } else if hwnd == self.c.tip_field || hwnd == self.c.eraser_field {
             self.edit_threshold(hwnd == self.c.eraser_field, hwnd, &value);
-        } else if hwnd == self.c.filter_json {
-            self.edit_json(&value);
         } else if let Some(index) = self.properties.iter().position(|row| row.hwnd == hwnd) {
             self.edit_property(index, &value);
         }
@@ -1432,27 +1356,6 @@ impl App {
         unsafe { InvalidateRect(slider, ptr::null(), 0) };
     }
 
-    pub(super) fn edit_json(&mut self, value: &str) {
-        let Some(FilterRef::Plugin(index)) = self.selected_target() else {
-            return;
-        };
-        let candidate = PluginConfig {
-            settings_json: value.replace("\r\n", "\n"),
-            ..self.editor.profile.plugins[index].clone()
-        };
-        let error = candidate.validate().err();
-        let changed = error != self.json_error;
-        if error.is_none() {
-            self.editor.profile.plugins[index] = candidate;
-            self.mark_dirty();
-        }
-        self.json_error = error;
-        if changed {
-            self.set_invalid(self.c.filter_json, self.json_error.is_some(), None);
-            self.layout();
-        }
-    }
-
     pub(super) fn edit_property(&mut self, index: usize, value: &str) {
         let Some(filter) = self.selected_target() else {
             return;
@@ -1549,7 +1452,6 @@ impl App {
             return;
         }
         // The default menu action writes a known attribute/editor default.
-        // Raw JSON null remains available for exact constructor/null semantics.
         let value = if value.is_null() { previous.reset_value() } else { value };
         let config = &self.editor.profile.plugins[plugin];
         let result = model::set_plugin_property(&config.settings_json, key, value.clone())
@@ -1627,8 +1529,7 @@ impl App {
                 return;
             }
             self.selected_filter = index as usize;
-            self.json_mode = false;
-            self.property_page = 0;
+                self.property_page = 0;
             self.rebuild_properties();
             self.layout();
         }
@@ -1649,8 +1550,7 @@ impl App {
     }
 
     pub(super) fn can_leave_filter(&mut self) -> bool {
-        if self.json_error.is_some()
-            || self
+        if self
                 .properties
                 .iter()
                 .any(|row| self.invalid.contains(&(row.hwnd as isize)))
@@ -1667,52 +1567,12 @@ impl App {
         }
     }
 
-    pub(super) fn toggle_filter_json(&mut self) {
-        if !self.can_leave_filter() {
-            return;
-        }
-        let Some(FilterRef::Plugin(index)) = self.selected_target() else {
-            return;
-        };
-        let plugin = &self.editor.profile.plugins[index];
-        if !plugin.kind.is_managed() || self.metadata_for(plugin).is_none() {
-            return;
-        }
-        if self.json_visible {
-            let fields =
-                model::plugin_editor_fields(&plugin.settings_json, self.metadata_for(plugin));
-            if fields
-                .as_ref()
-                .is_none_or(|fields| fields.len() >= MAX_PROPERTY_ROWS as usize)
-            {
-                self.show_status(
-                    "This settings object requires the JSON editor.".into(),
-                    Level::Info,
-                    false,
-                );
-                return;
-            }
-        }
-        self.json_mode = !self.json_visible;
-        self.property_page = 0;
-        self.rebuild_properties();
-        self.layout();
-        unsafe {
-            SetFocus(if self.json_visible {
-                self.c.filter_json
-            } else {
-                self.c.filter_json_toggle
-            });
-        }
-    }
-
     pub(super) fn move_filter(&mut self, down: bool) {
         // Rebuilding controls would discard invalid text, so retain it until corrected.
         if self
             .properties
             .iter()
             .any(|row| self.invalid.contains(&(row.hwnd as isize)))
-            || self.json_error.is_some()
         {
             self.show_status(
                 "Correct the selected filter's invalid settings before moving it.".into(),
@@ -1748,9 +1608,8 @@ impl App {
         };
         match self.editor.reset_filter(target, metadata.as_ref()) {
             Ok(()) => {
-                // Defaults intentionally replace invalid edits, including raw JSON.
-                self.set_invalid(self.c.filter_json, false, None);
-                self.mark_dirty();
+                // Defaults intentionally replace invalid property edits.
+                        self.mark_dirty();
                 self.refresh_filters();
                 self.layout();
                 self.log(
@@ -2072,7 +1931,9 @@ impl App {
         });
         self.dark_mode.apply_app(palette.dark);
         self.dark_mode.apply_title_bar(self.hwnd, palette.dark);
-        let mut scrolling = vec![self.c.filter_json, self.c.filter_list, self.c.log];
+        plugin_manager::apply_theme();
+        debugger::refresh_theme();
+        let mut scrolling = vec![self.c.filter_list, self.c.log];
         if !self.tooltip.is_null() {
             scrolling.push(self.tooltip);
         }
@@ -2109,11 +1970,7 @@ impl App {
                 .flatten(),
         );
         for hwnd in all {
-            let font = if hwnd == self.c.filter_json {
-                fonts.fonts.mono
-            } else {
-                fonts.fonts.ui
-            };
+            let font = fonts.fonts.ui;
             unsafe { SendMessageW(hwnd, WM_SETFONT, font as usize, 0) };
         }
         update_look(|look| {
@@ -2194,7 +2051,6 @@ impl App {
         }
         self.dirty = dirty;
         self.selected_filter = 0;
-        self.json_mode = false;
         self.property_page = 0;
         self.drag = None;
         self.sync_all();
@@ -2209,9 +2065,54 @@ impl App {
         }
     }
 
+    /// A Save/Apply echo should leave the editor exactly where the user was.
+    /// Matching snapshots need no control rebuild or metadata rediscovery.
+    fn load_active_profile(&mut self, profile: Profile) {
+        if let (Ok(current), Ok(incoming)) = (self.editor.profile.to_toml(), profile.to_toml())
+            && current == incoming
+        {
+            return;
+        }
+        let target = self.selected_target();
+        let selected_plugin = match target {
+            Some(FilterRef::Plugin(index)) => self.editor.profile.plugins.get(index).cloned(),
+            _ => None,
+        };
+        let top = unsafe { SendMessageW(self.c.filter_list, LB_GETTOPINDEX, 0, 0) }.max(0) as usize;
+        let page = self.property_page;
+        self.editor = Editor::new(profile);
+        self.metadata_generation = self.metadata_generation.wrapping_add(1);
+        self.metadata_pending.clear();
+        self.metadata_versions.clear();
+        self.metadata_refresh_deferred = false;
+        self.import_pending = false;
+        if let Some(plugin) = selected_plugin {
+            let same = |candidate: &PluginConfig| candidate.kind == plugin.kind
+                && candidate.path == plugin.path && candidate.type_name == plugin.type_name;
+            let previous = match target { Some(FilterRef::Plugin(index)) => index, _ => 0 };
+            let index = if self.editor.profile.plugins.get(previous).is_some_and(same) {
+                Some(previous)
+            } else {
+                self.editor.profile.plugins.iter().position(same)
+            };
+            if let Some(index) = index {
+                self.selected_filter = self.editor.profile.radial_follow.len().max(1) + index;
+            }
+        } else if let Some(FilterRef::Radial(index)) = target {
+            self.selected_filter = index;
+        }
+        self.property_page = page;
+        self.drag = None;
+        self.sync_all();
+        self.layout();
+        let count = self.editor.filters().len();
+        unsafe { SendMessageW(self.c.filter_list, LB_SETTOPINDEX, top.min(count.saturating_sub(1)), 0); }
+        self.update_title();
+    }
+
     /// The profile exactly as Save and Start will use it.
     pub(super) fn checked_profile(&self) -> Result<Profile, String> {
-        if !self.invalid.is_empty() || self.json_error.is_some() {
+        if !self.invalid.is_empty() {
             return Err("Correct invalid editor values before saving or applying settings.".into());
         }
         model::validated(&self.editor.profile, &self.profile_path)
@@ -2369,17 +2270,7 @@ impl App {
         let was_connected = self.driver == DriverState::Connected;
         self.driver = state;
         let running = self.running.is_some();
-        update_look(|look| look.running = running);
-        let label = match state {
-            DriverState::Starting if self.control_busy => "Starting…",
-            DriverState::Stopping => "Stopping…",
-            _ if running => "Stop driver",
-            _ => "Start driver",
-        };
-        set_text(self.c.start, label);
         unsafe {
-            EnableWindow(self.c.start, (!self.control_busy).into());
-            InvalidateRect(self.c.start, ptr::null(), 0);
             EnableWindow(
                 self.c.apply,
                 (running && !self.control_busy && state != DriverState::Stopping).into(),
@@ -2497,24 +2388,6 @@ impl App {
         }
     }
 
-    pub(super) fn stop(&mut self) {
-        let Some(identity) = self
-            .running
-            .as_ref()
-            .map(|running| running.identity.clone())
-        else {
-            return;
-        };
-        if self.submit_control(client::ClientCommand::Stop(identity)) {
-            self.set_driver_state(DriverState::Stopping);
-            self.log(
-                Level::Info,
-                "Daemon",
-                "Stop requested; waiting for daemon input cleanup.",
-            );
-        }
-    }
-
     pub(super) fn apply(&mut self) {
         if self.running.is_none() {
             self.log(
@@ -2562,8 +2435,28 @@ impl App {
             .unwrap_or_default();
         for event in events {
             match event {
+                client::ClientEvent::CloseFinished(result) => {
+                    match result {
+                        Ok(warning) => {
+                            if let Some(warning) = warning {
+                                self.log(Level::Warning, "Daemon", warning);
+                            }
+                            self.close_ready = true;
+                            self.save_prefs();
+                            unsafe { PostMessageW(self.hwnd, WM_CLOSE, 0, 0); }
+                        }
+                        Err(error) => {
+                            self.closing = false;
+                            self.control_busy = false;
+                            unsafe { EnableWindow(self.hwnd, 1); }
+                            plugin_manager::set_restart_pending(false);
+                            self.log(Level::Error, "Daemon", error);
+                            self.set_driver_state(self.driver);
+                        }
+                    }
+                }
                 client::ClientEvent::ActionFinished(result) => {
-                    self.control_busy = false;
+                    if !self.closing { self.control_busy = false; }
                     if let Err(error) = result {
                         self.log(Level::Error, "Daemon", error);
                     }
@@ -2576,7 +2469,7 @@ impl App {
                     self.running = None;
                     self.set_driver_state(DriverState::Disconnected);
                     self.log(if error.is_some() { Level::Warning } else { Level::Info }, "Daemon",
-                        error.unwrap_or_else(|| "No daemon is available. Start driver launches it; closing this panel does not stop daemon input.".into()));
+                        error.unwrap_or_else(|| "No daemon is available. Start driver launches it; closing this panel stops tablet input.".into()));
                 }
                 client::ClientEvent::Snapshot { status, profile } => {
                     let identity = status.identity();
@@ -2585,11 +2478,11 @@ impl App {
                         self.daemon_log_sequence = 0;
                     }
                     self.running = client::active(status.state).then_some(Running { identity });
-                    if let Some(profile) = profile {
-                        if self.dirty || !self.invalid.is_empty() || self.json_error.is_some() {
+                    if let Some(profile) = profile.filter(|_| !self.closing) {
+                        if self.dirty || !self.invalid.is_empty() {
                             self.log(Level::Warning, "Settings", "Daemon configuration changed. Unsaved local edits were kept; Apply deliberately replaces the active configuration.");
                         } else {
-                            self.replace_profile(*profile, None, false);
+                            self.load_active_profile(*profile);
                             self.log(Level::Info, "Settings", "Loaded the daemon's active configuration. Save writes it to the local profile file.");
                         }
                     }
@@ -2635,12 +2528,31 @@ impl App {
         }
     }
 
-    /// Closing the panel detaches immediately; the daemon retains its worker.
+    /// Close waits for driver cleanup without blocking the window thread.
     pub(super) fn begin_close(&mut self) -> bool {
-        self.closing = true;
-        self.save_prefs();
-        self.daemon_client.take();
-        true
+        if self.update_close_approved {
+            self.closing = true;
+            self.save_prefs();
+            return true;
+        }
+        self.connect_daemon();
+        let result = self.daemon_client.as_ref()
+            .ok_or_else(|| "Daemon client unavailable; input cleanup could not be confirmed.".to_owned())
+            .and_then(|client| client.submit(client::ClientCommand::Close));
+        match result {
+            Ok(()) => {
+                self.closing = true;
+                self.control_busy = true;
+                self.drag = None;
+                debugger::close();
+                self.set_driver_state(DriverState::Stopping);
+                self.show_status("Stopping the driver before closing…".into(), Level::Info, false);
+                unsafe { EnableWindow(self.hwnd, 0); }
+                plugin_manager::set_restart_pending(true);
+            }
+            Err(error) => self.log(Level::Error, "Daemon", error),
+        }
+        false
     }
     // ----- Console -------------------------------------------------------------------
 

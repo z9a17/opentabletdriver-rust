@@ -43,13 +43,6 @@ pub struct State {
     pub cues: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Glyph {
-    None,
-    Play,
-    Stop,
-}
-
 pub const TEXT_CENTER: u32 = DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS;
 pub const TEXT_LEFT: u32 = DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS;
 
@@ -77,7 +70,6 @@ pub fn button(
     style: &Style,
     surface: Rgb,
     state: State,
-    glyph: Glyph,
 ) {
     let p = &style.palette;
     canvas.fill(rect, surface);
@@ -106,59 +98,12 @@ pub fn button(
             Some((p.button_hot_border, 1.0)),
         );
     }
-    let (text_width, _) = canvas.measure(style.fonts.ui, text);
-    let glyph_size = style.px(8.0);
-    let gap = if glyph == Glyph::None {
-        0.0
-    } else {
-        glyph_size + style.px(7.0)
-    };
-    let start = ((rect.left + rect.right) as f32 - (text_width as f32 + gap)) / 2.0;
-    let middle = (rect.top + rect.bottom) as f32 / 2.0;
-    let accent = if state.disabled { p.disabled } else { p.accent };
-    match glyph {
-        Glyph::None => {}
-        Glyph::Play => {
-            let x = start.round();
-            canvas.polygon(
-                &[
-                    (x, middle - glyph_size / 2.0),
-                    (x + glyph_size * 0.85, middle),
-                    (x, middle + glyph_size / 2.0),
-                ],
-                accent,
-                1.0,
-            );
-        }
-        Glyph::Stop => {
-            let x = start.round() as i32;
-            let size = glyph_size as i32;
-            let top = (middle - glyph_size / 2.0).round() as i32;
-            canvas.round_rect(
-                RECT {
-                    left: x,
-                    top,
-                    right: x + size,
-                    bottom: top + size,
-                },
-                radius(style, 1.5),
-                Some(p.error),
-                None,
-            );
-        }
-    }
-    let (text_rect, format) = if glyph == Glyph::None {
-        (rect, TEXT_CENTER)
-    } else {
-        let left = (start + gap).round() as i32;
-        (RECT { left, ..rect }, TEXT_LEFT)
-    };
     canvas.text(
-        text_rect,
+        rect,
         text,
         style.fonts.ui,
         color,
-        format | prefix(&state),
+        TEXT_CENTER | prefix(&state),
     );
 }
 

@@ -57,7 +57,7 @@ impl App {
     pub(super) fn background_results(&mut self) -> Option<String> {
         // A confirmed update restart freezes the editor until it succeeds or
         // fails; keep profile-changing completions queued during that interval.
-        if self.update_restart_pending { return None; }
+        if self.closing || self.update_restart_pending { return None; }
         let mut dialog = None;
         while let Ok(event) = self.background_rx.try_recv() {
             match event {

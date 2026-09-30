@@ -16,6 +16,9 @@ const POLL: Duration = Duration::from_millis(33);
 
 struct Debugger {
     window: HWND,
+    dpi: u32,
+    fonts: FontSet,
+    palette: Palette,
     updates: Receiver<Result<DebugReport, String>>,
     cancelled: Arc<AtomicBool>,
     latest: Option<DebugReport>,
@@ -40,6 +43,9 @@ pub(super) fn open() -> Result<(), String> {
         return Ok(());
     }
     let instance = unsafe { GetModuleHandleW(ptr::null()) };
+    // Like the upstream DesktopForm, this window belongs to the panel.
+    // Finish borrowing App before creation dispatches any window messages.
+    let owner = with_app(|app| app.hwnd).unwrap_or(ptr::null_mut());
     let class = wide(CLASS);
     let registration = WNDCLASSW {
         style: CS_HREDRAW | CS_VREDRAW,
@@ -61,7 +67,7 @@ pub(super) fn open() -> Result<(), String> {
             CW_USEDEFAULT,
             760,
             560,
-            ptr::null_mut(),
+            owner,
             ptr::null_mut(),
             instance,
             ptr::null(),
@@ -70,6 +76,9 @@ pub(super) fn open() -> Result<(), String> {
     if window.is_null() {
         return Err(std::io::Error::last_os_error().to_string());
     }
+    let dpi = unsafe { GetDpiForWindow(window) }.max(96);
+    let fonts = FontSet::new(dpi);
+    let palette = with_look(|look| look.style.palette).unwrap_or_else(Palette::light);
     let (sender, updates) = mpsc::sync_channel(1);
     let cancelled = Arc::new(AtomicBool::new(false));
     let stop = Arc::clone(&cancelled);
@@ -84,6 +93,9 @@ pub(super) fn open() -> Result<(), String> {
     DEBUGGER.with(|slot| {
         *slot.borrow_mut() = Some(Debugger {
             window,
+            dpi,
+            fonts,
+            palette,
             updates,
             cancelled,
             latest: None,
@@ -92,14 +104,45 @@ pub(super) fn open() -> Result<(), String> {
             spec: None,
         })
     });
-    if let Some(dark) = with_look(|look| look.style.palette.dark) {
-        theme::DarkMode::load().apply_title_bar(window, dark);
-    }
+    refresh_theme();
     unsafe {
         ShowWindow(window, SW_SHOW);
         UpdateWindow(window);
     }
     Ok(())
+}
+
+/// Keep the debugger's client area and title bar on the panel's palette.
+/// No state borrow may survive calls that can dispatch Win32 callbacks.
+pub(super) fn refresh_theme() {
+    let Some(palette) = with_look(|look| look.style.palette) else {
+        return;
+    };
+    let window = DEBUGGER.with(|slot| {
+        let mut slot = slot.try_borrow_mut().ok()?;
+        let debugger = slot.as_mut()?;
+        debugger.palette = palette;
+        Some(debugger.window)
+    });
+    if let Some(window) = window {
+        theme::DarkMode::load().apply_title_bar(window, palette.dark);
+        unsafe { InvalidateRect(window, ptr::null(), 0) };
+    }
+}
+
+/// Called before panel resources are released or shutdown waits for the daemon.
+pub(super) fn close() {
+    let debugger = DEBUGGER.with(|slot| slot.try_borrow_mut().ok()?.take());
+    if let Some(debugger) = debugger {
+        debugger.cancelled.store(true, Ordering::Release);
+        unsafe { DestroyWindow(debugger.window) };
+    }
+}
+
+impl Drop for Debugger {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
 }
 
 fn poll(
@@ -126,8 +169,15 @@ fn poll(
             };
         // The window takes the newest update; a full channel means it has
         // not drawn the previous one yet.
-        if sender.try_send(update).is_ok() {
-            unsafe { PostMessageW(window as HWND, WM_DEBUG_REPORT, 0, 0) };
+        if cancelled.load(Ordering::Acquire) {
+            break;
+        }
+        match sender.try_send(update) {
+            Ok(()) => {
+                unsafe { PostMessageW(window as HWND, WM_DEBUG_REPORT, 0, 0) };
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => break,
+            Err(mpsc::TrySendError::Full(_)) => {}
         }
         std::thread::sleep(POLL);
     }
@@ -150,6 +200,7 @@ impl Debugger {
                             .is_some_and(|(_, sequence)| *sequence > report.sequence)
                     {
                         self.history.clear();
+                        self.spec = None;
                     }
                     self.history.push_back((now, report.sequence));
                     while self
@@ -173,6 +224,8 @@ impl Debugger {
                 Err(error) => {
                     self.error = Some(error);
                     self.history.clear();
+                    self.latest = None;
+                    self.spec = None;
                 }
             }
         }
@@ -193,7 +246,9 @@ impl Debugger {
             lines.push(("Status".into(), error.clone()));
         }
         let Some(report) = &self.latest else {
-            lines.push(("Status".into(), "Waiting for the driver...".into()));
+            if self.error.is_none() {
+                lines.push(("Status".into(), "Waiting for the driver...".into()));
+            }
             return lines;
         };
         let text = |value: &Option<String>| value.clone().unwrap_or_else(|| "none".into());
@@ -234,8 +289,14 @@ impl Debugger {
         let mut ps = PAINTSTRUCT::default();
         let hdc = unsafe { BeginPaint(self.window, &mut ps) };
         let client = client_rect(self.window);
-        let style = with_look(|look| look.style);
-        if let (Some(style), Some(mut canvas)) = (style, canvas::Canvas::new(hdc, client)) {
+        let style = draw::Style {
+            palette: self.palette,
+            fonts: self.fonts.fonts,
+            scale: self.dpi as f32 / 96.0,
+        };
+        if !hdc.is_null()
+            && let Some(mut canvas) = canvas::Canvas::new(hdc, client)
+        {
             self.draw(&mut canvas, client, &style);
             canvas.present(hdc);
         }
@@ -468,6 +529,7 @@ unsafe extern "system" fn window_proc(
             let _ = DEBUGGER.try_with(|slot| {
                 if let Ok(mut slot) = slot.try_borrow_mut()
                     && let Some(debugger) = slot.as_mut()
+                    && debugger.window == window
                 {
                     debugger.take_updates();
                 }
@@ -480,6 +542,7 @@ unsafe extern "system" fn window_proc(
                 .try_with(|slot| {
                     if let Ok(slot) = slot.try_borrow()
                         && let Some(debugger) = slot.as_ref()
+                        && debugger.window == window
                     {
                         debugger.paint();
                         true
@@ -497,14 +560,55 @@ unsafe extern "system" fn window_proc(
             }
         }
         WM_ERASEBKGND => 1,
+        WM_GETMINMAXINFO => {
+            let dpi = unsafe { GetDpiForWindow(window) }.max(96);
+            let mut frame = rect(0, 0, scale(700, dpi), scale(480, dpi));
+            unsafe {
+                AdjustWindowRectExForDpi(&mut frame, WS_OVERLAPPEDWINDOW, 0, 0, dpi);
+                if let Some(info) = (lparam as *mut MINMAXINFO).as_mut() {
+                    info.ptMinTrackSize = POINT {
+                        x: frame.right - frame.left,
+                        y: frame.bottom - frame.top,
+                    };
+                }
+            }
+            0
+        }
+        WM_DPICHANGED => {
+            let dpi = (wparam & 0xFFFF) as u32;
+            let _ = DEBUGGER.try_with(|slot| {
+                if let Ok(mut slot) = slot.try_borrow_mut()
+                    && let Some(debugger) = slot.as_mut()
+                    && debugger.window == window
+                {
+                    debugger.dpi = dpi.max(96);
+                    debugger.fonts = FontSet::new(debugger.dpi);
+                }
+            });
+            unsafe {
+                if let Some(area) = (lparam as *const RECT).as_ref() {
+                    SetWindowPos(
+                        window,
+                        ptr::null_mut(),
+                        area.left,
+                        area.top,
+                        area.right - area.left,
+                        area.bottom - area.top,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                }
+                InvalidateRect(window, ptr::null(), 0);
+            }
+            0
+        }
         WM_DESTROY => {
             // Never panic in a window procedure: the slot may be gone when
             // Windows destroys the window at thread exit.
             let _ = DEBUGGER.try_with(|slot| {
                 if let Ok(mut slot) = slot.try_borrow_mut()
-                    && let Some(debugger) = slot.take()
+                    && slot.as_ref().is_some_and(|debugger| debugger.window == window)
                 {
-                    debugger.cancelled.store(true, Ordering::Release);
+                    slot.take();
                 }
             });
             0
@@ -547,6 +651,9 @@ mod preview {
         let (_, updates) = mpsc::sync_channel(1);
         let mut debugger = Debugger {
             window: ptr::null_mut(),
+            dpi: 96,
+            fonts: FontSet::new(96),
+            palette: theme::Palette::light(),
             updates,
             cancelled: Arc::new(AtomicBool::new(false)),
             latest: Some(DebugReport {

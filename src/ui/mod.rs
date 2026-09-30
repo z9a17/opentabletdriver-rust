@@ -89,7 +89,7 @@ use area::AreaView;
 use commands::{
     accelerator_table, append, checked, confirm_discard, copy_to_clipboard, on_command,
 };
-use draw::{Glyph, State, Style};
+use draw::{State, Style};
 use model::{Align, AspectSource, Bounds, Editor, FilterRef, OutputMode, PropertyValue};
 use paint::{ctl_color, custom_draw, draw_item};
 use theme::{Palette, Rgb, ThemeMode, UiPrefs};
@@ -124,7 +124,6 @@ const CMD_REMOVE_FILTER: u16 = 222;
 const CMD_FILTER_UP: u16 = 223;
 const CMD_FILTER_DOWN: u16 = 224;
 const CMD_FILTER_DEFAULTS: u16 = 225;
-const CMD_FILTER_JSON: u16 = 226;
 const CMD_PROPERTY_PREV: u16 = 227;
 const CMD_PROPERTY_NEXT: u16 = 228;
 const CMD_THEME_SYSTEM: u16 = 230;
@@ -149,10 +148,8 @@ const ID_TABLET: u16 = 320;
 const ID_RELATIVE: u16 = 330;
 const ID_FILTER_LIST: u16 = 400;
 const ID_FILTER_ENABLE: u16 = 401;
-const ID_FILTER_JSON: u16 = 402;
 const ID_PROPERTY: u16 = 2000;
 const MAX_PROPERTY_ROWS: u16 = 1000;
-const ID_PROPERTY_DEFAULT: u16 = 4000;
 const ID_TIP_BINDING: u16 = 500;
 const ID_TIP_SLIDER: u16 = 501;
 const ID_TIP_FIELD: u16 = 502;
@@ -206,12 +203,12 @@ const TABLET_FIELDS: [(&str, &str); 5] = [
     ("Height", "mm"),
     ("X", "mm"),
     ("Y", "mm"),
-    ("Rotation", "°"),
+    ("Rotation", "Â°"),
 ];
 const RELATIVE_FIELDS: [(&str, &str); 4] = [
     ("X Sensitivity", "px/mm"),
     ("Y Sensitivity", "px/mm"),
-    ("Rotation", "°"),
+    ("Rotation", "Â°"),
     ("Reset Time", "ms"),
 ];
 const MENUS: [&str; 5] = ["&File", "&Tablets", "&Plugins", "&View", "&Help"];
@@ -400,7 +397,6 @@ enum Kind {
     Menu,
     Tab(Tab),
     Button,
-    StartStop,
     Dropdown,
     Check,
     Field,
@@ -448,7 +444,6 @@ struct Look {
     controls: HashMap<isize, ControlInfo>,
     tab: Tab,
     menu_open: isize,
-    running: bool,
     filters: Vec<model::FilterItem>,
     log: VecDeque<LogEntry>,
     log_columns: [i32; 3],
@@ -516,7 +511,6 @@ enum Tone {
     Text,
     Muted,
     Warning,
-    Error,
 }
 
 /// Display list built by `layout` and drawn by `paint`.
@@ -605,7 +599,6 @@ enum PropertyTarget {
 
 struct PropertyRow {
     hwnd: HWND,
-    default_control: Option<HWND>,
     /// Static text before the field, which also names it for screen readers.
     label_control: Option<HWND>,
     label: String,
@@ -665,11 +658,9 @@ struct Controls {
     filter_up: HWND,
     filter_down: HWND,
     filter_defaults: HWND,
-    filter_json_toggle: HWND,
     property_prev: HWND,
     property_next: HWND,
     filter_enable: HWND,
-    filter_json: HWND,
     tip_binding: HWND,
     tip_slider: HWND,
     tip_field: HWND,
@@ -679,7 +670,6 @@ struct Controls {
     log: HWND,
     copy_log: HWND,
     clear_log: HWND,
-    start: HWND,
     save: HWND,
     apply: HWND,
 }
@@ -763,10 +753,7 @@ struct App {
     connected_tablets: Vec<String>,
     /// Label controls keyed by the control they name.
     labels: HashMap<isize, HWND>,
-    json_visible: bool,
-    json_mode: bool,
     property_page: usize,
-    json_error: Option<String>,
     invalid: HashSet<isize>,
     drag: Option<Drag>,
     context_area: AreaKind,
@@ -776,6 +763,7 @@ struct App {
     daemon_instance: Option<String>,
     daemon_log_sequence: u64,
     closing: bool,
+    close_ready: bool,
     update_restart_pending: bool,
     update_close_approved: bool,
     driver: DriverState,
@@ -799,7 +787,7 @@ struct App {
 
 impl Drop for App {
     fn drop(&mut self) {
-        // The daemon owns input; closing this client only detaches.
+        // Normal close waits for input cleanup before dropping the client.
         self.daemon_client.take();
         unsafe {
             DestroyAcceleratorTable(self.accelerators);
@@ -941,6 +929,8 @@ unsafe extern "system" fn window_proc(
     let default = || unsafe { DefWindowProcW(window, message, wp, lp) };
     match message {
         WM_DESTROY => {
+            debugger::close();
+            plugin_manager::close();
             tray::remove(window);
             unsafe { PostQuitMessage(0) };
             0
@@ -1052,7 +1042,7 @@ unsafe extern "system" fn window_proc(
             1
         }
         WM_COMMAND => {
-            if with_app(|app| app.update_restart_pending).unwrap_or(false) { return 0; }
+            if with_app(|app| app.closing || app.update_restart_pending).unwrap_or(false) { return 0; }
             on_command(
                 window,
                 (wp & 0xFFFF) as u16,
@@ -1067,7 +1057,7 @@ unsafe extern "system" fn window_proc(
             0
         }
         WM_HSCROLL => {
-            if with_app(|app| app.update_restart_pending).unwrap_or(false) { return 0; }
+            if with_app(|app| app.closing || app.update_restart_pending).unwrap_or(false) { return 0; }
             let slider = lp as HWND;
             with_app(|app| app.slider_moved(slider));
             0
@@ -1210,6 +1200,9 @@ unsafe extern "system" fn window_proc(
         }
         WM_CLOSE => {
             if with_app(|app| app.closing).unwrap_or(false) {
+                if with_app(|app| app.close_ready).unwrap_or(false) {
+                    unsafe { DestroyWindow(window) };
+                }
                 return 0;
             }
             let approved_restart = with_app(|app| app.update_close_approved).unwrap_or(false);
@@ -1217,7 +1210,7 @@ unsafe extern "system" fn window_proc(
                 return 0;
             }
             // Close from the tray asks about unsaved edits with the panel shown.
-            if !approved_restart && with_app(|app| app.dirty || !app.invalid.is_empty() || app.json_error.is_some()).unwrap_or(false) && unsafe { IsWindowVisible(window) } == 0
+            if !approved_restart && with_app(|app| app.dirty || !app.invalid.is_empty()).unwrap_or(false) && unsafe { IsWindowVisible(window) } == 0
             {
                 tray::show_panel(window);
             }

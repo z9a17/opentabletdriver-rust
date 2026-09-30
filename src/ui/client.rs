@@ -22,7 +22,8 @@ pub(super) enum ClientCommand {
     Start(Box<Profile>),
     /// Launch preference only: never revive a worker this panel already observed.
     AutoStart(Box<Profile>),
-    Stop(WorkerIdentity),
+    /// Stop the current worker and wait for input cleanup before closing the panel.
+    Close,
     Restart {
         expected: WorkerIdentity,
         profile: Box<Profile>,
@@ -36,6 +37,7 @@ pub(super) enum ClientEvent {
     },
     Offline(Option<String>),
     ActionFinished(Result<(), String>),
+    CloseFinished(Result<Option<String>, String>),
     /// The daemon process ended with a failure code or left a crash record.
     DaemonExited(String),
 }
@@ -86,8 +88,8 @@ impl DaemonClient {
 
 impl Drop for DaemonClient {
     fn drop(&mut self) {
-        // Detach only. Never stop input, join a pipe call on the UI thread, or
-        // cancel a restart that the daemon has already accepted.
+        // Normal panel close has already waited for cleanup on this worker.
+        // Never join a pipe call or send an implicit command from Drop.
         self.cancelled.store(true, Ordering::Release);
     }
 }
@@ -135,7 +137,7 @@ fn execute(
                 profile_toml: text,
             }
         }
-        ClientCommand::Stop(expected) => Command::StopIf { expected },
+        ClientCommand::Close => return Err("Close must wait for the watched daemon on the client thread.".into()),
         ClientCommand::Restart { expected, profile } => Command::Restart {
             expected,
             profile_toml: profile_text(&profile)?,
@@ -154,6 +156,67 @@ pub(super) fn active(state: DriverState) -> bool {
         state,
         DriverState::Starting | DriverState::Running | DriverState::Stopping
     )
+}
+
+fn close_call(command: Command) -> io::Result<Reply> {
+    let response = control::request(&Request::new(1, command), Duration::from_secs(1))?;
+    match response.reply {
+        Reply::Error { error } => Err(io::Error::other(format!("{:?}: {}", error.code, error.message))),
+        reply => Ok(reply),
+    }
+}
+
+/// Read the identity after earlier queued actions finish, so a pending Start
+/// cannot leave input running after the panel goes away. StopIf protects a
+/// worker replaced between this snapshot and the stop request.
+fn stop_for_close(cancelled: &AtomicBool, watched: Option<&Watched>) -> Result<Option<String>, String> {
+    let status = match close_call(Command::Status) {
+        Ok(Reply::Status { status }) => status,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            // Shutdown can remove the pipe before worker cleanup finishes.
+            if watched.is_some_and(|watched| watched.exit_code().is_none()) {
+                return Err("The daemon is shutting down. The panel stayed open until the driver has stopped; close it again after shutdown finishes.".into());
+            }
+            return Ok(None);
+        }
+        Err(error) => return Err(format!("Cannot confirm driver shutdown: {error}")),
+        _ => return Err("Unexpected daemon status response while closing.".into()),
+    };
+    if !active(status.state) {
+        return Ok((status.state == DriverState::Failed).then(|| status.last_error.unwrap_or_else(|| "The driver stopped with a cleanup error.".into())));
+    }
+    let instance = status.instance.clone();
+    let process = Watched::open(&instance);
+    if cancelled.load(Ordering::Acquire) {
+        return Err("Panel closed before input cleanup was confirmed.".into());
+    }
+    // A timeout can occur after Stop was accepted. Confirm status rather than
+    // resending a potentially stale command.
+    let stop_error = match close_call(Command::StopIf { expected: status.identity() }) {
+        Ok(Reply::Stopped { .. }) | Ok(Reply::Status { .. }) => None,
+        Ok(_) => return Err("Unexpected daemon stop response while closing.".into()),
+        Err(error) => Some(error.to_string()),
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !cancelled.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
+        match close_call(Command::Status) {
+            Ok(Reply::Status { status }) if status.instance == instance => {
+                if !active(status.state) {
+                    return Ok((status.state == DriverState::Failed).then(|| status.last_error.unwrap_or_else(|| "The driver stopped with a cleanup error.".into())));
+                }
+            }
+            Ok(Reply::Status { .. }) => return Err("The daemon changed while closing. The panel stayed open; close it again to stop the current driver.".into()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if process.as_ref().and_then(Watched::exit_code).is_some() {
+                    return Ok(None);
+                }
+            }
+            Err(_) => {}
+            _ => return Err("Unexpected daemon status response while waiting for cleanup.".into()),
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Err(format!("Driver cleanup was not confirmed. The panel stayed open.{}", stop_error.map_or_else(String::new, |error| format!(" {error}"))))
 }
 
 fn publish(
@@ -365,10 +428,15 @@ fn run(
         }
         match commands.recv_timeout(Duration::from_millis(500)) {
             Ok(command) => {
-                let result = execute(command, &stop, &mut observed_active);
+                let closing = matches!(&command, ClientCommand::Close);
+                let event = if closing {
+                    ClientEvent::CloseFinished(stop_for_close(&stop, watched.as_ref()))
+                } else {
+                    ClientEvent::ActionFinished(execute(command, &stop, &mut observed_active))
+                };
                 if !publish(
                     &events,
-                    ClientEvent::ActionFinished(result),
+                    event,
                     window,
                     &stop,
                     true,

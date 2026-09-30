@@ -1,0 +1,33 @@
+{
+  "version": "0.14.2",
+  "purpose": "Release asset production and package contents; not runtime validation",
+  "matched_binaries": [
+    {
+      "name": "opentabletdriver-rust.exe",
+      "sha256": "c5736e432d0d5f83f70ff04294920ff6d82c0f1225556966f2c4a89c4b28662b"
+    },
+    {
+      "name": "opentabletdriver-rust-ui.exe",
+      "sha256": "fed1e1bf8585057ffebb4255d442a1cfc0b0961a129eada236383d7d39e69596"
+    },
+    {
+      "name": "otd_ema_filter.dll",
+      "sha256": "7f0786e56740d1b4f61efc1b6221494170e4a8e2d22b196357b6e2f214afd068"
+    },
+    {
+      "name": "compat/OtdCompat.dll",
+      "sha256": "824f9743e6c1836d330332d31b204229adaceac837a1a1c8a5481bdf899d8a5f"
+    },
+    {
+      "name": "compat/OpenTabletDriver.Plugin.dll",
+      "sha256": "e9140ac1b2ad10f8f439d9c3b9d1d007bbbfbb5046d1155dee9442ae9c8b2aa8"
+    },
+    {
+      "name": "compat/nethost.dll",
+      "sha256": "0a6772c622650c09d64d98b5ce1cf101929163d5bb46c55d6f462a18637296ba"
+    }
+  ],
+  "validation_suite_run": false,
+  "live_ui_or_hardware_run": false,
+  "raw_dump_included": false
+}
