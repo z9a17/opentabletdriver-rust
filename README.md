@@ -22,29 +22,136 @@ The Windows build offers:
 
 Not done yet: tablet express keys, and a settings panel editor for the side buttons.
 
-## Get started (Windows)
+## Installation
 
-1. Download `opentabletdriver-rust-<version>-win-x64.zip` from the [latest release](https://github.com/z9a17/opentabletdriver-rust/releases/latest) and extract the **whole** zip.
-2. Open **opentabletdriver-rust-ui.exe**.
-3. Plug in your tablet. The panel starts the driver for you. Pick your screen and tablet areas in **Output**, then press **Save** and **Apply**.
+Download from [this project's latest release](https://github.com/z9a17/opentabletdriver-rust/releases/latest). Choose the archive for your operating system and processor:
 
-If you have OpenTabletDriver installed, your settings are imported on first run. Stop its driver through its own panel before starting Rust output. The Rust driver refuses to start alongside the original driver; it leaves that process and its launch settings untouched. Stop any other tablet driver you have running too.
+| Platform | Requirements | Download |
+| --- | --- | --- |
+| [Windows](#windows) | Windows 11, x64 | `opentabletdriver-rust-v<version>-win-x64.zip` |
+| [Linux](#linux) | Linux x64, udev and kernel hidraw/uinput support | `opentabletdriver-rust-v<version>-linux-x64.tar.gz` |
+| [macOS, Apple Silicon](#macos) | macOS 11 or newer, M-series processor | `opentabletdriver-rust-v<version>-macos-arm64.tar.gz` |
+| [macOS, Intel](#macos) | macOS 11 or newer, Intel processor | `opentabletdriver-rust-v<version>-macos-x64.tar.gz` |
 
-Using `.NET` plugins needs the bundled `compat` folder and an installed x64 [.NET 8 or newer runtime](https://dotnet.microsoft.com/download). Without plugins, or with only the built-in filter, .NET isn't needed.
+Stop OpenTabletDriver and other tablet drivers before starting this driver. If a vendor driver keeps running in the background, follow its removal instructions. Keep your existing settings and plugins when switching drivers or upgrading.
 
-Closing the panel stops tablet input. Minimizing keeps it running in the tray. To remove it, close the panel and delete the folder. It doesn't change Windows drivers or startup settings (unless you turn on **Tablets > Start with Windows**).
+These instructions follow the original OpenTabletDriver website's [Windows](https://opentabletdriver.net/Wiki/Install/Windows), [Linux](https://opentabletdriver.net/Wiki/Install/Linux) and [macOS](https://opentabletdriver.net/Wiki/Install/MacOS) guides, adapted to our release packages. Distribution packages named `opentabletdriver`, upstream's Flatpak and upstream's macOS app install the original driver. Use the archives above for this Rust rewrite.
 
-### Prefer the console?
+### Windows
 
-Double-click **opentabletdriver-rust.exe** to run the driver in a console window. Press **Ctrl+C** to stop. Handy commands:
+#### Prerequisites
+
+The driver and native panel run without .NET. To use existing OpenTabletDriver `.NET` plugins, install the Windows **x64 .NET 8 or newer runtime** from [Microsoft's download page](https://dotnet.microsoft.com/en-us/download/dotnet/8.0). Choose the x64 installer under **.NET Runtime**; the x64 Desktop Runtime also includes it. Keep the release's `compat` folder beside the executables.
+
+#### Install and start
+
+1. Download `opentabletdriver-rust-v<version>-win-x64.zip`.
+2. Right-click the ZIP and select **Extract All**. Extract the whole archive into its own folder, for example `C:\Users\<username>\OpenTabletDriverRust`. Open the extracted `opentabletdriver-rust-v<version>-win-x64` folder containing the executables, DLLs and `compat` directory.
+3. Open **opentabletdriver-rust-ui.exe** as your normal user.
+4. Connect your tablet. The panel starts the driver. Set your screen and tablet areas in **Output**, then press **Save** and **Apply**.
+
+Supported settings from an existing OpenTabletDriver installation are imported on first run. The Rust driver refuses to start alongside the original OpenTabletDriver daemon. Current Windows transport support is USB HID; WinUSB-only tablets remain unsupported.
+
+You can create a shortcut to `opentabletdriver-rust-ui.exe`; set its **Start in** field to the extracted folder. Enable **Tablets > Start with Windows** in the panel to launch it at sign-in. Closing the panel stops tablet input; minimizing keeps it running in the tray.
+
+#### Console, updates and removal
+
+Double-click **opentabletdriver-rust.exe** to run in a console, or use these commands from the extracted folder:
 
 ```text
-opentabletdriver-rust.exe tablets --list   # every supported tablet model
-opentabletdriver-rust.exe settings         # show the active mapping
-opentabletdriver-rust.exe capture --seconds 10   # record a short pen trace
+.\opentabletdriver-rust.exe tablets --list
+.\opentabletdriver-rust.exe settings
+.\opentabletdriver-rust.exe capture --seconds 10
 ```
 
-The full command list is in the [reference](docs/REFERENCE.md).
+Press Ctrl+C to stop the console driver. The full command list is in the [reference](docs/REFERENCE.md).
+
+Use **Help > Check for updates** to install a newer release and restart. For a manual upgrade, close the panel and run `.\opentabletdriver-rust.exe shutdown` from its folder to stop the background daemon. Extract the new ZIP into a new folder and start it there. Normal settings remain in `%LOCALAPPDATA%\OpenTabletDriverRust`; preserve any profiles or plugins stored inside an older portable folder before removing it.
+
+To uninstall, turn off **Tablets > Start with Windows** if enabled, close the panel, run `.\opentabletdriver-rust.exe shutdown` and delete the extracted folder. Your saved settings remain in `%LOCALAPPDATA%\OpenTabletDriverRust`.
+
+### Linux
+
+#### Prerequisites
+
+The Linux x64 release is a static executable and needs no .NET runtime. Setup requires Bash and udev and loads the kernel's `uinput` module. Its permission rules grant device access to the active systemd-logind desktop user. Other session managers need equivalent device permissions; see the [Linux guide](crates/otd-linux/README.md).
+
+#### Install and start
+
+1. Download `opentabletdriver-rust-v<version>-linux-x64.tar.gz`.
+2. Open a terminal in the download directory. Replace `<version>` with the downloaded release version, then extract it and enter its folder:
+
+   ```sh
+   tar -xzf "opentabletdriver-rust-v<version>-linux-x64.tar.gz"
+   cd "opentabletdriver-rust-v<version>-linux-x64"
+   ```
+
+3. Install the device permissions:
+
+   ```sh
+   sudo ./setup/install.sh install
+   ```
+
+4. Unplug and reconnect the tablet, then check discovery and start the driver as your normal user:
+
+   ```sh
+   ./opentabletdriver-rust-linux --version
+   ./opentabletdriver-rust-linux list
+   ./opentabletdriver-rust-linux run
+   ```
+
+Use sudo for the setup script only. Press Ctrl+C to stop the driver. Setup does not register a background service or start the driver automatically.
+
+Hyprland, Sway and X11 screen layouts are detected at startup. Other desktops need a desktop size, for example `./opentabletdriver-rust-linux run --screen 1920x1080`. Restart after changing monitor layout or scaling. Existing OpenTabletDriver settings are imported for the selected tablet; use `run --profile /path/to/profile.toml` for a native profile.
+
+Linux supports absolute/relative mouse output and pressure-sensitive Artist Mode. It currently has no control panel or external plugin host. Enabled external plugins in an imported profile must be disabled or replaced with supported native settings.
+
+#### Permissions, competing input and removal
+
+If access is denied, run `./setup/install.sh status` and reconnect after installing permissions. If the kernel Wacom/UCLogic driver also moves the pointer, get the tablet's USB vendor/product IDs from `list` and run:
+
+```sh
+sudo ./setup/install.sh ignore-input VVVV PPPP
+```
+
+Replace `VVVV PPPP` with the two four-digit hexadecimal IDs. Reconnect the tablet to apply the scoped libinput rule. It suppresses that physical tablet's desktop input while preserving hidraw access. To undo it, run `sudo ./setup/install.sh restore` and reconnect. The setup uses this scoped rule instead of a global kernel-driver blacklist.
+
+For an update, stop the driver, extract the new archive into a new folder, run its `sudo ./setup/install.sh install` and reconnect. Keep your profiles. To uninstall, stop the driver, run `sudo ./setup/install.sh uninstall` from its extracted folder, reconnect the tablet and delete that folder. Locally edited setup files and saved profiles are preserved.
+
+Use `capture --seconds 10` to inspect pen reports without injecting input. See the [Linux guide](crates/otd-linux/README.md) for further setup and validation limits.
+
+### macOS
+
+#### Prerequisites
+
+Use macOS 11 or newer. Download `macos-arm64` for Apple Silicon or `macos-x64` for Intel. The CLI needs no .NET runtime. Give the terminal application you use **Input Monitoring** and **Accessibility** access before running tablet output.
+
+#### Install and start
+
+1. Download the matching `opentabletdriver-rust-v<version>-macos-arm64.tar.gz` or `opentabletdriver-rust-v<version>-macos-x64.tar.gz`.
+2. Double-click the archive in Finder to extract it. Keep the extracted folder in a stable location, such as `~/Applications/OpenTabletDriverRust`.
+3. Open Terminal, type `cd `, drag the extracted folder from Finder into the terminal window and press Return.
+4. Open **System Settings > Privacy & Security**, then add or enable your terminal application under both **Input Monitoring** and **Accessibility**. On macOS 11/12, use **System Preferences > Security & Privacy > Privacy**. If Input Monitoring does not list your terminal, try `./opentabletdriver-rust-macos run` once to request access. Quit and reopen the terminal after granting access, then return to the extracted folder.
+5. Connect the tablet and run:
+
+   ```sh
+   ./opentabletdriver-rust-macos --version
+   ./opentabletdriver-rust-macos list
+   ./opentabletdriver-rust-macos displays
+   ./opentabletdriver-rust-macos run
+   ```
+
+Press Ctrl+C to stop. If macOS blocks the downloaded executable, follow Apple's [Open Anyway instructions](https://support.apple.com/en-us/102445) after checking that you trust the download. These releases are unsigned and not notarized.
+
+The driver supports absolute/relative mouse output, tip clicks and pen side-button mouse/key/chord bindings. `Application` means Command and `Alt` means Option. Profiles and built-in Radial Follow use the shared Rust core. Pass `run --profile /path/to/profile.toml` for explicit settings. Imported profiles using pressure-sensitive pen output or external plugins need a supported mouse-output profile instead.
+
+#### Updates, removal and current limits
+
+For an update, stop the driver, extract the new archive into a new folder and run it from there. Keep any saved profiles. To uninstall, stop it and delete its extracted folder; remove the terminal's privacy permissions only if you no longer need them for other applications. This CLI does not register startup or a background service.
+
+The macOS backend is experimental and has no Mac hardware validation yet. There is no macOS control panel, external plugin host, pressure-sensitive drawing output or express-key support. See the [macOS guide](crates/otd-macos/README.md) for device initialization, permissions and other limits.
+
+Every future release must include Windows, Linux and both Mac architectures. The [release procedure](docs/RELEASING.md) checks the complete set before publication.
 
 ## Build from source
 
@@ -57,41 +164,6 @@ cargo build --locked --release -p otd-macos                         # macOS
 ```
 
 To build the Windows .NET bridge and ZIP, install the .NET 8+ SDK and run `pwsh -File scripts/package.ps1`. Linux and macOS packages use `scripts/package-unix.sh`; all-platform publishing follows [the release procedure](docs/RELEASING.md).
-
-## Get started (Linux)
-
-Download `opentabletdriver-rust-v<version>-linux-x64.tar.gz` from the [latest release](https://github.com/z9a17/opentabletdriver-rust/releases/latest), extract it, and open a terminal in its folder:
-
-```sh
-sudo ./setup/install.sh install
-# Reconnect the tablet after installing permissions.
-./opentabletdriver-rust-linux list
-./opentabletdriver-rust-linux run
-```
-
-Run the driver as your normal user. Hyprland, Sway and X11 screen layouts are detected at startup. For other desktops, use `run --screen WIDTHxHEIGHT` in desktop coordinates. Press Ctrl+C to stop.
-
-Linux uses hidraw for tablet input and uinput for absolute/relative mouse output or pressure-sensitive Artist Mode. It imports your existing OpenTabletDriver settings, or accepts `--profile FILE`. External plugins, the control panel and tablet express keys are not available on Linux yet. Restart after changing the monitor layout.
-
-Stop other tablet drivers before running it. If the kernel Wacom/UCLogic driver also moves the pointer, `sudo ./setup/install.sh ignore-input VVVV PPPP` installs a scoped libinput rule that suppresses that physical tablet's desktop input after reconnecting it. `restore` removes the rule; reconnect again to restore native desktop input. This keeps hidraw available to the Rust driver and never installs a global driver blacklist.
-
-Use `capture --seconds 10` to inspect pen reports without injecting input. See the [Linux guide](crates/otd-linux/README.md) for setup, removal and validation limits.
-
-## Get started (macOS)
-
-Download `opentabletdriver-rust-v<version>-macos-arm64.tar.gz` for Apple Silicon or `macos-x64.tar.gz` for an Intel Mac from the [latest release](https://github.com/z9a17/opentabletdriver-rust/releases/latest). macOS 11 or newer is required. Extract it and open a terminal in its folder:
-
-```sh
-./opentabletdriver-rust-macos list
-./opentabletdriver-rust-macos displays
-./opentabletdriver-rust-macos run
-```
-
-Grant your terminal Input Monitoring and Accessibility access in System Settings, then restart it. The driver uses IOKit HID input and CoreGraphics output for absolute/relative positioning, tip clicks and pen side-button mouse/key/chord bindings. `Application` means Command and `Alt` means Option; physical pen-button and shortcut validation remains pending. Profiles and built-in Radial Follow use the shared Rust core. Press Ctrl+C to stop.
-
-The macOS backend is experimental. These packages are cross-built, unsigned and not notarized; we have no Mac hardware validation yet. There is no macOS control panel, external plugin host, pressure-sensitive drawing output or express-key support. See the [macOS guide](crates/otd-macos/README.md) for supported device initialization and permission troubleshooting.
-
-Every future release must include Windows, Linux and both Mac architectures. The [release procedure](docs/RELEASING.md) checks the complete set before publication.
 
 ## Learn more
 
