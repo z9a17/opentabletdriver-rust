@@ -484,7 +484,7 @@ mod live {
                 .len()
                 > 100_000
         );
-        assert!(folder.join("compat").is_dir());
+        assert!(folder.join("data/compat").is_dir());
         assert_eq!(
             fs::read(folder.join(".otd-update/backup/opentabletdriver-rust.exe")).unwrap(),
             b"previous"

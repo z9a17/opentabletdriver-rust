@@ -20,8 +20,80 @@ MANDATORY = {'win-x64', 'linux-x64', 'macos-x64', 'macos-arm64'}
 if set(MATRIX) != MANDATORY:
     raise SystemExit('error: the release matrix must include Windows, Linux and both Mac architectures')
 VERSION = tomllib.loads((ROOT / 'Cargo.toml').read_text())['package']['version']
-COMMON = ['README.md', 'LICENSE', 'LICENSE.LGPL-3.0', 'NOTICE.md', 'driver.example.toml',
-          'driver.relative.example.toml', 'driver.plugins.example.toml', 'docs']
+PROJECT_LICENSES = ['LICENSE', 'LICENSE.LGPL-3.0', 'NOTICE.md']
+COMPAT_FILES = ['OtdCompat.dll', 'OtdCompat.runtimeconfig.json', 'OtdCompat.deps.json',
+                'OpenTabletDriver.Plugin.dll', 'Newtonsoft.Json.dll', 'JetBrains.Annotations.dll', 'nethost.dll']
+LINUX_SETUP = ['install.sh', '70-opentabletdriver-rust.rules', 'opentabletdriver-rust.conf', 'generate-rules.py']
+
+
+def quickstart(platform):
+    backend = 'windows' if platform == 'win-x64' else 'linux' if platform == 'linux-x64' else 'macos'
+    return ROOT / 'packaging' / f'README.{backend}.md'
+
+
+def platform_guide(backend):
+    text = (ROOT / 'crates' / backend / 'README.md').read_bytes()
+    return text.replace(b'](../../', f'](https://github.com/z9a17/opentabletdriver-rust/blob/v{VERSION}/'.encode())
+
+
+def pe_resources(data):
+    """Read resource bytes without loading or executing a Windows image."""
+    pe = struct.unpack_from('<I', data, 60)[0]
+    sections, optional_size = struct.unpack_from('<H', data, pe + 6)[0], struct.unpack_from('<H', data, pe + 20)[0]
+    optional = pe + 24
+    if struct.unpack_from('<H', data, optional)[0] != 0x20b:
+        raise ValueError('expected PE32+ resources')
+    resource_rva = struct.unpack_from('<I', data, optional + 112 + 16)[0]
+
+    def file_offset(rva, size):
+        for index in range(sections):
+            offset = optional + optional_size + index * 40
+            virtual_size, address, raw_size, raw_offset = struct.unpack_from('<IIII', data, offset + 8)
+            if address <= rva and rva + size <= address + min(virtual_size, raw_size):
+                result = raw_offset + rva - address
+                if result + size <= len(data):
+                    return result
+        raise ValueError('invalid PE resource address')
+
+    base = file_offset(resource_rva, 16)
+    result = {}
+
+    def visit(offset, path):
+        if len(path) > 2:
+            raise ValueError('invalid PE resource tree')
+        named, ids = struct.unpack_from('<HH', data, base + offset + 12)
+        for index in range(named + ids):
+            name, target = struct.unpack_from('<II', data, base + offset + 16 + index * 8)
+            if name & 0x80000000:
+                continue
+            if target & 0x80000000:
+                visit(target & 0x7fffffff, path + (name,))
+            else:
+                rva, size = struct.unpack_from('<II', data, base + target)
+                start = file_offset(rva, size)
+                result[path + (name,)] = data[start:start + size]
+
+    visit(0, ())
+    return result
+
+
+def verify_windows_icon(data):
+    resources = pe_resources(data)
+    groups = [(key, value) for key, value in resources.items() if key[:2] == (14, 1)]
+    if len(groups) != 1:
+        raise ValueError('Windows executable must embed application icon resource 1')
+    group_key, group = groups[0]
+    icon = (ROOT / 'resources/opentabletdriver.ico').read_bytes()
+    count = struct.unpack_from('<H', icon, 4)[0]
+    if group[:6] != icon[:6] or len(group) != 6 + count * 14:
+        raise ValueError('Windows application icon group differs from upstream asset')
+    for index in range(count):
+        source = 6 + index * 16
+        target = 6 + index * 14
+        size, offset = struct.unpack_from('<II', icon, source + 8)
+        resource_id = struct.unpack_from('<H', group, target + 12)[0]
+        if group[target:target + 12] != icon[source:source + 12] or resources.get((3, resource_id, group_key[2])) != icon[offset:offset + size]:
+            raise ValueError('Windows application icon image differs from upstream asset')
 
 
 def command(*args):
@@ -57,6 +129,8 @@ def check_binary(platform, name, data):
             raise ValueError(f'{name}: expected Windows x64 PE')
     if name.startswith('opentabletdriver-') and VERSION.encode() not in data:
         raise ValueError(f'{name}: release version {VERSION} is missing from the executable')
+    if platform == 'win-x64' and name.startswith('opentabletdriver-') and name.endswith('.exe'):
+        verify_windows_icon(data)
 
 
 def source_state():
@@ -85,7 +159,7 @@ def build(args):
     before = source_state()
     cargo = os.environ.get('CARGO', 'cargo')
     rustc = os.environ.get('RUSTC', 'rustc')
-    packages = ['opentabletdriver-rust', 'otd-ema-filter'] if platform == 'win-x64' else ['otd-linux' if platform == 'linux-x64' else 'otd-macos']
+    packages = ['opentabletdriver-rust'] if platform == 'win-x64' else ['otd-linux' if platform == 'linux-x64' else 'otd-macos']
     invocation = [cargo, 'build', '--locked', '--release', '--target', target, '-j4']
     for package in packages:
         invocation += ['-p', package]
@@ -105,16 +179,21 @@ def build(args):
         subprocess.run([dotnet, 'restore', 'compat/OtdCompat', '--locked-mode', '--nologo'], cwd=ROOT, check=True)
         subprocess.run([dotnet, 'build', 'compat/OtdCompat', '-c', 'Release', '--no-restore', '-o', str(compat), '--nologo'], cwd=ROOT, check=True)
         shutil.copy2(nethost, compat / 'nethost.dll')
-        shutil.copy2(ROOT / 'compat/THIRD_PARTY_NOTICES.txt', compat)
-        for name in ['LICENSE.txt', 'ThirdPartyNotices.txt']:
-            if (dotnet_directory / name).is_file():
-                shutil.copy2(dotnet_directory / name, compat / ('DOTNET-' + name))
     license_directory = binaries / 'runtime-licenses'
     license_directory.mkdir(exist_ok=True)
     rust_documentation = Path(command(rustc, '--print', 'sysroot')) / 'share/doc/rust'
     shutil.copy2(rust_documentation / 'COPYRIGHT-library.html', license_directory / 'RUST-COPYRIGHT.html')
     for name in ['MIT.txt', 'Apache-2.0.txt', 'LLVM-exception.txt', 'GCC-exception-3.1.txt', 'GPL-3.0-or-later.txt']:
         shutil.copy2(rust_documentation / 'licenses' / name, license_directory / name)
+    for name in PROJECT_LICENSES:
+        shutil.copy2(ROOT / name, license_directory / name)
+    if platform == 'win-x64':
+        shutil.copy2(ROOT / 'compat/THIRD_PARTY_NOTICES.txt', license_directory / 'DOTNET-BRIDGE-NOTICES.txt')
+        for name in ['LICENSE.txt', 'ThirdPartyNotices.txt']:
+            source = dotnet_directory / name
+            if not source.is_file():
+                raise ValueError(f'missing .NET SDK license: {source}')
+            shutil.copy2(source, license_directory / ('DOTNET-' + name))
     if platform == 'linux-x64':
         shutil.copy2(ROOT / 'packaging/linux/MUSL-COPYRIGHT.txt', license_directory)
     elif platform == 'win-x64' and target.endswith('-gnu'):
@@ -127,8 +206,8 @@ def build(args):
                     binaries={name: digest((binaries / name).read_bytes()) for name in MATRIX[platform]['binaries']})
     metadata['licenses'] = {path.name: digest(path.read_bytes()) for path in sorted(license_directory.iterdir()) if path.is_file()}
     if platform == 'win-x64':
-        metadata['compat'] = {path.relative_to(binaries / 'compat').as_posix(): digest(path.read_bytes())
-                              for path in sorted((binaries / 'compat').rglob('*')) if path.is_file()}
+        metadata['compat'] = {name: digest((binaries / 'compat' / name).read_bytes()) for name in COMPAT_FILES}
+    metadata['package_layout'] = 2
     (binaries / 'OTD-BUILD.json').write_text(json.dumps(metadata, indent=2) + '\n')
     args.bin_dir = binaries
     args.compat_dir = None
@@ -151,43 +230,38 @@ def make_package(args):
     with tempfile.TemporaryDirectory(prefix='otd-package-') as scratch:
         stage = Path(scratch) / package_name(platform)
         stage.mkdir()
+        data_directory = stage / 'data'
+        data_directory.mkdir()
         for name in MATRIX[platform]['binaries']:
             shutil.copy2(binaries / name, stage / name)
             if platform != 'win-x64':
                 (stage / name).chmod(0o755)
-        for name in COMMON:
-            source = ROOT / name
-            if source.is_dir():
-                shutil.copytree(source, stage / name, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
-            else:
-                shutil.copy2(source, stage / name)
+        shutil.copy2(quickstart(platform), stage / 'README.md')
         licenses = binaries / 'runtime-licenses'
         if {path.name: digest(path.read_bytes()) for path in sorted(licenses.iterdir()) if path.is_file()} != metadata['licenses']:
             raise ValueError('runtime license files changed since recorded build')
-        shutil.copytree(licenses, stage / 'runtime-licenses')
-        for backend in ['otd-linux', 'otd-macos']:
-            guide_dir = stage / 'crates' / backend
-            guide_dir.mkdir(parents=True)
-            shutil.copy2(ROOT / 'crates' / backend / 'README.md', guide_dir / 'README.md')
+        shutil.copytree(licenses, data_directory / 'licenses')
         if platform == 'win-x64':
             compat = (args.compat_dir or binaries / 'compat').resolve()
-            for name in ['OtdCompat.dll', 'OtdCompat.runtimeconfig.json', 'OpenTabletDriver.Plugin.dll',
-                         'nethost.dll', 'THIRD_PARTY_NOTICES.txt']:
+            for name in COMPAT_FILES:
                 if not (compat / name).is_file():
                     raise ValueError(f'missing Windows compatibility component: {compat / name}')
             check_binary('win-x64', 'nethost.dll', (compat / 'nethost.dll').read_bytes())
-            actual_compat = {path.relative_to(compat).as_posix(): digest(path.read_bytes())
-                             for path in sorted(compat.rglob('*')) if path.is_file()}
+            actual_compat = {name: digest((compat / name).read_bytes()) for name in COMPAT_FILES}
             if actual_compat != metadata.get('compat'):
                 raise ValueError('compatibility bridge changed since recorded build; rebuild Windows')
-            shutil.copytree(compat, stage / 'compat')
+            (data_directory / 'compat').mkdir()
+            for name in COMPAT_FILES:
+                shutil.copy2(compat / name, data_directory / 'compat' / name)
         elif platform == 'linux-x64':
-            shutil.copytree(ROOT / 'packaging/linux', stage / 'setup')
-            shutil.copy2(ROOT / 'crates/otd-linux/README.md', stage / 'LINUX.md')
+            (stage / 'setup').mkdir()
+            for name in LINUX_SETUP:
+                shutil.copy2(ROOT / 'packaging/linux' / name, stage / 'setup' / name)
+            (data_directory / 'LINUX.md').write_bytes(platform_guide('otd-linux'))
             (stage / 'setup/install.sh').chmod(0o755)
         else:
-            shutil.copy2(ROOT / 'crates/otd-macos/README.md', stage / 'MACOS.md')
-        (stage / 'BUILD-INFO.json').write_text(json.dumps(metadata, indent=2) + '\n')
+            (data_directory / 'MACOS.md').write_bytes(platform_guide('otd-macos'))
+        (data_directory / 'BUILD-INFO.json').write_text(json.dumps(metadata, indent=2) + '\n')
         archive = archive_path(destination, platform)
         if MATRIX[platform]['format'] == 'zip':
             with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as output:
@@ -260,7 +334,9 @@ def verify(directory, require_clean):
         prefix = package_name(platform) + '/'
         if any(not name.startswith(prefix) for name in files):
             raise ValueError(f'wrong package root: {archive.name}')
-        metadata = json.loads(files[prefix + 'BUILD-INFO.json'])
+        metadata = json.loads(files[prefix + 'data/BUILD-INFO.json'])
+        if metadata.get('package_layout') != 2:
+            raise ValueError(f'unsupported package layout: {archive.name}')
         if metadata['version'] != VERSION or metadata['platform'] != platform or metadata['source_commit'] != revision:
             raise ValueError(f'package source/version mismatch: {archive.name}')
         if require_clean and metadata['source_dirty']:
@@ -269,29 +345,43 @@ def verify(directory, require_clean):
             raise ValueError(f'source tree mismatch: {archive.name}')
         if metadata['cargo_lock_sha256'] != digest((ROOT / 'Cargo.lock').read_bytes()):
             raise ValueError(f'lockfile mismatch: {archive.name}')
-        required = spec['binaries'] + ['README.md', 'LICENSE', 'NOTICE.md']
+        required = spec['binaries'] + ['README.md', 'data/BUILD-INFO.json']
+        required += ['data/licenses/' + name for name in metadata['licenses']]
         if platform == 'win-x64':
-            required += ['compat/OtdCompat.dll', 'compat/OpenTabletDriver.Plugin.dll', 'compat/nethost.dll',
-                         'compat/OtdCompat.runtimeconfig.json', 'compat/THIRD_PARTY_NOTICES.txt']
+            required += ['data/compat/' + name for name in COMPAT_FILES]
+            required += ['data/licenses/DOTNET-BRIDGE-NOTICES.txt', 'data/licenses/DOTNET-LICENSE.txt', 'data/licenses/DOTNET-ThirdPartyNotices.txt']
         elif platform == 'linux-x64':
-            required += ['setup/install.sh', 'setup/70-opentabletdriver-rust.rules', 'LINUX.md']
+            required += ['setup/' + name for name in LINUX_SETUP] + ['data/LINUX.md']
         else:
-            required += ['MACOS.md']
+            required += ['data/MACOS.md']
         for name in required:
             if prefix + name not in files:
                 raise ValueError(f'{archive.name} is missing {name}')
+        if set(files) != {prefix + name for name in required}:
+            raise ValueError(f'unexpected files in runtime package: {archive.name}')
+        if files[prefix + 'README.md'] != quickstart(platform).read_bytes():
+            raise ValueError(f'quick-start guide mismatch: {archive.name}')
+        if platform == 'linux-x64' and files[prefix + 'data/LINUX.md'] != platform_guide('otd-linux'):
+            raise ValueError('Linux platform guide mismatch')
+        if platform.startswith('macos-') and files[prefix + 'data/MACOS.md'] != platform_guide('otd-macos'):
+            raise ValueError('macOS platform guide mismatch')
+        for name in PROJECT_LICENSES:
+            if files[prefix + 'data/licenses/' + name] != (ROOT / name).read_bytes():
+                raise ValueError(f'project license/notice mismatch: {archive.name}')
         for name in spec['binaries']:
             binary = files[prefix + name]
             check_binary(platform, name, binary)
             if digest(binary) != metadata['binaries'][name]:
                 raise ValueError(f'binary provenance mismatch: {name}')
         for name, expected_hash in metadata['licenses'].items():
-            if digest(files[prefix + 'runtime-licenses/' + name]) != expected_hash:
+            if digest(files[prefix + 'data/licenses/' + name]) != expected_hash:
                 raise ValueError(f'runtime license mismatch: {name}')
         if platform == 'win-x64':
-            check_binary('win-x64', 'nethost.dll', files[prefix + 'compat/nethost.dll'])
+            check_binary('win-x64', 'nethost.dll', files[prefix + 'data/compat/nethost.dll'])
+            if set(metadata['compat']) != set(COMPAT_FILES):
+                raise ValueError('compatibility bridge dependency inventory differs from required runtime files')
             for name, expected_hash in metadata['compat'].items():
-                if digest(files[prefix + 'compat/' + name]) != expected_hash:
+                if digest(files[prefix + 'data/compat/' + name]) != expected_hash:
                     raise ValueError(f'compatibility bridge provenance mismatch: {name}')
         print(f'{platform}: archive, architecture, version, source and SHA256 verified')
         assets.extend([archive, sidecar])
@@ -355,7 +445,7 @@ def main():
             verify(args.directory.resolve(), require_clean=True)
         else:
             publish(args)
-    except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, KeyError, struct.error, subprocess.CalledProcessError) as error:
         parser.exit(1, f'error: {error}\n')
 
 

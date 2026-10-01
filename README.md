@@ -41,12 +41,12 @@ These instructions follow the original OpenTabletDriver website's [Windows](http
 
 #### Prerequisites
 
-The driver and native panel run without .NET. To use existing OpenTabletDriver `.NET` plugins, install the Windows **x64 .NET 8 or newer runtime** from [Microsoft's download page](https://dotnet.microsoft.com/en-us/download/dotnet/8.0). Choose the x64 installer under **.NET Runtime**; the x64 Desktop Runtime also includes it. Keep the release's `compat` folder beside the executables.
+The driver and native panel run without .NET. To use existing OpenTabletDriver `.NET` plugins, install the Windows **x64 .NET 8 or newer runtime** from [Microsoft's download page](https://dotnet.microsoft.com/en-us/download/dotnet/8.0). Choose the x64 installer under **.NET Runtime**; the x64 Desktop Runtime also includes it. Keep the release's `data` folder beside the executables; plugin dependencies are in `data/compat`.
 
 #### Install and start
 
 1. Download `opentabletdriver-rust-v<version>-win-x64.zip`.
-2. Right-click the ZIP and select **Extract All**. Extract the whole archive into its own folder, for example `C:\Users\<username>\OpenTabletDriverRust`. Open the extracted `opentabletdriver-rust-v<version>-win-x64` folder containing the executables, DLLs and `compat` directory.
+2. Right-click the ZIP and select **Extract All**. Extract the whole archive into its own folder, for example `C:\Users\<username>\OpenTabletDriverRust`. Open the extracted `opentabletdriver-rust-v<version>-win-x64` folder containing the two apps, a short README and the `data` folder.
 3. Open **opentabletdriver-rust-ui.exe** as your normal user.
 4. Connect your tablet. The panel starts the driver. Set your screen and tablet areas in **Output**, then press **Save** and **Apply**.
 
@@ -155,7 +155,7 @@ Every future release must include Windows, Linux and both Mac architectures. The
 
 ## Build from source
 
-You need the stable Rust toolchain. Use MSVC on Windows; Linux and macOS builds select their backend crate as documented in [the release procedure](docs/RELEASING.md).
+You need the stable Rust toolchain. Use MSVC and the Windows SDK resource compiler on Windows; Linux and macOS builds select their backend crate as documented in [the release procedure](docs/RELEASING.md).
 
 ```text
 cargo build --locked --release -p opentabletdriver-rust -p otd-ema-filter  # Windows

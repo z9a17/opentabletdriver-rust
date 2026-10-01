@@ -408,72 +408,14 @@ impl Drop for Canvas {
     }
 }
 
-/// Signed distance from a point to a rounded box centered at `c`.
-fn rounded_box(p: Point, c: Point, half: Point, radius: f32) -> f32 {
-    let qx = (p.0 - c.0).abs() - half.0 + radius;
-    let qy = (p.1 - c.1).abs() - half.1 + radius;
-    qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - radius
-}
-
-/// The window icon: a tablet with its active area, drawn at `size` pixels
-/// so it stays sharp at any DPI.
-pub fn app_icon(size: i32, accent: Rgb) -> HICON {
-    let s = size as f32;
-    let center = (s / 2.0, s / 2.0);
-    let stroke = (s / 16.0).max(1.0);
-    let pixels: Vec<u32> = (0..size * size)
-        .map(|i| {
-            let p = ((i % size) as f32 + 0.5, (i / size) as f32 + 0.5);
-            let body = coverage(rounded_box(
-                p,
-                center,
-                (s / 2.0 - 0.5, s / 2.0 - 0.5),
-                s * 0.22,
-            ));
-            let area = rounded_box(p, center, (s * 0.3, s * 0.2), s * 0.05);
-            let ring = coverage(area) - coverage(area + stroke);
-            let dot = coverage((p.0 - center.0).hypot(p.1 - center.1) - s * 0.075);
-            let white = ring.max(dot);
-            let mix = |c: u8| (f32::from(c) + (255.0 - f32::from(c)) * white).round() as u32;
-            let alpha = (body * 255.0).round() as u32;
-            (alpha << 24) | (mix(accent.0) << 16) | (mix(accent.1) << 8) | mix(accent.2)
-        })
-        .collect();
-    let info = BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: size,
-            biHeight: -size,
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
+/// Owned icon from the executable's upstream OTD resource. Callers destroy
+/// it when replaced or closed; LR_SHARED would violate that ownership.
+pub fn app_icon(size: i32) -> HICON {
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IMAGE_ICON, LoadImageW};
     unsafe {
-        let screen = GetDC(ptr::null_mut());
-        let mut bits = ptr::null_mut();
-        let color = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &mut bits, ptr::null_mut(), 0);
-        ReleaseDC(ptr::null_mut(), screen);
-        if color.is_null() || bits.is_null() {
-            return ptr::null_mut();
-        }
-        ptr::copy_nonoverlapping(pixels.as_ptr(), bits.cast::<u32>(), pixels.len());
-        let mask_bits = vec![0u8; ((size + 15) / 16 * 2 * size) as usize];
-        let mask = CreateBitmap(size, size, 1, 1, mask_bits.as_ptr().cast());
-        let icon = windows_sys::Win32::UI::WindowsAndMessaging::CreateIconIndirect(
-            &windows_sys::Win32::UI::WindowsAndMessaging::ICONINFO {
-                fIcon: 1,
-                xHotspot: 0,
-                yHotspot: 0,
-                hbmMask: mask,
-                hbmColor: color,
-            },
-        );
-        DeleteObject(mask);
-        DeleteObject(color);
-        icon
+        LoadImageW(GetModuleHandleW(ptr::null()), 1usize as *const u16, IMAGE_ICON, size, size, 0)
+            as HICON
     }
 }
 

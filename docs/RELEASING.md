@@ -4,12 +4,14 @@ Every release ships these packages from the same merged source commit. Linux and
 
 | Package | Architecture | Contents |
 | --- | --- | --- |
-| `win-x64.zip` | Windows x64 | Console driver, panel, EMA sample DLL, .NET bridge |
+| `win-x64.zip` | Windows x64 | Console driver, panel, runtime dependencies in `data/compat` |
 | `linux-x64.tar.gz` | Linux x64 | hidraw/uinput driver, permission/setup files |
 | `macos-x64.tar.gz` | Intel Mac | IOKit/CoreGraphics driver |
 | `macos-arm64.tar.gz` | Apple Silicon Mac | IOKit/CoreGraphics driver |
 
-Names start with `opentabletdriver-rust-v<version>-`. Each archive includes Rust standard-library dependency notices and the applicable musl or GNU Windows runtime licenses. Keep the corresponding source links in NOTICE.md current when changing those toolchains. Each archive has a SHA256 sidecar and `BUILD-INFO.json` with its commit, lockfile hash and binary hashes. The required set lives in [the release matrix](../packaging/release-matrix.json). Do not remove a platform to make a release pass.
+Names start with `opentabletdriver-rust-v<version>-`. Runtime downloads contain executables, a platform quick-start README, `data/licenses`, `data/BUILD-INFO.json`, and required platform dependencies/setup. The full developer documentation, examples, sample plugin and debug symbols stay in the source repository. Each archive includes Rust standard-library notices and the applicable musl or GNU Windows runtime licenses. Keep source links in NOTICE.md current when changing those toolchains. SHA256 sidecars and build metadata identify the commit, lockfile and binary hashes. The required set lives in [the release matrix](../packaging/release-matrix.json).
+
+The Windows folder has four top-level entries: the UI, CLI, README and `data`. Both executables embed the pinned upstream icon. The verifier checks every embedded icon image and refuses extra files in runtime archives. The .NET bridge prefers `data/compat`; source builds and older installs can still use `compat`. Existing executable names and archive roots allow older updaters to install this layout. An in-place update preserves old files it does not own; extract into a new folder for a clean layout.
 
 The packager writes Unix archive permissions explicitly on every build host. Directories, drivers and Linux `setup/install.sh` and `setup/generate-rules.py` use 755; other files use 644. The verifier checks the executable permissions. Do not repair modes or rewrite checksums after packaging.
 
@@ -63,7 +65,7 @@ On Windows with Rust stable MSVC, Python 3.11+ and the .NET 8+ SDK:
 python scripts/release.py build --platform win-x64 --rust-target x86_64-pc-windows-msvc
 ```
 
-The existing `package.ps1` remains a single-platform developer packager. Publishing uses the recorded builds in `target/releases` and requires all platforms.
+`package.ps1` delegates to this same Windows build/packager. MSVC builds require the Windows SDK resource compiler, resolved from `RC`, PATH or the installed SDK; GNU builds use `WINDRES`. Missing/failed resource compilation fails the build. Publishing uses recorded builds in `target/releases` and requires all platforms.
 
 For a Linux cross-build, provide a GNU [MinGW-w64 toolchain](https://www.mingw-w64.org/) with GCC, binutils, CRT, headers and winpthreads, a .NET 8+ SDK, and `nethost.dll` from Microsoft's Windows x64 host pack. Obtain the host pack from the installed Windows SDK or the official `Microsoft.NETCore.App.Host.win-x64` NuGet package for that SDK's runtime version. Preserve its licenses. No system package installation is needed.
 
