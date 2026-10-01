@@ -761,6 +761,7 @@ struct App {
     close_ready: bool,
     update_restart_pending: bool,
     update_close_approved: bool,
+    updates: updates::UpdateState,
     driver: DriverState,
     tablet_present: Option<bool>,
     /// The tablets listed in the last Tablets menu, by command offset.
@@ -1170,6 +1171,10 @@ unsafe extern "system" fn window_proc(
             updates::on_message(window);
             0
         }
+        updates::WM_OFFER_UPDATE => {
+            updates::offer_deferred(window);
+            0
+        }
         WM_TRAY => {
             tray::notify(window, wp, lp);
             0
@@ -1184,7 +1189,9 @@ unsafe extern "system" fn window_proc(
             } else {
                 // The user brought the panel forward: offer an update the
                 // startup check held back. Posted, so it never runs here.
-                updates::offer_deferred(window);
+                // Activation can occur inside a modal message loop. Keep
+                // deferred offers out of that reentrant window procedure.
+                unsafe { PostMessageW(window, updates::WM_OFFER_UPDATE, 0, 0); }
                 let focus = LAST_FOCUS.with(Cell::get) as HWND;
                 if !focus.is_null()
                     && unsafe { IsWindow(focus) } != 0
@@ -1205,6 +1212,9 @@ unsafe extern "system" fn window_proc(
             }
             let approved_restart = with_app(|app| app.update_close_approved).unwrap_or(false);
             if !approved_restart && with_app(|app| app.update_restart_pending).unwrap_or(false) {
+                return 0;
+            }
+            if !approved_restart && updates::defer_close() {
                 return 0;
             }
             // Close from the tray asks about unsaved edits with the panel shown.

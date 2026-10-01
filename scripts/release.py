@@ -195,8 +195,19 @@ def make_package(args):
                     if path.is_file():
                         output.write(path, path.relative_to(stage.parent).as_posix())
         else:
+            executables = set(MATRIX[platform]['binaries'])
+            if platform == 'linux-x64':
+                executables.update({'setup/install.sh', 'setup/generate-rules.py'})
+
+            def unix_member(member):
+                relative = PurePosixPath(member.name).relative_to(stage.name).as_posix()
+                member.mode = 0o755 if member.isdir() or relative in executables else 0o644
+                member.uid = member.gid = 0
+                member.uname = member.gname = ''
+                return member
+
             with tarfile.open(archive, 'w:gz') as output:
-                output.add(stage, arcname=stage.name)
+                output.add(stage, arcname=stage.name, filter=unix_member)
     checksum = digest(archive.read_bytes())
     Path(str(archive) + '.sha256').write_text(f'{checksum}  {archive.name}\n')
     print(archive)
@@ -221,7 +232,7 @@ def read_archive(path):
                     continue
                 if not member.isfile() or member.name in files:
                     raise ValueError(f'unsafe or duplicate tar member: {member.name}')
-                if member.name.endswith(tuple('/' + name for spec in MATRIX.values() for name in spec['binaries']) + ('/setup/install.sh',)) and member.mode & 0o111 == 0:
+                if member.name.endswith(tuple('/' + name for spec in MATRIX.values() for name in spec['binaries']) + ('/setup/install.sh', '/setup/generate-rules.py')) and member.mode & 0o111 != 0o111:
                     raise ValueError(f'package executable mode missing: {member.name}')
                 stream = archive.extractfile(member)
                 if stream is None:

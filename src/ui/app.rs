@@ -228,6 +228,7 @@ impl App {
             close_ready: false,
             update_restart_pending: false,
             update_close_approved: false,
+            updates: updates::UpdateState::default(),
             driver: DriverState::Stopped,
             tablet_present: None,
             tablet_choices: Vec::new(),
