@@ -10,8 +10,8 @@ license notices. You can create a shortcut to the UI executable on your desktop.
 View > Experimental settings lets you choose logical CPUs separately for the
 GUI and driver. Use All for automatic scheduling or a list such as `0,2,4-7`.
 Save and apply persists the choices without restarting tablet input. Closing
-the panel still stops input; minimizing keeps it running. The daemon process
-can remain idle after close and is reused on the next launch.
+the panel stops input and shuts down the daemon process. Minimizing keeps both
+running. Opening the panel again starts a new daemon with the saved choices.
 
 Stop other tablet drivers before using this driver. Only the Wacom PTH-660 has
 confirmed Windows hardware support; other tablets remain experimental.

@@ -52,7 +52,7 @@ The driver and native panel run without .NET. To use existing OpenTabletDriver `
 
 Supported settings from an existing OpenTabletDriver installation are imported on first run. The Rust driver refuses to start alongside the original OpenTabletDriver daemon. Current Windows transport support is USB HID; WinUSB-only tablets remain unsupported.
 
-You can create a shortcut to `opentabletdriver-rust-ui.exe`; set its **Start in** field to the extracted folder. Enable **Tablets > Start with Windows** in the panel to launch it at sign-in. Closing the panel stops tablet input; minimizing keeps it running in the tray.
+You can create a shortcut to `opentabletdriver-rust-ui.exe`; set its **Start in** field to the extracted folder. Enable **Tablets > Start with Windows** in the panel to launch it at sign-in. Closing the panel shuts down the daemon and waits for its process to exit after input cleanup; minimizing keeps both running in the tray.
 
 **View > Experimental settings** lets you select logical CPUs separately for the GUI and driver. Both default to All CPUs; lists such as `0,2,4-7` are accepted. Save and apply stores the choices without restarting tablet input. [Usage and limits](docs/EXPERIMENTAL_SETTINGS.md).
 

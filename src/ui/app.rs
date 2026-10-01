@@ -2492,7 +2492,7 @@ impl App {
         }
     }
 
-    /// Close waits for driver cleanup without blocking the window thread.
+    /// Close waits for daemon cleanup and process exit off the window thread.
     pub(super) fn begin_close(&mut self) -> bool {
         if self.update_close_approved {
             self.closing = true;
@@ -2510,7 +2510,7 @@ impl App {
                 self.drag = None;
                 debugger::close();
                 self.set_driver_state(DriverState::Stopping);
-                self.show_status("Stopping the driver before closing…".into(), Level::Info, false);
+                self.show_status("Shutting down the daemon before closing…".into(), Level::Info, false);
                 unsafe { EnableWindow(self.hwnd, 0); }
                 plugin_manager::set_restart_pending(true);
             }

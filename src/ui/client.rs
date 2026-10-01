@@ -23,7 +23,7 @@ pub(super) enum ClientCommand {
     Start(Box<Profile>),
     /// Launch preference only: never revive a worker this panel already observed.
     AutoStart(Box<Profile>),
-    /// Stop the current worker and wait for input cleanup before closing the panel.
+    /// Shut down the daemon and wait for process exit before closing the panel.
     Close,
     Restart {
         expected: WorkerIdentity,
@@ -186,57 +186,60 @@ fn close_call(command: Command) -> io::Result<Reply> {
     }
 }
 
-/// Read the identity after earlier queued actions finish, so a pending Start
-/// cannot leave input running after the panel goes away. StopIf protects a
-/// worker replaced between this snapshot and the stop request.
-fn stop_for_close(cancelled: &AtomicBool, watched: Option<&Watched>) -> Result<Option<String>, String> {
+/// Read the identity after earlier queued actions finish. ShutdownIf protects
+/// a replacement between the snapshot and request. A stopped worker still has
+/// a daemon process, so every online state requires full process shutdown.
+fn shutdown_for_close(cancelled: &AtomicBool, watched: Option<&Watched>) -> Result<Option<String>, String> {
     let status = match close_call(Command::Status) {
         Ok(Reply::Status { status }) => status,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            // Shutdown can remove the pipe before worker cleanup finishes.
-            if watched.is_some_and(|watched| watched.exit_code().is_none()) {
-                return Err("The daemon is shutting down. The panel stayed open until the driver has stopped; close it again after shutdown finishes.".into());
-            }
-            return Ok(None);
+            // The pipe can disappear before shutdown cleanup and process exit.
+            return match watched {
+                Some(process) => wait_for_close(cancelled, process, None, None),
+                None => Ok(None),
+            };
         }
         Err(error) => return Err(format!("Cannot confirm driver shutdown: {error}")),
         _ => return Err("Unexpected daemon status response while closing.".into()),
     };
-    if !active(status.state) {
-        return Ok((status.state == DriverState::Failed).then(|| status.last_error.unwrap_or_else(|| "The driver stopped with a cleanup error.".into())));
-    }
-    let instance = status.instance.clone();
-    let process = Watched::open(&instance);
+    let existing = watched.filter(|process| process.instance == status.instance);
+    let opened = if existing.is_none() { Watched::open(&status.instance) } else { None };
+    let process = existing.or(opened.as_ref())
+        .ok_or("Cannot watch the daemon process exit. The panel stayed open.")?;
+    let warning = (status.state == DriverState::Failed).then(|| status.last_error.clone()
+        .unwrap_or_else(|| "The driver stopped with a cleanup error.".into()));
     if cancelled.load(Ordering::Acquire) {
         return Err("Panel closed before input cleanup was confirmed.".into());
     }
-    // A timeout can occur after Stop was accepted. Confirm status rather than
-    // resending a potentially stale command.
-    let stop_error = match close_call(Command::StopIf { expected: status.identity() }) {
-        Ok(Reply::Stopped { .. }) | Ok(Reply::Status { .. }) => None,
-        Ok(_) => return Err("Unexpected daemon stop response while closing.".into()),
-        Err(error) => Some(error.to_string()),
+    // A lost response can follow an accepted shutdown. Watch the held process
+    // handle instead of resending a request to a replacement endpoint.
+    let shutdown_error = match close_call(Command::ShutdownIf { expected: status.identity() }) {
+        Ok(Reply::ShutdownAccepted) => None,
+        Ok(_) => return Err("Unexpected daemon shutdown response. The panel stayed open.".into()),
+        Err(error) if matches!(error.kind(), io::ErrorKind::TimedOut | io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset | io::ErrorKind::NotFound
+            | io::ErrorKind::Interrupted) => Some(error.to_string()),
+        Err(error) => return Err(format!("Daemon shutdown was refused or failed: {error}. The panel stayed open. Update/restart the daemon if it is from an older release.")),
     };
+    wait_for_close(cancelled, process, warning, shutdown_error)
+}
+
+fn wait_for_close(cancelled: &AtomicBool, process: &Watched, warning: Option<String>, shutdown_error: Option<String>) -> Result<Option<String>, String> {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !cancelled.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
-        match close_call(Command::Status) {
-            Ok(Reply::Status { status }) if status.instance == instance => {
-                if !active(status.state) {
-                    return Ok((status.state == DriverState::Failed).then(|| status.last_error.unwrap_or_else(|| "The driver stopped with a cleanup error.".into())));
-                }
-            }
-            Ok(Reply::Status { .. }) => return Err("The daemon changed while closing. The panel stayed open; close it again to stop the current driver.".into()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                if process.as_ref().and_then(Watched::exit_code).is_some() {
-                    return Ok(None);
-                }
-            }
-            Err(_) => {}
-            _ => return Err("Unexpected daemon status response while waiting for cleanup.".into()),
+        if let Some(code) = process.exit_code() {
+            if code == 0 { return Ok(warning); }
+            let crash = otd_core::crash::latest_for(process.pid, process.started);
+            let exit = exit_message(code, crash.as_ref());
+            return Ok(match (warning, exit) {
+                (Some(warning), Some(exit)) => Some(format!("{warning} {exit}")),
+                (warning, exit) => warning.or(exit),
+            });
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    Err(format!("Driver cleanup was not confirmed. The panel stayed open.{}", stop_error.map_or_else(String::new, |error| format!(" {error}"))))
+    Err(format!("Daemon process exit was not confirmed. The panel stayed open.{}",
+        shutdown_error.map_or_else(String::new, |error| format!(" {error}"))))
 }
 
 fn publish(
@@ -456,7 +459,7 @@ fn run(
             Ok(command) => {
                 let closing = matches!(&command, ClientCommand::Close);
                 let event = if closing {
-                    ClientEvent::CloseFinished(stop_for_close(&stop, watched.as_ref()))
+                    ClientEvent::CloseFinished(shutdown_for_close(&stop, watched.as_ref()))
                 } else {
                     ClientEvent::ActionFinished(execute(command, &stop, &mut observed_active))
                 };
@@ -479,6 +482,124 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "benign process helper, launched only by the shutdown tests"]
+    fn shutdown_process_helper() {
+        if std::env::var_os("OTD_TEST_CLOSE_HELPER").is_some() {
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line).unwrap();
+        }
+    }
+
+    struct Helper(std::process::Child);
+    impl Helper {
+        fn spawn() -> Self {
+            use std::os::windows::process::CommandExt;
+            Self(std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "ui::client::tests::shutdown_process_helper", "--ignored"])
+                .env("OTD_TEST_CLOSE_HELPER", "1")
+                .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null()).spawn().unwrap())
+        }
+        fn instance(&self) -> String {
+            format!("{}-{}", self.0.id(), std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos())
+        }
+        fn finish(&mut self) {
+            use std::io::Write;
+            self.0.stdin.take().unwrap().write_all(b"finished\n").unwrap();
+            assert!(self.0.wait().unwrap().success());
+        }
+    }
+    impl Drop for Helper {
+        fn drop(&mut self) {
+            // Cleanup only the exact benign helper this test created.
+            if self.0.try_wait().ok().flatten().is_none() {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+    }
+
+    #[test]
+    fn close_shuts_down_running_stopped_and_failed_daemons_and_waits_for_process_exit() {
+        use crate::control::{ControlError, ControlHandler};
+        use std::sync::atomic::AtomicUsize;
+        struct Fake { status: ControlStatus, shutdowns: Arc<AtomicUsize> }
+        impl ControlHandler for Fake {
+            fn handle(&mut self, command: Command) -> Result<Reply, ControlError> {
+                match command {
+                    Command::Status => Ok(Reply::Status { status: self.status.clone() }),
+                    Command::ShutdownIf { expected } => {
+                        assert_eq!(expected, self.status.identity());
+                        self.shutdowns.fetch_add(1, Ordering::SeqCst);
+                        Ok(Reply::ShutdownAccepted)
+                    }
+                    _ => panic!("close must request guarded process shutdown"),
+                }
+            }
+        }
+        for state in [DriverState::Running, DriverState::Stopped, DriverState::Failed] {
+            let mut helper = Helper::spawn();
+            let instance = helper.instance();
+            let process = Watched::open(&instance).unwrap();
+            let shutdowns = Arc::new(AtomicUsize::new(0));
+            let stop = Arc::new(AtomicBool::new(false));
+            let server = {
+                let (shutdowns,stop) = (shutdowns.clone(),stop.clone());
+                std::thread::spawn(move || {
+                    let status = ControlStatus { instance, state, generation: 7, profile: None,
+                        last_error: (state == DriverState::Failed).then(|| "fixture worker failure".into()),
+                        logs: Vec::new(), log_sequence: 0 };
+                    control::serve(&mut Fake { status, shutdowns }, &stop).unwrap();
+                    // Model the real daemon's cleanup after removing its pipe.
+                    // Shutdown acknowledgement alone must not complete close.
+                    std::thread::sleep(Duration::from_millis(150));
+                    helper.finish();
+                })
+            };
+            for _ in 0..100 {
+                if call(Command::Status).is_ok() { break; }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let started = std::time::Instant::now();
+            let result = shutdown_for_close(&AtomicBool::new(false), Some(&process)).unwrap();
+            assert!(started.elapsed() >= Duration::from_millis(150));
+            assert_eq!(process.exit_code(), Some(0), "close returned before process exit");
+            assert_eq!(shutdowns.load(Ordering::SeqCst), 1);
+            assert_eq!(result, (state == DriverState::Failed).then(|| "fixture worker failure".into()));
+            stop.store(true, Ordering::Release);
+            control::wake();
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn close_waits_for_an_already_disconnected_daemon_to_finish_cleanup() {
+        let mut helper = Helper::spawn();
+        let process = Watched::open(&helper.instance()).unwrap();
+        let finish = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            helper.finish();
+        });
+        let started = std::time::Instant::now();
+        assert_eq!(shutdown_for_close(&AtomicBool::new(false), Some(&process)).unwrap(), None);
+        assert!(started.elapsed() >= Duration::from_millis(150));
+        assert_eq!(process.exit_code(), Some(0));
+        finish.join().unwrap();
+    }
+
+    #[test]
+    fn cancelled_close_does_not_report_a_running_process_as_exited() {
+        let helper = Helper::spawn();
+        let process = Watched::open(&helper.instance()).unwrap();
+        let error = wait_for_close(&AtomicBool::new(true), &process, None, None).unwrap_err();
+        assert!(error.contains("process exit was not confirmed"));
+        assert_eq!(process.exit_code(), None);
+    }
 
     #[test]
     fn only_failed_daemon_exits_are_reported() {

@@ -86,6 +86,10 @@ pub enum Command {
     },
     Stop,
     Shutdown,
+    /// Shut down only the daemon/worker generation the client just observed.
+    ShutdownIf {
+        expected: WorkerIdentity,
+    },
     GetConfiguration {
         expected: WorkerIdentity,
     },

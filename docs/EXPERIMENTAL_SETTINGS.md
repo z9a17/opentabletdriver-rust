@@ -12,10 +12,18 @@ Start driver is requested. With the default launch preference and valid
 settings, tablet input starts automatically. A daemon already observed
 running or stopping is not revived by a queued autostart request.
 
-Closing the panel still waits for tablet input to stop and release held
-actions. Minimizing retains input. The independent daemon can remain idle
-after panel close and is reused on reopening; CLI `shutdown` explicitly
-terminates it after cleanup.
+Since 0.16.1, closing the panel shuts down the daemon and waits for its process
+to exit after tablet input cleanup and held-action release. This also applies
+when input is already stopped or failed. Minimizing keeps the panel and daemon
+running; reopening after close starts a new daemon with the saved settings.
+CLI `stop` stops input only, and CLI `shutdown` terminates the daemon.
+
+Close sends a shutdown request guarded by the daemon identity and worker
+generation. It does not shut down a replacement that appeared after the
+snapshot. If the pipe disappears first, the panel still waits for the watched
+process to exit. A lost shutdown reply is not retried against a new endpoint.
+If process exit cannot be confirmed within ten seconds, the panel stays open
+and reports the failure; it does not force-kill a process during cleanup.
 
 Use the updater's restart action when upgrading from an older release. It
 waits for the old daemon to exit before opening the new panel. With a manual

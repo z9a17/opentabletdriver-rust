@@ -6,7 +6,7 @@
 //!
 //! The panel always launches or connects to a separate daemon. Tablet input
 //! starts according to the launch preference; panel close waits for input
-//! cleanup while the idle daemon remains available. The panel
+//! cleanup and daemon process exit. The panel
 //! keeps an icon in the notification area and minimizes into it. Opening the
 //! panel again brings the running one forward.
 //!
