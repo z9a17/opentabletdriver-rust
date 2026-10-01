@@ -37,6 +37,25 @@ enum Phase {
     Resuming,
     ResumeSent,
 }
+
+#[cfg(test)]
+mod scheduling_tests {
+    use super::*;
+    #[test]
+    fn stale_affinity_requests_do_not_change_driver_state_or_scheduling() {
+        let mut daemon = Daemon::new(Arc::new(AtomicBool::new(false)));
+        let before = crate::experimental::masks().unwrap().0;
+        let error = daemon.handle(Command::SetExperimental {
+            expected: WorkerIdentity { instance: "different-daemon".into(), generation: 0 },
+            settings: crate::experimental::Settings::default(),
+        }).unwrap_err();
+        assert!(matches!(error.code, ErrorCode::Conflict));
+        assert_eq!(crate::experimental::masks().unwrap().0, before);
+        assert_eq!(daemon.state, DriverState::Stopped);
+        assert_eq!(daemon.generation,0);
+        assert!(daemon.worker.is_none());
+    }
+}
 struct Pending {
     worker: Option<Worker>,
     expected: WorkerIdentity,
@@ -106,6 +125,9 @@ impl Daemon {
             self.logs.pop_front();
         }
         self.logs.push_back(line);
+    }
+    pub(super) fn scheduling_warning(&mut self, error: String) {
+        self.log(format!("Experimental driver CPU affinity was not applied: {error}"));
     }
     fn identity(&self) -> WorkerIdentity {
         WorkerIdentity {
@@ -685,6 +707,17 @@ impl ControlHandler for Daemon {
         self.poll();
         match command {
             Command::Status => Ok(self.status()),
+            Command::SetExperimental { expected, settings } => {
+                self.check_identity(&expected)?;
+                let path = crate::experimental::path()
+                    .map_err(|error| ControlError::new(ErrorCode::InvalidRequest, error))?;
+                crate::experimental::save_driver_at(&path, &settings)
+                    .map_err(|error| ControlError::new(ErrorCode::InvalidRequest, error))?;
+                self.log(format!("Experimental CPU affinity saved. GUI: {}; driver: {}.",
+                    crate::experimental::format_cpus(&settings.ui_cpus),
+                    crate::experimental::format_cpus(&settings.driver_cpus)));
+                Ok(Reply::ExperimentalSaved)
+            }
             Command::GetConfiguration { expected } => {
                 self.check_identity(&expected)?;
                 Ok(Reply::Configuration {

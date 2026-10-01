@@ -86,14 +86,14 @@ def verify_windows_icon(data):
     icon = (ROOT / 'resources/opentabletdriver.ico').read_bytes()
     count = struct.unpack_from('<H', icon, 4)[0]
     if group[:6] != icon[:6] or len(group) != 6 + count * 14:
-        raise ValueError('Windows application icon group differs from upstream asset')
+        raise ValueError('Windows application icon group differs from the source asset')
     for index in range(count):
         source = 6 + index * 16
         target = 6 + index * 14
         size, offset = struct.unpack_from('<II', icon, source + 8)
         resource_id = struct.unpack_from('<H', group, target + 12)[0]
         if group[target:target + 12] != icon[source:source + 12] or resources.get((3, resource_id, group_key[2])) != icon[offset:offset + size]:
-            raise ValueError('Windows application icon image differs from upstream asset')
+            raise ValueError('Windows application icon image differs from the source asset')
 
 
 def command(*args):

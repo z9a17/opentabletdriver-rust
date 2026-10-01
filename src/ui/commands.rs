@@ -404,6 +404,8 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                     "Dark",
                 );
                 unsafe { AppendMenuW(menu, MF_POPUP, theme as usize, wide("Theme").as_ptr()) };
+                append(menu, if app.control_busy { MF_GRAYED } else { MF_STRING },
+                    CMD_EXPERIMENTAL, "Experimental settings...");
                 append(menu, MF_STRING, CMD_NEXT_TAB, "Next tab\tCtrl+Tab");
                 append(
                     menu,
@@ -462,6 +464,14 @@ pub(super) fn about(window: HWND) {
 }
 
 pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
+    if id == CMD_EXPERIMENTAL {
+        match experimental::show(window) {
+            Ok(Some(settings)) => { with_app(|app| app.apply_experimental(settings)); }
+            Ok(None) => {}
+            Err(error) => { with_app(|app| app.log(Level::Error, "Experimental", error)); }
+        }
+        return;
+    }
     if !control.is_null() {
         match code {
             EN_CHANGE => {

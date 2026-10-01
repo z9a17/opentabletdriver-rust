@@ -1,11 +1,17 @@
 # OpenTabletDriver Rust for Windows
 
 1. Extract the entire ZIP into its own folder.
-2. Open **opentabletdriver-rust-ui.exe** to start the control panel.
+2. Open **opentabletdriver-rust-ui.exe** to start the panel and a separate hidden daemon.
 3. Connect your tablet, choose your areas, then Save and Apply.
 
 Keep the `data` folder beside the apps. It contains the plugin dependencies and
 license notices. You can create a shortcut to the UI executable on your desktop.
+
+View > Experimental settings lets you choose logical CPUs separately for the
+GUI and driver. Use All for automatic scheduling or a list such as `0,2,4-7`.
+Save and apply persists the choices without restarting tablet input. Closing
+the panel still stops input; minimizing keeps it running. The daemon process
+can remain idle after close and is reused on the next launch.
 
 Stop other tablet drivers before using this driver. Only the Wacom PTH-660 has
 confirmed Windows hardware support; other tablets remain experimental.

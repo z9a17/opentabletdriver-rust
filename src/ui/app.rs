@@ -2297,6 +2297,7 @@ impl App {
     }
 
     pub(super) fn auto_start(&mut self) {
+        // Input autostart is separate from the client's daemon process launch.
         if !self.closing && !self.update_restart_pending && self.running.is_none() && !self.control_busy {
             match self.checked_profile() {
                 Ok(profile) => self.start_with_intent(profile, true),
@@ -2312,6 +2313,12 @@ impl App {
         match self.checked_profile() {
             Ok(profile) => self.start_with(profile),
             Err(error) => self.log(Level::Error, "Settings", error),
+        }
+    }
+
+    pub(super) fn apply_experimental(&mut self, settings: crate::experimental::Settings) {
+        if self.submit_control(client::ClientCommand::Experimental(settings)) {
+            self.log(Level::Info, "Experimental", "Applying and saving CPU affinity. The Console reports completion or failure; tablet input will not restart.");
         }
     }
 
@@ -2386,6 +2393,12 @@ impl App {
             .unwrap_or_default();
         for event in events {
             match event {
+                client::ClientEvent::DaemonReady(result) => {
+                    match result {
+                        Ok(()) => self.log(Level::Info, "Daemon", "The separate daemon process is available."),
+                        Err(error) => self.log(Level::Error, "Daemon", error),
+                    }
+                }
                 client::ClientEvent::CloseFinished(result) => {
                     match result {
                         Ok(warning) => {

@@ -47,12 +47,14 @@ The driver and native panel run without .NET. To use existing OpenTabletDriver `
 
 1. Download `opentabletdriver-rust-v<version>-win-x64.zip`.
 2. Right-click the ZIP and select **Extract All**. Extract the whole archive into its own folder, for example `C:\Users\<username>\OpenTabletDriverRust`. Open the extracted `opentabletdriver-rust-v<version>-win-x64` folder containing the two apps, a short README and the `data` folder.
-3. Open **opentabletdriver-rust-ui.exe** as your normal user.
+3. Open **opentabletdriver-rust-ui.exe** as your normal user. It opens the panel and starts or attaches to a separate hidden daemon process.
 4. Connect your tablet. The panel starts the driver. Set your screen and tablet areas in **Output**, then press **Save** and **Apply**.
 
 Supported settings from an existing OpenTabletDriver installation are imported on first run. The Rust driver refuses to start alongside the original OpenTabletDriver daemon. Current Windows transport support is USB HID; WinUSB-only tablets remain unsupported.
 
 You can create a shortcut to `opentabletdriver-rust-ui.exe`; set its **Start in** field to the extracted folder. Enable **Tablets > Start with Windows** in the panel to launch it at sign-in. Closing the panel stops tablet input; minimizing keeps it running in the tray.
+
+**View > Experimental settings** lets you select logical CPUs separately for the GUI and driver. Both default to All CPUs; lists such as `0,2,4-7` are accepted. Save and apply stores the choices without restarting tablet input. [Usage and limits](docs/EXPERIMENTAL_SETTINGS.md).
 
 #### Console, updates and removal
 

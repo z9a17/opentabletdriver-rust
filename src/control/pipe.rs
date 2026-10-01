@@ -127,17 +127,20 @@ fn current_sid() -> io::Result<String> {
     process_sid(unsafe { GetCurrentProcess() })
 }
 fn name_for_sid(sid: &str) -> String {
-    format!(r"\\.\pipe\OpenTabletDriverRust.Control.v{PROTOCOL_VERSION}.{sid}")
+    versioned_name(sid, PROTOCOL_VERSION)
+}
+fn versioned_name(sid: &str, version: u32) -> String {
+    let name = format!(r"\\.\pipe\OpenTabletDriverRust.Control.v{version}.{sid}");
+    #[cfg(test)]
+    let name = format!("{name}.test-{}", std::process::id());
+    name
 }
 pub(super) fn endpoint_name() -> io::Result<String> {
     current_sid().map(|sid| name_for_sid(&sid))
 }
 
 pub(super) fn legacy_service_present() -> io::Result<bool> {
-    let name = wide(&format!(
-        r"\\.\pipe\OpenTabletDriverRust.Control.v1.{}",
-        current_sid()?
-    ));
+    let name = wide(&versioned_name(&current_sid()?, 1));
     if unsafe { WaitNamedPipeW(name.as_ptr(), 1) } != 0 {
         return Ok(true);
     }
