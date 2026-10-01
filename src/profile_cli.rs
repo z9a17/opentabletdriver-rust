@@ -2,7 +2,10 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use otd_core::config::{ImportOptions, NativeProfileCollection, OtdSettingsDocument, Profile};
+use otd_core::config::{
+    ImportOptions, MAX_PEN_BUTTONS, NativeProfileCollection, OtdSettingsDocument, Profile,
+};
+use otd_core::output::buttons::ButtonAction;
 use otd_core::storage;
 use serde_json::{Value, json};
 
@@ -16,7 +19,7 @@ pub fn usage() -> &'static str {
   profiles recover PROFILE.toml --output RECOVERED.toml
   profiles get INPUT [--profile INDEX] [--section SECTION]
   profiles set PROFILE.toml --output NEW.toml [--sensitivity X,Y]
-      [--relative-rotation DEGREES] [--reset-time MS]
+      [--relative-rotation DEGREES] [--reset-time MS] [--pen-button NUMBER=ACTION]
   profiles paths
 
 Output files must not already exist. The source file is never overwritten.
@@ -26,8 +29,11 @@ Recovery reads the sibling .bak into a new file; it never replaces the source.
 Get prints JSON for one section: all, output, areas, sensitivity, bindings,
 filters or misc (default all). A collection defaults to its selected profile and
 a single Rust profile to index 0; OTD JSON requires --profile.
-Set changes relative-mode settings only and writes a new profile with the next
-settings revision; it neither contacts the daemon nor applies the result.
+Set writes a new profile with the next settings revision; it neither contacts
+the daemon nor applies the result. Relative options require relative output.
+Pen button numbers start at 1 (maximum 64). Repeat --pen-button for distinct
+buttons. Actions: none, barrel:1..3, mouse:left|right|middle|backward|forward,
+or keys:Control+Shift+Z. Quote key chords when required by your shell.
 OTD_RUST_PORTABLE_DIR selects an explicit absolute portable settings directory."
 }
 
@@ -37,7 +43,7 @@ OTD_RUST_PORTABLE_DIR selects an explicit absolute portable settings directory."
 const SECTIONS: [(&str, &[&str]); 5] = [
     ("areas", &["monitor", "rotation", "crop", "absolute"]),
     ("sensitivity", &["relative"]),
-    ("bindings", &["bindings"]),
+    ("bindings", &["bindings", "pen_buttons"]),
     ("filters", &["radial_follow", "plugins"]),
     (
         "misc",
@@ -55,6 +61,7 @@ struct Options {
     sensitivity: Option<(f64, f64)>,
     relative_rotation: Option<f64>,
     reset_time_ms: Option<u64>,
+    pen_buttons: Vec<(usize, ButtonAction)>,
 }
 
 impl Options {
@@ -209,19 +216,27 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             let Input::Native(mut profile) = input else {
                 return Err("set requires a single Rust profile TOML file. Extract a profile with profiles import first.".into());
             };
-            let mut relative = profile
-                .relative
-                .ok_or("set changes relative-mode settings; this profile uses absolute output")?;
-            if let Some(sensitivity) = options.sensitivity {
-                relative.sensitivity = sensitivity;
+            if options.sets_relative() {
+                let mut relative = profile
+                    .relative
+                    .ok_or("relative setting options require a profile with relative output")?;
+                if let Some(sensitivity) = options.sensitivity {
+                    relative.sensitivity = sensitivity;
+                }
+                if let Some(rotation) = options.relative_rotation {
+                    relative.rotation = rotation;
+                }
+                if let Some(ms) = options.reset_time_ms {
+                    relative.reset_delay = Duration::from_millis(ms);
+                }
+                profile.relative = Some(relative.validate()?);
             }
-            if let Some(rotation) = options.relative_rotation {
-                relative.rotation = rotation;
+            for (index, action) in &options.pen_buttons {
+                if profile.pen_buttons.len() <= *index {
+                    profile.pen_buttons.resize(*index + 1, ButtonAction::None);
+                }
+                profile.pen_buttons[*index] = action.clone();
             }
-            if let Some(ms) = options.reset_time_ms {
-                relative.reset_delay = Duration::from_millis(ms);
-            }
-            profile.relative = Some(relative.validate()?);
             profile.advance_revision()?;
             let output = options
                 .output
@@ -304,6 +319,23 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> 
                         .map_err(|_| "--reset-time requires nonnegative whole milliseconds")?,
                 );
             }
+            "--pen-button" => {
+                let value = option_value(&mut args, &flag)?;
+                let (number, action) = value
+                    .split_once('=')
+                    .ok_or("--pen-button requires NUMBER=ACTION, for example 1=mouse:right")?;
+                let number = number
+                    .trim()
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|number| (1..=MAX_PEN_BUTTONS).contains(number))
+                    .ok_or("pen button number must be an integer from 1 to 64")?;
+                let index = number - 1;
+                if options.pen_buttons.iter().any(|(old, _)| *old == index) {
+                    return Err(format!("pen button {number} was specified more than once"));
+                }
+                options.pen_buttons.push((index, action.parse()?));
+            }
             _ => return Err(format!("unknown profile option {flag:?}\n{}", usage())),
         }
     }
@@ -343,6 +375,9 @@ fn validate_options(command: &str, options: &Options) -> Result<(), String> {
             usage()
         ));
     }
+    if !options.pen_buttons.is_empty() && command != "set" {
+        return Err("--pen-button applies only to profiles set".into());
+    }
     let valid = match command {
         "list" => {
             options.profile.is_none()
@@ -372,7 +407,7 @@ fn validate_options(command: &str, options: &Options) -> Result<(), String> {
                 && options.output.is_some()
                 && options.name.is_none()
                 && !options.legacy
-                && options.sets_relative()
+                && (options.sets_relative() || !options.pen_buttons.is_empty())
         }
         _ => false,
     };
@@ -484,6 +519,12 @@ fn profile_section(profile: &Profile, section: &str) -> Result<Value, String> {
     settings.remove("preserved_fields");
     settings.insert("tablet".into(), json!(tablet));
     settings.insert("output_mode".into(), json!(output_mode(profile)));
+    // Default barrel bindings are omitted from TOML, but must remain visible
+    // to inspection commands just like explicitly configured actions.
+    settings.insert(
+        "pen_buttons".into(),
+        json!(profile.pen_buttons.iter().map(ToString::to_string).collect::<Vec<_>>()),
+    );
     if section == "all" {
         settings.insert(
             "imported_otd_archive".into(),
@@ -528,4 +569,115 @@ fn write_output(path: &Path, text: &str) -> Result<(), String> {
     storage::save(path, text.as_bytes(), storage::SaveMode::CreateNew)?;
     println!("Saved {}", path.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn options(args: &[&str]) -> Result<Options, String> {
+        parse_options(args.iter().map(|arg| (*arg).to_owned()))
+    }
+
+    #[test]
+    fn bindings_getter_shows_default_and_explicit_pen_buttons() {
+        let mut profile = Profile::default();
+        let bindings = profile_section(&profile, "bindings").unwrap();
+        assert_eq!(
+            bindings["pen_buttons"],
+            json!(["barrel:1", "barrel:2", "barrel:3"])
+        );
+        assert!(bindings["bindings"].is_object());
+        profile.pen_buttons = vec!["keys:Control+Z".parse().unwrap(), ButtonAction::None];
+        assert_eq!(
+            profile_section(&profile, "all").unwrap()["pen_buttons"],
+            json!(["keys:LeftControl+Z", "none"])
+        );
+    }
+
+    #[test]
+    fn pen_button_options_are_bounded_distinct_and_set_only() {
+        for args in [
+            vec!["--pen-button", "0=none"],
+            vec!["--pen-button", "65=none"],
+            vec!["--pen-button", "one=none"],
+            vec!["--pen-button", "1"],
+            vec!["--pen-button", "1="],
+            vec!["--pen-button", "1=keys:Mute"],
+            vec!["--pen-button", "1=barrel:4"],
+            vec!["--pen-button", "1=none", "--pen-button", "1=mouse:right"],
+        ] {
+            assert!(options(&args).is_err(), "{args:?}");
+        }
+        let valid = options(&["--output", "new.toml", "--pen-button", "64=mouse:right"])
+            .unwrap();
+        assert_eq!(valid.pen_buttons[0].0, 63);
+        assert_eq!(valid.pen_buttons[0].1.to_string(), "mouse:right");
+        validate_options("set", &valid).unwrap();
+        for command in [
+            "get", "list", "import", "export", "preview", "select", "recover",
+        ] {
+            assert!(validate_options(command, &valid).is_err(), "{command}");
+        }
+        assert!(validate_options("set", &options(&["--output", "new.toml"]).unwrap()).is_err());
+    }
+
+    #[test]
+    fn set_pen_buttons_writes_absolute_copy_and_preserves_source() {
+        let directory = std::env::temp_dir().join(format!(
+            "otd-pen-buttons-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let source = directory.join("source.toml");
+        let output = directory.join("edited.toml");
+        let rejected = directory.join("rejected.toml");
+        let original = Profile::default().to_toml().unwrap();
+        std::fs::write(&source, &original).unwrap();
+        let args = vec![
+            "set".into(),
+            source.to_string_lossy().into_owned(),
+            "--output".into(),
+            output.to_string_lossy().into_owned(),
+            "--pen-button".into(),
+            "1=keys:Control+Z".into(),
+            "--pen-button".into(),
+            "5=mouse:forward".into(),
+        ];
+        run(args.clone()).unwrap();
+        let Input::Native(edited) = read_input(&output).unwrap() else {
+            panic!("native copy")
+        };
+        assert_eq!(edited.settings_revision, 1);
+        assert!(edited.relative.is_none());
+        assert_eq!(
+            edited.pen_buttons.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            [
+                "keys:LeftControl+Z", "barrel:2", "barrel:3", "none", "mouse:forward",
+            ]
+        );
+        let saved = std::fs::read(&output).unwrap();
+        assert!(run(args).is_err(), "existing output must be refused");
+        assert_eq!(std::fs::read(&output).unwrap(), saved);
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), original);
+        assert!(
+            run(vec![
+                "set".into(),
+                source.to_string_lossy().into_owned(),
+                "--output".into(),
+                rejected.to_string_lossy().into_owned(),
+                "--pen-button".into(),
+                "1=none".into(),
+                "--sensitivity".into(),
+                "1,1".into(),
+            ])
+            .is_err()
+        );
+        assert!(!rejected.exists());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }

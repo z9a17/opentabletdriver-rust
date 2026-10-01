@@ -18,7 +18,7 @@ The Windows build offers:
 - **Several tablets at once,** each with its own profile.
 - **Native control panel** in OpenTabletDriver's layout, with light and dark themes, a tray icon, and a tablet debugger that shows raw and decoded pen data live.
 - **Command line and background service** for scripting: profiles, presets, diagnostics and area conversion all work headless.
-- **Pen side buttons** click or press keys and shortcuts, with right and middle click defaults and configurable mouse buttons or keyboard chords. See [pen side buttons](docs/PEN_BUTTONS.md).
+- **Pen side buttons** click or press keys and shortcuts, with right and middle click defaults. The Windows CLI can inspect defaults, edit individual buttons into a new profile and export supported edits back to OTD settings. See [pen side buttons](docs/PEN_BUTTONS.md).
 
 Not done yet: tablet express keys, and a settings panel editor for the side buttons.
 
