@@ -77,7 +77,7 @@ Async plugins and multiple endpoints need documented ownership and ordering. Int
 
 Continue hosting .NET on demand through the compatibility bridge. Reuse official managed contracts/helper assemblies where binary type identity requires them. Add adapters for actual dependencies on Desktop/Configurations/Native/core assemblies; do not assume `OpenTabletDriver.Plugin.dll` alone is enough. Rust remains responsible for native device processing and its native output paths. Do not secretly start the original OTD daemon to claim port completion.
 
-The UI talks to the daemon. At the owner's request, release 0.14.2 changes normal panel close to stop the current worker and await cleanup. Minimizing retains input; CLI clients can still run headlessly. Keep the current panel working during migration. U01 chooses a maintainable platform-native or cross-platform frontend strategy through a small measured prototype; no UI framework choice is pre-approved by this document. Backend behavior must remain independently testable and usable headlessly.
+The UI talks to the daemon. At the owner's request, release 0.16.1 makes normal panel close shut down the daemon and await input cleanup and process exit. Minimizing retains both processes and input; CLI clients can still run headlessly. This intentionally supersedes upstream detach-on-close and 0.16's persistent idle daemon behavior. Keep the current panel working during migration. U01 chooses a maintainable platform-native or cross-platform frontend strategy through a small measured prototype; no UI framework choice is pre-approved by this document. Backend behavior must remain independently testable and usable headlessly.
 
 ## 5. Performance and reliability constraints
 

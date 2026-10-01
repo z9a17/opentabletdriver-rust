@@ -42,6 +42,17 @@ enum Phase {
 mod scheduling_tests {
     use super::*;
     #[test]
+    fn stale_shutdown_does_not_stop_a_replacement_daemon() {
+        let mut daemon = Daemon::new(Arc::new(AtomicBool::new(false)));
+        let error = daemon.handle(Command::ShutdownIf {
+            expected: WorkerIdentity { instance: "previous-daemon".into(), generation: 0 },
+        }).unwrap_err();
+        assert!(matches!(error.code, ErrorCode::Conflict));
+        assert!(!daemon.stopping);
+        assert_eq!(daemon.state, DriverState::Stopped);
+        assert_eq!(daemon.generation, 0);
+    }
+    #[test]
     fn stale_affinity_requests_do_not_change_driver_state_or_scheduling() {
         let mut daemon = Daemon::new(Arc::new(AtomicBool::new(false)));
         let before = crate::experimental::masks().unwrap().0;
@@ -697,7 +708,7 @@ impl ControlHandler for Daemon {
             Command::Stop | Command::Shutdown => self
                 .stop_all()
                 .map_err(|error| ControlError::new(ErrorCode::StopFailed, error))?,
-            Command::StopIf { expected } => {
+            Command::StopIf { expected } | Command::ShutdownIf { expected } => {
                 self.check_identity(expected)?;
                 self.stop_all()
                     .map_err(|error| ControlError::new(ErrorCode::StopFailed, error))?;
@@ -760,7 +771,7 @@ impl ControlHandler for Daemon {
                     Ok(self.status())
                 }
             }
-            Command::Shutdown => Ok(Reply::ShutdownAccepted),
+            Command::Shutdown | Command::ShutdownIf { .. } => Ok(Reply::ShutdownAccepted),
             Command::Debug => Ok(Reply::Debug {
                 report: crate::decode_cli::debug_report(),
             }),

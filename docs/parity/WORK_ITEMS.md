@@ -392,9 +392,9 @@ Sources: UP-DAEMON, UP-CLI, UP-PLATFORM. Control interfaces must not place seria
 
 **Depends on:** F02, B01. **Start:** `src/main.rs`, `src/ui.rs`, instance guard and stop signaling.
 
-Create a per-user daemon owning devices and pipelines. The GUI/CLI can connect/disconnect without stopping input; explicit Stop/Exit remain distinct. Preserve a foreground diagnostic mode. Handle single-instance discovery, stale endpoints, normal shutdown, failed startup and original-driver coexistence. Avoid elevation for normal supported operations.
+Create a per-user daemon owning devices and pipelines. At the owner's request, GUI close shuts down the daemon and waits for process exit after cleanup, starting in 0.16.1; minimizing and headless CLI operation retain input. This intentionally differs from upstream detach-on-close. Explicit Stop/Shutdown remain distinct. Preserve a foreground diagnostic mode. Handle single-instance discovery, stale endpoints, normal shutdown, failed startup and original-driver coexistence. Avoid elevation for normal supported operations.
 
-**Accept:** Closing/reopening UI preserves input; daemon exit releases cooperative output and resources; two clients cannot create duplicate injectors. Tests cover startup races and client crash. Any crash recovery limitations are documented.
+**Accept:** GUI close waits for daemon cleanup and process exit; reopening starts a fresh daemon, while minimizing and headless operation preserve input. Daemon exit releases cooperative output and resources; two clients cannot create duplicate injectors. Tests cover startup races and client crash. Any crash recovery limitations are documented.
 
 <a id="s02"></a>
 ### S02 - Add a versioned local control protocol
