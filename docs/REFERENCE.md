@@ -48,12 +48,13 @@ opentabletdriver-rust.exe profiles select collection.toml --name Gaming --output
 opentabletdriver-rust.exe profiles recover driver.toml --output recovered.toml
 opentabletdriver-rust.exe profiles get driver.toml --section areas
 opentabletdriver-rust.exe profiles set driver.toml --output faster.toml --sensitivity 12,12 --reset-time 100
+opentabletdriver-rust.exe profiles set driver.toml --output undo.toml --pen-button "1=keys:Control+Z"
 opentabletdriver-rust.exe profiles paths
 ```
 
 Use `--legacy-force-radial-follow` on OTD preview/import only when that earlier behavior is intended. Collection selection does not switch a running driver; extract the desired entry with `profiles import` before starting it.
 
-`profiles get` prints one settings section (`all`, `output`, `areas`, `sensitivity`, `bindings`, `filters` or `misc`) as JSON, like the upstream console's `get*` commands but for a file. `profiles set` changes relative sensitivity, rotation and reset time and writes a new profile; start it with `restart --config`. The [command matrix](parity/CLI_COMMAND_MATRIX.md) maps every upstream console command to its Rust equivalent or open task.
+`profiles get` prints one settings section (`all`, `output`, `areas`, `sensitivity`, `bindings`, `filters` or `misc`) as JSON. The bindings section includes contact settings and pen side buttons, including defaults. `profiles set` edits individual pen buttons or relative sensitivity, rotation and reset time, then writes a new profile. See [pen-button editing and export](PEN_BUTTONS.md#offline-command-line-editing). Applying the result uses a separate `restart --config`. The [command matrix](parity/CLI_COMMAND_MATRIX.md) maps every upstream console command to its Rust equivalent or open task.
 
 Offline named presets support `presets list`, `presets show NAME`, `presets save NAME --config FILE` and `presets export NAME --output NEWFILE`. Save creates a new name; explicit `--replace` uses a loaded-byte conflict guard and retains a backup. Names preserve spelling and reject unsafe paths or case-only aliases. These commands do not select/apply runtime settings. See [named presets](NAMED_PRESETS.md).
 

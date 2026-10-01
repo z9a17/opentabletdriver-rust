@@ -1911,12 +1911,114 @@ mod tests {
     }
 
     #[test]
-    fn editing_pen_buttons_cannot_be_exported_to_otd_settings() {
+    fn edited_pen_buttons_export_and_reimport_all_supported_action_types() {
         let mut profile = import_pen_buttons_from(serde_json::json!([]));
         assert!(profile.to_otd_json().is_ok());
-        profile.pen_buttons = vec![ButtonAction::Barrel(1)];
+        profile.pen_buttons = ["barrel:3", "mouse:forward", "keys:Escape", "keys:Control+Shift+Z", "none"]
+            .into_iter().map(|action| action.parse().unwrap()).collect();
+        let exported = profile.to_otd_json().unwrap();
+        let json: serde_json::Value = serde_json::from_str(&exported).unwrap();
+        let buttons = &json["Profiles"][0]["Bindings"]["PenButtons"];
+        assert_eq!(buttons[0]["Path"], ADAPTIVE_BINDING);
+        assert_eq!(buttons[0]["Settings"][0]["Value"], "Button 3");
+        assert_eq!(buttons[1]["Path"], MOUSE_BINDING);
+        assert_eq!(buttons[1]["Settings"][0]["Value"], "Forward");
+        assert_eq!(buttons[2]["Path"], KEY_BINDING);
+        assert_eq!(buttons[2]["Settings"][0]["Value"], "Escape");
+        assert_eq!(buttons[3]["Path"], MULTI_KEY_BINDING);
+        assert_eq!(buttons[3]["Settings"][0]["Value"], "LeftControl+LeftShift+Z");
+        assert!(buttons[4].is_null());
+        let reimported = Profile::from_otd_text(&exported, Path::new("exported.json")).unwrap();
+        assert_eq!(reimported.pen_buttons, profile.pen_buttons);
+    }
+
+    #[test]
+    fn edited_pen_buttons_preserve_unknown_stores_and_same_type_properties() {
+        let unknown = serde_json::json!({"Path": "Plugin.UnknownBinding", "Enable": true,
+            "Settings": [{"Property": "Mystery", "Value": [null, {"x": 17}]}]});
+        let mut original = store(MOUSE_BINDING, "Button", "Right".into());
+        original["Metadata"] = serde_json::json!({"keep": true});
+        original["Settings"].as_array_mut().unwrap().push(serde_json::json!(
+            {"Property": "FutureProperty", "Value": "preserved"}
+        ));
+        let mut profile = import_pen_buttons_from(serde_json::json!([original.clone(), unknown.clone()]));
+        profile.pen_buttons[0] = "mouse:left".parse().unwrap();
+        let exported: serde_json::Value = serde_json::from_str(&profile.to_otd_json().unwrap()).unwrap();
+        original["Settings"][0]["Value"] = "Left".into();
+        assert_eq!(exported["Profiles"][0]["Bindings"]["PenButtons"], serde_json::json!([original, unknown]));
+        profile.pen_buttons[1] = "mouse:middle".parse().unwrap();
         let error = profile.to_otd_json().unwrap_err();
-        assert!(error.contains("pen button"), "{error}");
+        assert!(error.contains("pen button 2") && error.contains("unsupported"), "{error}");
+    }
+
+    #[test]
+    fn edited_pen_buttons_change_known_types_and_disable_without_losing_properties() {
+        let source = store(ADAPTIVE_BINDING, "Binding", "Button 1".into());
+        let mut profile = import_pen_buttons_from(serde_json::json!([source.clone()]));
+        profile.pen_buttons[0] = "keys:Escape".parse().unwrap();
+        let exported = profile.to_otd_json().unwrap();
+        let reimported = Profile::from_otd_text(&exported, Path::new("edited.json")).unwrap();
+        assert_eq!(reimported.pen_buttons, profile.pen_buttons);
+        profile.pen_buttons[0] = ButtonAction::None;
+        let exported: serde_json::Value = serde_json::from_str(&profile.to_otd_json().unwrap()).unwrap();
+        let mut disabled = source;
+        disabled["Enable"] = false.into();
+        assert_eq!(exported["Profiles"][0]["Bindings"]["PenButtons"][0], disabled);
+    }
+
+    #[test]
+    fn edited_pen_buttons_refuse_type_changes_that_would_drop_unknown_data() {
+        for setting in [
+            serde_json::json!({"Property": "Unknown", "Value": 42}),
+            serde_json::json!({"Property": "Binding", "Value": "Button 1", "Metadata": "keep"}),
+        ] {
+            let mut source = store(ADAPTIVE_BINDING, "Binding", "Button 1".into());
+            source["Settings"].as_array_mut().unwrap().push(setting);
+            let mut profile = import_pen_buttons_from(serde_json::json!([source]));
+            profile.pen_buttons[0] = "keys:Escape".parse().unwrap();
+            let error = profile.to_otd_json().unwrap_err();
+            assert!(error.contains("unknown source properties"), "{error}");
+        }
+    }
+
+    #[test]
+    fn edited_pen_buttons_reject_invalid_native_actions_and_preserve_over_limit_source() {
+        let unknown = serde_json::json!({"Path": "Plugin.UnknownBinding", "Enable": true,
+            "Settings": [{"Property": "Keep", "Value": 42}]});
+        let mut source = vec![serde_json::Value::Null; MAX_PEN_BUTTONS];
+        source.push(unknown.clone());
+        let mut profile = import_pen_buttons_from(serde_json::json!(source));
+        profile.pen_buttons[0] = "mouse:right".parse().unwrap();
+        let exported: serde_json::Value = serde_json::from_str(&profile.to_otd_json().unwrap()).unwrap();
+        assert_eq!(exported["Profiles"][0]["Bindings"]["PenButtons"][64], unknown);
+        profile.pen_buttons.pop();
+        assert!(profile.to_otd_json().unwrap_err().contains("cannot shrink"));
+        for action in [ButtonAction::Barrel(4), ButtonAction::Keys(vec![]),
+            ButtonAction::Keys(vec![crate::actions::KeyboardUsage::new(0xffff).unwrap()])] {
+            let mut profile = import_pen_buttons_from(serde_json::json!([]));
+            profile.pen_buttons.push(action);
+            assert!(profile.to_otd_json().is_err());
+        }
+    }
+
+    #[test]
+    fn pen_buttons_export_preserves_mouse_action_when_output_changes_to_pen() {
+        let mut json = relative_profile();
+        json["Profiles"][0]["OutputMode"]["Path"] = "OpenTabletDriver.Desktop.Output.AbsoluteMode".into();
+        json["Profiles"][0]["AbsoluteModeSettings"] = serde_json::json!({
+            "Display": {"Width": 2560, "Height": 1440, "X": 1280, "Y": 720, "Rotation": 0},
+            "Tablet": {"Width": 85, "Height": 47.8125, "X": 110, "Y": 23.90625, "Rotation": 0},
+            "EnableClipping": true, "EnableAreaLimiting": false
+        });
+        json["Profiles"][0]["Bindings"]["PenButtons"] = serde_json::json!([
+            store(ADAPTIVE_BINDING, "Binding", "Tip".into())
+        ]);
+        let mut profile = Profile::from_otd_text(&json.to_string(), Path::new("mouse.json")).unwrap();
+        profile.output = OutputKind::Pen;
+        let exported = profile.to_otd_json().unwrap();
+        let reimported = Profile::from_otd_text(&exported, Path::new("pen.json")).unwrap();
+        assert_eq!(reimported.pen_buttons[0].to_string(), "mouse:left");
+        assert_eq!(reimported.output, OutputKind::Pen);
     }
 
     #[test]

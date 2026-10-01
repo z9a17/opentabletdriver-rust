@@ -629,9 +629,6 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
             legacy_force_radial_follow: imported.legacy_force_radial_follow,
         },
     )?;
-    if profile.pen_buttons != baseline.pen_buttons {
-        return Err("OTD export cannot write edited pen button actions back to the source bindings. Keep the Rust TOML profile, or edit them in OpenTabletDriver.".into());
-    }
     let original: Value =
         serde_json::from_str(&imported.settings_json).map_err(|error| error.to_string())?;
     let mut document = original.clone();
@@ -833,6 +830,7 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
             set_field(&mut selected["Bindings"], threshold, json!(percent))?;
         }
     }
+    export_pen_buttons(selected, profile, &baseline)?;
     if profile.radial_follow.len() != baseline.radial_follow.len() {
         return Err("OTD export cannot infer filter identity/order after adding or removing native Radial Follow entries. Export edits to existing entries or keep the Rust TOML profile.".into());
     }
@@ -884,6 +882,147 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
     }
     reject_precision_loss(&imported.settings_json)?;
     serde_json::to_string_pretty(&document).map_err(|error| error.to_string())
+}
+
+/// Reconcile only changed bindings. Unknown stores and buttons beyond the
+/// runtime limit remain in the archived document; replacing them is refused.
+fn export_pen_buttons(
+    selected: &mut Value,
+    profile: &Profile,
+    baseline: &Profile,
+) -> Result<(), String> {
+    use crate::output::buttons::ButtonAction;
+
+    if profile.pen_buttons.len() > super::MAX_PEN_BUTTONS {
+        return Err("OTD export supports at most 64 pen button actions".into());
+    }
+    for action in &profile.pen_buttons {
+        if action.to_string().parse::<ButtonAction>().as_ref() != Ok(action) {
+            return Err("OTD export requires supported, nonempty pen button actions".into());
+        }
+    }
+    if profile.pen_buttons == baseline.pen_buttons && profile.output == baseline.output {
+        return Ok(());
+    }
+    if profile.pen_buttons.len() < baseline.pen_buttons.len() {
+        return Err("OTD export cannot shrink the preserved pen button list; set unwanted buttons to none instead".into());
+    }
+    ensure_object(&mut selected["Bindings"])?;
+    let source = &mut selected["Bindings"]["PenButtons"];
+    if source.is_null() {
+        *source = json!([]);
+    }
+    let stores = source
+        .as_array_mut()
+        .ok_or("cannot edit preserved pen buttons: source PenButtons is not an array")?;
+    stores.resize(stores.len().max(profile.pen_buttons.len()), Value::Null);
+    for (index, action) in profile.pen_buttons.iter().enumerate() {
+        let store = &mut stores[index];
+        let unchanged = baseline.pen_buttons.get(index) == Some(action);
+        if unchanged {
+            if profile.output == baseline.output {
+                continue;
+            }
+            // Adaptive Tip/Eraser on mouse output cannot mean the same action
+            // on a pen output. Rebind such stores to the explicit mouse action.
+            let adapted = serde_json::from_value::<super::OtdStore>(store.clone())
+                .ok()
+                .and_then(|store| {
+                    super::pen_button_action(Some(&store), profile.output == super::OutputKind::Pen)
+                        .ok()
+                });
+            if adapted.as_ref() == Some(action) || *action == ButtonAction::None {
+                continue;
+            }
+        }
+        write_pen_button(store, action, baseline.output == super::OutputKind::Pen)
+            .map_err(|error| format!("cannot export pen button {}: {error}", index + 1))?;
+    }
+    Ok(())
+}
+
+fn pen_binding_property(path: &str) -> Option<&'static str> {
+    match path {
+        super::ADAPTIVE_BINDING => Some("Binding"),
+        super::MOUSE_BINDING => Some("Button"),
+        super::KEY_BINDING => Some("Key"),
+        super::MULTI_KEY_BINDING => Some("Keys"),
+        _ => None,
+    }
+}
+
+fn write_pen_button(
+    store: &mut Value,
+    action: &crate::output::buttons::ButtonAction,
+    source_pen: bool,
+) -> Result<(), String> {
+    use crate::actions::MouseButton;
+    use crate::output::buttons::ButtonAction;
+
+    if !store.is_null() {
+        let parsed: super::OtdStore = serde_json::from_value(store.clone())
+            .map_err(|error| format!("unreadable preserved binding: {error}"))?;
+        pen_binding_property(&parsed.path)
+            .ok_or("replacing an unsupported source binding would lose its original settings")?;
+        super::pen_button_action(Some(&parsed), source_pen)?;
+    }
+    let (path, property, value) = match action {
+        ButtonAction::None => {
+            if !store.is_null() {
+                set_field(store, "Enable", json!(false))?;
+            }
+            return Ok(());
+        }
+        ButtonAction::Barrel(number) => (
+            super::ADAPTIVE_BINDING,
+            "Binding",
+            format!("Button {number}"),
+        ),
+        ButtonAction::Mouse(button) => (
+            super::MOUSE_BINDING,
+            "Button",
+            match button {
+                MouseButton::Left => "Left",
+                MouseButton::Right => "Right",
+                MouseButton::Middle => "Middle",
+                MouseButton::Backward => "Backward",
+                MouseButton::Forward => "Forward",
+            }
+            .to_owned(),
+        ),
+        ButtonAction::Keys(keys) if keys.len() == 1 => (
+            super::KEY_BINDING,
+            "Key",
+            crate::keys::name_of(keys[0])
+                .ok_or("unsupported key usage")?
+                .to_owned(),
+        ),
+        ButtonAction::Keys(keys) => (
+            super::MULTI_KEY_BINDING,
+            "Keys",
+            crate::keys::chord_text(keys),
+        ),
+    };
+    if !store.is_null() && store["Path"].as_str() != Some(path) {
+        let old_property = store["Path"]
+            .as_str()
+            .and_then(pen_binding_property)
+            .ok_or("unsupported source binding")?;
+        if store["Settings"].as_array().is_some_and(|settings| {
+            settings.iter().any(|setting| {
+                setting["Property"].as_str() != Some(old_property)
+                    || setting.as_object().is_none_or(|fields| {
+                        fields.keys().any(|key| key != "Property" && key != "Value")
+                    })
+            })
+        }) {
+            return Err("changing binding type would discard unknown source properties; keep the existing type or edit a new button".into());
+        }
+        set_field(store, "Settings", json!([]))?;
+    }
+    set_field(store, "Path", json!(path))?;
+    set_store_property(store, property, json!(value))?;
+    set_field(store, "Enable", json!(true))
 }
 
 fn ensure_object(value: &mut Value) -> Result<(), String> {

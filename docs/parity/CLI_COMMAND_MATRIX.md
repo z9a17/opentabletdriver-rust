@@ -53,7 +53,7 @@ Upstream setters change one tablet profile in the running daemon. `profiles set`
 | `settabletarea TABLET W H X Y [ROTATION]` | `area full`/`area fit` (preview) | Partial | Area commands compute areas offline; they do not write profiles. [Area conversions](../AREA_CONVERSIONS.md). C05/S04. |
 | `setsensitivity TABLET X Y [ROTATION]` | `profiles set FILE --output NEW --sensitivity X,Y [--relative-rotation DEG]` | Covered | Offline, relative profiles only; values pass the same validation as a loaded profile. No tablet argument; the file is one profile. |
 | `settipbinding TABLET NAME THRESHOLD` | — | Open | B02. |
-| `setpenbinding TABLET NAME INDEX` | — | Open | B02 (deferred by owner priority). |
+| `setpenbinding TABLET NAME INDEX` | `profiles set FILE --output NEW --pen-button NUMBER=ACTION` | Partial | Offline, absolute or relative profiles; button numbers start at 1. Mouse, barrel, key/chord and none actions; unsupported bindings remain open under B02/B04. [Editing and export](../PEN_BUTTONS.md#offline-command-line-editing). |
 | `setauxbinding TABLET NAME INDEX` | — | Open | B02. |
 | `setresettime TABLET MS` | `profiles set FILE --output NEW --reset-time MS` | Covered | Offline, relative profiles only. Whole milliseconds, as upstream. |
 | `setenableclipping TABLET BOOL` | — | Open | S04. |
@@ -71,7 +71,7 @@ Upstream getters print text for the running daemon's settings. `profiles get` pr
 | `getoutputmode TABLET` | `profiles get INPUT --section output` | Covered | Rust modes are `absolute` and `relative`; `output` is `mouse` or `pen` (Windows Ink/Artist Mode, absolute only). Managed output modes are not hosted (P06). |
 | `getareas TABLET` | `profiles get INPUT --section areas` | Covered | Prints `monitor`/`rotation`/`crop` for simple profiles and `absolute` for OTD mappings. |
 | `getsensitivity TABLET` | `profiles get INPUT --section sensitivity` | Covered | |
-| `getbindings TABLET` | `profiles get INPUT --section bindings` | Partial | Only the contact policy exists until B02. |
+| `getbindings TABLET` | `profiles get INPUT --section bindings` | Partial | Contact policy and pen side buttons, including defaults. Auxiliary, mouse, wheel and plugin bindings remain open under B02-B04. |
 | `getmiscsettings TABLET` | `profiles get INPUT --section misc` | Partial | Device path, schema version and settings revision. Clipping/limiting live in `absolute`. |
 | `getfilters TABLET` | `profiles get INPUT --section filters` | Covered | Radial Follow entries and plugin references, including disabled ones. |
 | `gettools` | — | Open | P06. |
@@ -109,4 +109,4 @@ Upstream getters print text for the running daemon's settings. `profiles get` pr
 
 ## Summary
 
-47 upstream commands: 9 covered, 9 partial, 29 open.
+47 upstream commands: 9 covered, 10 partial, 28 open.

@@ -36,9 +36,13 @@ import diagnostics, and that button does nothing. Key names are OpenTabletDriver
 ...); `Control`, `Shift`, `Alt` and `Application` mean the left key. The media
 keys (`Mute`, `VolumeUp`, `PlayPause`, ...) are not supported.
 
-Changes made to pen buttons in this driver cannot be written back to an
-OpenTabletDriver settings file (`profiles export` refuses); keep the Rust TOML
-profile for them.
+Since 0.15.5, `profiles export` writes supported pen-button edits into a copy of
+the archived OpenTabletDriver document. It preserves unchanged bindings, other
+profiles and settings. A disabled button keeps its original store with `Enable`
+set to false; new empty slots are null. Replacing unsupported stores, changing a
+binding type that has unknown properties, or shortening the archived button list
+returns an error. Use `none` for unwanted buttons. A standalone TOML profile still
+needs an imported OTD archive to export.
 
 ## Rust TOML profiles
 
@@ -56,6 +60,39 @@ pen_buttons = ["mouse:right", "keys:Control+Z", "none"]
 
 Buttons past the end of the list do nothing. The settings panel has no editor
 for pen buttons yet; it keeps them when it saves.
+
+## Offline command-line editing
+
+The Windows CLI can inspect and edit pen buttons without starting the driver:
+
+```text
+opentabletdriver-rust.exe profiles get driver.toml --section bindings
+opentabletdriver-rust.exe profiles set driver.toml --output undo.toml --pen-button "1=keys:Control+Z" --pen-button "2=mouse:right"
+opentabletdriver-rust.exe profiles export undo.toml --output exported-settings.json
+```
+
+Button numbers start at 1, while profile indexes start at 0. Repeat `--pen-button`
+for different buttons, up to 64; duplicate numbers and unsupported actions are
+errors. Missing slots between the current list and the edited button become
+`none`. Each successful command increments the settings revision once and
+requires a new output filename. It never changes the source or applies the
+profile to a running driver. Button edits work in absolute and relative profiles;
+relative sensitivity/rotation/reset options still require relative output.
+
+`profiles get --section bindings` and the default `all` section always include
+`pen_buttons`, including the default barrel assignments omitted from TOML. Key
+names are printed in canonical form, such as `keys:LeftControl+Z`.
+
+The Linux and macOS driver CLIs can load the resulting TOML but do not yet expose
+these profile-editing commands. A key accepted by the profile format may still
+be unavailable on the target platform; see [platform output](#platform-output).
+
+Export uses the pinned upstream [AdaptiveBinding](https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Desktop/Binding/AdaptiveBinding.cs),
+[MouseBinding](https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Desktop/Binding/MouseBinding.cs),
+[KeyBinding](https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Desktop/Binding/KeyBinding.cs)
+and [MultiKeyBinding](https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Desktop/Binding/MultiKeyBinding.cs)
+store paths and property names. This establishes format support, not physical
+button or application compatibility.
 
 ## How a button is carried out
 
