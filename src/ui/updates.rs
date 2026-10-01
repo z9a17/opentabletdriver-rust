@@ -24,6 +24,10 @@ enum Event {
 
 static EVENTS: Mutex<VecDeque<Event>> = Mutex::new(VecDeque::new());
 static RESTARTING: AtomicBool = AtomicBool::new(false);
+/// A release the startup check found while the panel was not in front. It is
+/// offered when the user next brings the panel forward, so the check never
+/// takes focus from a game or another program.
+static DEFERRED: Mutex<Option<Release>> = Mutex::new(None);
 
 fn send(window: isize, event: Event) {
     if let Ok(mut events) = EVENTS.lock() {
@@ -72,6 +76,34 @@ fn install(window: HWND, release: Release) {
         }) {
             send(target, Event::Installed(Err(format!("Could not start update installation: {error}"))));
         }
+}
+
+/// Whether the user is looking at the panel or one of its windows.
+fn in_front(window: HWND) -> bool {
+    unsafe {
+        let foreground = GetForegroundWindow();
+        IsWindowVisible(window) != 0
+            && IsIconic(window) == 0
+            && !foreground.is_null()
+            && (foreground == window || GetAncestor(foreground, GA_ROOTOWNER) == window)
+    }
+}
+
+/// Offers a deferred update; called when the panel becomes active.
+pub(super) fn offer_deferred(window: HWND) {
+    if let Some(release) = DEFERRED
+        .lock()
+        .ok()
+        .and_then(|mut deferred| deferred.take())
+    {
+        send(
+            window as isize,
+            Event::Checked {
+                manual: false,
+                result: Ok(release),
+            },
+        );
+    }
 }
 
 /// Handles `WM_UPDATE` on the panel's thread.
@@ -142,10 +174,26 @@ fn checked(window: HWND, manual: bool, result: Result<Release, String>) {
     let current = env!("CARGO_PKG_VERSION");
     match result {
         Ok(release) if release.version > update::current_version() => {
-            if !manual {
-                // A launch minimized to the tray still needs a visible owner
-                // for the update screen. Current/offline launches stay hidden.
-                tray::show_panel(window);
+            if !manual && !in_front(window) {
+                let message = format!(
+                    "{} is available. Open the panel to install it.",
+                    release.tag
+                );
+                let Ok(mut deferred) = DEFERRED.lock() else {
+                    return;
+                };
+                // Announce each release once, not every time it is deferred.
+                if deferred
+                    .as_ref()
+                    .is_none_or(|known| known.tag != release.tag)
+                {
+                    log(Level::Info, message.clone());
+                    if with_app(|app| app.in_tray).unwrap_or(false) {
+                        tray::balloon(window, "Update available", &message);
+                    }
+                }
+                *deferred = Some(release);
+                return;
             }
             let answer = message_box(
                 window,

@@ -123,7 +123,13 @@ impl Drop for Companions {
 struct Running {
     stop: Event,
     thread: JoinHandle<std::io::Result<()>>,
+    /// Set when the session returns, before the thread has fully exited.
+    done: Arc<AtomicBool>,
 }
+
+/// How long discovery sleeps without a device change or a companion ending.
+/// The rescan after it repairs a missed notification.
+const RESCAN: std::time::Duration = std::time::Duration::from_secs(60);
 
 fn supervise(
     profile: Profile,
@@ -172,7 +178,9 @@ fn supervise(
             }
             let finished: Vec<_> = running
                 .iter()
-                .filter(|(_, session)| session.thread.is_finished())
+                .filter(|(_, session)| {
+                    session.done.load(Ordering::Acquire) || session.thread.is_finished()
+                })
                 .map(|(path, _)| path.clone())
                 .collect();
             for path in finished {
@@ -188,7 +196,7 @@ fn supervise(
                 }
             }
             // PnP changes drive discovery. A slow fallback repairs missed notifications.
-            if rescan || scanned.elapsed() >= std::time::Duration::from_secs(60) {
+            if rescan || scanned.elapsed() >= RESCAN {
                 known = candidates(&database);
                 scanned = std::time::Instant::now();
                 rejected.clear();
@@ -213,7 +221,7 @@ fn supervise(
                         continue;
                     }
                 };
-                match spawn(path.clone(), name.clone(), profile, database.clone()) {
+                match spawn(path.clone(), name.clone(), profile, database.clone(), &wake) {
                     Ok(session) => {
                         log(&format!("Also running {name} (a second tablet)."));
                         running.insert(path.clone(), session);
@@ -221,7 +229,8 @@ fn supervise(
                     Err(error) => log(&format!("Could not start {name}: {error}")),
                 }
             }
-            rescan = match session::companion_wake(&notification, &wake) {
+            let until_rescan = RESCAN.saturating_sub(scanned.elapsed());
+            rescan = match session::companion_wake(&notification, &wake, until_rescan) {
                 Ok(changed) => changed,
                 Err(error) => {
                     log(&format!("Companion discovery stopped: {error}"));
@@ -304,19 +313,29 @@ fn import_otd(tablet: &str) -> Result<Option<Profile>, String> {
     Profile::load_otd_tablet(tablet)
 }
 
+/// Starts a companion session that wakes discovery when it ends.
 fn spawn(
     path: String,
     name: String,
     profile: Profile,
     database: Database,
+    wake: &Event,
 ) -> Result<Running, String> {
     let stop = Event::create(true).map_err(|error| error.to_string())?;
     let thread_stop = stop.duplicate().map_err(|error| error.to_string())?;
+    let thread_wake = wake.duplicate().map_err(|error| error.to_string())?;
+    let done = Arc::new(AtomicBool::new(false));
+    let thread_done = Arc::clone(&done);
     let thread = std::thread::Builder::new()
         .name(format!("tablet-{name}"))
-        .spawn(move || run_companion(&path, &name, &profile, &database, &thread_stop))
+        .spawn(move || {
+            let result = run_companion(&path, &name, &profile, &database, &thread_stop);
+            thread_done.store(true, Ordering::Release);
+            let _ = thread_wake.signal();
+            result
+        })
         .map_err(|error| error.to_string())?;
-    Ok(Running { stop, thread })
+    Ok(Running { stop, thread, done })
 }
 
 fn run_companion(
@@ -382,7 +401,14 @@ mod tests {
                     Ok(())
                 }
             });
-            running.insert(name.into(), Running { stop, thread });
+            running.insert(
+                name.into(),
+                Running {
+                    stop,
+                    thread,
+                    done: Arc::default(),
+                },
+            );
         }
         let error = stop_all(&mut running).unwrap_err();
         assert!(error.contains("unreleased contact"), "{error}");

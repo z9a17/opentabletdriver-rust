@@ -171,6 +171,7 @@ To build the Windows .NET bridge and ZIP, install the .NET 8+ SDK and run `pwsh 
 - [Reference](docs/REFERENCE.md): every command, profile format, the daemon and troubleshooting notes
 - [Plugins and UI](docs/PLUGINS_AND_UI.md) Â· [Pen output](docs/PEN_OUTPUT.md) Â· [Relative mode](docs/RELATIVE_MODE.md)
 - [Performance](docs/PERFORMANCE.md) and [input latency](docs/INPUT_LATENCY.md), compared with OpenTabletDriver 0.6.7
+- [Performance audit, 0.15.3](docs/AUDIT_FIXES_0.15.3.md): every release measured against 0.7.5 and OpenTabletDriver, and what was fixed
 - [Performance and usability audit, 0.14.1](docs/AUDIT_FIXES_0.14.1.md): source findings, fixes and remaining limits
 - [Debugger crash and panel cleanup, 0.14.2](docs/DEBUGGER_AND_UI_0.14.2.md): captured crash cause, UI changes and native/.NET settings comparison
 - [Plugin manager and menu cleanup, 0.14.3](docs/UI_CLEANUP_0.14.3.md): header theme, compact filter controls and dropdown click-to-close

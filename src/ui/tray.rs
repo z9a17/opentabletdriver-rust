@@ -2,8 +2,9 @@
 //! panel runs, a click brings the panel back, and its menu offers Show Window
 //! and Close. Minimizing the panel hides it here.
 use windows_sys::Win32::UI::Shell::{
-    NIF_ICON, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION,
-    NIN_SELECT, NINF_KEY, NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW,
+    NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_INFO, NIIF_RESPECT_QUIET_TIME,
+    NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NIN_BALLOONUSERCLICK, NIN_SELECT, NINF_KEY,
+    NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 
 use super::*;
@@ -45,6 +46,28 @@ pub(super) fn set_tip(window: HWND, tip: &str) {
     unsafe { Shell_NotifyIconW(NIM_MODIFY, &data(window, tip)) };
 }
 
+/// Shows a notification from the icon. It never takes focus, and Windows
+/// holds it back during quiet time and while a full-screen game is in front.
+/// Clicking it opens the panel. Returns whether Windows accepted it.
+pub(super) fn balloon(window: HWND, title: &str, text: &str) -> bool {
+    let mut data = NOTIFYICONDATAW {
+        cbSize: size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: window,
+        uID: ICON_ID,
+        uFlags: NIF_INFO,
+        dwInfoFlags: NIIF_INFO | NIIF_RESPECT_QUIET_TIME,
+        ..Default::default()
+    };
+    for (field, value) in [
+        (&mut data.szInfoTitle[..], title),
+        (&mut data.szInfo[..], text),
+    ] {
+        let units: Vec<u16> = value.encode_utf16().take(field.len() - 1).collect();
+        field[..units.len()].copy_from_slice(&units);
+    }
+    unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) != 0 }
+}
+
 pub(super) fn remove(window: HWND) {
     unsafe { Shell_NotifyIconW(NIM_DELETE, &data(window, "")) };
 }
@@ -68,7 +91,7 @@ pub(super) fn show_panel(window: HWND) {
 /// Handles `WM_TRAY`, the icon's callback message.
 pub(super) fn notify(window: HWND, wp: WPARAM, lp: LPARAM) {
     match (lp & 0xFFFF) as u32 {
-        NIN_SELECT | NIN_KEYSELECT | WM_LBUTTONDBLCLK => show_panel(window),
+        NIN_SELECT | NIN_KEYSELECT | NIN_BALLOONUSERCLICK | WM_LBUTTONDBLCLK => show_panel(window),
         WM_CONTEXTMENU => menu(window, point_from(wp as LPARAM)),
         _ => {}
     }

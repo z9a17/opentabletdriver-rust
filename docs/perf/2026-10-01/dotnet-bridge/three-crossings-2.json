@@ -1,0 +1,95 @@
+{
+  "cases": [
+    {
+      "allocations": 0,
+      "allocations_per_report": 0.0,
+      "description": "as absolute, with the unchanged RadialFollow 0.3.0 DLL through the .NET bridge instead of the built-in port",
+      "first_report_us": [
+        5612.2,
+        1150.5,
+        1249.4,
+        1148.1,
+        1133.3
+      ],
+      "name": "absolute+managed_radial_follow",
+      "per_report_ns": {
+        "max": {
+          "max": 13579.0,
+          "median": 4318.1,
+          "min": 3095.8,
+          "spread_pct": 242.8
+        },
+        "mean": {
+          "max": 579.0,
+          "median": 542.3,
+          "min": 532.6,
+          "spread_pct": 8.6
+        },
+        "p50": {
+          "max": 531.0,
+          "median": 511.0,
+          "min": 511.0,
+          "spread_pct": 3.9
+        },
+        "p95": {
+          "max": 921.7,
+          "median": 871.6,
+          "min": 571.1,
+          "spread_pct": 40.2
+        },
+        "p99": {
+          "max": 1102.1,
+          "median": 1011.9,
+          "min": 991.9,
+          "spread_pct": 10.9
+        },
+        "p999": {
+          "max": 1823.4,
+          "median": 1633.1,
+          "min": 1272.4,
+          "spread_pct": 33.7
+        }
+      },
+      "reports": 20000,
+      "rounds": 5,
+      "setup_ms": [
+        127.4,
+        2.9,
+        3.7,
+        3.4,
+        3.0
+      ],
+      "thread_cpu_ns_per_report": 566.0,
+      "throughput_per_s": 1766160.0
+    }
+  ],
+  "driver": {
+    "commit": null,
+    "name": "opentabletdriver-rust",
+    "version": "0.15.2"
+  },
+  "harness": "rust",
+  "machine": {
+    "cpu": "AMD Ryzen 7 5800X3D 8-Core Processor",
+    "invariant_tsc": true,
+    "logical_cpus": 16,
+    "thread_cycle_hz": 3392269080.0,
+    "tsc_hz": 3393626757.0
+  },
+  "method": {
+    "allocations": "Rust allocations on the measuring thread during the timed pass",
+    "rounds": 5,
+    "timer": "rdtsc/rdtscp with lfence around each report, converted with the measured counter frequency",
+    "warmup_ms": 1000
+  },
+  "replay": null,
+  "schema": "otd-bench/1",
+  "trace": {
+    "fnv1a64": "719b88e0c722d0af",
+    "generator": "osu-synthetic-v1",
+    "rate_hz": 200.0,
+    "report_bytes": 192,
+    "reports": 20000,
+    "seed": 20260923
+  }
+}

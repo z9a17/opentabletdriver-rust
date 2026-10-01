@@ -1182,6 +1182,9 @@ unsafe extern "system" fn window_proc(
                     LAST_FOCUS.with(|last| last.set(focus as isize));
                 }
             } else {
+                // The user brought the panel forward: offer an update the
+                // startup check held back. Posted, so it never runs here.
+                updates::offer_deferred(window);
                 let focus = LAST_FOCUS.with(Cell::get) as HWND;
                 if !focus.is_null()
                     && unsafe { IsWindow(focus) } != 0

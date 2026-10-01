@@ -936,7 +936,7 @@ mod tests {
     fn discovery_does_not_query_strings_for_impossible_report_lengths() {
         let files = vec![("discovery-fixture.json".into(), serde_json::json!({
             "Name": "Discovery fixture",
-            "Specifications": {"Digitizer": {"Width": 100, "Height": 100, "MaxX": 1000, "MaxY": 1000}, "Pen": {"MaxPressure": 1000}},
+            "Specifications": {"Digitizer": {"Width": 100, "Height": 100, "MaxX": 1000, "MaxY": 1000}, "Pen": {"MaxPressure": 1000, "ButtonCount": 2}},
             "DigitizerIdentifiers": [
                 {"VendorID": 65534, "ProductID": 65534, "InputReportLength": 64, "DeviceStrings": {"201": "^slow$"}},
                 {"VendorID": 65534, "ProductID": 65534, "OutputReportLength": 64, "DeviceStrings": {"202": "^slow$"}},
@@ -946,6 +946,8 @@ mod tests {
             ]
         }).to_string())];
         let database = Database::with_overrides(&files);
+        // An unusable fixture would make every assertion below vacuous.
+        assert_eq!(database.find(65534, 65534).count(), 5);
         let mut endpoint = Endpoint {
             path: "fixture".into(), physical_id: "physical-fixture".into(),
             transport: Transport::UsbHid, vendor_id: 65534, product_id: 65534,

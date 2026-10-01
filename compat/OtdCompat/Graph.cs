@@ -71,6 +71,10 @@ unsafe sealed class SynchronousGraph
     delegate* unmanaged[Cdecl]<nint, uint, uint, GraphReport*, int> callback;
     nint scope;
     bool running, failed;
+    // Fused continuations: the host already ran its built-in filters, and
+    // operation 4 transforms and outputs in one native call. Each native call
+    // exports the report, crosses into Rust and decodes it there.
+    bool fused;
     int currentEmitter = -1;
     public int FailedIndex { get; private set; } = -1;
     public string? Error { get; private set; }
@@ -106,16 +110,17 @@ unsafe sealed class SynchronousGraph
         return nodes;
     }
     public int Dispatch(GraphReport* input,
-        delegate* unmanaged[Cdecl]<nint, uint, uint, GraphReport*, int> native, nint nativeScope)
+        delegate* unmanaged[Cdecl]<nint, uint, uint, GraphReport*, int> native, nint nativeScope,
+        bool fusedContinuations = false)
     {
         if (running || Environment.CurrentManagedThreadId != ownerThread)
             throw new InvalidOperationException("The synchronous graph must run on its owning thread.");
         running = true; failed = false; FailedIndex = -1; currentEmitter = -1; Error = null;
-        callback = native; scope = nativeScope;
+        callback = native; scope = nativeScope; fused = fusedContinuations;
         try
         {
             IDeviceReport report = Import(input);
-            if (Call(0, 0, report)) Visit(pre, 0, report, transform);
+            if (fused || Call(0, 0, report)) Visit(pre, 0, report, transform);
             return failed ? -1 : 0;
         }
         catch (GraphAbort) { return -1; }
@@ -139,12 +144,13 @@ unsafe sealed class SynchronousGraph
 
     /// Fires due timers. A timer emission continues downstream of its filter,
     /// exactly as a synchronous emission does.
-    public int Tick(delegate* unmanaged[Cdecl]<nint, uint, uint, GraphReport*, int> native, nint nativeScope)
+    public int Tick(delegate* unmanaged[Cdecl]<nint, uint, uint, GraphReport*, int> native, nint nativeScope,
+        bool fusedContinuations = false)
     {
         if (running || Environment.CurrentManagedThreadId != ownerThread)
             throw new InvalidOperationException("The synchronous graph must run on its owning thread.");
         running = true; failed = false; FailedIndex = -1; currentEmitter = -1; Error = null;
-        callback = native; scope = nativeScope;
+        callback = native; scope = nativeScope; fused = fusedContinuations;
         try
         {
             long now = Stopwatch.GetTimestamp();
@@ -185,6 +191,8 @@ unsafe sealed class SynchronousGraph
 
     void Transform(IDeviceReport report)
     {
+        // Without post-transform filters nothing runs between the two.
+        if (fused && post.Length == 0) { Call(4, 0, report); return; }
         if (Call(2, 0, report)) Visit(post, 0, report, output);
     }
     void Output(IDeviceReport report) { Call(3, 0, report); }
@@ -238,8 +246,10 @@ unsafe sealed class SynchronousGraph
                 int result = callback(scope, operation, index, &frame);
                 if (result < 0) { failed = true; throw new GraphAbort(); }
                 var updatedPosition = new Vector2(frame.X, frame.Y);
+                // Transform (2, or 4 fused with output) moves the report itself,
+                // as upstream's output mode does.
                 if (operation != 3 && report is IAbsolutePositionReport position
-                    && (operation == 2 || originalPosition != updatedPosition))
+                    && (operation is 2 or 4 || originalPosition != updatedPosition))
                     position.Position = updatedPosition;
                 return result == 0;
             }
@@ -460,6 +470,38 @@ public static unsafe partial class EntryPoints
             if (callback == null) throw new ArgumentException("Missing graph continuation.");
             var graph = (SynchronousGraph)GCHandle.FromIntPtr(context).Target!;
             int result = graph.Dispatch(report, callback, scope);
+            if (result != 0) lastError = graph.Error ?? "A native graph continuation failed.";
+            return result;
+        }
+        catch (Exception error) { lastError = error.GetBaseException().Message; return -1; }
+    }
+
+    /// DispatchGraph with fused continuations, for 0.15.3 hosts and later.
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static int DispatchGraph2(nint context, GraphReport* report,
+        delegate* unmanaged[Cdecl]<nint, uint, uint, GraphReport*, int> callback, nint scope)
+    {
+        try
+        {
+            if (callback == null) throw new ArgumentException("Missing graph continuation.");
+            var graph = (SynchronousGraph)GCHandle.FromIntPtr(context).Target!;
+            int result = graph.Dispatch(report, callback, scope, fusedContinuations: true);
+            if (result != 0) lastError = graph.Error ?? "A native graph continuation failed.";
+            return result;
+        }
+        catch (Exception error) { lastError = error.GetBaseException().Message; return -1; }
+    }
+
+    /// TickGraph with fused continuations, for 0.15.3 hosts and later.
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static int TickGraph2(nint context,
+        delegate* unmanaged[Cdecl]<nint, uint, uint, GraphReport*, int> callback, nint scope)
+    {
+        try
+        {
+            if (callback == null) throw new ArgumentException("Missing graph continuation.");
+            var graph = (SynchronousGraph)GCHandle.FromIntPtr(context).Target!;
+            int result = graph.Tick(callback, scope, fusedContinuations: true);
             if (result != 0) lastError = graph.Error ?? "A native graph continuation failed.";
             return result;
         }

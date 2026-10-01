@@ -393,13 +393,13 @@ mod app {
         ).map_err(SessionError::hardware)
     }
 
-    /// Waits two seconds between device scans, waking early on a stop.
+    /// Waits two seconds between device scans. A stop signal ends the wait:
+    /// poll is never restarted after a signal handler, while
+    /// `std::thread::sleep` would sleep on.
     fn pause() {
-        for _ in 0..20 {
-            if STOP.load(Ordering::Acquire) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(100));
+        if !STOP.load(Ordering::Acquire) {
+            // SAFETY: no descriptors, only the timeout.
+            unsafe { libc::poll(std::ptr::null_mut(), 0, 2_000) };
         }
     }
 

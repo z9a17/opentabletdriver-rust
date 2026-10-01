@@ -235,6 +235,30 @@ pub fn serve(handler: &mut impl ControlHandler, stop: &AtomicBool) -> io::Result
     pipe::serve(handler, stop)
 }
 
+/// The auto-reset event that wakes the control thread to poll its handler.
+/// Without it the control thread falls back to polling every 50 ms.
+fn wake_event() -> Option<windows_sys::Win32::Foundation::HANDLE> {
+    static WAKE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let event = *WAKE.get_or_init(|| unsafe {
+        windows_sys::Win32::System::Threading::CreateEventW(
+            std::ptr::null(),
+            0,
+            0,
+            std::ptr::null(),
+        ) as usize
+    });
+    (event != 0).then_some(event as windows_sys::Win32::Foundation::HANDLE)
+}
+
+/// Wakes the control thread, which otherwise sleeps until a client connects.
+/// Call it after anything `ControlHandler::poll` must see: a worker notice or
+/// log line, a worker's exit, a stop request.
+pub fn wake() {
+    if let Some(event) = wake_event() {
+        unsafe { windows_sys::Win32::System::Threading::SetEvent(event) };
+    }
+}
+
 /// Contact an existing daemon. Does not launch one, retry commands or inject input.
 /// Timeout includes connection, framing, response and response acknowledgement.
 pub fn request(request: &Request, timeout: Duration) -> io::Result<Response> {

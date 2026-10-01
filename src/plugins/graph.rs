@@ -100,6 +100,17 @@ impl Scope<'_> {
                 true
             }
             2 => self.runtime.transform(kind, &mut values)?,
+            4 => {
+                // Fused transform and output, for a graph without managed
+                // post-transform filters: one native call instead of two.
+                let keep = self.runtime.transform(kind, &mut values)?;
+                if keep {
+                    // .NET pins this report's Raw array until the callback returns.
+                    self.runtime
+                        .output(kind, &values, unsafe { frame.raw()? })?;
+                }
+                keep
+            }
             3 => {
                 // .NET pins this report's current Raw array until the callback
                 // returns. The output stage cannot retain this borrowed view.
@@ -207,6 +218,11 @@ impl PluginChain {
                         "managed dispatch requires the complete raw pen packet",
                     ));
                 }
+            }
+            // The built-in filters always run first. The fused bridge leaves
+            // them to the host, which saves a native continuation per report.
+            if graph.runs_builtins_in_host() {
+                runtime.builtins(&mut values)?;
             }
             let frame = GraphReport::new(input.kind, &values, raw)?;
             // Disjoint field borrows: graph owns only managed references; this
