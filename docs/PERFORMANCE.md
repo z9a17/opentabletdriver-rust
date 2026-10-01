@@ -4,6 +4,8 @@ This page describes the repeatable performance measurements (F04): what they tim
 
 These are software measurements. They time the work between a report arriving and the cursor call returning. They do not include USB transfer, the HID read call, the display, or anything a camera would see.
 
+The results below were measured with 0.7.5. The [0.15.3 performance audit](AUDIT_FIXES_0.15.3.md) measured every release since then and OpenTabletDriver again on 1 October 2026. From 0.8.0 until 0.15.3 the idle daemon woke about 20 times a second instead of the 1.6 shown below, and from 0.9.0 the unchanged RadialFollow DLL cost about 530 ns per report through the .NET bridge (381 ns since 0.15.3) instead of 180 ns.
+
 ## Results on the development machine
 
 Ryzen 7 5800X3D (16 logical CPUs), Windows 11 Pro build 26200, Ultimate Performance power plan, 23 September 2026. This driver 0.7.5 against OpenTabletDriver 0.6.7 on .NET 8.0.31, both replaying the same trace with the development machine's osu! profile. Each number is the median of three runs unless noted; the complete output is in [perf/2026-09-23](perf/2026-09-23/summary.md).

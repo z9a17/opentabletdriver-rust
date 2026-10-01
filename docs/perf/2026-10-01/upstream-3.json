@@ -1,0 +1,504 @@
+{
+  "schema": "otd-bench/1",
+  "harness": "upstream",
+  "driver": {
+    "name": "OpenTabletDriver",
+    "version": "0.6.7",
+    "commit": null
+  },
+  "runtime": {
+    "framework": ".NET 8.0.31",
+    "server_gc": false,
+    "gc_latency_mode": "Interactive",
+    "tiered_pgo": true
+  },
+  "machine": {
+    "cpu": "AMD Ryzen 7 5800X3D 8-Core Processor",
+    "logical_cpus": 16,
+    "tsc_hz": 3393606003,
+    "thread_cycle_hz": 3381829351,
+    "invariant_tsc": true
+  },
+  "trace": {
+    "file": "trace.bin",
+    "fnv1a64": "719b88e0c722d0af",
+    "generator": "osu-synthetic-v1",
+    "rate_hz": 200.0,
+    "report_bytes": 192,
+    "reports": 20000,
+    "seed": 20260923
+  },
+  "method": {
+    "rounds": 7,
+    "warmup_ms": 1000,
+    "timer": "rdtsc/rdtscp with lfence around each report, converted with the measured counter frequency",
+    "allocations": "managed bytes allocated on the measuring thread during the timed pass"
+  },
+  "cases": [
+    {
+      "name": "empty",
+      "description": "the harness alone: timing and one delegate call per report",
+      "reports": 20000,
+      "rounds": 7,
+      "per_report_ns": {
+        "p50": {
+          "median": 30.1,
+          "min": 20,
+          "max": 30.1,
+          "spread_pct": 33.3
+        },
+        "p95": {
+          "median": 30.1,
+          "min": 30.1,
+          "max": 30.1,
+          "spread_pct": 0
+        },
+        "p99": {
+          "median": 30.1,
+          "min": 30.1,
+          "max": 40.1,
+          "spread_pct": 33.3
+        },
+        "p999": {
+          "median": 30.1,
+          "min": 30.1,
+          "max": 50.1,
+          "spread_pct": 66.7
+        },
+        "max": {
+          "median": 360.7,
+          "min": 50.1,
+          "max": 13757,
+          "spread_pct": 3800.3
+        },
+        "mean": {
+          "median": 28.9,
+          "min": 24,
+          "max": 30.2,
+          "spread_pct": 21.4
+        }
+      },
+      "thread_cpu_ns_per_report": 57.2,
+      "throughput_per_s": 17571604,
+      "gc_bytes_per_report": 0,
+      "gc_collections": {
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      "setup_ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "first_report_us": [
+        14.8,
+        0.5,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.2
+      ]
+    },
+    {
+      "name": "parse",
+      "description": "IntuosV2ReportParser.Parse on each 192-byte report",
+      "reports": 20000,
+      "rounds": 7,
+      "per_report_ns": {
+        "p50": {
+          "median": 40.1,
+          "min": 40.1,
+          "max": 50.1,
+          "spread_pct": 25
+        },
+        "p95": {
+          "median": 50.1,
+          "min": 40.1,
+          "max": 60.1,
+          "spread_pct": 40
+        },
+        "p99": {
+          "median": 370.7,
+          "min": 330.6,
+          "max": 380.7,
+          "spread_pct": 13.5
+        },
+        "p999": {
+          "median": 521,
+          "min": 470.9,
+          "max": 701.3,
+          "spread_pct": 44.2
+        },
+        "max": {
+          "median": 951.8,
+          "min": 831.6,
+          "max": 3065.8,
+          "spread_pct": 234.7
+        },
+        "mean": {
+          "median": 45.1,
+          "min": 40.1,
+          "max": 54.7,
+          "spread_pct": 32.2
+        }
+      },
+      "thread_cpu_ns_per_report": 70.9,
+      "throughput_per_s": 14178364,
+      "gc_bytes_per_report": 96,
+      "gc_collections": {
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      "setup_ms": [
+        0.1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "first_report_us": [
+        477.1,
+        0.5,
+        0.5,
+        0.8,
+        0.3,
+        0.4,
+        0.4
+      ]
+    },
+    {
+      "name": "absolute",
+      "description": "the daemon\u0027s report path: parse, report event, tree lock, absolute mode and the tip binding; the pointer keeps the position",
+      "reports": 20000,
+      "rounds": 7,
+      "per_report_ns": {
+        "p50": {
+          "median": 120.2,
+          "min": 110.2,
+          "max": 130.2,
+          "spread_pct": 16.7
+        },
+        "p95": {
+          "median": 180.3,
+          "min": 150.3,
+          "max": 230.4,
+          "spread_pct": 44.4
+        },
+        "p99": {
+          "median": 430.8,
+          "min": 380.7,
+          "max": 480.9,
+          "spread_pct": 23.3
+        },
+        "p999": {
+          "median": 641.2,
+          "min": 551,
+          "max": 861.6,
+          "spread_pct": 48.4
+        },
+        "max": {
+          "median": 9070.6,
+          "min": 861.6,
+          "max": 483842.8,
+          "spread_pct": 5324.7
+        },
+        "mean": {
+          "median": 130.5,
+          "min": 120.3,
+          "max": 185.9,
+          "spread_pct": 50.3
+        }
+      },
+      "thread_cpu_ns_per_report": 157,
+      "throughput_per_s": 6395089,
+      "gc_bytes_per_report": 96.2,
+      "gc_collections": {
+        "gen0": 2,
+        "gen1": 1,
+        "gen2": 1
+      },
+      "setup_ms": [
+        77,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1
+      ],
+      "first_report_us": [
+        3708.8,
+        1,
+        1,
+        1.1,
+        0.8,
+        0.9,
+        1.1
+      ]
+    },
+    {
+      "name": "relative",
+      "description": "as absolute, in relative mode at 10 counts/mm",
+      "reports": 20000,
+      "rounds": 7,
+      "per_report_ns": {
+        "p50": {
+          "median": 140.3,
+          "min": 140.3,
+          "max": 220.4,
+          "spread_pct": 57.1
+        },
+        "p95": {
+          "median": 210.4,
+          "min": 180.3,
+          "max": 290.5,
+          "spread_pct": 52.4
+        },
+        "p99": {
+          "median": 480.9,
+          "min": 420.8,
+          "max": 601.1,
+          "spread_pct": 37.5
+        },
+        "p999": {
+          "median": 751.4,
+          "min": 601.1,
+          "max": 1072,
+          "spread_pct": 62.7
+        },
+        "max": {
+          "median": 8920,
+          "min": 2514.7,
+          "max": 13114.7,
+          "spread_pct": 118.8
+        },
+        "mean": {
+          "median": 158.8,
+          "min": 148.4,
+          "max": 217,
+          "spread_pct": 43.2
+        }
+      },
+      "thread_cpu_ns_per_report": 183.2,
+      "throughput_per_s": 5443658,
+      "gc_bytes_per_report": 96,
+      "gc_collections": {
+        "gen0": 0,
+        "gen1": 0,
+        "gen2": 0
+      },
+      "setup_ms": [
+        0.9,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1
+      ],
+      "first_report_us": [
+        610.3,
+        1.7,
+        1.5,
+        1,
+        1,
+        1.4,
+        1
+      ]
+    },
+    {
+      "name": "absolute\u002Bmanaged_radial_follow",
+      "description": "as absolute, with the unchanged RadialFollow 0.3.0 tablet-space filter (the osu! profile)",
+      "reports": 20000,
+      "rounds": 7,
+      "per_report_ns": {
+        "p50": {
+          "median": 220.4,
+          "min": 210.4,
+          "max": 230.4,
+          "spread_pct": 9.1
+        },
+        "p95": {
+          "median": 290.5,
+          "min": 260.5,
+          "max": 320.6,
+          "spread_pct": 20.7
+        },
+        "p99": {
+          "median": 571.1,
+          "min": 521,
+          "max": 581.1,
+          "spread_pct": 10.5
+        },
+        "p999": {
+          "median": 821.5,
+          "min": 681.3,
+          "max": 951.8,
+          "spread_pct": 32.9
+        },
+        "max": {
+          "median": 5831,
+          "min": 2334.4,
+          "max": 93606,
+          "spread_pct": 1565.3
+        },
+        "mean": {
+          "median": 231.1,
+          "min": 218,
+          "max": 232.9,
+          "spread_pct": 6.4
+        }
+      },
+      "thread_cpu_ns_per_report": 255.6,
+      "throughput_per_s": 3922107,
+      "gc_bytes_per_report": 96,
+      "gc_collections": {
+        "gen0": 1,
+        "gen1": 0,
+        "gen2": 0
+      },
+      "setup_ms": [
+        2.3,
+        0.4,
+        0.3,
+        0.3,
+        0.2,
+        0.3,
+        0.3
+      ],
+      "first_report_us": [
+        395.7,
+        1.7,
+        1.4,
+        1.4,
+        1.5,
+        1.3,
+        1.2
+      ]
+    },
+    {
+      "name": "absolute\u002Bmanaged_radial_follow\u002Bread_buffer",
+      "description": "as the osu! profile case, with a new 192-byte buffer per report as the HID read returns",
+      "reports": 20000,
+      "rounds": 7,
+      "per_report_ns": {
+        "p50": {
+          "median": 230.4,
+          "min": 220.4,
+          "max": 240.5,
+          "spread_pct": 8.7
+        },
+        "p95": {
+          "median": 330.6,
+          "min": 320.6,
+          "max": 390.7,
+          "spread_pct": 21.2
+        },
+        "p99": {
+          "median": 631.2,
+          "min": 571.1,
+          "max": 681.3,
+          "spread_pct": 17.5
+        },
+        "p999": {
+          "median": 891.7,
+          "min": 851.6,
+          "max": 961.8,
+          "spread_pct": 12.4
+        },
+        "max": {
+          "median": 3145.9,
+          "min": 2655,
+          "max": 77706.1,
+          "spread_pct": 2385.7
+        },
+        "mean": {
+          "median": 246.6,
+          "min": 237.9,
+          "max": 258.4,
+          "spread_pct": 8.3
+        }
+      },
+      "thread_cpu_ns_per_report": 271.8,
+      "throughput_per_s": 3690718,
+      "gc_bytes_per_report": 312,
+      "gc_collections": {
+        "gen0": 1,
+        "gen1": 0,
+        "gen2": 0
+      },
+      "setup_ms": [
+        0.3,
+        0.2,
+        0.2,
+        0.2,
+        0.2,
+        0.2,
+        0.2
+      ],
+      "first_report_us": [
+        50.3,
+        1.6,
+        1.4,
+        1.5,
+        1.5,
+        1.4,
+        1.5
+      ]
+    }
+  ],
+  "replay": {
+    "rate_hz": 200,
+    "reports": 6000,
+    "processed": 6000,
+    "coalesced": 0,
+    "send_input": false,
+    "wake_ns": {
+      "p50": 5562.2,
+      "p95": 7263.7,
+      "p99": 8948.3,
+      "p999": 51312.7,
+      "max": 154071.5,
+      "mean": 5813.5
+    },
+    "pipeline_ns": {
+      "p50": 2184.1,
+      "p95": 2584.9,
+      "p99": 3917.4,
+      "p999": 5129.6,
+      "max": 113713.8,
+      "mean": 2195.1
+    },
+    "output_ns": {
+      "p50": 0,
+      "p95": 0,
+      "p99": 0,
+      "p999": 0,
+      "max": 0,
+      "mean": 0
+    },
+    "signal_to_output_ns": {
+      "p50": 7826.5,
+      "p95": 9578.3,
+      "p99": 11481.6,
+      "p999": 52955.8,
+      "max": 167511.2,
+      "mean": 8008.6
+    },
+    "gc_bytes_per_report": 96,
+    "gc_collections": {
+      "gen0": 0,
+      "gen1": 0,
+      "gen2": 0
+    }
+  }
+}

@@ -19,8 +19,11 @@ pub fn serve() -> Result<(), String> {
     );
     let cancelled = Arc::new(AtomicBool::new(false));
     let signal = Arc::clone(&cancelled);
-    ctrlc::set_handler(move || signal.store(true, Ordering::Release))
-        .map_err(|error| error.to_string())?;
+    ctrlc::set_handler(move || {
+        signal.store(true, Ordering::Release);
+        control::wake();
+    })
+    .map_err(|error| error.to_string())?;
     let mut daemon = Daemon::new(Arc::clone(&cancelled));
     let result = control::serve(&mut daemon, &cancelled).map_err(|error| error.to_string());
     let cleanup = daemon.cleanup();

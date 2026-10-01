@@ -55,6 +55,18 @@ pub struct Worker {
     pub notices: Receiver<Notice>,
     pub logs: Receiver<String>,
     pub thread: JoinHandle<Result<(), String>>,
+    done: Arc<AtomicBool>,
+}
+
+/// Marks the worker finished and wakes the control thread, last thing on the
+/// worker thread, even if it unwinds. `JoinHandle::is_finished` turns true
+/// only later, so a poll woken by this must not rely on it.
+struct Done(Arc<AtomicBool>);
+impl Drop for Done {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+        crate::control::wake();
+    }
 }
 impl Worker {
     pub fn spawn(profile: Profile) -> Result<Self, String> {
@@ -65,9 +77,12 @@ impl Worker {
         let (commands, receiver) = mpsc::sync_channel(4);
         let (notifier, notices) = mpsc::sync_channel(8);
         let (logger, logs) = mpsc::sync_channel(crate::control::MAX_LOG_LINES);
+        let done = Arc::new(AtomicBool::new(false));
+        let thread_done = Done(Arc::clone(&done));
         let thread = std::thread::Builder::new()
             .name("tablet-driver".into())
             .spawn(move || {
+                let _done = thread_done;
                 run(
                     profile,
                     &thread_interrupt,
@@ -85,6 +100,7 @@ impl Worker {
             notices,
             logs,
             thread,
+            done,
         })
     }
     pub fn command(&self, command: Directive) -> Result<(), String> {
@@ -102,8 +118,9 @@ impl Worker {
         let _ = self.commands.try_send(Directive::Stop);
         self.interrupt.signal().map_err(|error| error.to_string())
     }
+    /// The worker has returned; `join` then waits only for its thread exit.
     pub fn finished(&self) -> bool {
-        self.thread.is_finished()
+        self.done.load(Ordering::Acquire) || self.thread.is_finished()
     }
     pub fn join(self) -> Result<(), String> {
         self.thread
@@ -144,11 +161,14 @@ fn run(
     let outcome = (|| {
     let log = |line: &str| {
         let _ = logs.try_send(line.to_owned());
+        crate::control::wake();
     };
     let notify = |notice| {
-        notices
+        let sent = notices
             .send(notice)
-            .map_err(|_| "daemon control owner disconnected".to_owned())
+            .map_err(|_| "daemon control owner disconnected".to_owned());
+        crate::control::wake();
+        sent
     };
     let configured_tablets = crate::check_tablet_configurations()?;
     let database = configured_tablets.as_ref();
@@ -323,6 +343,7 @@ fn run(
                                 interrupt,
                                 move |line| {
                                     let _ = companion_logs.try_send(line.to_owned());
+                                    crate::control::wake();
                                 },
                             )
                             .map_err(io::Error::other)?,

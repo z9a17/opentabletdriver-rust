@@ -1611,7 +1611,18 @@ mod tests {
             path.parent().unwrap().join("filters/test.dll")
         );
         assert!(Profile::from_toml_text("[[radial_follow]]\nouter_radius=nan\n", &path).is_err());
-        assert!(Profile::from_toml_text("[bindings]\ntip_threshold_raw=8192\n", &path).is_err());
+        // Thresholds are checked against the tablet that runs the profile,
+        // since other tablets report more pressure levels than the PTH-660.
+        let above = Profile::from_toml_text("[bindings]\ntip_threshold_raw=8192\n", &path).unwrap();
+        assert!(above.for_tablet(crate::spec::TabletSpec::PTH_660).is_err());
+        let deeper = crate::spec::TabletSpec {
+            max_pressure: 16_383,
+            ..crate::spec::TabletSpec::PTH_660
+        };
+        assert_eq!(
+            above.for_tablet(deeper).unwrap().contact.tip_threshold_raw,
+            Some(8192)
+        );
     }
 
     #[test]

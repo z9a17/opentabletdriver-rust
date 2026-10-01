@@ -1450,7 +1450,14 @@ mod tests {
         ] {
             let entry = database.entries().iter().find(|e| e.path == path).unwrap();
             assert!(entry.usable().is_none());
-            assert!(entry.diagnostics[0].message.contains(first), "{entry:?}");
+            // Field warnings from the file itself may come first.
+            assert!(
+                entry
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.severity == Severity::Error && d.message.contains(first)),
+                "{entry:?}"
+            );
         }
     }
 

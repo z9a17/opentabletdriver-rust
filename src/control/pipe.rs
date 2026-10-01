@@ -36,8 +36,8 @@ use windows_sys::Win32::System::Pipes::{
     PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT, WaitNamedPipeW,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateEventW, GetCurrentProcess, OpenProcess, OpenProcessToken,
-    PROCESS_QUERY_LIMITED_INFORMATION, WaitForSingleObject,
+    CreateEventW, GetCurrentProcess, INFINITE, OpenProcess, OpenProcessToken,
+    PROCESS_QUERY_LIMITED_INFORMATION, WaitForMultipleObjects,
 };
 
 const POLL_MS: u32 = 50;
@@ -217,6 +217,11 @@ impl Operation {
         stop: &AtomicBool,
         tick: &mut impl FnMut(),
     ) -> io::Result<u32> {
+        // Sleep until the operation completes or the handler has work; a
+        // timer here would wake an idle daemon many times a second.
+        let wake = super::wake_event();
+        let handles = [self.event.0, wake.unwrap_or(null_mut())];
+        let count = if wake.is_some() { 2 } else { 1 };
         loop {
             if stop.load(Ordering::Acquire) {
                 return Err(io::Error::new(
@@ -233,11 +238,16 @@ impl Operation {
                             "control request timed out",
                         ));
                     }
-                    left.as_millis().clamp(1, POLL_MS as u128) as u32
+                    left.as_millis().clamp(1, u128::from(INFINITE - 1)) as u32
                 }
-                None => POLL_MS,
+                None => INFINITE,
             };
-            match unsafe { WaitForSingleObject(self.event.0, wait_ms) } {
+            let wait_ms = if wake.is_some() {
+                wait_ms
+            } else {
+                wait_ms.min(POLL_MS)
+            };
+            match unsafe { WaitForMultipleObjects(count, handles.as_ptr(), 0, wait_ms) } {
                 WAIT_OBJECT_0 => {
                     let mut bytes = 0;
                     let ok =
@@ -249,7 +259,8 @@ impl Operation {
                         Err(io::Error::last_os_error())
                     };
                 }
-                WAIT_TIMEOUT => tick(),
+                // The wake event, or a deadline check.
+                result if result == WAIT_OBJECT_0 + 1 || result == WAIT_TIMEOUT => tick(),
                 _ => return Err(io::Error::last_os_error()),
             }
         }
@@ -567,4 +578,37 @@ pub(super) fn request(request: &Request, timeout: Duration) -> io::Result<Respon
     }
     write_all(pipe.0, &[ACK], deadline, &stop, &mut || {})?;
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+
+    /// An idle server sleeps until it is woken: no timer polls its handler.
+    #[test]
+    fn idle_wait_polls_only_when_woken() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let waiter = {
+            let (stop, ticks) = (Arc::clone(&stop), Arc::clone(&ticks));
+            std::thread::spawn(move || {
+                // An operation on no pipe whose event never completes.
+                let mut operation = Operation::new(null_mut()).unwrap();
+                operation.wait(None, &stop, &mut || {
+                    ticks.fetch_add(1, Ordering::SeqCst);
+                })
+            })
+        };
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(ticks.load(Ordering::SeqCst), 0, "polled without a wake");
+        crate::control::wake();
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(ticks.load(Ordering::SeqCst), 1);
+        stop.store(true, Ordering::Release);
+        crate::control::wake();
+        let error = waiter.join().unwrap().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    }
 }

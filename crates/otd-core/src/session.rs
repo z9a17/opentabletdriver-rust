@@ -813,10 +813,12 @@ mod tests {
             &mut NoFilters,
         );
         let flags: Vec<u32> = packets.iter().map(|p| p.flags).collect();
+        // The 0x13 report reaches the pipeline as a plain device report, as
+        // upstream passes one to its filters, and moves nothing.
         assert_eq!(flags, [ABSOLUTE, ABSOLUTE | flags::LEFTDOWN, flags::LEFTUP]);
         assert_eq!(statuses[0], "Tablet connected; receiving pen input");
         assert!(
-            statuses[1].starts_with("Processed 2 reports")
+            statuses[1].starts_with("Processed 3 reports")
                 && statuses[1].ends_with("1 reads found a report already waiting"),
             "{}",
             statuses[1]

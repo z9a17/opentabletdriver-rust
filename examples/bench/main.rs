@@ -384,7 +384,16 @@ fn pipeline(
     let mut pipeline = ReportPipeline::new(profile)?;
     Ok(Box::new(move |report, now| {
         if let Ok(Some(pen)) = protocol::parse(report) {
-            let _ = black_box(pipeline.process(pen, now, mapper, &mut filters, send));
+            // With the raw packet, as the driver passes it: .NET filters
+            // refuse a pen report without one.
+            let _ = black_box(pipeline.process_with_raw(
+                pen,
+                report,
+                now,
+                mapper,
+                &mut filters,
+                send,
+            ));
         }
     }))
 }

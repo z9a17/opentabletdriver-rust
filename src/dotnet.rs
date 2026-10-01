@@ -49,6 +49,10 @@ struct Bridge {
     destroy_graph: graph::DestroyGraph,
     graph_next_tick: Option<graph::GraphNextTick>,
     tick_graph: Option<graph::TickGraph>,
+    /// Fused continuations (0.15.3): the host runs its built-in filters
+    /// before dispatch, and transform plus output cross into Rust once.
+    dispatch_graph2: Option<graph::DispatchGraph>,
+    tick_graph2: Option<graph::TickGraph>,
     create_tool: Option<CreateTool>,
     destroy_tool: Option<DestroyTool>,
 }
@@ -159,6 +163,13 @@ fn load_bridge() -> Result<Bridge, String> {
             std::mem::transmute::<*mut c_void, graph::GraphNextTick>(entry)
         }),
         tick_graph: entry("TickGraph")
+            .ok()
+            .map(|entry| unsafe { std::mem::transmute::<*mut c_void, graph::TickGraph>(entry) }),
+        // Bridges older than 0.15.3 take the three-call path.
+        dispatch_graph2: entry("DispatchGraph2").ok().map(|entry| unsafe {
+            std::mem::transmute::<*mut c_void, graph::DispatchGraph>(entry)
+        }),
+        tick_graph2: entry("TickGraph2")
             .ok()
             .map(|entry| unsafe { std::mem::transmute::<*mut c_void, graph::TickGraph>(entry) }),
         get_api: unsafe { std::mem::transmute::<*mut c_void, GetApi>(entry("GetApi")?) },
@@ -1049,9 +1060,10 @@ mod tests {
             "screen-space smoothing suppresses the move"
         );
 
+        // Upstream ignores saved keys a plugin no longer declares.
         config.type_name = "RadialFollow.RadialFollowSmoothingTabletSpace".into();
         config.settings_json = r#"{"Typo":0.5}"#.into();
-        assert!(Plugin::load(&config).is_err());
+        assert!(Plugin::load(&config).is_ok());
     }
 
     #[test]

@@ -58,7 +58,8 @@ fn all_parser_adapters_survive_bounded_malformed_transport_inputs() {
             }
         }
     }
-    assert_eq!(cases, 963_328);
+    // Every parser, 71 lengths, 256 report IDs.
+    assert_eq!(cases, TYPE_NAMES.len() * 71 * 256);
 }
 use std::{
     cell::Cell,

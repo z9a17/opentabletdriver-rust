@@ -352,10 +352,13 @@ impl ReportSource for Hidraw<'_> {
         // SAFETY: one valid pollfd.
         let queued = unsafe { libc::poll(&mut poll, 1, 0) } > 0;
         if !queued {
-            // Wake at least every 100 ms to notice a stop request.
+            // SIGINT and SIGTERM end the wait: the driver has one thread, and
+            // poll is never restarted after a signal handler (signal(7)). The
+            // one-second cap covers a signal landing just before the call,
+            // without waking an idle driver ten times a second to look.
             // Round up: a sub-millisecond filter timer deadline must not spin.
             let wait = timeout
-                .min(Duration::from_millis(100))
+                .min(Duration::from_secs(1))
                 .as_micros()
                 .div_ceil(1000) as i32;
             // SAFETY: one valid pollfd.

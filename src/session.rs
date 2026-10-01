@@ -11,8 +11,8 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Storage::FileSystem::ReadFile;
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Threading::{
-    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, INFINITE, ResetEvent,
-    SetWaitableTimer, TIMER_ALL_ACCESS, WaitForMultipleObjects, WaitForSingleObject,
+    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, INFINITE, SetWaitableTimer,
+    TIMER_ALL_ACCESS, WaitForMultipleObjects, WaitForSingleObject,
 };
 
 /// Waits shorter than this use a high-resolution waitable timer: filter timer
@@ -165,7 +165,9 @@ impl<'a> HidSource<'a> {
         }
         // A synchronous ReadFile completion never enters the multi-event wait.
         // Recheck before exposing it so a queued stream cannot starve Stop.
-        if self.stopped()? {
+        // An asynchronous completion came from that wait, where Stop has
+        // precedence, so it needs no second check.
+        if queued && self.stopped()? {
             return Ok(Read::Ended);
         }
         if transferred as usize > self.buffer.len() {
@@ -195,15 +197,13 @@ impl ReportSource for HidSource<'_> {
         Instant::now()
     }
 
+    // Each system call here costs about 0.2 us per report. Stop needs no
+    // check of its own: the wait below sees it first, and a synchronous
+    // completion checks it in `completed`.
     fn next(&mut self, timeout: Duration) -> io::Result<Read<'_>> {
-        if self.stopped()? {
-            self.cancel();
-            return Ok(Read::Ended);
-        }
         if !self.pending {
-            if unsafe { ResetEvent(self.read_event.raw()) } == 0 {
-                return Err(io::Error::last_os_error());
-            }
+            // ReadFile resets the event when it starts the read.
+            // https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-readfile
             self.operation = OVERLAPPED {
                 hEvent: self.read_event.raw(),
                 ..Default::default()
@@ -499,8 +499,14 @@ pub fn wait_for_retry(notification: &Notification, stop_event: &Event) -> io::Re
     }
 }
 
-/// True only for a device notification. Stop wakes immediately; the owner
-/// checks its stop flag before its next pass. Timeouts only reap finished jobs.
-pub fn companion_wake(notification: &Notification, stop_event: &Event) -> io::Result<bool> {
-    Ok(wait(&[stop_event.raw(), notification.event()], 2_000)? == Some(1))
+/// True only for a device notification. Stop, and a companion session
+/// ending, wake immediately; the owner checks its stop flag and reaps finished
+/// sessions before its next pass. The timeout is the owner's fallback rescan.
+pub fn companion_wake(
+    notification: &Notification,
+    stop_event: &Event,
+    timeout: Duration,
+) -> io::Result<bool> {
+    let millis = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX - 1);
+    Ok(wait(&[stop_event.raw(), notification.event()], millis)? == Some(1))
 }

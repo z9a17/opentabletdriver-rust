@@ -404,7 +404,7 @@ impl Graph {
     /// `callback`, which must not unwind or retain frame pointers.
     pub unsafe fn tick(&self, callback: Callback, scope: *mut c_void) -> io::Result<()> {
         let bridge = super::bridge().map_err(io::Error::other)?;
-        let Some(tick) = bridge.tick_graph else {
+        let Some(tick) = bridge.tick_graph2.or(bridge.tick_graph) else {
             return Ok(());
         };
         if unsafe { tick(self.context, callback, scope) } != 0 {
@@ -421,6 +421,8 @@ impl Graph {
     /// unchanged until this call returns; the bridge copies it on entry.
     /// `scope` must be valid for every invocation of `callback`, which must not
     /// unwind or retain any frame/raw pointers after returning.
+    /// When `runs_builtins_in_host` is true, the caller must already have run
+    /// the built-in filters on the frame's report.
     pub unsafe fn dispatch(
         &self,
         frame: &GraphReport,
@@ -428,10 +430,16 @@ impl Graph {
         scope: *mut c_void,
     ) -> io::Result<()> {
         let bridge = super::bridge().map_err(io::Error::other)?;
-        if unsafe { (bridge.dispatch_graph)(self.context, frame, callback, scope) } != 0 {
+        let dispatch = bridge.dispatch_graph2.unwrap_or(bridge.dispatch_graph);
+        if unsafe { dispatch(self.context, frame, callback, scope) } != 0 {
             return Err(io::Error::other(super::last_error()));
         }
         Ok(())
+    }
+    /// Whether `dispatch` expects the built-in filters to have run already.
+    /// The fused bridge skips the continuation that would run them.
+    pub fn runs_builtins_in_host(&self) -> bool {
+        super::bridge().is_ok_and(|bridge| bridge.dispatch_graph2.is_some())
     }
     pub fn failed_index(&self) -> Option<usize> {
         let bridge = super::bridge().ok()?;
