@@ -167,6 +167,7 @@ To build the Windows .NET bridge and ZIP, install the .NET 8+ SDK and run `pwsh 
 
 ## Learn more
 
+- [Update and packaging reliability, 0.15.4](docs/RELIABILITY_0.15.4.md): update lifecycle guards, clipboard preparation and Unix archive permissions
 - [Release 0.15.1](docs/RELEASE_0.15.1.md): pen side buttons, startup update prompts and all-platform packages
 - [Reference](docs/REFERENCE.md): every command, profile format, the daemon and troubleshooting notes
 - [Plugins and UI](docs/PLUGINS_AND_UI.md) Â· [Pen output](docs/PEN_OUTPUT.md) Â· [Relative mode](docs/RELATIVE_MODE.md)

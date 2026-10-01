@@ -14,22 +14,26 @@ pub(super) fn copy_to_clipboard(owner: HWND, value: &str) -> bool {
     let mut data: Vec<u16> = value.encode_utf16().collect();
     data.push(0);
     unsafe {
-        if OpenClipboard(owner) == 0 {
+        // Prepare the transfer before replacing the user's clipboard.
+        let memory = GlobalAlloc(GMEM_MOVEABLE, data.len() * 2);
+        if memory.is_null() {
             return false;
         }
-        EmptyClipboard();
-        let memory = GlobalAlloc(GMEM_MOVEABLE, data.len() * 2);
-        let mut copied = false;
-        if !memory.is_null() {
-            let target = GlobalLock(memory).cast::<u16>();
-            if !target.is_null() {
-                ptr::copy_nonoverlapping(data.as_ptr(), target, data.len());
-                GlobalUnlock(memory);
-                copied = !SetClipboardData(CF_UNICODETEXT, memory).is_null();
-            }
-            if !copied {
-                GlobalFree(memory);
-            }
+        let target = GlobalLock(memory).cast::<u16>();
+        if target.is_null() {
+            GlobalFree(memory);
+            return false;
+        }
+        ptr::copy_nonoverlapping(data.as_ptr(), target, data.len());
+        GlobalUnlock(memory);
+        if OpenClipboard(owner) == 0 {
+            GlobalFree(memory);
+            return false;
+        }
+        let copied = EmptyClipboard() != 0
+            && !SetClipboardData(CF_UNICODETEXT, memory).is_null();
+        if !copied {
+            GlobalFree(memory);
         }
         CloseClipboard();
         copied
@@ -410,7 +414,7 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
             }
             _ => {
                 append(menu, MF_STRING, CMD_DOCS, "Open documentation...");
-                append(menu, MF_STRING, CMD_CHECK_UPDATES, "Check for updates...");
+                append(menu, if app.updates.blocking() { MF_GRAYED } else { MF_STRING }, CMD_CHECK_UPDATES, "Check for updates...");
                 append(
                     menu,
                     checked(app.prefs.check_for_updates),

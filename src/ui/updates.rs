@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::os::windows::process::CommandExt;
 
 pub(super) const WM_UPDATE: u32 = WM_APP + 21;
+pub(super) const WM_OFFER_UPDATE: u32 = WM_APP + 23;
 /// Tells a restarted panel to wait for this process to exit first.
 const WAIT_PID: &str = "OTD_RUST_WAIT_PID";
 
@@ -22,12 +23,78 @@ enum Event {
     Restarted(Result<(), String>),
 }
 
+#[derive(Default)]
+pub(super) struct UpdateState {
+    phase: UpdatePhase,
+    close_requested: bool,
+    installed: Option<String>,
+    restart_deferred: bool,
+    deferred: Option<Release>,
+}
+
+#[derive(Default)]
+enum UpdatePhase {
+    #[default]
+    Idle,
+    Checking { manual: bool },
+    Prompting,
+    Installing,
+}
+
+impl UpdateState {
+    fn begin_check(&mut self, manual: bool) -> bool {
+        match &mut self.phase {
+            UpdatePhase::Idle => {
+                self.phase = UpdatePhase::Checking { manual };
+                true
+            }
+            UpdatePhase::Checking { manual: requested } => {
+                *requested |= manual;
+                false
+            }
+            UpdatePhase::Prompting | UpdatePhase::Installing => false,
+        }
+    }
+
+    pub(super) fn busy(&self) -> bool {
+        !matches!(self.phase, UpdatePhase::Idle)
+    }
+
+    fn finish_check(&mut self, manual: bool) -> bool {
+        match std::mem::take(&mut self.phase) {
+            UpdatePhase::Checking { manual: requested } => manual || requested,
+            _ => manual,
+        }
+    }
+
+    fn begin_install(&mut self) -> bool {
+        if self.busy() { return false; }
+        self.phase = UpdatePhase::Installing;
+        self.deferred = None;
+        true
+    }
+
+    fn finish_install(&mut self, installed: Option<String>) {
+        self.phase = UpdatePhase::Idle;
+        if let Some(tag) = installed { self.installed = Some(tag); }
+    }
+
+    pub(super) fn blocking(&self) -> bool {
+        matches!(self.phase, UpdatePhase::Installing | UpdatePhase::Prompting)
+    }
+
+    fn defer_close(&mut self) -> bool {
+        if self.blocking() {
+            self.close_requested = true;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 static EVENTS: Mutex<VecDeque<Event>> = Mutex::new(VecDeque::new());
 static RESTARTING: AtomicBool = AtomicBool::new(false);
-/// A release the startup check found while the panel was not in front. It is
-/// offered when the user next brings the panel forward, so the check never
-/// takes focus from a game or another program.
-static DEFERRED: Mutex<Option<Release>> = Mutex::new(None);
 
 fn send(window: isize, event: Event) {
     if let Ok(mut events) = EVENTS.lock() {
@@ -39,6 +106,13 @@ fn send(window: isize, event: Event) {
 /// Looks for a newer release and prompts when one is available. Manual
 /// checks also report up-to-date and error outcomes in a dialog.
 pub(super) fn check(window: HWND, manual: bool) {
+    let start = with_app(|app| {
+        if app.closing || app.update_restart_pending {
+            return false;
+        }
+        app.updates.begin_check(manual)
+    }).unwrap_or(false);
+    if !start { return; }
     let target = window as isize;
     if let Err(error) = std::thread::Builder::new()
         .name("update-check".into())
@@ -56,6 +130,13 @@ pub(super) fn check(window: HWND, manual: bool) {
 }
 
 fn install(window: HWND, release: Release) {
+    let start = with_app(|app| {
+        if app.closing || app.update_restart_pending {
+            return false;
+        }
+        app.updates.begin_install()
+    }).unwrap_or(false);
+    if !start { return; }
     let target = window as isize;
     if let Err(error) = std::thread::Builder::new()
         .name("update-install".into())
@@ -91,19 +172,48 @@ fn in_front(window: HWND) -> bool {
 
 /// Offers a deferred update; called when the panel becomes active.
 pub(super) fn offer_deferred(window: HWND) {
-    if let Some(release) = DEFERRED
-        .lock()
-        .ok()
-        .and_then(|mut deferred| deferred.take())
-    {
-        send(
-            window as isize,
-            Event::Checked {
-                manual: false,
-                result: Ok(release),
-            },
-        );
+    if !in_front(window) { return; }
+    let installed = with_app(|app| {
+        if app.closing || app.update_restart_pending || app.updates.busy() {
+            return None;
+        }
+        if std::mem::take(&mut app.updates.restart_deferred) {
+            app.updates.installed.clone()
+        } else {
+            None
+        }
+    }).flatten();
+    if let Some(tag) = installed {
+        offer_restart(window, &tag);
+        return;
     }
+    let release = with_app(|app| {
+        if app.closing || app.update_restart_pending || app.updates.busy() {
+            return None;
+        }
+        app.updates.deferred.take()
+    }).flatten();
+    if let Some(release) = release {
+        checked(window, false, Ok(release));
+    }
+}
+
+/// A normal close waits for file replacement and rollback to finish. The
+/// completion posts WM_CLOSE again, leaving daemon cleanup to its usual path.
+pub(super) fn defer_close() -> bool {
+    with_app(|app| {
+        if !app.updates.defer_close() { return false; }
+        app.show_status("Waiting for the update before closing…".into(), Level::Info, false);
+        true
+    }).unwrap_or(false)
+}
+
+fn resume_close(window: HWND) -> bool {
+    let requested = with_app(|app| std::mem::take(&mut app.updates.close_requested)).unwrap_or(false);
+    if requested {
+        unsafe { PostMessageW(window, WM_CLOSE, 0, 0); }
+    }
+    requested
 }
 
 /// Handles `WM_UPDATE` on the panel's thread.
@@ -115,29 +225,35 @@ pub(super) fn on_message(window: HWND) {
     for event in events {
         match event {
             Event::Checked { manual, result } => {
+                let manual = with_app(|app| app.updates.finish_check(manual)).unwrap_or(manual);
                 if !RESTARTING.load(Ordering::Acquire) { checked(window, manual, result); }
             }
             Event::Progress(line) => log(Level::Info, line),
             Event::Installed(Ok(tag)) => {
+                with_app(|app| {
+                    app.updates.finish_install(Some(tag.clone()));
+                });
+                if resume_close(window) { continue; }
                 if RESTARTING.load(Ordering::Acquire) {
                     log(Level::Info, format!("{tag} is installed; a restart is already in progress."));
                     continue;
                 }
-                let answer = message_box(
-                    window,
-                    &format!(
-                        "{tag} is installed. Restart the driver and the panel now to use it?\n\nRestarting stops pen input for a moment."
-                    ),
-                    "Update installed",
-                    MB_YESNO | MB_ICONQUESTION,
-                );
-                if answer == IDYES {
-                    restart(window);
+                if in_front(window) {
+                    offer_restart(window, &tag);
+                } else {
+                    let message = format!("{tag} is installed. Open the panel to restart it.");
+                    log(Level::Info, message.clone());
+                    if with_app(|app| app.in_tray).unwrap_or(false) {
+                        tray::balloon(window, "Update installed", &message);
+                    }
+                    with_app(|app| app.updates.restart_deferred = true);
                 }
             }
             Event::Installed(Err(error)) => {
+                with_app(|app| app.updates.finish_install(None));
                 log(Level::Error, format!("Update failed: {error}"));
-                if !RESTARTING.load(Ordering::Acquire) { message_box(
+                if resume_close(window) { continue; }
+                if !RESTARTING.load(Ordering::Acquire) { prompt(
                     window,
                     &format!("The update did not complete.\n\n{error}"),
                     "Update failed",
@@ -168,7 +284,8 @@ fn log(level: Level, message: String) {
 }
 
 fn checked(window: HWND, manual: bool, result: Result<Release, String>) {
-    if with_app(|app| app.closing).unwrap_or(true) {
+    if with_app(|app| app.closing || app.update_restart_pending
+        || app.updates.busy()).unwrap_or(true) {
         return;
     }
     let current = env!("CARGO_PKG_VERSION");
@@ -179,23 +296,24 @@ fn checked(window: HWND, manual: bool, result: Result<Release, String>) {
                     "{} is available. Open the panel to install it.",
                     release.tag
                 );
-                let Ok(mut deferred) = DEFERRED.lock() else {
-                    return;
-                };
                 // Announce each release once, not every time it is deferred.
-                if deferred
-                    .as_ref()
-                    .is_none_or(|known| known.tag != release.tag)
-                {
+                let announce = with_app(|app| app.updates.deferred.as_ref()
+                    .is_none_or(|known| known.tag != release.tag)).unwrap_or(false);
+                if announce {
                     log(Level::Info, message.clone());
                     if with_app(|app| app.in_tray).unwrap_or(false) {
                         tray::balloon(window, "Update available", &message);
                     }
                 }
-                *deferred = Some(release);
+                with_app(|app| app.updates.deferred = Some(release));
                 return;
             }
-            let answer = message_box(
+            with_app(|app| app.updates.deferred = None);
+            if with_app(|app| app.updates.installed.as_deref() == Some(release.tag.as_str())).unwrap_or(false) {
+                offer_restart(window, &release.tag);
+                return;
+            }
+            let answer = prompt(
                 window,
                 &format!(
                     "{} is available; this is {current}.\n\nDownload and install it now? The driver keeps running until you restart.\n\n{}",
@@ -210,8 +328,9 @@ fn checked(window: HWND, manual: bool, result: Result<Release, String>) {
             }
         }
         Ok(release) => {
+            with_app(|app| app.updates.deferred = None);
             if manual {
-                message_box(
+                prompt(
                     window,
                     &format!(
                         "OpenTabletDriver Rust {current} is up to date (latest release {}).",
@@ -224,7 +343,7 @@ fn checked(window: HWND, manual: bool, result: Result<Release, String>) {
         }
         Err(error) => {
             if manual {
-                message_box(
+                prompt(
                     window,
                     &format!("Could not check for updates.\n\n{error}"),
                     "Update check failed",
@@ -238,6 +357,24 @@ fn checked(window: HWND, manual: bool, result: Result<Release, String>) {
             }
         }
     }
+}
+
+fn offer_restart(window: HWND, tag: &str) {
+    with_app(|app| app.updates.restart_deferred = false);
+    let answer = prompt(
+        window,
+        &format!("{tag} is installed. Restart the driver and the panel now to use it?\n\nRestarting stops pen input for a moment."),
+        "Update installed",
+        MB_YESNO | MB_ICONQUESTION,
+    );
+    if answer == IDYES { restart(window); }
+}
+
+fn prompt(window: HWND, text: &str, caption: &str, flags: MESSAGEBOX_STYLE) -> MESSAGEBOX_RESULT {
+    with_app(|app| app.updates.phase = UpdatePhase::Prompting);
+    let answer = message_box(window, text, caption, flags);
+    with_app(|app| app.updates.phase = UpdatePhase::Idle);
+    if resume_close(window) { IDNO } else { answer }
 }
 
 /// Stops the running daemon, starts the new panel and closes this one. The
@@ -335,5 +472,48 @@ pub(super) fn wait_for_previous_panel() {
             WaitForSingleObject(process, 10_000);
             windows_sys::Win32::Foundation::CloseHandle(process);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manual_update_check_shares_the_startup_request_and_receives_its_result() {
+        let mut updates = UpdateState::default();
+        assert!(updates.begin_check(false));
+        assert!(!updates.begin_check(true));
+        assert!(!updates.begin_check(false));
+        assert!(updates.finish_check(false));
+        assert!(updates.begin_check(false));
+        assert!(!updates.finish_check(false));
+    }
+
+    #[test]
+    fn update_installation_blocks_duplicate_work_and_preserves_a_pending_close() {
+        let mut updates = UpdateState::default();
+        assert!(updates.begin_install());
+        assert!(!updates.begin_install());
+        assert!(!updates.begin_check(true));
+        assert!(updates.defer_close());
+        updates.finish_install(Some("v0.15.4".into()));
+        assert!(!updates.busy());
+        assert_eq!(updates.installed.as_deref(), Some("v0.15.4"));
+        assert!(std::mem::take(&mut updates.close_requested));
+        assert!(!updates.close_requested);
+    }
+
+    #[test]
+    fn failed_update_installation_allows_retry_after_a_pending_close() {
+        let mut updates = UpdateState::default();
+        assert!(updates.begin_install());
+        assert!(updates.defer_close());
+        updates.finish_install(None);
+        assert!(updates.close_requested);
+        assert!(updates.installed.is_none());
+        assert!(updates.begin_check(true));
+        assert!(!updates.defer_close());
+        assert!(updates.finish_check(false));
     }
 }
