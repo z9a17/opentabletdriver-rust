@@ -1946,11 +1946,10 @@ impl App {
 
     /// Title bar and taskbar icons at the current DPI.
     pub(super) fn set_icons(&self) {
-        let accent = Palette::light().accent;
         let big = unsafe { GetSystemMetricsForDpi(SM_CXICON, self.dpi) };
         let small = unsafe { GetSystemMetricsForDpi(SM_CXSMICON, self.dpi) };
         for (kind, size) in [(ICON_BIG, big), (ICON_SMALL, small)] {
-            let icon = canvas::app_icon(size.max(16), accent);
+            let icon = canvas::app_icon(size.max(16));
             if icon.is_null() {
                 continue;
             }
@@ -2250,7 +2249,7 @@ impl App {
         if self.tray_icon.is_null() {
             // The notification area uses the system DPI, not the panel's.
             let size = unsafe { GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForSystem()) };
-            self.tray_icon = canvas::app_icon(size.max(16), Palette::light().accent);
+            self.tray_icon = canvas::app_icon(size.max(16));
         }
         self.in_tray = tray::add(self.hwnd, self.tray_icon, &self.tray_tip());
     }

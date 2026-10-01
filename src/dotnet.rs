@@ -66,7 +66,44 @@ fn bridge_dir() -> Result<PathBuf, String> {
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let parent = exe.parent().ok_or("executable has no parent directory")?;
-    Ok(parent.join("compat"))
+    Ok(packaged_bridge_dir(parent))
+}
+
+fn packaged_bridge_dir(parent: &Path) -> PathBuf {
+    let bundled = parent.join("data/compat");
+    if bundled.join("OtdCompat.runtimeconfig.json").is_file() {
+        bundled
+    } else {
+        // Source builds and older portable installations keep this layout.
+        parent.join("compat")
+    }
+}
+
+#[cfg(test)]
+mod package_tests {
+    use super::*;
+
+    #[test]
+    fn bundled_bridge_takes_priority_over_legacy_and_source_layouts() {
+        let root = std::env::temp_dir().join(format!(
+            "otd-bridge-layout-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let legacy = root.join("compat");
+        let bundled = root.join("data/compat");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("OtdCompat.runtimeconfig.json"), b"{}").unwrap();
+        assert_eq!(packaged_bridge_dir(&root), legacy);
+        std::fs::create_dir_all(&bundled).unwrap();
+        assert_eq!(packaged_bridge_dir(&root), legacy, "empty bundle is not selected");
+        std::fs::write(bundled.join("OtdCompat.runtimeconfig.json"), b"{}").unwrap();
+        assert_eq!(packaged_bridge_dir(&root), bundled, "old installed files cannot shadow the bundle");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 fn load_bridge() -> Result<Bridge, String> {
@@ -147,7 +184,7 @@ fn load_bridge() -> Result<Bridge, String> {
     };
     let bridge = Bridge {
         create_graph: unsafe {
-            std::mem::transmute::<*mut c_void, graph::CreateGraph>(entry("CreateGraph").map_err(|error| format!("The installed .NET bridge lacks synchronous graph support. Replace the compat directory with this release's files: {error}"))?)
+            std::mem::transmute::<*mut c_void, graph::CreateGraph>(entry("CreateGraph").map_err(|error| format!("The installed .NET bridge lacks synchronous graph support. Replace the data/compat directory with this release's files: {error}"))?)
         },
         dispatch_graph: unsafe {
             std::mem::transmute::<*mut c_void, graph::DispatchGraph>(entry("DispatchGraph")?)
@@ -187,11 +224,11 @@ fn load_bridge() -> Result<Bridge, String> {
         get_error: unsafe { std::mem::transmute::<*mut c_void, GetError>(entry("GetError")?) },
         process_report: unsafe {
             std::mem::transmute::<*mut c_void, ProcessReport>(entry("ProcessReport").map_err(|error|
-                format!("The installed .NET bridge lacks owned raw-report support. Replace the compat directory with this release's files: {error}"))?)
+                format!("The installed .NET bridge lacks owned raw-report support. Replace the data/compat directory with this release's files: {error}"))?)
         },
         reset_report: unsafe {
             std::mem::transmute::<*mut c_void, ResetReport>(entry("ResetReport").map_err(|error|
-                format!("The installed .NET bridge lacks owned reset-report support. Replace the compat directory with this release's files: {error}"))?)
+                format!("The installed .NET bridge lacks owned reset-report support. Replace the data/compat directory with this release's files: {error}"))?)
         },
     };
     // The runtime and managed entry points live for this process. Retain the
@@ -347,7 +384,7 @@ pub struct FilterMetadata {
 pub fn create_tool(config: &crate::plugins::PluginConfig) -> Result<*mut c_void, String> {
     let bridge = bridge()?;
     let create = bridge.create_tool.ok_or(
-        "The installed .NET bridge lacks tool support. Replace the compat directory with this release's files.",
+        "The installed .NET bridge lacks tool support. Replace the data/compat directory with this release's files.",
     )?;
     let settings = serde_json::json!({
         "assembly_path": config.path.canonicalize().map_err(|e| e.to_string())?,

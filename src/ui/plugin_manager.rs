@@ -380,7 +380,7 @@ impl Manager {
             .into_iter().enumerate()
         {
             let size = unsafe { GetSystemMetricsForDpi(metric, self.dpi) }.max(16);
-            let icon = canvas::app_icon(size, Palette::light().accent);
+            let icon = canvas::app_icon(size);
             if icon.is_null() { continue; }
             unsafe { SendMessageW(self.window, WM_SETICON, kind as usize, icon as isize) };
             let previous = std::mem::replace(&mut self.icons[index], icon);
