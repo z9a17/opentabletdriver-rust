@@ -75,6 +75,10 @@ impl Request {
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
     Status,
+    SetExperimental {
+        expected: WorkerIdentity,
+        settings: crate::experimental::Settings,
+    },
     /// None selects the daemon's default settings; Some is native profile TOML.
     /// The handler must validate and prepare it before starting a worker.
     Start {
@@ -132,6 +136,7 @@ pub struct Response {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Reply {
+    ExperimentalSaved,
     Status {
         status: ControlStatus,
     },

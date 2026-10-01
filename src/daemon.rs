@@ -25,6 +25,9 @@ pub fn serve() -> Result<(), String> {
     })
     .map_err(|error| error.to_string())?;
     let mut daemon = Daemon::new(Arc::clone(&cancelled));
+    if let Err(error) = crate::experimental::apply_saved(false) {
+        daemon.scheduling_warning(error);
+    }
     let result = control::serve(&mut daemon, &cancelled).map_err(|error| error.to_string());
     let cleanup = daemon.cleanup();
     match (result, cleanup) {
@@ -101,8 +104,8 @@ pub fn background() -> Result<(), String> {
     print_reply(&Reply::Status { status })
 }
 
-/// Called only for an explicit CLI launch or a GUI Start/autostart request.
-/// Mere UI attachment does not create a daemon or disturb older services.
+/// Ensure GUI and daemon run as separate processes. Reuse an existing service
+/// without replacing its worker or profile; tablet input is a separate request.
 pub fn ensure_running(cancelled: &AtomicBool) -> Result<ControlStatus, String> {
     let get_status = || -> Result<ControlStatus, std::io::Error> {
         let response = control::request(
@@ -129,6 +132,11 @@ pub fn ensure_running(cancelled: &AtomicBool) -> Result<ControlStatus, String> {
     }
     if cancelled.load(Ordering::Acquire) {
         return Err("daemon launch cancelled".into());
+    }
+    // Unit-test pipe names are isolated, but the sibling release executable
+    // would own the real user's endpoint. Never launch it from a test binary.
+    if cfg!(test) {
+        return Err("Unit tests cannot launch a live driver daemon; provide a fake test endpoint.".into());
     }
     let executable = std::env::current_exe()
         .map_err(|error| error.to_string())?

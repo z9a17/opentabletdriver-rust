@@ -18,7 +18,7 @@ The release's `data/compat` directory includes OpenTabletDriver.Plugin 0.6.7 (Op
 
 ## Windows application icon
 
-`resources/opentabletdriver.ico` is the unchanged OpenTabletDriver contributors' icon from [OpenTabletDriver.UX/Assets/otd.ico](https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.UX/Assets/otd.ico), revision `736003e`, under upstream's LGPL-3.0 license. It is embedded in the Windows executables and used by the native panel. The combined executable remains GPL-3.0-only.
+`resources/opentabletdriver.ico` is this project's blue tablet icon, generated from the native panel's earlier drawing in [v0.15.5 canvas.rs](https://github.com/z9a17/opentabletdriver-rust/blob/v0.15.5/src/ui/canvas.rs) by `scripts/generate-app-icon.py`. It is embedded in both Windows executables and used by the native panel, under this project's GPL-3.0-only license.
 
 ## Platform runtime licenses
 

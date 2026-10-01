@@ -1,9 +1,11 @@
 # Windows application icon
 
-`opentabletdriver.ico` is copied unchanged from OpenTabletDriver's
-[otd.ico at revision 736003ed72c8bbb28033b039d5a0bb76c344145c](https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.UX/Assets/otd.ico).
-It contains 16, 32, 48, 64, 128 and 256 pixel images. The upstream project is
-licensed under LGPL-3.0; see the source notice in [NOTICE.md](../NOTICE.md).
+`opentabletdriver.ico` restores this project's blue rounded-tablet icon from
+[v0.15.5 canvas.rs](https://github.com/z9a17/opentabletdriver-rust/blob/v0.15.5/src/ui/canvas.rs).
+It contains 16, 32, 48, 64, 128 and 256 pixel images, with Windows blue
+`#0078D7`, a white active-area outline and a white center dot. It uses this
+project's GPL-3.0-only license. Regenerate it with
+`python scripts/generate-app-icon.py`; the script preserves the earlier geometry.
 
 `build.rs` embeds it as Windows icon resource 1 in both executables. The native
 panel loads owned copies at the current DPI for its window, taskbar, tray and

@@ -4,8 +4,9 @@
 //! setting unless the user picks one, and uses system colors in high
 //! contrast. A bounded background IPC client keeps pipe calls off the UI thread.
 //!
-//! Like OpenTabletDriver's UX, which starts its daemon, the panel starts the
-//! driver when requested. The independent daemon keeps running when the panel closes. The panel
+//! The panel always launches or connects to a separate daemon. Tablet input
+//! starts according to the launch preference; panel close waits for input
+//! cleanup while the idle daemon remains available. The panel
 //! keeps an icon in the notification area and minimizes into it. Opening the
 //! panel again brings the running one forward.
 //!
@@ -22,6 +23,7 @@ mod commands;
 mod conversion;
 mod debugger;
 mod draw;
+mod experimental;
 mod layout;
 mod model;
 mod paint;
@@ -127,6 +129,7 @@ const CMD_PROPERTY_NEXT: u16 = 228;
 const CMD_THEME_SYSTEM: u16 = 230;
 const CMD_THEME_LIGHT: u16 = 231;
 const CMD_THEME_DARK: u16 = 232;
+const CMD_EXPERIMENTAL: u16 = 233;
 const CMD_DOCS: u16 = 240;
 const CMD_ABOUT: u16 = 241;
 const CMD_NEXT_TAB: u16 = 250;
@@ -1289,6 +1292,7 @@ pub fn run() -> Result<(), String> {
     let Some(_panel) = claim_panel()? else {
         return Ok(());
     };
+    let affinity_warning = crate::experimental::apply_saved(true).err();
     // The panel renders at the monitor's DPI; the driver thread and display
     // snapshots keep using the process default (see displays_for_driver).
     let process_dpi = unsafe { GetThreadDpiAwarenessContext() } as isize;
@@ -1355,6 +1359,9 @@ pub fn run() -> Result<(), String> {
             return Err(error);
         }
     };
+    if let Some(error) = affinity_warning {
+        app.log(Level::Warning, "Experimental", format!("GUI CPU affinity was not applied: {error}"));
+    }
     let _device_notifications = match crate::hid::WindowNotification::register(window) {
         Ok(notification) => Some(notification),
         Err(error) => {

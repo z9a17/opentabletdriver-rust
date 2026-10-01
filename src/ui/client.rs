@@ -18,6 +18,7 @@ use windows_sys::Win32::System::Threading::{
 use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
 
 pub(super) enum ClientCommand {
+    Experimental(crate::experimental::Settings),
     /// Attach if a worker already exists; otherwise start with the supplied profile.
     Start(Box<Profile>),
     /// Launch preference only: never revive a worker this panel already observed.
@@ -31,6 +32,7 @@ pub(super) enum ClientCommand {
 }
 
 pub(super) enum ClientEvent {
+    DaemonReady(Result<(), String>),
     Snapshot {
         status: ControlStatus,
         profile: Option<Box<Profile>>,
@@ -121,6 +123,23 @@ fn execute(
     cancelled: &AtomicBool,
     observed_active: &mut bool,
 ) -> Result<(), String> {
+    if cancelled.load(Ordering::Acquire) {
+        return Err("Panel detached before sending command.".into());
+    }
+    if let ClientCommand::Experimental(settings) = &command {
+        crate::experimental::validate(settings)?;
+        let status = match call(Command::Status).map_err(|error| error.to_string())? {
+            Reply::Status { status } => status,
+            _ => return Err("Unexpected daemon status response.".into()),
+        };
+        match call(Command::SetExperimental { expected: status.identity(), settings: settings.clone() })
+            .map_err(|error| format!("{error}. Reopen Experimental settings to check saved values before retrying."))? {
+            Reply::ExperimentalSaved => {}
+            _ => return Err("Unexpected experimental settings response.".into()),
+        }
+        return crate::experimental::apply(&settings.ui_cpus).map_err(|error|
+            format!("Settings were saved and driver affinity was applied, but GUI affinity failed: {error}. Reopen the panel to retry the saved GUI selection."));
+    }
     if matches!(&command, ClientCommand::AutoStart(_)) && *observed_active {
         return Ok(());
     }
@@ -138,6 +157,7 @@ fn execute(
             }
         }
         ClientCommand::Close => return Err("Close must wait for the watched daemon on the client thread.".into()),
+        ClientCommand::Experimental(_) => return Err("Experimental settings were not handled.".into()),
         ClientCommand::Restart { expected, profile } => Command::Restart {
             expected,
             profile_toml: profile_text(&profile)?,
@@ -337,6 +357,12 @@ fn run(
     // preference must not undo an explicit stop/shutdown from another client.
     let mut observed_active = false;
     let mut watched: Option<Watched> = None;
+    let ready = crate::daemon::ensure_running(&stop).map(|status| {
+        observed_active = active(status.state);
+    });
+    if !publish(&events, ClientEvent::DaemonReady(ready), window, &stop, true) {
+        return;
+    }
     while !stop.load(Ordering::Acquire) {
         let snapshot = (|| -> io::Result<(ControlStatus, Option<Box<Profile>>)> {
             let Reply::Status { status } = call(Command::Status)? else {
@@ -486,5 +512,51 @@ mod tests {
             None,
             "a running process has no exit code"
         );
+    }
+
+    #[test]
+    fn panel_launch_attaches_to_an_idle_daemon_without_starting_input() {
+        use crate::control::{ControlError, ControlHandler};
+        use std::sync::atomic::AtomicUsize;
+        struct Fake { calls: Arc<AtomicUsize> }
+        impl ControlHandler for Fake {
+            fn poll(&mut self) {}
+            fn handle(&mut self, command: Command) -> Result<Reply, ControlError> {
+                assert!(matches!(command, Command::Status), "attachment must not start or replace input");
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(Reply::Status { status: ControlStatus { instance: "fake-idle-daemon".into(),
+                    state: DriverState::Stopped, generation: 0, profile: None, last_error: None,
+                    logs: Vec::new(), log_sequence: 0 } })
+            }
+        }
+        // cfg(test) endpoints include this test process ID, so this server and
+        // client cannot connect to or replace the user's active daemon.
+        let calls = Arc::new(AtomicUsize::new(0));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let server = {
+            let (calls,cancelled) = (calls.clone(),cancelled.clone());
+            std::thread::spawn(move || control::serve(&mut Fake { calls }, &cancelled))
+        };
+        for _ in 0..100 {
+            if call(Command::Status).is_ok() { break; }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(calls.load(Ordering::SeqCst) > 0, "fake daemon did not become ready");
+        let client = DaemonClient::new(std::ptr::null_mut()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut ready = false;
+        while std::time::Instant::now() < deadline {
+            for event in client.drain() {
+                if let ClientEvent::DaemonReady(result) = event { result.unwrap(); ready = true; }
+            }
+            if ready { break; }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        drop(client);
+        cancelled.store(true,Ordering::Release);
+        control::wake();
+        server.join().unwrap().unwrap();
+        assert!(ready, "normal client creation must ensure daemon readiness even without AutoStart");
+        assert!(calls.load(Ordering::SeqCst) >= 2);
     }
 }

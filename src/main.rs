@@ -6,6 +6,7 @@ mod daemon;
 mod decode_cli;
 mod diagnostics;
 mod display;
+mod experimental;
 mod dotnet;
 mod hid;
 mod original_driver;
@@ -39,7 +40,7 @@ use crate::session::Mode;
 
 fn usage() -> &'static str {
     "Usage:
-  opentabletdriver-rust-ui.exe              Open the native control panel
+  opentabletdriver-rust-ui.exe              Open the panel and its separate daemon
   opentabletdriver-rust.exe ui [--tray]     Open the same control panel (--tray: in the tray)
   opentabletdriver-rust.exe                 Start the visible cursor daemon
   opentabletdriver-rust.exe run [--config driver.toml | --otd-settings settings.json]
@@ -612,6 +613,9 @@ fn run(
     capture_seconds: Option<u64>,
 ) -> Result<(), String> {
     let profile = load_profile(config.as_ref(), otd_settings.as_ref())?;
+    if capture_seconds.is_none() && let Err(error) = experimental::apply_saved(false) {
+        eprintln!("Experimental driver CPU affinity was not applied: {error}");
+    }
     let stop_event = Event::create(true).map_err(|e| format!("stop event failed: {e}"))?;
     let stop_handle = stop_event.raw() as usize;
     ctrlc::set_handler(move || {
