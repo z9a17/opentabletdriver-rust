@@ -1,15 +1,14 @@
 //! Updates from this project's GitHub releases. The panel and the `update`
 //! command check the latest release, download its Windows package and its
-//! SHA-256 file over HTTPS with Windows' curl.exe, verify the hash with the
+//! SHA-256 file over HTTPS (`crate::download`), verify the hash with the
 //! Windows crypto API, extract with tar.exe and replace the installed files.
 //! Replacement is serialized and journaled: incomplete updates roll back on
 //! the next startup. Recovery failures preserve backups and stop startup.
 //! Committed backups are removed once running processes release their DLLs.
 //!
 //! A private repository needs a GitHub token: `GH_TOKEN`, `GITHUB_TOKEN` or
-//! the logged-in GitHub CLI's (`gh auth token`). curl reads it from a
-//! temporary header file, so it never appears on a command line, and does not
-//! send it on to the storage host a download redirects to.
+//! the logged-in GitHub CLI's (`gh auth token`). It is sent only to GitHub's
+//! API, never to the storage host a download redirects to.
 
 use std::fs;
 use std::io;
@@ -54,15 +53,6 @@ fn token() -> Option<String> {
         })
 }
 
-/// Deletes the header file holding a token when the request is done.
-struct HeaderFile(PathBuf);
-
-impl Drop for HeaderFile {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
-    }
-}
-
 /// `v1.2.3` or `1.2.3` as numbers; anything else is not a release version.
 pub fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
     let mut parts = text.strip_prefix('v').unwrap_or(text).split('.');
@@ -78,62 +68,17 @@ pub fn current_version() -> (u64, u64, u64) {
     parse_version(env!("CARGO_PKG_VERSION")).expect("the package version is numeric")
 }
 
-fn system_tool(name: &str) -> PathBuf {
+pub(crate) fn system_tool(name: &str) -> PathBuf {
     let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
     PathBuf::from(root).join("System32").join(name)
-}
-
-fn curl(arguments: &[&str], token: Option<&str>) -> Result<Vec<u8>, String> {
-    let mut command = Command::new(system_tool("curl.exe"));
-    command.creation_flags(CREATE_NO_WINDOW);
-    let _header = match token {
-        Some(token) => {
-            let path = std::env::temp_dir().join(format!(
-                "otd-update-auth-{}-{:?}.txt",
-                std::process::id(),
-                std::thread::current().id()
-            ));
-            fs::write(&path, format!("Authorization: Bearer {token}\n"))
-                .map_err(|error| format!("cannot prepare the request: {error}"))?;
-            command.arg("--header").arg(format!("@{}", path.display()));
-            Some(HeaderFile(path))
-        }
-        None => None,
-    };
-    let output = command
-        .args([
-            "--silent",
-            "--show-error",
-            "--fail",
-            "--location",
-            "--max-time",
-            "120",
-        ])
-        .args([
-            "--user-agent",
-            concat!("opentabletdriver-rust/", env!("CARGO_PKG_VERSION")),
-        ])
-        .args(arguments)
-        .output()
-        .map_err(|error| format!("cannot run curl.exe: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "download failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    Ok(output.stdout)
 }
 
 /// The latest published release, from the GitHub API.
 pub fn latest() -> Result<Release, String> {
     let token = token();
-    let body = curl(
-        &[
-            "--header",
-            "Accept: application/vnd.github+json",
-            &format!("https://api.github.com/repos/{REPOSITORY}/releases/latest"),
-        ],
+    let body = crate::download::to_memory(
+        &format!("https://api.github.com/repos/{REPOSITORY}/releases/latest"),
+        Some("application/vnd.github+json"),
         token.as_deref(),
     )
     .map_err(|error| {
@@ -149,16 +94,16 @@ pub fn latest() -> Result<Release, String> {
 /// Downloads a release file, through the API when a token is available.
 fn download(public: &str, api: &str, output: Option<&Path>) -> Result<Vec<u8>, String> {
     let token = token();
-    let path = output.map(|path| path.to_string_lossy().into_owned());
-    let mut arguments = Vec::new();
-    if let Some(path) = &path {
-        arguments.extend(["--output", path.as_str()]);
+    let (url, accept) = match &token {
+        Some(_) => (api, Some("application/octet-stream")),
+        None => (public, None),
+    };
+    match output {
+        Some(path) => {
+            crate::download::to_file(url, accept, token.as_deref(), path).map(|()| Vec::new())
+        }
+        None => crate::download::to_memory(url, accept, token.as_deref()),
     }
-    match &token {
-        Some(_) => arguments.extend(["--header", "Accept: application/octet-stream", api]),
-        None => arguments.push(public),
-    }
-    curl(&arguments, token.as_deref())
 }
 
 fn parse_release(body: &[u8]) -> Result<Release, String> {

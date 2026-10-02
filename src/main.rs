@@ -6,6 +6,7 @@ mod daemon;
 mod decode_cli;
 mod diagnostics;
 mod display;
+mod download;
 mod experimental;
 mod dotnet;
 mod hid;
