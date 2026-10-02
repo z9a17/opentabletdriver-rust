@@ -1,36 +1,98 @@
-//! Tablet debugger, like OpenTabletDriver's: the tablet, its parser, the
-//! report rate, the latest raw packet and its decoded values, and the pen on
-//! an outline of the tablet. A background thread polls the daemon and decodes
-//! the packet in this process; the daemon only copies packets while this
-//! window is open and never decodes them.
+//! Tablet debugger, laid out like OpenTabletDriver's: the pen on an outline
+//! of the tablet, the device and its report rate, the decoded report in
+//! upstream's text format and the raw packet, all in the panel's palette.
+//! A background thread polls the daemon and decodes the packet in this
+//! process; the daemon only copies packets while this window is open and
+//! never decodes them.
+//!
+//! Upstream: OpenTabletDriver.UX/Windows/Tablet/TabletDebugger.cs and
+//! OpenTabletDriver.Plugin/ReportFormatter.cs at 736003e.
 use super::*;
 use crate::control::{self, Command, DebugReport, Reply, Request};
 use otd_core::spec::TabletSpec;
+use serde_json::Value;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, atomic::AtomicBool, atomic::Ordering};
 use std::time::Instant;
+use windows_sys::Win32::UI::Controls::WM_MOUSELEAVE;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE, VK_F10,
+};
 
 const CLASS: &str = "OpenTabletDriverRustDebugger";
+const TITLE: &str = "Tablet Debugger";
 const WM_DEBUG_REPORT: u32 = WM_APP + 20;
 const POLL: Duration = Duration::from_millis(33);
+const CMD_VISUALIZER: u16 = 1;
+const CMD_HEX: u16 = 2;
+const CMD_BINARY: u16 = 3;
+const CMD_CLOSE: u16 = 4;
+
+/// Upstream's debugger text sizes, in the panel's monospace face.
+struct MonoFonts {
+    text: HFONT,
+    large: HFONT,
+}
+
+impl MonoFonts {
+    fn new(dpi: u32) -> Self {
+        let points = |pt: i32| (pt * dpi as i32 + 36) / 72;
+        Self {
+            text: create_font(points(10), 400, "Consolas", 0),
+            large: create_font(points(14), 400, "Consolas", 0),
+        }
+    }
+}
+
+impl Drop for MonoFonts {
+    fn drop(&mut self) {
+        for font in [self.text, self.large] {
+            unsafe { DeleteObject(font) };
+        }
+    }
+}
 
 struct Debugger {
     window: HWND,
     dpi: u32,
     fonts: FontSet,
+    mono: MonoFonts,
     palette: Palette,
     updates: Receiver<Result<DebugReport, String>>,
     cancelled: Arc<AtomicBool>,
     latest: Option<DebugReport>,
+    /// The latest packet's bytes.
+    raw: Vec<u8>,
     error: Option<String>,
     /// (time, packet counter) samples for the report rate.
     history: VecDeque<(Instant, u64)>,
     /// The last tablet looked up, and its specification when it has one.
     spec: Option<(String, Option<TabletSpec>)>,
+    title: String,
+    visualizer: bool,
+    binary: bool,
+    /// The File menu entry, where the last paint put it.
+    menu: Cell<RECT>,
+    menu_hot: bool,
+    menu_open: bool,
+    tracking_mouse: bool,
 }
 
 thread_local! {
     static DEBUGGER: RefCell<Option<Debugger>> = const { RefCell::new(None) };
+}
+
+/// Runs `f` on the debugger that owns `window`. The borrow ends before the
+/// caller makes any Win32 call that can dispatch messages.
+fn with_debugger<R>(window: HWND, f: impl FnOnce(&mut Debugger) -> R) -> Option<R> {
+    DEBUGGER
+        .try_with(|slot| {
+            let mut slot = slot.try_borrow_mut().ok()?;
+            let debugger = slot.as_mut().filter(|debugger| debugger.window == window)?;
+            Some(f(debugger))
+        })
+        .ok()
+        .flatten()
 }
 
 /// Opens the debugger, or brings it forward if it is open.
@@ -42,10 +104,37 @@ pub(super) fn open() -> Result<(), String> {
         }
         return Ok(());
     }
-    let instance = unsafe { GetModuleHandleW(ptr::null()) };
     // Like the upstream DesktopForm, this window belongs to the panel.
     // Finish borrowing App before creation dispatches any window messages.
     let owner = with_app(|app| app.hwnd).unwrap_or(ptr::null_mut());
+    let window = create_window(owner)?;
+    let dpi = unsafe { GetDpiForWindow(window) }.max(96);
+    let palette = with_look(|look| look.style.palette).unwrap_or_else(Palette::light);
+    let (sender, updates) = mpsc::sync_channel(1);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let stop = Arc::clone(&cancelled);
+    let target = window as isize;
+    if let Err(error) = std::thread::Builder::new()
+        .name("tablet-debugger".into())
+        .spawn(move || poll(sender, stop, target))
+    {
+        unsafe { DestroyWindow(window) };
+        return Err(error.to_string());
+    }
+    DEBUGGER.with(|slot| {
+        *slot.borrow_mut() = Some(Debugger::new(window, dpi, palette, updates, cancelled))
+    });
+    refresh_theme();
+    unsafe {
+        ShowWindow(window, SW_SHOW);
+        UpdateWindow(window);
+    }
+    Ok(())
+}
+
+/// Creates the hidden window at upstream's size for its DPI.
+fn create_window(owner: HWND) -> Result<HWND, String> {
+    let instance = unsafe { GetModuleHandleW(ptr::null()) };
     let class = wide(CLASS);
     let registration = WNDCLASSW {
         style: CS_HREDRAW | CS_VREDRAW,
@@ -61,12 +150,12 @@ pub(super) fn open() -> Result<(), String> {
         CreateWindowExW(
             0,
             class.as_ptr(),
-            wide("Tablet debugger").as_ptr(),
+            wide(TITLE).as_ptr(),
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            760,
-            560,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
             owner,
             ptr::null_mut(),
             instance,
@@ -77,39 +166,21 @@ pub(super) fn open() -> Result<(), String> {
         return Err(std::io::Error::last_os_error().to_string());
     }
     let dpi = unsafe { GetDpiForWindow(window) }.max(96);
-    let fonts = FontSet::new(dpi);
-    let palette = with_look(|look| look.style.palette).unwrap_or_else(Palette::light);
-    let (sender, updates) = mpsc::sync_channel(1);
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let stop = Arc::clone(&cancelled);
-    let target = window as isize;
-    if let Err(error) = std::thread::Builder::new()
-        .name("tablet-debugger".into())
-        .spawn(move || poll(sender, stop, target))
-    {
-        unsafe { DestroyWindow(window) };
-        return Err(error.to_string());
-    }
-    DEBUGGER.with(|slot| {
-        *slot.borrow_mut() = Some(Debugger {
-            window,
-            dpi,
-            fonts,
-            palette,
-            updates,
-            cancelled,
-            latest: None,
-            error: None,
-            history: VecDeque::new(),
-            spec: None,
-        })
-    });
-    refresh_theme();
+    // Upstream's window opens at 940 x 560 plus its menu bar.
+    let mut frame = rect(0, 0, scale(940, dpi), scale(590, dpi));
     unsafe {
-        ShowWindow(window, SW_SHOW);
-        UpdateWindow(window);
+        AdjustWindowRectExForDpi(&mut frame, WS_OVERLAPPEDWINDOW, 0, 0, dpi);
+        SetWindowPos(
+            window,
+            ptr::null_mut(),
+            0,
+            0,
+            frame.right - frame.left,
+            frame.bottom - frame.top,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
     }
-    Ok(())
+    Ok(window)
 }
 
 /// Keep the debugger's client area and title bar on the panel's palette.
@@ -184,7 +255,39 @@ fn poll(
 }
 
 impl Debugger {
-    fn take_updates(&mut self) {
+    fn new(
+        window: HWND,
+        dpi: u32,
+        palette: Palette,
+        updates: Receiver<Result<DebugReport, String>>,
+        cancelled: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            window,
+            dpi,
+            fonts: FontSet::new(dpi),
+            mono: MonoFonts::new(dpi),
+            palette,
+            updates,
+            cancelled,
+            latest: None,
+            raw: Vec::new(),
+            error: None,
+            history: VecDeque::new(),
+            spec: None,
+            title: TITLE.into(),
+            visualizer: true,
+            binary: false,
+            menu: Cell::new(RECT::default()),
+            menu_hot: false,
+            menu_open: false,
+            tracking_mouse: false,
+        }
+    }
+
+    /// Takes the newest reports; returns a new window title if the tablet
+    /// changed, for the caller to set once this borrow has ended.
+    fn take_updates(&mut self) -> Option<String> {
         while let Ok(update) = self.updates.try_recv() {
             match update {
                 Ok(report) => {
@@ -218,6 +321,7 @@ impl Debugger {
                         self.spec =
                             Some((name.clone(), otd_core::config::runtime_tablet(name).ok()));
                     }
+                    self.raw = parse_hex(&report.raw_hex).unwrap_or_default();
                     self.error = None;
                     self.latest = Some(report);
                 }
@@ -225,10 +329,24 @@ impl Debugger {
                     self.error = Some(error);
                     self.history.clear();
                     self.latest = None;
+                    self.raw.clear();
                     self.spec = None;
                 }
             }
         }
+        // Like upstream, the title names the tablet being debugged.
+        let title = match self
+            .latest
+            .as_ref()
+            .and_then(|report| report.tablet.as_deref())
+        {
+            Some(name) => format!("{TITLE} - {name}"),
+            None => TITLE.into(),
+        };
+        (title != self.title).then(|| {
+            self.title.clone_from(&title);
+            title
+        })
     }
 
     fn rate(&self) -> f64 {
@@ -240,49 +358,22 @@ impl Debugger {
         }
     }
 
-    fn lines(&self) -> Vec<(String, String)> {
-        let mut lines = Vec::new();
+    /// The Tablet Report text: upstream's lines, or why there are none.
+    fn report_lines(&self) -> (Vec<String>, bool) {
+        let status = |text: &str| (vec![text.to_owned()], true);
         if let Some(error) = &self.error {
-            lines.push(("Status".into(), error.clone()));
+            return status(error);
         }
         let Some(report) = &self.latest else {
-            if self.error.is_none() {
-                lines.push(("Status".into(), "Waiting for the driver...".into()));
-            }
-            return lines;
+            return status("Waiting for the driver...");
         };
-        let text = |value: &Option<String>| value.clone().unwrap_or_else(|| "none".into());
-        lines.push(("Tablet".into(), text(&report.tablet)));
-        lines.push((
-            "Parser".into(),
-            report.parser.as_deref().map_or("none".into(), |parser| {
-                parser.rsplit('.').next().unwrap_or(parser).into()
-            }),
-        ));
-        lines.push(("Reports".into(), format!("{:.0} per second", self.rate())));
-        lines.push(("Raw".into(), spaced_hex(&report.raw_hex)));
-        match report
-            .values
-            .get("values")
-            .and_then(|values| values.as_object())
-        {
-            Some(values) => {
-                if let Some(kind) = report.values.get("kind").and_then(|kind| kind.as_str()) {
-                    lines.push(("Kind".into(), label(kind)));
-                }
-                for (key, value) in values {
-                    if !value.is_null() {
-                        lines.push((label(key), show(value)));
-                    }
-                }
-            }
-            None => {
-                if let Some(error) = report.values.get("error") {
-                    lines.push(("Decode error".into(), error.to_string()));
-                }
-            }
+        if report.raw_hex.is_empty() {
+            return status("Waiting for a tablet report...");
         }
-        lines
+        if report.values.is_null() {
+            return status("This report could not be decoded.");
+        }
+        (format_report(&report.values), false)
     }
 
     fn paint(&self) {
@@ -303,219 +394,498 @@ impl Debugger {
         unsafe { EndPaint(self.window, &ps) };
     }
 
+    /// Upstream's layout: the visualizer above the device and report rate,
+    /// then the decoded report and the raw packet in fixed-width columns.
     fn draw(&self, canvas: &mut canvas::Canvas, client: RECT, style: &draw::Style) {
         let p = style.palette;
-        let fonts = style.fonts;
         let s = |value: f32| style.ipx(value);
-        canvas.fill(client, p.page);
-        let diagram_width = ((client.right - client.left) * 2 / 5).max(s(160.0));
-        let text_right = client.right - diagram_width - s(16.0);
-        let line = s(22.0);
-        let mut top = client.top + s(12.0);
-        for (label, value) in self.lines() {
-            let label_rect = rect(
-                client.left + s(12.0),
-                top,
-                client.left + s(140.0),
-                top + line,
-            );
+        canvas.fill(client, p.window);
+
+        // The menu bar entry, drawn like the panel's.
+        let (label_width, _) = canvas.measure(style.fonts.ui, "File");
+        let menu = rect(
+            client.left + s(4.0),
+            client.top + s(2.0),
+            client.left + s(20.0) + label_width,
+            client.top + s(24.0),
+        );
+        self.menu.set(menu);
+        draw::flat_button(
+            canvas,
+            menu,
+            "&File",
+            style,
+            p.window,
+            State {
+                hot: self.menu_hot,
+                selected: self.menu_open,
+                ..State::default()
+            },
+        );
+
+        let (pad, gap, header) = (s(10.0), s(10.0), s(22.0));
+        let (top, bottom) = (menu.bottom + s(6.0), client.bottom - pad);
+        let (text, large) = (self.mono.text, self.mono.large);
+        let line = canvas.measure(text, "F").1.max(1);
+        let sample = if self.binary {
+            "10101010 10101010 10101010 10101010"
+        } else {
+            "FF FF FF FF FF FF FF FF"
+        };
+        let raw_width = canvas.measure(text, sample).0 + s(24.0);
+        let raw_column = rect(
+            client.right - pad - raw_width,
+            top,
+            client.right - pad,
+            bottom,
+        );
+        let report_column = rect(
+            raw_column.left - gap - s(220.0),
+            top,
+            raw_column.left - gap,
+            bottom,
+        );
+        let left = rect(client.left + pad, top, report_column.left - gap, bottom);
+
+        let report_box = section(canvas, report_column, "Tablet Report", style, header);
+        let (lines, status) = self.report_lines();
+        let inner = draw::inset(report_box, s(10.0), s(8.0));
+        let mut y = inner.top;
+        for line_text in lines {
+            let height = canvas
+                .wrapped_height(text, &line_text, inner.right - inner.left)
+                .max(line);
+            if y + height > inner.bottom {
+                break;
+            }
             canvas.text(
-                label_rect,
-                &label,
-                fonts.bold,
+                rect(inner.left, y, inner.right, y + height),
+                &line_text,
+                text,
+                if status { p.muted } else { p.text },
+                DT_LEFT | DT_WORDBREAK | DT_NOPREFIX,
+            );
+            y += height;
+        }
+
+        let raw_box = section(canvas, raw_column, "Raw Tablet Data", style, header);
+        let inner = draw::inset(raw_box, s(10.0), s(8.0));
+        let visible = usize::try_from((inner.bottom - inner.top) / line).unwrap_or(0);
+        let per_line = if self.binary { 4 } else { 8 };
+        for (index, bytes) in self.raw.chunks(per_line).take(visible).enumerate() {
+            let y = inner.top + index as i32 * line;
+            canvas.text(
+                rect(inner.left, y, inner.right, y + line),
+                &raw_line(bytes, self.binary),
+                text,
                 p.text,
                 DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX,
             );
-            let value_rect = rect(client.left + s(144.0), top, text_right, top + line * 4);
-            let height =
-                canvas.wrapped_height(fonts.mono, &value, value_rect.right - value_rect.left);
-            canvas.text(
-                rect(
-                    value_rect.left,
-                    top,
-                    value_rect.right,
-                    top + height.max(line),
-                ),
-                &value,
-                fonts.mono,
-                p.text,
-                DT_LEFT | DT_WORDBREAK | DT_NOPREFIX,
-            );
-            top += height.max(line) + s(2.0);
-            if top > client.bottom {
-                break;
-            }
         }
-        self.draw_tablet(
+
+        // Device and report rate sit below the visualizer, or at the top
+        // when it is hidden.
+        let box_height = canvas.measure(large, "W").1 + s(18.0);
+        let name = self
+            .latest
+            .as_ref()
+            .and_then(|report| report.tablet.as_deref())
+            .unwrap_or_default();
+        let rate_width = canvas.measure(large, "1234.56Hz").0 + s(24.0);
+        let device_width = (canvas.measure(large, name).0 + s(24.0)).max(s(140.0));
+        let row = header + box_height;
+        // Side by side as upstream lays them out, or stacked when the
+        // binary raw view leaves too little width.
+        let stacked = device_width + gap + rate_width > left.right - left.left;
+        let rows_height = if stacked { row * 2 + gap } else { row };
+        let rows_top = if self.visualizer {
+            bottom - rows_height
+        } else {
+            top
+        };
+        let device = section(
             canvas,
             rect(
-                text_right + s(8.0),
-                client.top + s(12.0),
-                client.right - s(12.0),
-                client.bottom - s(12.0),
+                left.left,
+                rows_top,
+                (left.left + device_width).min(left.right),
+                rows_top + row,
             ),
+            "Device",
             style,
+            header,
         );
+        canvas.text(
+            draw::inset(device, s(10.0), 0),
+            name,
+            large,
+            p.text,
+            draw::TEXT_LEFT | DT_NOPREFIX,
+        );
+        let (rate_left, rate_top) = if stacked {
+            (left.left, rows_top + row + gap)
+        } else {
+            (device.right + gap, rows_top)
+        };
+        let rate = section(
+            canvas,
+            rect(
+                rate_left,
+                rate_top,
+                (rate_left + rate_width).min(left.right),
+                rate_top + row,
+            ),
+            "Report Rate",
+            style,
+            header,
+        );
+        if self.latest.is_some() {
+            canvas.text(
+                draw::inset(rate, s(10.0), 0),
+                &format!("{:>7.2}Hz", self.rate()),
+                large,
+                p.text,
+                draw::TEXT_LEFT | DT_NOPREFIX,
+            );
+        }
+        if self.visualizer {
+            let area = section(
+                canvas,
+                rect(left.left, top, left.right, rows_top - gap),
+                "Visualizer",
+                style,
+                header,
+            );
+            self.draw_tablet(canvas, area, style);
+        }
     }
 
-    /// The pen on an outline of the tablet's active area, with a pressure bar.
+    /// The tablet's active area, centered and outlined in the accent color,
+    /// with the pen position as a dot, as upstream's visualizer draws them.
     fn draw_tablet(&self, canvas: &mut canvas::Canvas, area: RECT, style: &draw::Style) {
         let p = style.palette;
         let Some((_, Some(spec))) = &self.spec else {
             return;
         };
-        let bar = style.ipx(18.0);
-        let width = f64::from(area.right - area.left);
-        let height = f64::from(area.bottom - area.top - bar * 2);
+        let margin = style.ipx(6.0);
+        let width = f64::from(area.right - area.left - margin * 2);
+        let height = f64::from(area.bottom - area.top - margin * 2);
         if width <= 0.0 || height <= 0.0 {
             return;
         }
-        let aspect = spec.width_mm / spec.height_mm;
-        let (w, h) = if width / height > aspect {
-            (height * aspect, height)
-        } else {
-            (width, width / aspect)
-        };
+        let fit = (width / spec.width_mm).min(height / spec.height_mm);
+        let (w, h) = (spec.width_mm * fit, spec.height_mm * fit);
+        let left = f64::from(area.left + area.right) / 2.0 - w / 2.0;
+        let top = f64::from(area.top + area.bottom) / 2.0 - h / 2.0;
         let outline = rect(
-            area.left,
-            area.top,
-            area.left + w as i32,
-            area.top + h as i32,
+            left.round() as i32,
+            top.round() as i32,
+            (left + w).round() as i32,
+            (top + h).round() as i32,
         );
         canvas.round_rect(
             outline,
-            [style.px(4.0); 4],
+            [0.0; 4],
             Some(p.bounds_fill),
-            Some((p.bounds_border, 1.0)),
+            Some((p.accent, 1.0)),
         );
-        let values = self
-            .latest
-            .as_ref()
-            .and_then(|report| report.values.get("values"));
-        let number = |key: &str, index: usize| {
-            values
-                .and_then(|values| values.get(key))
-                .and_then(|value| value.get(index))
-                .and_then(serde_json::Value::as_f64)
+        let Some(report) = &self.latest else {
+            return;
         };
-        if let (Some(x), Some(y)) = (number("position", 0), number("position", 1)) {
-            let px =
-                outline.left as f32 + (x / f64::from(spec.max_x)).clamp(0.0, 1.0) as f32 * w as f32;
-            let py =
-                outline.top as f32 + (y / f64::from(spec.max_y)).clamp(0.0, 1.0) as f32 * h as f32;
-            canvas.circle((px, py), style.px(5.0), Some(p.accent), None);
+        if report.values.get("kind").and_then(Value::as_str) != Some("data") {
+            return;
         }
-        let pressure = values
-            .and_then(|values| values.get("pressure"))
-            .and_then(serde_json::Value::as_f64)
-            .unwrap_or(0.0);
-        let fraction = (pressure / f64::from(spec.max_pressure.max(1))).clamp(0.0, 1.0);
-        let track = rect(
-            outline.left,
-            outline.bottom + bar / 2,
-            outline.right,
-            outline.bottom + bar + bar / 2,
-        );
-        canvas.round_rect(
-            track,
-            [style.px(3.0); 4],
-            Some(p.field),
-            Some((p.field_border, 1.0)),
-        );
-        let filled = rect(
-            track.left,
-            track.top,
-            track.left + ((track.right - track.left) as f64 * fraction) as i32,
-            track.bottom,
-        );
-        if filled.right > filled.left {
-            canvas.round_rect(filled, [style.px(3.0); 4], Some(p.accent), None);
+        let position = report.values.pointer("/values/position");
+        let coordinate = |index: usize| position.and_then(|p| p.get(index)).and_then(Value::as_f64);
+        if let (Some(x), Some(y)) = (coordinate(0), coordinate(1)) {
+            let x = left + x / f64::from(spec.max_x.max(1)) * w;
+            let y = top + y / f64::from(spec.max_y.max(1)) * h;
+            // Upstream does not clamp the dot; keep it inside the box.
+            if (f64::from(area.left)..f64::from(area.right)).contains(&x)
+                && (f64::from(area.top)..f64::from(area.bottom)).contains(&y)
+            {
+                canvas.circle(
+                    (x as f32, y as f32),
+                    2.5 * style.scale,
+                    Some(p.accent),
+                    None,
+                );
+            }
         }
-        canvas.text(
-            rect(
-                track.left,
-                track.bottom + style.ipx(4.0),
-                track.right,
-                track.bottom + bar * 2,
-            ),
-            &format!("Pressure {pressure:.0} / {}", spec.max_pressure),
-            style.fonts.small,
-            p.muted,
-            draw::TEXT_LEFT | DT_NOPREFIX,
-        );
     }
 }
 
-/// "near_proximity" as "Near proximity".
-fn label(key: &str) -> String {
-    let words = key.replace('_', " ");
-    let mut chars = words.chars();
-    chars
-        .next()
-        .map(|first| first.to_uppercase().chain(chars).collect())
-        .unwrap_or_default()
+/// A titled box, like upstream's debugger groups. Returns the box.
+fn section(
+    canvas: &mut canvas::Canvas,
+    area: RECT,
+    title: &str,
+    style: &draw::Style,
+    header: i32,
+) -> RECT {
+    canvas.text(
+        rect(area.left, area.top, area.right, area.top + header),
+        title,
+        style.fonts.bold,
+        style.palette.text,
+        draw::TEXT_LEFT | DT_NOPREFIX,
+    );
+    let content = rect(area.left, area.top + header, area.right, area.bottom);
+    draw::group_box(canvas, content, style, style.palette.group);
+    content
 }
 
-/// A decoded value for reading: whole numbers without a fraction, lists
-/// separated by commas.
-fn show(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::Number(number) => match number.as_f64() {
-            Some(float) if float.fract() == 0.0 && float.abs() < 1e15 => format!("{float:.0}"),
-            _ => number.to_string(),
-        },
-        serde_json::Value::Array(items) => items.iter().map(show).collect::<Vec<_>>().join(", "),
-        serde_json::Value::Object(fields) => fields
-            .iter()
-            .map(|(key, value)| format!("{} {}", label(key), show(value)))
-            .collect::<Vec<_>>()
-            .join(", "),
-        serde_json::Value::String(text) => text.clone(),
-        other => other.to_string(),
+fn parse_hex(hex: &str) -> Option<Vec<u8>> {
+    if hex.len() % 2 != 0 {
+        return None;
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(hex.get(at..at + 2)?, 16).ok())
+        .collect()
+}
+
+/// One line of the packet, as upstream's raw view shows it: uppercase hex
+/// bytes, or eight-digit binary bytes, separated by spaces.
+fn raw_line(bytes: &[u8], binary: bool) -> String {
+    bytes
+        .iter()
+        .map(|byte| {
+            if binary {
+                format!("{byte:08b}")
+            } else {
+                format!("{byte:02X}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A decoded number as .NET prints it: whole values without a fraction.
+fn number(value: &Value) -> String {
+    match value.as_f64() {
+        Some(float) if float.fract() == 0.0 && float.abs() < 1e15 => format!("{float:.0}"),
+        Some(_) => value.to_string(),
+        None => "null".into(),
     }
 }
 
-/// "a1b2c3" as "a1 b2 c3".
-/// Trailing zero bytes are summarized: most packets are padded to the
-/// collection's report length. Bound the on-screen preview while capture and
-/// background decoding retain the full packet.
-fn spaced_hex(hex: &str) -> String {
-    const MAX_PREVIEW_BYTES: usize = 64;
-    let bytes = hex.as_bytes();
-    if bytes.len() % 2 != 0 || !bytes.iter().all(|byte| byte.is_ascii_hexdigit()) {
-        return "Invalid raw hexadecimal data.".into();
+fn boolean(value: &Value) -> &'static str {
+    if value.as_bool() == Some(true) {
+        "True"
+    } else {
+        "False"
     }
-    let count = bytes.len() / 2;
-    let used = bytes
-        .chunks_exact(2)
-        .rposition(|byte| byte != b"00")
-        .map_or(0, |last| last + 1);
-    let zeros = count - used;
-    let preview_count = if zeros > 4 { used } else { count };
-    let shown = preview_count.min(MAX_PREVIEW_BYTES);
-    let mut preview = String::with_capacity(shown * 3 + 96);
-    for byte in bytes.chunks_exact(2).take(shown) {
-        if !preview.is_empty() {
-            preview.push(' ');
+}
+
+fn buttons(value: &Value) -> String {
+    let states = value.as_array().map(Vec::as_slice).unwrap_or_default();
+    states.iter().map(boolean).collect::<Vec<_>>().join(" ")
+}
+
+fn pair(value: &Value) -> String {
+    format!("[{},{}]", number(&value[0]), number(&value[1]))
+}
+
+/// The decoded report as upstream's ReportFormatter.GetStringFormat writes
+/// it, in its order. Values upstream's report types do not carry are left
+/// out.
+fn format_report(report: &Value) -> Vec<String> {
+    if let Some(error) = report.get("error") {
+        return vec![format!(
+            "Decode error: {}",
+            error
+                .as_str()
+                .map_or_else(|| error.to_string(), str::to_owned)
+        )];
+    }
+    if report.get("kind").and_then(Value::as_str) == Some("out_of_range") {
+        return vec!["Pen is out of Range".into()];
+    }
+    let values = &report["values"];
+    let field = |key: &str| values.get(key).filter(|value| !value.is_null());
+    let mut lines = Vec::new();
+    if let Some(position) = field("position") {
+        lines.push(format!("Position:{}", pair(position)));
+    }
+    if let Some(pressure) = field("pressure") {
+        lines.push(format!("Pressure:{}", number(pressure)));
+    }
+    if let Some(pen) = field("pen_buttons") {
+        lines.push(format!("PenButtons:[{}]", buttons(pen)));
+    }
+    if let Some(aux) = field("aux_buttons") {
+        lines.push(format!("AuxButtons:[{}]", buttons(aux)));
+    }
+    if let Some(eraser) = field("eraser") {
+        lines.push(format!("Eraser:{}", boolean(eraser)));
+    }
+    if let Some(near) = field("near_proximity") {
+        lines.push(format!("NearProximity:{}", boolean(near)));
+    }
+    if let Some(distance) = field("hover_distance") {
+        lines.push(format!("HoverDistance:{}", number(distance)));
+    }
+    if let Some(tilt) = field("tilt") {
+        lines.push(format!("Tilt:{}", pair(tilt)));
+    }
+    if let Some(touches) = field("touches").and_then(Value::as_array) {
+        lines.push("Touch data:".into());
+        for touch in touches.iter().filter(|touch| !touch.is_null()) {
+            let position = &touch["position"];
+            lines.push(format!(
+                "Point #{}: <{}, {}>;",
+                number(&touch["id"]),
+                number(&position[0]),
+                number(&position[1])
+            ));
         }
-        preview.push(char::from(byte[0]));
-        preview.push(char::from(byte[1]));
     }
-    use std::fmt::Write;
-    let omitted = preview_count - shown;
-    if omitted != 0 {
-        if !preview.is_empty() {
-            preview.push(' ');
+    if let Some(positions) = field("absolute_analog")
+        .and_then(|analog| analog.get("positions"))
+        .and_then(Value::as_array)
+    {
+        for (index, position) in positions.iter().enumerate() {
+            let position = if position.is_null() {
+                "Idle".into()
+            } else {
+                number(position)
+            };
+            lines.push(format!("Wheel {}:{position}", index + 1));
         }
-        let _ = write!(preview, "(+{omitted} more bytes)");
     }
-    if zeros > 4 {
-        if !preview.is_empty() {
-            preview.push(' ');
+    if let Some(deltas) = field("relative_analog")
+        .and_then(|analog| analog.get("deltas"))
+        .and_then(Value::as_array)
+    {
+        for (index, delta) in deltas.iter().enumerate() {
+            lines.push(format!("Wheel {} Delta:{}", index + 1, number(delta)));
         }
-        let _ = write!(preview, "(+{zeros} zero bytes)");
     }
-    preview
+    if let Some(wheels) = field("wheel_buttons").and_then(Value::as_array) {
+        for (index, wheel) in wheels.iter().enumerate() {
+            lines.push(format!("Wheel {} Buttons:[{}]", index + 1, buttons(wheel)));
+        }
+    }
+    if let Some(mouse) = field("mouse_buttons") {
+        lines.push(format!("MouseButtons:[{}]", buttons(mouse)));
+    }
+    if let Some(scroll) = field("mouse_scroll") {
+        lines.push(format!("Scroll:{}", pair(scroll)));
+    }
+    if let Some(tool) = field("tool") {
+        let kind = match tool["kind"].as_str() {
+            Some("eraser") => "Eraser",
+            _ => "Pen",
+        };
+        lines.push(format!("Tool:{kind}"));
+        lines.push(format!("RawToolID:{}", number(&tool["raw_tool_id"])));
+        lines.push(format!("Serial:{}", number(&tool["serial"])));
+    }
+    lines
+}
+
+/// Opens the File menu below its entry. No debugger borrow survives the
+/// menu's message loop.
+fn open_menu(window: HWND) {
+    let Some((entry, visualizer, binary)) = with_debugger(window, |debugger| {
+        debugger.menu_open = true;
+        (debugger.menu.get(), debugger.visualizer, debugger.binary)
+    }) else {
+        return;
+    };
+    unsafe { InvalidateRect(window, &entry, 0) };
+    let command = unsafe {
+        let menu = CreatePopupMenu();
+        append(menu, checked(visualizer), CMD_VISUALIZER, "Visualizer");
+        let modes = CreatePopupMenu();
+        append(modes, MF_STRING, CMD_HEX, "Hex");
+        append(modes, MF_STRING, CMD_BINARY, "Binary");
+        let mode = if binary { CMD_BINARY } else { CMD_HEX };
+        CheckMenuRadioItem(
+            modes,
+            u32::from(CMD_HEX),
+            u32::from(CMD_BINARY),
+            u32::from(mode),
+            MF_BYCOMMAND,
+        );
+        AppendMenuW(
+            menu,
+            MF_POPUP,
+            modes as usize,
+            wide("Raw Data Mode").as_ptr(),
+        );
+        AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
+        append(menu, MF_STRING, CMD_CLOSE, "Close Window\tEsc");
+        let mut corners = [
+            POINT {
+                x: entry.left,
+                y: entry.top,
+            },
+            POINT {
+                x: entry.right,
+                y: entry.bottom,
+            },
+        ];
+        for corner in &mut corners {
+            ClientToScreen(window, corner);
+        }
+        let params = TPMPARAMS {
+            cbSize: size_of::<TPMPARAMS>() as u32,
+            rcExclude: rect(corners[0].x, corners[0].y, corners[1].x, corners[1].y),
+        };
+        let command = TrackPopupMenuEx(
+            menu,
+            TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_VERTICAL,
+            corners[0].x,
+            corners[1].y,
+            window,
+            &params,
+        );
+        DestroyMenu(menu);
+        // A click on File that closed the menu must not open it again.
+        let mut message = MSG::default();
+        if PeekMessageW(
+            &mut message,
+            window,
+            WM_LBUTTONDOWN,
+            WM_LBUTTONDOWN,
+            PM_NOREMOVE,
+        ) != 0
+            && inside(entry, message.lParam)
+        {
+            PeekMessageW(
+                &mut message,
+                window,
+                WM_LBUTTONDOWN,
+                WM_LBUTTONDOWN,
+                PM_REMOVE,
+            );
+        }
+        command as u16
+    };
+    with_debugger(window, |debugger| {
+        debugger.menu_open = false;
+        match command {
+            CMD_VISUALIZER => debugger.visualizer = !debugger.visualizer,
+            CMD_HEX => debugger.binary = false,
+            CMD_BINARY => debugger.binary = true,
+            _ => {}
+        }
+    });
+    if command == CMD_CLOSE {
+        unsafe { DestroyWindow(window) };
+    } else {
+        unsafe { InvalidateRect(window, ptr::null(), 0) };
+    }
+}
+
+fn inside(area: RECT, lparam: LPARAM) -> bool {
+    let (x, y) = (
+        i32::from((lparam & 0xFFFF) as u16 as i16),
+        i32::from(((lparam >> 16) & 0xFFFF) as u16 as i16),
+    );
+    x >= area.left && x < area.right && y >= area.top && y < area.bottom
 }
 
 unsafe extern "system" fn window_proc(
@@ -526,14 +896,9 @@ unsafe extern "system" fn window_proc(
 ) -> LRESULT {
     match message {
         WM_DEBUG_REPORT => {
-            let _ = DEBUGGER.try_with(|slot| {
-                if let Ok(mut slot) = slot.try_borrow_mut()
-                    && let Some(debugger) = slot.as_mut()
-                    && debugger.window == window
-                {
-                    debugger.take_updates();
-                }
-            });
+            if let Some(Some(title)) = with_debugger(window, Debugger::take_updates) {
+                unsafe { SetWindowTextW(window, wide(&title).as_ptr()) };
+            }
             unsafe { InvalidateRect(window, ptr::null(), 0) };
             0
         }
@@ -560,9 +925,65 @@ unsafe extern "system" fn window_proc(
             }
         }
         WM_ERASEBKGND => 1,
+        WM_LBUTTONDOWN => {
+            if with_debugger(window, |debugger| inside(debugger.menu.get(), lparam)) == Some(true) {
+                open_menu(window);
+            }
+            0
+        }
+        WM_MOUSEMOVE => {
+            let changed = with_debugger(window, |debugger| {
+                let track = !debugger.tracking_mouse;
+                debugger.tracking_mouse = true;
+                let hot = inside(debugger.menu.get(), lparam);
+                let entry = (hot != debugger.menu_hot).then(|| debugger.menu.get());
+                debugger.menu_hot = hot;
+                (track, entry)
+            });
+            if let Some((track, entry)) = changed {
+                if track {
+                    let mut event = TRACKMOUSEEVENT {
+                        cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                        dwFlags: TME_LEAVE,
+                        hwndTrack: window,
+                        dwHoverTime: 0,
+                    };
+                    unsafe { TrackMouseEvent(&mut event) };
+                }
+                if let Some(entry) = entry {
+                    unsafe { InvalidateRect(window, &entry, 0) };
+                }
+            }
+            0
+        }
+        WM_MOUSELEAVE => {
+            if let Some(entry) = with_debugger(window, |debugger| {
+                debugger.tracking_mouse = false;
+                std::mem::take(&mut debugger.menu_hot).then(|| debugger.menu.get())
+            })
+            .flatten()
+            {
+                unsafe { InvalidateRect(window, &entry, 0) };
+            }
+            0
+        }
+        // Escape closes the window, as upstream's does; Alt+F and F10 open
+        // the File menu.
+        WM_KEYDOWN if wparam == usize::from(VK_ESCAPE) => {
+            unsafe { DestroyWindow(window) };
+            0
+        }
+        WM_SYSCHAR if matches!(wparam, 0x46 | 0x66) => {
+            open_menu(window);
+            0
+        }
+        WM_SYSKEYDOWN if wparam == usize::from(VK_F10) => {
+            open_menu(window);
+            0
+        }
         WM_GETMINMAXINFO => {
             let dpi = unsafe { GetDpiForWindow(window) }.max(96);
-            let mut frame = rect(0, 0, scale(700, dpi), scale(480, dpi));
+            let mut frame = rect(0, 0, scale(760, dpi), scale(480, dpi));
             unsafe {
                 AdjustWindowRectExForDpi(&mut frame, WS_OVERLAPPEDWINDOW, 0, 0, dpi);
                 if let Some(info) = (lparam as *mut MINMAXINFO).as_mut() {
@@ -576,14 +997,10 @@ unsafe extern "system" fn window_proc(
         }
         WM_DPICHANGED => {
             let dpi = (wparam & 0xFFFF) as u32;
-            let _ = DEBUGGER.try_with(|slot| {
-                if let Ok(mut slot) = slot.try_borrow_mut()
-                    && let Some(debugger) = slot.as_mut()
-                    && debugger.window == window
-                {
-                    debugger.dpi = dpi.max(96);
-                    debugger.fonts = FontSet::new(debugger.dpi);
-                }
+            with_debugger(window, |debugger| {
+                debugger.dpi = dpi.max(96);
+                debugger.fonts = FontSet::new(debugger.dpi);
+                debugger.mono = MonoFonts::new(debugger.dpi);
             });
             unsafe {
                 if let Some(area) = (lparam as *const RECT).as_ref() {
@@ -606,7 +1023,9 @@ unsafe extern "system" fn window_proc(
             // Windows destroys the window at thread exit.
             let _ = DEBUGGER.try_with(|slot| {
                 if let Ok(mut slot) = slot.try_borrow_mut()
-                    && slot.as_ref().is_some_and(|debugger| debugger.window == window)
+                    && slot
+                        .as_ref()
+                        .is_some_and(|debugger| debugger.window == window)
                 {
                     slot.take();
                 }
@@ -622,13 +1041,124 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hex_is_spaced_by_byte() {
-        assert_eq!(spaced_hex("0a1bff"), "0a 1b ff");
-        assert_eq!(spaced_hex("1364000000000000"), "13 64 (+6 zero bytes)");
-        assert_eq!(spaced_hex("0a0000"), "0a 00 00");
-        assert_eq!(label("near_proximity"), "Near proximity");
-        assert_eq!(show(&serde_json::json!([25981.0, 3939.5])), "25981, 3939.5");
-        assert_eq!(spaced_hex(""), "");
+    fn reports_read_like_upstream() {
+        let report = serde_json::json!({"kind": "data", "values": {
+            "position": [20914.0, 4845.0], "pressure": 0, "pen_buttons": [false, false],
+            "eraser": false, "near_proximity": false, "hover_distance": 63,
+            "tilt": [-6.0, 9.0], "tip_switch": false, "rotation": null}});
+        assert_eq!(
+            format_report(&report),
+            [
+                "Position:[20914,4845]",
+                "Pressure:0",
+                "PenButtons:[False False]",
+                "Eraser:False",
+                "NearProximity:False",
+                "HoverDistance:63",
+                "Tilt:[-6,9]",
+            ]
+        );
+        let other = serde_json::json!({"kind": "data", "values": {
+            "position": [1.5, 2.0], "aux_buttons": [true, false],
+            "absolute_analog": {"kind": "wheel", "positions": [null, 12]},
+            "touches": [{"id": 3, "position": [10.0, 20.0]}, null],
+            "tool": {"kind": "eraser", "raw_tool_id": 2210, "serial": 77}}});
+        assert_eq!(
+            format_report(&other),
+            [
+                "Position:[1.5,2]",
+                "AuxButtons:[True False]",
+                "Touch data:",
+                "Point #3: <10, 20>;",
+                "Wheel 1:Idle",
+                "Wheel 2:12",
+                "Tool:Eraser",
+                "RawToolID:2210",
+                "Serial:77",
+            ]
+        );
+        assert_eq!(
+            format_report(&serde_json::json!({"kind": "out_of_range", "values": {}})),
+            ["Pen is out of Range"]
+        );
+        assert_eq!(
+            format_report(&serde_json::json!({"error": "short packet"})),
+            ["Decode error: short packet"]
+        );
+    }
+
+    fn title(window: HWND) -> String {
+        let mut buffer = [0u16; 128];
+        let length = unsafe { GetWindowTextW(window, buffer.as_mut_ptr(), buffer.len() as i32) };
+        String::from_utf16_lossy(&buffer[..length.max(0) as usize])
+    }
+
+    fn point(x: i32, y: i32) -> LPARAM {
+        ((y as u16 as isize) << 16) | x as u16 as isize
+    }
+
+    /// A hidden window, never shown or activated, with no driver.
+    #[test]
+    fn a_hidden_debugger_follows_reports_hover_and_escape() {
+        let window = create_window(ptr::null_mut()).unwrap();
+        let (sender, updates) = mpsc::sync_channel(1);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        DEBUGGER.with(|slot| {
+            *slot.borrow_mut() = Some(Debugger::new(
+                window,
+                96,
+                Palette::light(),
+                updates,
+                Arc::clone(&cancelled),
+            ))
+        });
+        let report = DebugReport {
+            tablet: Some("Wacom PTH-660".into()),
+            parser: None,
+            sequence: 1,
+            raw_hex: "10ff".into(),
+            values: Value::Null,
+        };
+        sender.send(Ok(report)).unwrap();
+        unsafe { SendMessageW(window, WM_DEBUG_REPORT, 0, 0) };
+        assert_eq!(title(window), "Tablet Debugger - Wacom PTH-660");
+        assert_eq!(
+            with_debugger(window, |debugger| debugger.raw.clone()),
+            Some(vec![0x10, 0xFF])
+        );
+        with_debugger(window, |debugger| debugger.menu.set(rect(4, 2, 40, 24)));
+        unsafe { SendMessageW(window, WM_MOUSEMOVE, 0, point(10, 10)) };
+        assert_eq!(
+            with_debugger(window, |debugger| debugger.menu_hot),
+            Some(true)
+        );
+        unsafe { SendMessageW(window, WM_MOUSEMOVE, 0, point(200, 200)) };
+        assert_eq!(
+            with_debugger(window, |debugger| debugger.menu_hot),
+            Some(false)
+        );
+        sender
+            .send(Err("The driver is not running.".into()))
+            .unwrap();
+        unsafe { SendMessageW(window, WM_DEBUG_REPORT, 0, 0) };
+        assert_eq!(title(window), "Tablet Debugger");
+        assert_eq!(
+            with_debugger(window, |debugger| debugger.report_lines()),
+            Some((vec!["The driver is not running.".to_owned()], true))
+        );
+        unsafe { SendMessageW(window, WM_KEYDOWN, usize::from(VK_ESCAPE), 0) };
+        assert_eq!(unsafe { IsWindow(window) }, 0);
+        assert!(DEBUGGER.with(|slot| slot.borrow().is_none()));
+        assert!(cancelled.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn raw_data_is_uppercase_hex_or_binary() {
+        let bytes = parse_hex("1000b251ff").unwrap();
+        assert_eq!(raw_line(&bytes, false), "10 00 B2 51 FF");
+        assert_eq!(raw_line(&bytes[..2], true), "00010000 00000000");
+        assert_eq!(parse_hex("abc"), None);
+        assert_eq!(parse_hex("zz"), None);
     }
 }
 
@@ -636,56 +1166,75 @@ mod tests {
 mod preview {
     use super::*;
 
-    /// Renders the debugger with a sample PTH-660 report to
-    /// $OTD_PREVIEW_DIR/debugger.bmp without opening a window.
+    /// Renders the debugger with a sample PTH-660 report in the light, dark
+    /// and high-contrast palettes, then at the minimum size in binary mode
+    /// without the visualizer and with the driver stopped, to
+    /// $OTD_PREVIEW_DIR/debugger-*.bmp without opening a window.
     #[test]
-    #[ignore = "writes a preview image; set OTD_PREVIEW_DIR"]
+    #[ignore = "writes preview images; set OTD_PREVIEW_DIR"]
     fn render_debugger_preview() {
         let directory = std::env::var_os("OTD_PREVIEW_DIR").expect("OTD_PREVIEW_DIR");
-        let fonts = FontSet::new(96);
-        let style = draw::Style {
-            palette: theme::Palette::light(),
-            fonts: fonts.fonts,
-            scale: 1.0,
-        };
-        let (_, updates) = mpsc::sync_channel(1);
-        let mut debugger = Debugger {
-            window: ptr::null_mut(),
-            dpi: 96,
-            fonts: FontSet::new(96),
-            palette: theme::Palette::light(),
-            updates,
-            cancelled: Arc::new(AtomicBool::new(false)),
-            latest: Some(DebugReport {
+        let raw = format!("1000b25100ed120000003ffa0900003f{}", "00".repeat(345));
+        for (name, palette, size) in [
+            ("light", theme::Palette::light(), (940, 590)),
+            ("dark", theme::Palette::dark(), (940, 590)),
+            ("contrast", theme::Palette::high_contrast(), (940, 590)),
+            ("compact", theme::Palette::dark(), (760, 480)),
+            ("stopped", theme::Palette::light(), (760, 480)),
+        ] {
+            let fonts = FontSet::new(96);
+            let style = draw::Style {
+                palette,
+                fonts: fonts.fonts,
+                scale: 1.0,
+            };
+            let (_, updates) = mpsc::sync_channel(1);
+            let mut debugger = Debugger::new(
+                ptr::null_mut(),
+                96,
+                palette,
+                updates,
+                Arc::new(AtomicBool::new(false)),
+            );
+            debugger.raw = parse_hex(&raw).unwrap();
+            debugger.latest = Some(DebugReport {
                 tablet: Some("Wacom PTH-660".into()),
                 parser: Some(
                     "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV2.IntuosV2ReportParser"
                         .into(),
                 ),
                 sequence: 1000,
-                raw_hex: "10617d6500630f009319f8070000000013f2ae8025020811".into(),
+                raw_hex: raw.clone(),
                 values: serde_json::json!({"kind": "data", "values": {
-                    "position": [25981.0, 3939.0], "pressure": 6547, "tilt": [-8.0, 7.0],
-                    "eraser": false, "near_proximity": true, "pen_buttons": [false, false]}}),
-            }),
-            error: None,
-            history: VecDeque::new(),
-            spec: Some(("Wacom PTH-660".into(), Some(TabletSpec::PTH_660))),
-        };
-        let now = Instant::now();
-        debugger
-            .history
-            .push_back((now - Duration::from_millis(500), 500));
-        debugger.history.push_back((now, 1000));
-        let area = rect(0, 0, 760, 520);
-        let screen = unsafe { GetDC(ptr::null_mut()) };
-        let mut canvas = canvas::Canvas::new(screen, area).unwrap();
-        debugger.draw(&mut canvas, area, &style);
-        std::fs::write(
-            std::path::Path::new(&directory).join("debugger.bmp"),
-            canvas.to_bmp(),
-        )
-        .unwrap();
-        unsafe { ReleaseDC(ptr::null_mut(), screen) };
+                    "position": [20914.0, 4845.0], "pressure": 0, "tilt": [-6.0, 9.0],
+                    "eraser": false, "near_proximity": false, "hover_distance": 63,
+                    "pen_buttons": [false, false]}}),
+            });
+            debugger.spec = Some(("Wacom PTH-660".into(), Some(TabletSpec::PTH_660)));
+            debugger.menu_hot = name == "dark";
+            debugger.visualizer = name != "compact";
+            debugger.binary = name == "compact";
+            if name == "stopped" {
+                debugger.latest = None;
+                debugger.raw.clear();
+                debugger.spec = None;
+                debugger.error = Some("The driver is not running. Start it to see reports.".into());
+            }
+            let now = Instant::now();
+            debugger
+                .history
+                .push_back((now - Duration::from_millis(1000), 284));
+            debugger.history.push_back((now, 1000));
+            let area = rect(0, 0, size.0, size.1);
+            let screen = unsafe { GetDC(ptr::null_mut()) };
+            let mut canvas = canvas::Canvas::new(screen, area).unwrap();
+            debugger.draw(&mut canvas, area, &style);
+            std::fs::write(
+                std::path::Path::new(&directory).join(format!("debugger-{name}.bmp")),
+                canvas.to_bmp(),
+            )
+            .unwrap();
+            unsafe { ReleaseDC(ptr::null_mut(), screen) };
+        }
     }
 }
