@@ -20,13 +20,15 @@ The panel opens `driver.toml` from `%LOCALAPPDATA%\OpenTabletDriverRust` (or the
 
 **Add to settings** inspects the plugin's DLLs, running their code as **Add .NET plugin** does, and adds every exported position filter. Plugins that only provide bindings, tools or output modes install but add nothing, because the driver cannot run those yet. **Remove** deletes the folder. A plugin loaded by the running driver can't be removed until the driver stops.
 
+**Downloads.** The catalog, plugins and updates download with Windows' `curl.exe`, through the proxy the Windows proxy settings give each address: automatic detection, a setup script, or the manual proxy and its exceptions. Redirects are followed one request at a time, because GitHub serves release files from a different host than its pages and API. As in OpenTabletDriver's .NET downloads, certificate revocation is not checked, so an unreachable revocation server cannot block a download; certificates and host names are still verified, and plugins and updates must match their SHA-256. A failed download names the host, the proxy if one was used, and curl's reason.
+
 **Updates.** The panel checks the latest GitHub release when it opens (Help menu toggle) and on **Help > Check for updates**. A launch check that finds a release while the panel is not in front shows a tray notification and waits for the panel to be activated instead of taking focus. Installing:
 1. `curl.exe` downloads the release ZIP and its SHA-256 file.
 2. Windows CNG verifies the hash, and `tar.exe` extracts the ZIP.
 3. Every installed file is renamed aside before its replacement is copied, so running executables and loaded DLLs keep working. If any step fails, every file is restored.
 4. **Restart** stops the daemon, starts the new panel and closes the old one.
 
-The renamed files are removed at the next start. For a private repository the updater needs `GH_TOKEN`, `GITHUB_TOKEN` or a logged-in GitHub CLI. It passes the token to curl in a temporary header file and deletes the file after the request.
+The renamed files are removed at the next start. For a private repository the updater needs `GH_TOKEN`, `GITHUB_TOKEN` or a logged-in GitHub CLI. It passes the token to curl in a temporary header file, sends it only to GitHub's API and not to the storage host a download redirects to, and deletes the file afterwards.
 
 **Startup and presets.** **Tablets > Start with Windows** writes one `OpenTabletDriverRust` value under the current user's `Run` key, and turning it off removes only that value. The value opens the panel with `ui --tray`. **File > Presets** lists the presets in `%LOCALAPPDATA%\OpenTabletDriverRust\presets`. Choosing one loads it as unsaved settings. **Save settings as preset** saves in that folder and asks before replacing a preset.
 

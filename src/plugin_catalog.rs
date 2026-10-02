@@ -98,30 +98,6 @@ fn system_tool(name: &str) -> PathBuf {
     PathBuf::from(root).join("System32").join(name)
 }
 
-fn curl(url: &str, output: &Path) -> Result<(), String> {
-    let status = Command::new(system_tool("curl.exe"))
-        .creation_flags(CREATE_NO_WINDOW)
-        .args([
-            "--silent",
-            "--show-error",
-            "--fail",
-            "--location",
-            "--max-time",
-            "180",
-        ])
-        .args(["--user-agent", "OpenTabletDriver"])
-        .arg("--output")
-        .arg(output)
-        .arg(url)
-        .status()
-        .map_err(|error| format!("cannot run curl.exe: {error}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("download failed: {url}"))
-    }
-}
-
 fn extract(archive: &Path, into: &Path) -> Result<(), String> {
     fs::create_dir_all(into).map_err(|error| error.to_string())?;
     let status = Command::new(system_tool("tar.exe"))
@@ -158,7 +134,7 @@ fn json_files(directory: &Path, found: &mut Vec<PathBuf>) {
 pub fn fetch() -> Result<Vec<PluginMetadata>, String> {
     let work = crate::update::temporary_work("otd-rust-catalog")?;
     let archive = work.join("catalog.tar.gz");
-    let result = curl(CATALOG, &archive)
+    let result = crate::download::to_file(CATALOG, None, None, &archive)
         .and_then(|()| extract(&archive, &work.join("catalog")))
         .map(|()| read_catalog(&work.join("catalog")));
     let _ = fs::remove_dir_all(&work);
@@ -297,7 +273,7 @@ pub fn install(entry: &PluginMetadata) -> Result<PathBuf, String> {
     let work = crate::update::temporary_work("otd-plugin")?;
     fs::create_dir_all(&work).map_err(|error| error.to_string())?;
     let archive = work.join("download");
-    let result = curl(url, &archive)
+    let result = crate::download::to_file(url, None, None, &archive)
         .and_then(|()| install_archive(entry, &archive, &plugins_directory()?, &work));
     let _ = fs::remove_dir_all(&work);
     result
