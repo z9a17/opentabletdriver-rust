@@ -2,6 +2,10 @@
 //! the console.
 use super::*;
 
+#[cfg(test)]
+#[path = "area_preview_tests.rs"]
+mod area_preview_tests;
+
 impl App {
     pub(super) fn style(&self) -> Style {
         with_look(|look| look.style).expect("look is initialized")
@@ -1204,7 +1208,8 @@ impl App {
     pub(super) fn bounds(&self, which: AreaKind) -> Bounds {
         match which {
             AreaKind::Display => Bounds::from_rect(self.displays.virtual_screen),
-            AreaKind::Tablet => Bounds::tablet_for(self.editor.profile.tablet),
+            AreaKind::Tablet => self.tablet_view
+                .map_or_else(|| Bounds::tablet_for(self.editor.profile.tablet), |view| view.bounds),
         }
     }
 
@@ -1760,6 +1765,10 @@ impl App {
 
     pub(super) fn area_action(&mut self, command: u16) {
         let which = self.context_area;
+        // Discovery can complete while a context menu is open.
+        if which == AreaKind::Tablet && self.tablet_view.is_none() {
+            return;
+        }
         let bounds = self.bounds(which);
         let mut mapping = self.editor.absolute(&self.displays);
         let previous = (mapping.display.width, mapping.display.height);

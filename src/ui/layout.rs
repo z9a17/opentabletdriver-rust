@@ -306,10 +306,9 @@ impl App {
                             self.unit_row(&fields, row, s(92), items, shown, measure);
                         }
                         AreaKind::Tablet => {
-                            self.tablet_view = AreaView::new(
-                                canvas_rect,
-                                Bounds::tablet_for(self.editor.profile.tablet),
-                            );
+                            self.tablet_view = self.editor
+                                .detected_tablet_bounds(&self.connected_tablets)
+                                .and_then(|bounds| AreaView::new(canvas_rect, bounds));
                             let fields = with_units(&self.c.tablet, &TABLET_FIELDS);
                             self.unit_row(&fields, row, s(92), items, shown, measure);
                         }
