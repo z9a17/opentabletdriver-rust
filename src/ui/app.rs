@@ -1885,6 +1885,7 @@ impl App {
         self.dark_mode.apply_title_bar(self.hwnd, palette.dark);
         plugin_manager::apply_theme();
         debugger::refresh_theme();
+        experimental::refresh_theme();
         let mut scrolling = vec![self.c.filter_list, self.c.log];
         if !self.tooltip.is_null() {
             scrolling.push(self.tooltip);
