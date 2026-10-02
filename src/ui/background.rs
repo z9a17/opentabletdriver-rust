@@ -36,6 +36,18 @@ impl DeviceScan {
 }
 
 impl App {
+    fn refresh_tablet_view(&mut self) {
+        // Do not finish a pending drag against a tablet that disappeared.
+        let bounds = self.editor.detected_tablet_bounds(&self.connected_tablets);
+        if bounds != self.tablet_view.map(|view| view.bounds)
+            && self.drag.as_ref().is_some_and(|drag| drag.which == AreaKind::Tablet)
+        {
+            self.drag = None;
+            unsafe { ReleaseCapture() };
+        }
+        self.layout();
+    }
+
     pub(super) fn background(
         &mut self,
         name: &str,
@@ -250,20 +262,25 @@ impl App {
                                     Ok(true) => {
                                         self.sync_areas(None);
                                         self.sync_pen(None);
-                                        self.layout();
                                     }
                                     Ok(false) => {}
                                     Err(error) => self.log(Level::Warning, "Tablet", format!("Could not use the detected tablet's dimensions: {error}")),
                                 }
                             }
+                            // A removal must clear the view even when no
+                            // profile geometry changed or edits are pending.
+                            self.refresh_tablet_view();
                             self.update_title();
                             self.set_driver_state(self.driver);
                         }
-                        Err(error) => self.log(
-                            Level::Error,
-                            "Tablet",
-                            format!("HID discovery failed: {error}"),
-                        ),
+                        Err(error) => {
+                            self.tablet_present = None;
+                            self.connected_tablets.clear();
+                            self.refresh_tablet_view();
+                            self.update_title();
+                            self.set_driver_state(self.driver);
+                            self.log(Level::Error, "Tablet", format!("HID discovery failed: {error}"));
+                        }
                     }
                     if let Some(again) = again {
                         self.refresh_tablets(announce || again);

@@ -455,6 +455,21 @@ impl Editor {
         }
     }
 
+    /// Only a detected, selected device supplies usable preview bounds. The
+    /// profile's transient/default spec is not evidence of connected hardware.
+    pub fn detected_tablet_bounds(&self, connected: &[String]) -> Option<Bounds> {
+        let target = self.profile.tablet_name().ok()?;
+        let name = match target.as_deref() {
+            Some(target) => connected.iter().find(|name| name.as_str() == target)?,
+            None => {
+                let [name] = connected else { return None; };
+                name
+            }
+        };
+        let spec = otd_core::config::spec_for_tablet(name).ok()?;
+        Some(Bounds::tablet_for(spec))
+    }
+
     /// Resolve the editor's transient geometry without naming/saving a target.
     pub fn update_detected_tablet(&mut self, connected: &[String]) -> Result<bool, String> {
         if self.profile.tablet_name()?.is_some() {
@@ -904,6 +919,52 @@ pub fn parse_number(text: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disconnected_preview_preserves_default_named_and_invalid_profiles() {
+        for target in [None, Some("*"), Some("Wacom PTH-660")] {
+            let mut profile = Profile::default();
+            profile.target_tablet = target.map(str::to_owned);
+            let mut editor = Editor::new(profile);
+            let mut mapping = editor.absolute(&displays());
+            mapping.tablet.width = 82.6;
+            mapping.tablet.height = 48.2;
+            mapping.tablet.x = 41.3;
+            mapping.tablet.y = 69.0;
+            editor.set_absolute(mapping);
+            let saved = editor.profile.to_toml().unwrap();
+            assert_eq!(editor.detected_tablet_bounds(&[]), None);
+            assert_eq!(editor.profile.to_toml().unwrap(), saved);
+            editor.profile.otd_mapping.as_mut().unwrap().tablet.width = 0.0;
+            let invalid = editor.profile.to_toml().unwrap();
+            assert_eq!(editor.detected_tablet_bounds(&[]), None);
+            assert_eq!(editor.profile.to_toml().unwrap(), invalid);
+        }
+    }
+
+    #[test]
+    fn preview_bounds_require_the_selected_detected_device() {
+        let mut editor = Editor::new(Profile::default());
+        assert_eq!(editor.profile.tablet, TabletSpec::PTH_660);
+        let ptk = vec!["Wacom PTK-470".to_owned()];
+        let expected = Some(Bounds { left: 0.0, top: 0.0, right: 187.0, bottom: 105.0 });
+        let saved = editor.profile.to_toml().unwrap();
+        assert_eq!(editor.detected_tablet_bounds(&ptk), expected);
+        assert_eq!(editor.profile.to_toml().unwrap(), saved);
+        assert_eq!(editor.profile.tablet, TabletSpec::PTH_660);
+        let both = vec!["Wacom PTK-470".to_owned(), "Wacom PTH-660".to_owned()];
+        assert_eq!(editor.detected_tablet_bounds(&both), None);
+        assert_eq!(editor.detected_tablet_bounds(&["Unrecognized model".into()]), None);
+        editor.profile.target_tablet = Some("Wacom PTH-660".into());
+        assert_eq!(editor.detected_tablet_bounds(&ptk), None);
+        assert_eq!(editor.detected_tablet_bounds(&both), Some(Bounds {
+            left: 0.0, top: 0.0, right: 224.0, bottom: 148.0,
+        }));
+        editor.profile.target_tablet = Some("Wacom PTK-470".into());
+        assert_eq!(editor.detected_tablet_bounds(&both), expected);
+        assert_eq!(editor.detected_tablet_bounds(&[]), None);
+        assert_eq!(editor.detected_tablet_bounds(&ptk), expected);
+    }
 
     #[test]
     fn generated_control_attributes_become_choices_and_tool_tips() {

@@ -1,6 +1,6 @@
 [package]
 name = "opentabletdriver-rust"
-version = "0.16.2"
+version = "0.16.3"
 edition = "2024"
 license = "GPL-3.0-only"
 description = "User-mode tablet driver using OpenTabletDriver configurations on Windows, Linux and macOS"

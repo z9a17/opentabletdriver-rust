@@ -408,7 +408,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "The bounded 0.16.3 disconnected-canvas correction is documented in docs/DISCONNECTED_TABLET_AREA.md. Broader U02 conversion/lock, interactive UI and physical reconnect evidence remain open; no full capability verification is claimed."
+      ]
     },
     "CAP-32": {
       "state": "open",

@@ -148,6 +148,7 @@ pub struct AreaScene<'a> {
     pub backgrounds: &'a [Bounds],
     pub area: OtdArea,
     pub unit: &'a str,
+    pub unavailable_text: &'a str,
     pub invalid_text: &'a str,
 }
 
@@ -158,14 +159,18 @@ pub fn paint(canvas: &mut Canvas, scene: &AreaScene, fonts: &AreaFonts, palette:
         backgrounds,
         area,
         unit,
+        unavailable_text,
         invalid_text,
     } = *scene;
     let area = &area;
     let valid = area.width > 0.0 && area.height > 0.0 && area.x.is_finite() && area.y.is_finite();
+    // Missing hardware and an invalid saved mapping are different states.
+    // An empty unavailable message leaves the themed canvas untouched.
+    let message = if view.is_none() { unavailable_text } else { invalid_text };
     let Some(view) = view.filter(|_| valid) else {
         canvas.text(
             rect,
-            invalid_text,
+            message,
             fonts.small,
             palette.text,
             DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,

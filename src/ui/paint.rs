@@ -67,7 +67,7 @@ impl App {
                         ),
                         AreaKind::Tablet => (
                             self.tablet_view.as_ref(),
-                            vec![Bounds::tablet_for(self.editor.profile.tablet)],
+                            self.tablet_view.iter().map(|view| view.bounds).collect(),
                             "mm",
                             "Invalid tablet area.",
                         ),
@@ -82,6 +82,7 @@ impl App {
                         backgrounds: &backgrounds,
                         area: which.area(&mapping),
                         unit,
+                        unavailable_text: if *which == AreaKind::Tablet { "" } else { error },
                         invalid_text: error,
                     };
                     area::paint(canvas, &scene, &fonts, &p);
