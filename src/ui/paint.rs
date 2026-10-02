@@ -183,7 +183,11 @@ pub(super) fn custom_draw(draw: &mut NMCUSTOMDRAW) -> LRESULT {
         if draw.dwDrawStage != CDDS_PREPAINT {
             return Some(CDRF_DODEFAULT as LRESULT);
         }
-        let style = look.style;
+        let mut style = look.style;
+        // Secondary windows can be on another monitor and own their fonts.
+        style.scale = unsafe { GetDpiForWindow(hwnd) }.max(96) as f32 / 96.0;
+        let font = unsafe { SendMessageW(hwnd, WM_GETFONT, 0, 0) } as HFONT;
+        if !font.is_null() { style.fonts.ui = font; }
         let surface = look.surface(info.surface);
         let flags = draw.uItemState;
         let mut state = State {
