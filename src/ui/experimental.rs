@@ -37,6 +37,7 @@ struct Dialog {
     fields: [HWND; 2],
     controls: Vec<(HWND, RECT)>,
     fonts: Option<FontSet>,
+    dpi: u32,
     notice: HWND,
     result: Option<Settings>,
     error: Option<String>,
@@ -124,7 +125,7 @@ impl Dialog {
     fn paint(&self, dc: HDC) {
         with_look(|look| {
             let Some(fonts) = &self.fonts else { return; };
-            let dpi = unsafe { GetDpiForWindow(self.window) }.max(96);
+            let dpi = self.dpi;
             let style = Style { fonts: fonts.fonts, scale: dpi as f32 / 96.0, ..look.style };
             let client = client_rect(self.window);
             let Some(mut canvas) = canvas::Canvas::new(dc, client) else { return; };
@@ -146,6 +147,7 @@ impl Dialog {
     }
 
     fn resize(&mut self, dpi: u32, suggested: Option<RECT>) {
+        self.dpi = dpi;
         let fonts = FontSet::new(dpi);
         for (control, bounds) in &self.controls {
             let font = if unsafe { GetDlgCtrlID(*control) } == i32::from(TITLE) {
@@ -358,7 +360,6 @@ fn load_choices() -> (Settings, Option<String>) {
 
 pub(super) struct Page {
     window: HWND,
-    dpi: Cell<u32>,
     // Box keeps GWLP_USERDATA stable when the parent App moves.
     state: Box<RefCell<Dialog>>,
 }
@@ -368,7 +369,7 @@ impl Page {
         let (settings, load_warning) = load_choices();
         let state = Box::new(RefCell::new(Dialog {
             window: ptr::null_mut(), settings, fields: [ptr::null_mut(); 2], controls: Vec::new(),
-            fonts: None, notice: ptr::null_mut(), result: None, error: None, load_warning,
+            fonts: None, dpi: 96, notice: ptr::null_mut(), result: None, error: None, load_warning,
             invalid: false, busy: false, dark_mode: theme::DarkMode::load(), icons: [ptr::null_mut(); 2],
         }));
         let template = Template { dialog: DLGTEMPLATE {
@@ -378,7 +379,7 @@ impl Page {
         let window = unsafe { CreateDialogIndirectParamW(GetModuleHandleW(ptr::null()), &template.dialog,
             parent, Some(procedure), state.as_ref() as *const RefCell<Dialog> as isize) };
         if window.is_null() { return Err(std::io::Error::last_os_error().to_string()); }
-        let page = Self { window, state, dpi: Cell::new(unsafe { GetDpiForWindow(window) }.max(96)) };
+        let page = Self { window, state };
         let error = page.state.borrow_mut().error.take();
         if let Some(error) = error { return Err(error); }
         Ok(page)
@@ -387,7 +388,7 @@ impl Page {
     pub(super) fn window(&self) -> HWND { self.window }
 
     pub(super) fn set_dpi(&self, dpi: u32) {
-        if self.dpi.replace(dpi) != dpi {
+        if self.state.borrow().dpi != dpi {
             self.state.borrow_mut().resize(dpi, None);
         }
     }
@@ -496,7 +497,7 @@ mod tests {
             filters: Vec::new(), log: VecDeque::new(), log_columns: [0;3], brushes: RefCell::new(Vec::new()),
         }));
         let state = RefCell::new(Dialog { window: ptr::null_mut(), settings: Settings::default(),
-            fields: [ptr::null_mut();2], controls: Vec::new(), fonts: None, notice: ptr::null_mut(),
+            fields: [ptr::null_mut();2], controls: Vec::new(), fonts: None, dpi: 96, notice: ptr::null_mut(),
             result: None, error: None, load_warning: None, invalid: false, busy: false,
             dark_mode: theme::DarkMode::load(), icons: [ptr::null_mut();2] });
         let template = Template { dialog: DLGTEMPLATE {
