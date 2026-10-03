@@ -54,3 +54,15 @@ Needs a Windows build with [pen side buttons](PEN_BUTTONS.md). Replay tests cove
 5. In pen output, open a drawing application: a side button should arrive as the pen's barrel button (most applications list it as a stylus or pen button you can assign). Windows pens have one barrel button, so buttons 1 to 3 all act as it.
 6. Unplug the tablet while a button is held and confirm nothing stays pressed.
 7. Report the tablet model, the Windows build, and any button that does the wrong thing.
+
+## Express keys and wheels (pending)
+
+Needs a Windows build with [express keys and wheels](EXPRESS_KEYS_AND_WHEELS.md). Replay tests cover the logic; these steps check it on a tablet.
+
+1. Start the driver with a PTH-660 and check the Console for `express keys and wheels connected`. No message about the auxiliary collection failing should appear.
+2. In **Auxiliary Settings**, bind Express Key 1 to `Control+Z` and Express Key 2 to Right Click, Save, and press each key in a text editor. Holding a key holds its action; releasing it lets go, also when the pen is away from the tablet.
+3. Bind the ring's Clockwise to `Control+Equal` and Counter-Clockwise to `Control+Minus` in a browser. One slow turn of one ring position should zoom once; turning back should zoom the other way; wrapping past the top of the ring should keep the direction.
+4. Set the thresholds to 30° and turn slowly: one zoom per six positions. Lift the finger halfway and touch again: the half turn must not count.
+5. Bind Wheel Button 1 (the ring's centre) and check it holds and releases.
+6. Hold an express key and unplug the tablet: nothing may stay pressed.
+7. Report the tablet model, the Windows build, and any key or direction that does the wrong thing.
