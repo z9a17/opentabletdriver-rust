@@ -1443,9 +1443,6 @@ pub fn run() -> Result<(), String> {
     }
     app.profile_snapshot = profile_snapshot;
     app.set_driver_state(DriverState::Stopped);
-    if prefs.check_for_updates {
-        updates::check(window, false);
-    }
     // A profile that failed to load is replaced by defaults; never drive
     // the tablet with those unasked.
     let auto_start = prefs.start_driver_on_launch && loaded.is_ok();
@@ -1473,6 +1470,11 @@ pub fn run() -> Result<(), String> {
     APP.with(|slot| *slot.borrow_mut() = Some(app));
     with_app(App::layout);
     show_initial(window, maximized);
+    // The update check uses with_app to claim its request. Before APP is
+    // registered, it silently returns without starting the worker.
+    if prefs.check_for_updates {
+        updates::check(window, false);
+    }
     unsafe {
         SetFocus(first_tab);
         PostMessageW(window, WM_DETECT, 0, 0);
