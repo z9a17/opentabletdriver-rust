@@ -194,6 +194,7 @@ impl App {
             },
             tab: Tab::Output,
             items: Vec::new(),
+            experimental: None,
             display_view: None,
             tablet_view: None,
             displays,
@@ -256,6 +257,7 @@ impl App {
     }
 
     pub(super) fn create_controls(&mut self) -> Result<(), String> {
+        self.experimental = Some(experimental::Page::create(self.hwnd)?);
         for (index, label) in MENUS.iter().enumerate() {
             let hwnd = self.button(label, ID_MENU + index as u16, Kind::Menu, Surface::Window)?;
             self.c.menus.push(hwnd);
@@ -404,6 +406,7 @@ impl App {
         all.extend_from_slice(&c.tablet);
         all.extend_from_slice(&c.relative);
         all.extend(self.labels.values().copied());
+        all.extend(self.experimental.as_ref().map(experimental::Page::window));
         all
     }
 
@@ -2344,7 +2347,11 @@ impl App {
 
     pub(super) fn apply_experimental(&mut self, settings: crate::experimental::Settings) {
         if self.submit_control(client::ClientCommand::Experimental(settings)) {
+            if let Some(page) = &self.experimental { page.set_busy(true); }
             self.log(Level::Info, "Experimental", "Applying and saving CPU affinity. The Console reports completion or failure; tablet input will not restart.");
+        } else if let Some(page) = &self.experimental {
+            page.set_busy(true);
+            page.complete(&Err("The daemon is busy or unavailable. See the Console and retry Save and apply.".into()));
         }
     }
 
@@ -2447,6 +2454,7 @@ impl App {
                 }
                 client::ClientEvent::ActionFinished(result) => {
                     if !self.closing { self.control_busy = false; }
+                    if let Some(page) = &self.experimental { page.complete(&result); }
                     if let Err(error) = result {
                         self.log(Level::Error, "Daemon", error);
                     }

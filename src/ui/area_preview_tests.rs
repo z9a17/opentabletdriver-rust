@@ -25,7 +25,7 @@ fn fixture(hwnd: HWND) -> App {
             eraser_binding: null, eraser_slider: null, eraser_field: null,
             log: null, copy_log: null, clear_log: null, save: null, apply: null,
         },
-        tab: Tab::Output, items: Vec::new(), display_view: None, tablet_view: None,
+        tab: Tab::Output, items: Vec::new(), experimental: None, display_view: None, tablet_view: None,
         displays: fallback_displays(), editor: Editor::new(Profile::default()),
         profile_path: PathBuf::new(), profile_snapshot: None, profile_revision_floor: 0,
         recovered_backup: false, dirty: false, selected_filter: 0, properties: Vec::new(),
@@ -213,6 +213,9 @@ fn render_page(app: &App, name: &str) {
             }
             RestoreDC(dc, saved);
         }
+        if app.tab == Tab::Experimental {
+            if let Some(page) = &app.experimental { page.render(dc); }
+        }
         GdiFlush();
         let pixels = std::slice::from_raw_parts(bits as *const u32, (width * height) as usize);
         let mut bmp = Vec::new();
@@ -363,6 +366,53 @@ fn accent_colors_replace_the_blue_on_every_page() {
             app.select_tab(Tab::Pen);
         }
     }
+    drop(app);
+    LOOK.with(|slot| slot.borrow_mut().take());
+    unsafe { DestroyWindow(window); }
+}
+
+#[test]
+fn experimental_tab_keeps_cpu_edits_separate_and_reloads_saved_choices() {
+    let window = unsafe { CreateWindowExW(0, wide("STATIC").as_ptr(), wide("Experimental tab").as_ptr(),
+        WS_POPUP, 0, 0, 820, 600, ptr::null_mut(), ptr::null_mut(), GetModuleHandleW(ptr::null()), ptr::null()) };
+    assert!(!window.is_null());
+    let mut app = fixture(window);
+    app.c.tabs.clear();
+    app.c.menus.clear();
+    app.create_controls().unwrap();
+    let affinity = crate::experimental::masks().unwrap().0;
+    let page = app.experimental.as_ref().unwrap().window();
+    let fields = [unsafe { GetDlgItem(page, 100) }, unsafe { GetDlgItem(page, 101) }];
+    let saved = fields.map(text);
+    app.select_tab(Tab::Experimental);
+    assert!(placed(&app, &[page]).len() == 1);
+    assert!(placed(&app, &[app.c.save, app.c.apply]).is_empty(), "profile buttons must not appear on the CPU page");
+    set_text(fields[0], "0,0");
+    unsafe { SendMessageW(page, WM_COMMAND, IDOK as usize, 0); }
+    assert!(app.experimental.as_ref().unwrap().take_result().is_none(), "duplicate CPUs must be rejected");
+    unsafe { SendMessageW(page, WM_COMMAND, 102, 0); }
+    assert_eq!(fields.map(text), ["All", "All"]);
+    unsafe { SendMessageW(page, WM_COMMAND, IDOK as usize, 0); }
+    assert_eq!(app.experimental.as_ref().unwrap().take_result(), Some(crate::experimental::Settings::default()));
+    assert!(!app.dirty);
+    assert_eq!(app.edit_revision, 0);
+    assert_eq!(crate::experimental::masks().unwrap().0, affinity, "capturing choices must not apply affinity");
+    unsafe { SendMessageW(page, WM_COMMAND, IDCANCEL as usize, 0); }
+    assert_eq!(fields.map(text), saved, "Reload saved must discard unsaved CPU edits");
+    for (name, palette) in [("dark", Palette::dark().with_accent(Accent::Red)), ("light", Palette::light().with_accent(Accent::Green)), ("contrast", Palette::high_contrast())] {
+        update_look(|look| look.style.palette = palette);
+        experimental::refresh_theme();
+        for dpi in [96, 144, 192] {
+            app.set_dpi(dpi);
+            unsafe { SetWindowPos(window, ptr::null_mut(), 0, 0, scale(820, dpi), scale(600, dpi), SWP_NOZORDER | SWP_NOACTIVATE); }
+            app.layout();
+            let bounds = placed(&app, &[page])[0];
+            assert!(bounds.bottom <= client_rect(window).bottom - scale(48, dpi));
+            render_page(&app, &format!("experimental-tab-{name}-{dpi}"));
+        }
+    }
+    app.select_tab(Tab::Output);
+    assert!(placed(&app, &[page]).is_empty());
     drop(app);
     LOOK.with(|slot| slot.borrow_mut().take());
     unsafe { DestroyWindow(window); }

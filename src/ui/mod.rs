@@ -136,7 +136,6 @@ const CMD_THEME_DARK: u16 = 232;
 const CMD_ACCENT_FIRST: u16 = 280;
 const CMD_ACCENT_WINDOWS: u16 = 297;
 const CMD_ACCENT_CUSTOM: u16 = 298;
-const CMD_EXPERIMENTAL: u16 = 233;
 const CMD_DOCS: u16 = 240;
 const CMD_ABOUT: u16 = 241;
 const CMD_NEXT_TAB: u16 = 250;
@@ -187,6 +186,7 @@ const WM_SHOW_PANEL: u32 = WM_APP + 5;
 const WM_TRAY: u32 = WM_APP + 6;
 const WM_BACKGROUND: u32 = WM_APP + 7;
 const WM_METADATA_REFRESH: u32 = WM_APP + 8;
+const WM_EXPERIMENTAL_APPLY: u32 = WM_APP + 9;
 
 const PANEL_CLASS: &str = "OpenTabletDriverRustControlPanel";
 const PANEL_MUTEX: &str = "Local\\OpenTabletDriverRustPanel";
@@ -383,14 +383,16 @@ enum Tab {
     Filters,
     Pen,
     Aux,
+    Experimental,
     Console,
 }
 
-const TABS: [(Tab, &str); 5] = [
+const TABS: [(Tab, &str); 6] = [
     (Tab::Output, "Output"),
     (Tab::Filters, "Filters"),
     (Tab::Pen, "Pen Settings"),
     (Tab::Aux, "Auxiliary Settings"),
+    (Tab::Experimental, "Experimental"),
     (Tab::Console, "Console"),
 ];
 
@@ -731,6 +733,7 @@ struct App {
     hovered_filter: Option<usize>,
     accelerators: HACCEL,
     c: Controls,
+    experimental: Option<experimental::Page>,
     tab: Tab,
     items: Vec<Item>,
     display_view: Option<AreaView>,
@@ -1169,6 +1172,13 @@ unsafe extern "system" fn window_proc(
                 // Modal dialogs pump messages; release the App borrow first.
                 commands::message_box(window, &text, "Device strings", MB_OK | MB_ICONINFORMATION);
             }
+            0
+        }
+        WM_EXPERIMENTAL_APPLY => {
+            with_app(|app| {
+                let settings = app.experimental.as_ref().and_then(experimental::Page::take_result);
+                if let Some(settings) = settings { app.apply_experimental(settings); }
+            });
             0
         }
         WM_METADATA_REFRESH => {

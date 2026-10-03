@@ -1,5 +1,5 @@
-//! Modal editor for optional scheduling settings. Validation is local; saving
-//! and daemon control run on the background client after the dialog closes.
+//! Experimental tab for optional scheduling settings. Validation is local;
+//! saving and daemon control run on the panel's background client.
 use super::*;
 use crate::experimental::{Settings, format_cpus, parse_cpus};
 use windows_sys::Win32::UI::HiDpi::{DDC_DISABLE_ALL, SetDialogDpiChangeBehavior};
@@ -37,11 +37,13 @@ struct Dialog {
     fields: [HWND; 2],
     controls: Vec<(HWND, RECT)>,
     fonts: Option<FontSet>,
+    dpi: u32,
     notice: HWND,
     result: Option<Settings>,
     error: Option<String>,
     load_warning: Option<String>,
     invalid: bool,
+    busy: bool,
     dark_mode: theme::DarkMode,
     icons: [HICON; 2],
 }
@@ -59,7 +61,9 @@ impl Dialog {
         };
         update_look(|look| {
             look.controls.insert(control as isize, ControlInfo {
-                kind, surface: if kind == Kind::Button { Surface::Window } else { Surface::Group },
+                kind, surface: if kind == Kind::Button {
+                    if self.embedded() { Surface::Page } else { Surface::Window }
+                } else { Surface::Group },
             });
         });
         self.controls.push((control, bounds));
@@ -99,7 +103,8 @@ impl Dialog {
             NOTICE, SS_LEFT | SS_NOPREFIX, rect(16,316,604,374))?;
         self.add("BUTTON", "&All CPUs", 102, WS_TABSTOP | BS_PUSHBUTTON as u32, rect(16,388,124,420))?;
         self.add("BUTTON", "&Save and apply", IDOK as u16, WS_TABSTOP | BS_DEFPUSHBUTTON as u32, rect(328,388,474,420))?;
-        self.add("BUTTON", "Cancel", IDCANCEL as u16, WS_TABSTOP | BS_PUSHBUTTON as u32, rect(490,388,604,420))?;
+        self.add("BUTTON", if self.embedded() { "&Reload saved" } else { "Cancel" }, IDCANCEL as u16,
+            WS_TABSTOP | BS_PUSHBUTTON as u32, rect(490,388,604,420))?;
         self.resize(unsafe { GetDpiForWindow(window) }.max(96), None);
         self.apply_theme();
         Ok(())
@@ -120,11 +125,11 @@ impl Dialog {
     fn paint(&self, dc: HDC) {
         with_look(|look| {
             let Some(fonts) = &self.fonts else { return; };
-            let dpi = unsafe { GetDpiForWindow(self.window) }.max(96);
+            let dpi = self.dpi;
             let style = Style { fonts: fonts.fonts, scale: dpi as f32 / 96.0, ..look.style };
             let client = client_rect(self.window);
             let Some(mut canvas) = canvas::Canvas::new(dc, client) else { return; };
-            canvas.fill(client, style.palette.window);
+            canvas.fill(client, if self.embedded() { style.palette.page } else { style.palette.window });
             draw::group_box(&mut canvas, rect(scale(8,dpi),scale(8,dpi),scale(612,dpi),scale(382,dpi)),
                 &style, style.palette.group);
             for field in self.fields {
@@ -142,6 +147,7 @@ impl Dialog {
     }
 
     fn resize(&mut self, dpi: u32, suggested: Option<RECT>) {
+        self.dpi = dpi;
         let fonts = FontSet::new(dpi);
         for (control, bounds) in &self.controls {
             let font = if unsafe { GetDlgCtrlID(*control) } == i32::from(TITLE) {
@@ -158,6 +164,7 @@ impl Dialog {
             }
         }
         self.fonts = Some(fonts);
+        if self.embedded() { return; }
         for (index, (kind, metric)) in [(ICON_BIG, SM_CXICON), (ICON_SMALL, SM_CXSMICON)].into_iter().enumerate() {
             let icon = canvas::app_icon(unsafe { GetSystemMetricsForDpi(metric,dpi) }.max(16));
             if !icon.is_null() {
@@ -188,7 +195,12 @@ impl Dialog {
             Ok::<_, String>(settings)
         })();
         match candidate {
-            Ok(settings) => { self.result = Some(settings); unsafe { EndDialog(self.window, IDOK as isize); } }
+            Ok(settings) => {
+                self.result = Some(settings);
+                if self.embedded() {
+                    unsafe { PostMessageW(GetParent(self.window), WM_EXPERIMENTAL_APPLY, 0, 0); }
+                } else { unsafe { EndDialog(self.window, IDOK as isize); } }
+            }
             Err(error) => {
                 self.invalid = true;
                 set_text(self.notice, &error);
@@ -210,6 +222,23 @@ impl Dialog {
             InvalidateRect(self.notice, ptr::null(), 1);
         }
     }
+
+    fn embedded(&self) -> bool {
+        (unsafe { GetWindowLongW(self.window, GWL_STYLE) }) as u32 & WS_CHILD != 0
+    }
+
+    fn reload(&mut self) {
+        let (settings, warning) = load_choices();
+        self.settings = settings;
+        self.load_warning = warning;
+        self.invalid = false;
+        self.result = None;
+        for (field, cpus) in self.fields.iter().zip([&self.settings.ui_cpus, &self.settings.driver_cpus]) {
+            set_text(*field, &format_cpus(cpus));
+        }
+        set_text(self.notice, self.load_warning.as_deref().unwrap_or("Reloaded saved CPU choices. Changes apply only when you choose Save and apply."));
+        unsafe { RedrawWindow(self.window, ptr::null(), ptr::null_mut(), RDW_INVALIDATE | RDW_ALLCHILDREN); }
+    }
 }
 
 impl Drop for Dialog {
@@ -230,7 +259,10 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wp: WPARAM, lp: 
     // Painting can reenter while initialize/resize/text changes hold Dialog.
     // Read shared LOOK without borrowing the mutable dialog state.
     match message {
-        WM_CTLCOLORDLG => return with_look(|look| look.brush(look.style.palette.window) as isize).unwrap_or(0),
+        WM_CTLCOLORDLG => return with_look(|look| {
+            let embedded = unsafe { GetWindowLongW(window, GWL_STYLE) } as u32 & WS_CHILD != 0;
+            look.brush(if embedded { look.style.palette.page } else { look.style.palette.window }) as isize
+        }).unwrap_or(0),
         WM_CTLCOLOREDIT | WM_CTLCOLORSTATIC => {
             let control = lp as HWND;
             let result = ctl_color(wp as HDC, control).unwrap_or(0);
@@ -289,7 +321,9 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wp: WPARAM, lp: 
             }
             match (wp & 0xffff) as u16 {
                 id if id == IDOK as u16 => state.accept(),
-                id if id == IDCANCEL as u16 => { unsafe { EndDialog(window, 0); } }
+                id if id == IDCANCEL as u16 => {
+                    if state.embedded() { state.reload(); } else { unsafe { EndDialog(window, 0); } }
+                }
                 102 => { for field in state.fields { set_text(field,"All"); } state.clear_validation(); }
                 _ => return 0,
             }
@@ -309,32 +343,101 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wp: WPARAM, lp: 
             1
         }
         WM_PRINTCLIENT => { state.paint(wp as HDC); 1 }
-        WM_CLOSE => { unsafe { EndDialog(window,0); } 1 }
+        WM_CLOSE => {
+            if !state.embedded() { unsafe { EndDialog(window,0); } }
+            1
+        }
         _ => 0,
     }
 }
 
-pub(super) fn show(parent: HWND) -> Result<Option<Settings>, String> {
-    let (settings, load_warning) = match crate::experimental::load() {
+fn load_choices() -> (Settings, Option<String>) {
+    match crate::experimental::load() {
         Ok(settings) => (settings,None),
         Err(error) => (Settings::default(), Some(format!("Could not load saved choices: {error}. Save and apply replaces them with the values shown and retains a backup."))),
-    };
-    let state = RefCell::new(Dialog { window: ptr::null_mut(), settings, fields: [ptr::null_mut();2],
-        controls: Vec::new(), fonts: None, notice: ptr::null_mut(), result: None, error: None, load_warning,
-        invalid: false, dark_mode: theme::DarkMode::load(), icons: [ptr::null_mut();2] });
-    let template = Template { dialog: DLGTEMPLATE {
-        style: WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME as u32,
-        dwExtendedStyle: WS_EX_DLGMODALFRAME, cx: 340, cy: 250, ..Default::default()
-    }, menu: 0, class: 0, title: 0 };
-    // WM_INITDIALOG registers the window for theme changes throughout the
-    // modal message loop. WM_NCDESTROY clears it before the state is dropped.
-    let result = unsafe { DialogBoxIndirectParamW(GetModuleHandleW(ptr::null()), &template.dialog,
-        parent, Some(procedure), &state as *const RefCell<Dialog> as isize) };
-    WINDOW.with(|window| window.set(ptr::null_mut()));
-    let mut state = state.into_inner();
-    if let Some(error) = state.error.take() { return Err(error); }
-    if result == -1 { return Err(std::io::Error::last_os_error().to_string()); }
-    Ok(state.result.take())
+    }
+}
+
+pub(super) struct Page {
+    window: HWND,
+    // Box keeps GWLP_USERDATA stable when the parent App moves.
+    state: Box<RefCell<Dialog>>,
+}
+
+impl Page {
+    pub(super) fn create(parent: HWND) -> Result<Self, String> {
+        let (settings, load_warning) = load_choices();
+        let state = Box::new(RefCell::new(Dialog {
+            window: ptr::null_mut(), settings, fields: [ptr::null_mut(); 2], controls: Vec::new(),
+            fonts: None, dpi: 96, notice: ptr::null_mut(), result: None, error: None, load_warning,
+            invalid: false, busy: false, dark_mode: theme::DarkMode::load(), icons: [ptr::null_mut(); 2],
+        }));
+        let template = Template { dialog: DLGTEMPLATE {
+            style: WS_CHILD | DS_CONTROL as u32,
+            dwExtendedStyle: WS_EX_CONTROLPARENT, cx: 340, cy: 250, ..Default::default()
+        }, menu: 0, class: 0, title: 0 };
+        let window = unsafe { CreateDialogIndirectParamW(GetModuleHandleW(ptr::null()), &template.dialog,
+            parent, Some(procedure), state.as_ref() as *const RefCell<Dialog> as isize) };
+        if window.is_null() { return Err(std::io::Error::last_os_error().to_string()); }
+        let page = Self { window, state };
+        let error = page.state.borrow_mut().error.take();
+        if let Some(error) = error { return Err(error); }
+        Ok(page)
+    }
+
+    pub(super) fn window(&self) -> HWND { self.window }
+
+    pub(super) fn set_dpi(&self, dpi: u32) {
+        if self.state.borrow().dpi != dpi {
+            self.state.borrow_mut().resize(dpi, None);
+        }
+    }
+
+    pub(super) fn take_result(&self) -> Option<Settings> { self.state.borrow_mut().result.take() }
+
+    pub(super) fn accept(&self) { self.state.borrow_mut().accept(); }
+
+    #[cfg(test)]
+    pub(super) fn render(&self, dc: HDC) {
+        let parent = unsafe { GetParent(self.window) };
+        let mut origin = POINT::default();
+        unsafe {
+            MapWindowPoints(self.window, parent, &mut origin, 1);
+            let saved = SaveDC(dc);
+            SetViewportOrgEx(dc, origin.x, origin.y, ptr::null_mut());
+            SendMessageW(self.window, WM_PRINTCLIENT, dc as usize, 0);
+            RestoreDC(dc, saved);
+        }
+        for (control, _) in &self.state.borrow().controls {
+            let mut origin = POINT::default();
+            unsafe {
+                MapWindowPoints(*control, parent, &mut origin, 1);
+                let saved = SaveDC(dc);
+                SetViewportOrgEx(dc, origin.x, origin.y, ptr::null_mut());
+                SendMessageW(*control, WM_PRINT, dc as usize, (PRF_CLIENT | PRF_ERASEBKGND) as isize);
+                RestoreDC(dc, saved);
+            }
+        }
+    }
+
+    pub(super) fn set_busy(&self, busy: bool) {
+        self.state.borrow_mut().busy = busy;
+        if busy { set_text(self.state.borrow().notice, "Saving and applying CPU affinity. The Console reports any failure."); }
+        unsafe { EnableWindow(self.window, i32::from(!busy)); }
+    }
+
+    pub(super) fn complete(&self, result: &Result<(), String>) {
+        let mut state = self.state.borrow_mut();
+        if !state.busy { return; }
+        state.busy = false;
+        state.load_warning = result.as_ref().err().cloned();
+        set_text(state.notice, state.load_warning.as_deref().unwrap_or("Saved and applied CPU choices. Tablet input was not restarted."));
+        unsafe { EnableWindow(self.window, 1); RedrawWindow(self.window, ptr::null(), ptr::null_mut(), RDW_INVALIDATE | RDW_ALLCHILDREN); }
+    }
+}
+
+impl Drop for Page {
+    fn drop(&mut self) { unsafe { DestroyWindow(self.window); } }
 }
 
 #[cfg(test)]
@@ -394,8 +497,8 @@ mod tests {
             filters: Vec::new(), log: VecDeque::new(), log_columns: [0;3], brushes: RefCell::new(Vec::new()),
         }));
         let state = RefCell::new(Dialog { window: ptr::null_mut(), settings: Settings::default(),
-            fields: [ptr::null_mut();2], controls: Vec::new(), fonts: None, notice: ptr::null_mut(),
-            result: None, error: None, load_warning: None, invalid: false,
+            fields: [ptr::null_mut();2], controls: Vec::new(), fonts: None, dpi: 96, notice: ptr::null_mut(),
+            result: None, error: None, load_warning: None, invalid: false, busy: false,
             dark_mode: theme::DarkMode::load(), icons: [ptr::null_mut();2] });
         let template = Template { dialog: DLGTEMPLATE {
             style: WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME as u32,

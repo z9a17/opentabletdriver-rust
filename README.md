@@ -20,7 +20,7 @@ The Windows build offers:
 - **Command line and background service** for scripting: profiles, presets, diagnostics and area conversion all work headless.
 - **Pen side buttons** click or press keys and shortcuts, with right and middle click defaults. The Windows CLI can inspect defaults, edit individual buttons into a new profile and export supported edits back to OTD settings. See [pen side buttons](docs/PEN_BUTTONS.md).
 
-Not done yet: tablet express keys, and a settings panel editor for the side buttons.
+The Windows panel includes pen-button and express-key/wheel binding editors. See [express keys and wheels](docs/EXPRESS_KEYS_AND_WHEELS.md) for supported actions and remaining hardware checks. Scrolling, toggles and preset-switch bindings remain unfinished.
 
 ## Installation
 
@@ -55,6 +55,8 @@ Supported settings from an existing OpenTabletDriver installation are imported o
 You can create a shortcut to `opentabletdriver-rust-ui.exe`; set its **Start in** field to the extracted folder. Enable **Tablets > Start with Windows** in the panel to launch it at sign-in. Closing the panel shuts down the daemon and waits for its process to exit after input cleanup; minimizing keeps both running in the tray.
 
 Choose **View > Theme > Accent color** to change the blue highlights throughout the panel and its settings windows. Blue remains the default. Pick a preset, follow the Windows accent color, or enter RGB/hex values under **Custom**. The choice is saved for future launches. Windows high-contrast colors take precedence.
+
+Use the **Experimental** tab to choose GUI and driver CPU affinity. **Save and apply** stores both choices without restarting input; **Reload saved** discards unsaved edits. These choices are separate from tablet profiles. See [experimental settings](docs/EXPERIMENTAL_SETTINGS.md).
 
 **View > Experimental settings** lets you select logical CPUs separately for the GUI and driver. Both default to All CPUs; lists such as `0,2,4-7` are accepted. Save and apply stores the choices without restarting tablet input. [Usage and limits](docs/EXPERIMENTAL_SETTINGS.md).
 
