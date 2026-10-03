@@ -32,25 +32,26 @@ already-running daemon does not understand the new CPU settings request.
 
 ## Choose CPUs
 
-Open View > Experimental settings. The window has separate GUI CPUs and
+Open the Experimental tab. The page has separate GUI CPUs and
 Driver CPUs fields. These numbers match Windows logical processor numbers,
 starting at zero. A physical core may have more than one logical processor.
 
-The window follows the theme selected under View, including the system theme
+The page follows the theme selected under View, including the system theme
 and Windows high contrast. Its labels, fields, buttons, focus and validation
 colors use the same palette and drawing as the panel. Theme changes reach an
-open window, and fonts and control sizes follow the window's DPI.
+page, and fonts and control sizes follow the panel's DPI.
 
 - `All` or a blank field lets Windows schedule the process on available CPUs.
 - `2` pins that process to logical CPU 2.
 - `0,2,4-7` allows logical CPUs 0, 2, 4, 5, 6 and 7.
 - All CPUs fills both fields with `All`. Save and apply commits the change.
+- Reload saved discards unsaved CPU edits and reads the persisted choices.
 
 Save and apply validates both selections, asks the attached daemon to apply
 its choice and save the file, then applies the GUI choice. It does not restart
 the tablet worker or rewrite its profile. The Console reports completion or
 failure. If saving fails, the daemon restores its previous affinity. A lost
-IPC reply can follow an accepted save, so reopen the window to check persisted
+IPC reply can follow an accepted save, so choose Reload saved to check persisted
 choices before retrying. If GUI affinity fails after the daemon accepted the
 save, the error says so; reopen the panel to retry the saved GUI choice.
 
@@ -58,7 +59,7 @@ Choices are stored in `%LOCALAPPDATA%\OpenTabletDriverRust\experimental.toml`,
 or under `OTD_RUST_PORTABLE_DIR` in portable mode. The previous file is retained
 as `experimental.toml.bak`. UI preferences remain in `ui.toml`, and tablet
 settings remain in `driver.toml`. Corrupt scheduling settings produce a
-Console warning rather than preventing driver control; the settings window
+Console warning rather than preventing driver control; the Experimental tab
 offers valid defaults that can replace them while retaining a backup.
 
 Defaults do not pin the GUI. A newly launched daemon clears affinity inherited
@@ -72,7 +73,7 @@ Windows group scheduling in place. Invalid or duplicate CPU numbers and
 reversed ranges are rejected. This uses Windows
 [process affinity](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-setprocessaffinitymask).
 Affinity is experimental; this release makes no latency improvement claim.
-Linux/macOS downloads retain their CLI behavior and have no settings window.
+Linux/macOS downloads retain their CLI behavior and have no settings tab.
 
 ## Blue icon and validation
 

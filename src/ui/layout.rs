@@ -52,7 +52,7 @@ impl App {
         let bar_top = client.bottom - s(48);
         let button_top = bar_top + s(9);
         let mut right = client.right - s(10);
-        for (hwnd, width) in [(self.c.apply, 92), (self.c.save, 92)] {
+        for (hwnd, width) in [(self.c.apply, 92), (self.c.save, 92)].into_iter().filter(|_| self.tab != Tab::Experimental) {
             shown.push((
                 hwnd,
                 rect(right - s(width), button_top, right, button_top + s(30)),
@@ -71,6 +71,13 @@ impl App {
             Tab::Filters => self.layout_filters(content, &mut items, &mut shown, &measure, dc),
             Tab::Pen => self.layout_pen(content, &mut items, &mut shown, &measure, dc),
             Tab::Aux => self.layout_aux(content, &mut items, &mut shown, &measure, dc),
+            Tab::Experimental => {
+                if let Some(page) = &self.experimental {
+                    page.set_dpi(self.dpi);
+                    let left = content.left + ((content.right - content.left - s(620)) / 2).max(0);
+                    shown.push((page.window(), rect(left, content.top, left + s(620), content.top + s(436))));
+                }
+            }
             Tab::Console => self.layout_console(content, &mut items, &mut shown),
         }
         unsafe { ReleaseDC(self.hwnd, dc) };
