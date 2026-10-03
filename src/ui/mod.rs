@@ -14,6 +14,7 @@
 //! painted through custom draw. Their painting reads the `LOOK` state, which
 //! is only ever borrowed briefly, so controls that repaint synchronously
 //! while an `App` handler runs still get the right colors.
+mod accent;
 mod app;
 mod area;
 mod background;
@@ -96,7 +97,7 @@ use commands::{
 use draw::{State, Style};
 use model::{Align, AspectSource, Bounds, Editor, FilterRef, OutputMode, PropertyValue};
 use paint::{ctl_color, custom_draw, draw_item};
-use theme::{Palette, Rgb, ThemeMode, UiPrefs};
+use theme::{Accent, Palette, Rgb, ThemeMode, UiPrefs};
 
 // Menu bar, tabs and commands. Button controls use their command's ID.
 const ID_MENU: u16 = 100;
@@ -131,6 +132,10 @@ const CMD_PROPERTY_NEXT: u16 = 228;
 const CMD_THEME_SYSTEM: u16 = 230;
 const CMD_THEME_LIGHT: u16 = 231;
 const CMD_THEME_DARK: u16 = 232;
+/// `theme::Accent::PRESETS` in order, then the Windows and custom accents.
+const CMD_ACCENT_FIRST: u16 = 280;
+const CMD_ACCENT_WINDOWS: u16 = 297;
+const CMD_ACCENT_CUSTOM: u16 = 298;
 const CMD_EXPERIMENTAL: u16 = 233;
 const CMD_DOCS: u16 = 240;
 const CMD_ABOUT: u16 = 241;
@@ -206,12 +211,12 @@ const TABLET_FIELDS: [(&str, &str); 5] = [
     ("Height", "mm"),
     ("X", "mm"),
     ("Y", "mm"),
-    ("Rotation", "Â°"),
+    ("Rotation", "°"),
 ];
 const RELATIVE_FIELDS: [(&str, &str); 4] = [
     ("X Sensitivity", "px/mm"),
     ("Y Sensitivity", "px/mm"),
-    ("Rotation", "Â°"),
+    ("Rotation", "°"),
     ("Reset Time", "ms"),
 ];
 const MENUS: [&str; 5] = ["&File", "&Tablets", "&Plugins", "&View", "&Help"];
@@ -989,6 +994,13 @@ unsafe extern "system" fn window_proc(
             }
             with_app(App::layout);
             0
+        }
+        // The Windows accent color changed.
+        WM_DWMCOLORIZATIONCOLORCHANGED => {
+            if with_app(|app| app.prefs.accent == theme::Accent::Windows) == Some(true) {
+                with_app(App::apply_theme);
+            }
+            default()
         }
         WM_SETTINGCHANGE | WM_SYSCOLORCHANGE => {
             // Windows broadcasts many setting changes; only the app color mode,

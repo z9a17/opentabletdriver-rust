@@ -130,7 +130,7 @@ impl App {
         let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
         let fonts = FontSet::new(dpi);
         let dark_mode = theme::DarkMode::load();
-        let palette = theme::palette_for(prefs.theme);
+        let palette = theme::palette_for(prefs.theme, prefs.accent);
         dark_mode.apply_app(palette.dark);
         dark_mode.apply_title_bar(hwnd, palette.dark);
         LOOK.with(|slot| {
@@ -1891,7 +1891,7 @@ impl App {
     }
 
     pub(super) fn apply_theme(&mut self) {
-        let palette = theme::palette_for(self.prefs.theme);
+        let palette = theme::palette_for(self.prefs.theme, self.prefs.accent);
         update_look(|look| {
             look.style.palette = palette;
             for (_, brush) in look.brushes.get_mut().drain(..) {
@@ -1904,6 +1904,7 @@ impl App {
         debugger::refresh_theme();
         experimental::refresh_theme();
         shortcut::refresh_theme();
+        accent::refresh_theme();
         let mut scrolling = vec![self.c.filter_list, self.c.log];
         if !self.tooltip.is_null() {
             scrolling.push(self.tooltip);
@@ -1923,6 +1924,12 @@ impl App {
 
     pub(super) fn set_theme(&mut self, mode: ThemeMode) {
         self.prefs.theme = mode;
+        self.save_prefs();
+        self.apply_theme();
+    }
+
+    pub(super) fn set_accent(&mut self, accent: Accent) {
+        self.prefs.accent = accent;
         self.save_prefs();
         self.apply_theme();
     }
