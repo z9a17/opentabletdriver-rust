@@ -199,6 +199,7 @@ pub(super) fn extract_unknown_fields(document: &mut toml::Value) -> BTreeMap<Str
             "pen_buttons",
             "output",
             "radial_follow",
+            "disabled_radial_follow",
             "plugins",
             "tablet",
         ],
@@ -206,6 +207,16 @@ pub(super) fn extract_unknown_fields(document: &mut toml::Value) -> BTreeMap<Str
     );
     for (name, keys) in [
         ("crop", &["x", "y", "width", "height"][..]),
+        (
+            "disabled_radial_follow",
+            &[
+                "outer_radius",
+                "inner_radius",
+                "smoothing_coefficient",
+                "soft_knee_scale",
+                "smoothing_leak_coefficient",
+            ][..],
+        ),
         (
             "relative",
             &[
