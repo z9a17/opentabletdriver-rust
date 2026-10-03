@@ -402,7 +402,14 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
                 ));
             }
             let point = if let Some(relative) = &mut self.pipeline.relative {
-                relative.transform_emission((x, y))
+                // Lost-pen positions still advance filters, but cannot become
+                // the origin for the next live relative report. Retained timer
+                // emissions after loss must not establish that origin either.
+                if self.physical_loss || (self.timer && !self.pipeline.physical_present) {
+                    (0.0, 0.0)
+                } else {
+                    relative.transform_emission((x, y))
+                }
             } else {
                 let Some(point) = self
                     .mapper
@@ -733,6 +740,50 @@ mod tests {
         }
         assert_eq!(filters.seen.unwrap().position, Some([20139.598, 5000.0]));
         assert!(pipeline.physical_present);
+    }
+
+    #[test]
+    fn retained_timer_positions_cannot_rebase_relative_motion_after_loss() {
+        struct Retained;
+        impl Filters for Retained {
+            fn has_pre(&self) -> bool { false }
+            fn has_pixels(&self) -> bool { false }
+            fn process_pre(&mut self, p: (f32, f32), _: PenReport, _: Instant) -> (f32, f32) { p }
+            fn process_pixels(&mut self, p: (f32, f32), _: PenReport, _: Instant) -> (f32, f32) { p }
+            fn reset(&mut self) {}
+            fn take_failure(&mut self) -> Option<&str> { None }
+            fn tick(&mut self, _: Instant, runtime: &mut dyn PipelineRuntime) -> io::Result<()> {
+                let mut values = ReportValues { position: Some([20200.0, 5000.0]), ..ReportValues::default() };
+                if runtime.transform(ReportKind::Data, &mut values)? {
+                    runtime.output(ReportKind::Data, &values, &[])?;
+                }
+                Ok(())
+            }
+        }
+        let mut pipeline = ReportPipeline::new(&profile(true, false)).unwrap();
+        let mut filters = Retained;
+        let start = Instant::now();
+        let mut pen = protocol::parse(&CAPTURE[0]).unwrap().unwrap();
+        pen.x = 20000;
+        pen.y = 5000;
+        let mut packets = Vec::new();
+        pipeline.process(pen, start, None, &mut filters, |packet| { packets.push(packet); Ok(()) }).unwrap();
+        pen.in_range = false;
+        pen.sense = false;
+        pen.x = 20200;
+        pipeline.process(pen, start + Duration::from_millis(2), None, &mut filters, |packet| { packets.push(packet); Ok(()) }).unwrap();
+        for step in 3..6 {
+            pipeline.process_tick(start + Duration::from_millis(step), None, &mut filters, |packet| { packets.push(packet); Ok(()) }).unwrap();
+        }
+        pen.in_range = true;
+        pen.sense = true;
+        pen.x = 23000;
+        pipeline.process(pen, start + Duration::from_millis(6), None, &mut filters, |packet| { packets.push(packet); Ok(()) }).unwrap();
+        assert!(packets.is_empty(), "loss, timers and reentry must not move the pointer: {packets:?}");
+        pen.x = 23200;
+        pipeline.process(pen, start + Duration::from_millis(8), None, &mut filters, |packet| { packets.push(packet); Ok(()) }).unwrap();
+        assert_eq!(packets.len(), 1);
+        assert_eq!((packets[0].dx, packets[0].dy, packets[0].flags), (10, 0, crate::output::flags::MOVE));
     }
 
     #[test]
