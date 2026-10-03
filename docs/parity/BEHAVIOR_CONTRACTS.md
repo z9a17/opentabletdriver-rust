@@ -39,7 +39,7 @@ Rust and upstream normalized coordinates for the same transform result differ by
 
 ## Pen state, hover and contact
 
-- **Detection.** The cursor follows the pen while byte-1 In Range (`0x20`) or Sense (`0x40`) is set, like upstream, which uses the position of every [IntuosV2 report][IntuosV2Report]. A report with neither bit set means the pen is not detected. It moves nothing, releases a held button, resets DLL filters and clears the relative origin. The bit meanings come from the device's report descriptor; see [input latency](../INPUT_LATENCY.md#hover-tracking).
+- **Detection.** The cursor follows the pen while byte-1 In Range (`0x20`) or Sense (`0x40`) is set, like upstream, which uses the position of every [IntuosV2 report][IntuosV2Report]. A report with neither bit set means the pen is not detected. Its position and pen interfaces still traverse native and managed filters, matching the upstream `ITabletReport`; it is not converted into an `OutOfRangeReport` or used to reset DLL filters. Transport loss separately releases held native output, clears the relative origin and prevents stale timer output from reviving contact. Cursor output remains suppressed for these loss reports, an intentional difference from upstream. The bit meanings come from the device's report descriptor; see [input latency](../INPUT_LATENCY.md#hover-tracking).
 - **Tip or eraser.** Invert (`0x10`) selects the eraser binding, as upstream's `Eraser` does. Each binding can be disabled; a disabled one never clicks.
 - **Threshold.** With a raw threshold, contact means `pressure >= threshold`. An imported OpenTabletDriver percentage becomes the first raw value with `pressure / 8191 × 100 > percent` in single precision, and 100 % means full pressure; this reproduces [`ThresholdBindingState`][ThresholdBindingState]. For 1 % that is raw 82.
 - **Tip switch.** A Rust TOML profile without a threshold uses the tip switch bit (`0x01`) instead of pressure.
@@ -47,7 +47,8 @@ Rust and upstream normalized coordinates for the same transform result differ by
 
 ## Filters and time
 
-- The built-in Radial Follow port runs per report in tablet millimetres. It resets to the report when 50 ms or more have passed since the previous one, or when its output is not finite, as the original [`RadialFollowCore`][RadialFollowCore] does (`!(elapsed < 50)`).
+- Disabled native Radial Follow values are stored in the optional `disabled_radial_follow` TOML table. Saving and reopening preserves all five values without executing the filter. Profiles without this table retain the previous defaults; settings already lost by an older build cannot be recovered.
+- The built-in Radial Follow port runs per positional report in tablet millimetres, including IntuosV2 reports with both proximity flags clear. It resets to the report when 50 ms or more have passed since the previous one, or when its output is not finite, as the original [`RadialFollowCore`][RadialFollowCore] does (`!(elapsed < 50)`).
 - Time is the moment the report's read completed. The Radial Follow reset, the relative reset delay and the DLL filters' `time_ns` all use it. Upstream measures each element's elapsed time with its own `HPETDeltaStopwatch` when the report reaches it. Neither driver uses device timestamps.
 - Native ABI version 1 filters position only. The managed graph preserves synchronous Emit ordering and the emitted object across downstream nodes; PostTransform sees desktop pixels or relative deltas. Async/off-thread Emit is rejected. The built-in Radial Follow retains its 50 ms reset rule; managed range-loss reports traverse the graph, while physical loss independently releases native held output even if the plugin suppresses that notification.
 

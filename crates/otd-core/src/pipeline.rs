@@ -187,27 +187,21 @@ impl ReportPipeline {
         plugins: &mut impl Filters,
         send: impl FnMut(MousePacket) -> io::Result<()>,
     ) -> io::Result<DispatchStats> {
-        let kind = if pen.in_range || pen.sense {
-            ReportKind::Data
-        } else {
-            ReportKind::OutOfRange
-        };
-        let values = if kind == ReportKind::Data {
-            ReportValues {
-                position: Some([pen.x as f32, pen.y as f32]),
-                pressure: Some(u32::from(pen.pressure)),
-                eraser: Some(pen.eraser),
-                pen_buttons: buttons,
-                tilt: Some([f32::from(pen.tilt[0]), f32::from(pen.tilt[1])]),
-                near_proximity: Some(pen.in_range),
-                hover_distance: pen.hover_distance.map(u32::from),
-                tip_switch: Some(pen.tip_switch),
-                sense: Some(pen.sense),
-                rotation: pen.rotation,
-                ..ReportValues::default()
-            }
-        } else {
-            ReportValues::default()
+        // Upstream IntuosV2Report always implements ITabletReport, including
+        // when proximity flags clear. Filters must still consume its position.
+        let kind = ReportKind::Data;
+        let values = ReportValues {
+            position: Some([pen.x as f32, pen.y as f32]),
+            pressure: Some(u32::from(pen.pressure)),
+            eraser: Some(pen.eraser),
+            pen_buttons: buttons,
+            tilt: Some([f32::from(pen.tilt[0]), f32::from(pen.tilt[1])]),
+            near_proximity: Some(pen.in_range),
+            hover_distance: pen.hover_distance.map(u32::from),
+            tip_switch: Some(pen.tip_switch),
+            sense: Some(pen.sense),
+            rotation: pen.rotation,
+            ..ReportValues::default()
         };
         self.process_report(
             DispatchInput {
@@ -236,7 +230,8 @@ impl ReportPipeline {
         let mut initial_stats = DispatchStats::default();
         // Transport state must advance even while cleanup or mapping pauses
         // dispatch. A retained timer report cannot resurrect a lost pen.
-        let physical_loss = input.kind == ReportKind::OutOfRange;
+        let physical_loss = input.kind == ReportKind::OutOfRange
+            || input.pen.is_some_and(|pen| !pen.in_range && !pen.sense);
         if physical_loss {
             self.physical_present = false;
         } else if input.values.position.is_some() {
@@ -250,7 +245,7 @@ impl ReportPipeline {
             initial_stats.packets += u64::from(self.release_all(&mut send)?);
         }
         if let Some(relative) = &mut self.relative {
-            if input.kind == ReportKind::OutOfRange {
+            if physical_loss {
                 relative.note_range_loss();
             } else if let Some([x, y]) = input.values.position
                 && !relative.begin_input((x, y), input.now)
@@ -260,9 +255,8 @@ impl ReportPipeline {
         } else if mapping_paused {
             return Ok(initial_stats);
         }
-        // An incoming loss is a transport notification even when it came from
-        // a general report source without the legacy PenReport adapter. Loss
-        // emitted by a plugin reaches Runtime::output instead of this entry.
+        // Explicit loss from a general report source also revokes ownership.
+        // Loss emitted by a plugin reaches Runtime::output instead of this entry.
         let preserve_precision = !plugins.uses_managed_graph() && !plugins.has_pixels();
         let unfiltered_raw = if preserve_precision && !plugins.has_pre() && self.filters.is_empty()
         {
@@ -284,6 +278,7 @@ impl ReportPipeline {
             preserve_precision,
             unfiltered_raw,
             timer: false,
+            physical_loss,
         };
         let result = plugins.dispatch(input, &mut runtime);
         let mut stats = runtime.stats;
@@ -297,8 +292,8 @@ impl ReportPipeline {
             return Err(error);
         }
         if physical_loss {
-            // Physical endpoint loss revokes native action ownership even when
-            // a plugin suppresses the explicit OutOfRangeReport notification.
+            // Physical loss revokes native ownership even if a plugin suppresses
+            // the report. IntuosV2 loss retains its positional interfaces.
             match self.release_all(&mut send) {
                 Ok(sent) => stats.packets += u64::from(sent),
                 Err(error) => {
@@ -338,6 +333,7 @@ impl ReportPipeline {
             preserve_precision: false,
             unfiltered_raw: None,
             timer: true,
+            physical_loss: false,
         };
         let result = plugins.tick(now, &mut runtime);
         let stats = runtime.stats;
@@ -381,6 +377,7 @@ struct Runtime<'a, F> {
     preserve_precision: bool,
     unfiltered_raw: Option<(u32, u32)>,
     timer: bool,
+    physical_loss: bool,
 }
 
 impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F> {
@@ -436,6 +433,12 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
             return Ok(());
         }
         self.stats.reports += 1;
+        // Keep transport cleanup independent of the interfaces filters see.
+        // A positional loss packet must not reacquire held actions or pen contact.
+        if self.physical_loss {
+            self.stats.packets += u64::from(self.pipeline.release_all(&mut *self.send)?);
+            return Ok(());
+        }
         if let Some(eraser) = values
             .eraser
             .or_else(|| values.tool.map(|tool| tool.tool == ToolType::Eraser))
@@ -632,6 +635,104 @@ mod tests {
             }
         });
         emitted
+    }
+
+    /// Expected state comes from the unchanged AbstractQbit 0.3.0 DLL on
+    /// OTD 0.6.7: one initial report, eight positions with cleared proximity,
+    /// then the first returning report, at 2ms intervals.
+    #[test]
+    fn radial_follow_consumes_positions_while_proximity_is_clear() {
+        struct Observe {
+            seen: Option<ReportValues>,
+        }
+        impl Filters for Observe {
+            fn dispatch(
+                &mut self,
+                input: DispatchInput<'_>,
+                runtime: &mut dyn PipelineRuntime,
+            ) -> io::Result<()> {
+                assert_eq!(input.kind, ReportKind::Data);
+                let mut values = input.values;
+                runtime.builtins(&mut values)?;
+                self.seen = Some(values);
+                if runtime.transform(input.kind, &mut values)? {
+                    runtime.output(input.kind, &values, input.raw)?;
+                }
+                Ok(())
+            }
+            fn has_pre(&self) -> bool {
+                false
+            }
+            fn has_pixels(&self) -> bool {
+                false
+            }
+            fn process_pre(&mut self, p: (f32, f32), _: PenReport, _: Instant) -> (f32, f32) {
+                p
+            }
+            fn process_pixels(&mut self, p: (f32, f32), _: PenReport, _: Instant) -> (f32, f32) {
+                p
+            }
+            fn reset(&mut self) {}
+            fn take_failure(&mut self) -> Option<&str> {
+                None
+            }
+        }
+        let profile = Profile {
+            radial_follow: vec![RadialFollowSettings {
+                outer_radius: 0.7039,
+                inner_radius: 0.302,
+                smoothing_coefficient: 0.302,
+                soft_knee_scale: 0.603,
+                smoothing_leak_coefficient: 0.201,
+            }],
+            ..Profile::default()
+        };
+        let mut pipeline = ReportPipeline::new(&profile).unwrap();
+        let screen = Rect {
+            left: 0,
+            top: 0,
+            right: 2560,
+            bottom: 1440,
+        };
+        let mapper = DisplaySnapshot {
+            virtual_screen: screen,
+            monitors: vec![screen],
+        }
+        .mapper(&profile)
+        .unwrap();
+        let mut filters = Observe { seen: None };
+        let start = Instant::now() + Duration::from_millis(100);
+        for index in 0..=9 {
+            let mut pen = protocol::parse(&CAPTURE[0]).unwrap().unwrap();
+            pen.x = if index == 0 { 20000 } else { 20200 };
+            pen.y = 5000;
+            pen.in_range = index == 0 || index == 9;
+            pen.sense = pen.in_range;
+            pipeline
+                .process_pen(
+                    pen,
+                    &[],
+                    None,
+                    start + Duration::from_millis(index * 2),
+                    Some(mapper),
+                    &mut filters,
+                    |_| {
+                        assert!(
+                            pen.in_range,
+                            "loss advances filters without moving the pointer"
+                        );
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            let seen = filters.seen.unwrap();
+            assert!(seen.position.is_some());
+            assert_eq!(seen.near_proximity, Some(pen.in_range));
+            assert_eq!(seen.sense, Some(pen.sense));
+            assert_eq!(pipeline.physical_present, pen.in_range);
+        }
+        assert_eq!(filters.seen.unwrap().position, Some([20139.598, 5000.0]));
+        assert!(pipeline.physical_present);
     }
 
     #[test]
