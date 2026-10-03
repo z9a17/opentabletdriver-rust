@@ -55,6 +55,16 @@ pub enum Read<'a> {
         ready: Instant,
         queued: bool,
     },
+    /// A report from the tablet's separate auxiliary endpoint (express keys,
+    /// wheels), decoded with that endpoint's own parser.
+    Auxiliary {
+        bytes: &'a [u8],
+        ready: Instant,
+        queued: bool,
+    },
+    /// The auxiliary endpoint failed or went away while the pen endpoint
+    /// keeps working. What it held is released.
+    AuxiliaryEnded,
     /// Nothing arrived within the timeout; a pending read stays pending.
     Idle,
     /// The device went away or a stop was requested.
@@ -349,6 +359,29 @@ pub fn run_gated_with_devices(
     mode: Mode,
     decoder: &mut impl PenDecoder,
     filters: &mut impl Filters,
+    send: impl FnMut(MousePacket) -> io::Result<()>,
+    pen: Option<Box<dyn PenSink>>,
+    actions: Option<Box<dyn ActionSink>>,
+    status: &impl Fn(&str),
+    gate: impl FnOnce() -> io::Result<bool>,
+) -> io::Result<()> {
+    run_gated_with_endpoints(
+        source, displays, profile, mode, decoder, None, filters, send, pen, actions, status, gate,
+    )
+}
+
+/// `run_gated_with_devices` for a source that also reads the tablet's
+/// auxiliary endpoint. `auxiliary` decodes its reports; without one they use
+/// the pen endpoint's decoder.
+#[allow(clippy::too_many_arguments)]
+pub fn run_gated_with_endpoints(
+    source: &mut impl ReportSource,
+    displays: &mut impl Displays,
+    profile: &Profile,
+    mode: Mode,
+    decoder: &mut impl PenDecoder,
+    mut auxiliary: Option<&mut dyn PenDecoder>,
+    filters: &mut impl Filters,
     mut send: impl FnMut(MousePacket) -> io::Result<()>,
     pen: Option<Box<dyn PenSink>>,
     actions: Option<Box<dyn ActionSink>>,
@@ -360,8 +393,8 @@ pub fn run_gated_with_devices(
         && matches!(mode, Mode::Driver)
     {
         for message in pipeline.set_action_sink(sink) {
-            eprintln!("Pen button not applied: {message}");
-            status(&format!("Pen button not applied: {message}"));
+            eprintln!("Binding not applied: {message}");
+            status(&format!("Binding not applied: {message}"));
         }
     }
     match pen {
@@ -466,8 +499,20 @@ pub fn run_gated_with_devices(
                     wait.min(Duration::from_secs(1))
                 }),
             };
-            let (bytes, ready, queued) = match source.next(timeout)? {
+            let (bytes, ready, queued, from_auxiliary) = match source.next(timeout)? {
                 Read::Ended => break,
+                Read::AuxiliaryEnded => {
+                    if let Some(decoder) = auxiliary.as_deref_mut() {
+                        decoder.reset();
+                    }
+                    if let Err(error) = pipeline.release_auxiliary() {
+                        counters.output_failures += 1;
+                        eprintln!("could not release express keys: {error}");
+                    }
+                    eprintln!("Auxiliary endpoint lost; pen input continues.");
+                    status("Express keys and wheels disconnected; pen input continues");
+                    continue;
+                }
                 Read::Idle => {
                     let now = source.now();
                     if matches!(mode, Mode::Capture { deadline, .. } if now >= deadline) {
@@ -484,14 +529,23 @@ pub fn run_gated_with_devices(
                     bytes,
                     ready,
                     queued,
-                } => (bytes, ready, queued),
+                } => (bytes, ready, queued, false),
+                Read::Auxiliary {
+                    bytes,
+                    ready,
+                    queued,
+                } => (bytes, ready, queued, true),
             };
             if queued {
                 timing.queued += 1;
             }
             counters.read += 1;
             crate::debug::record(bytes);
-            match decoder.decode_input(bytes) {
+            let decoded = match auxiliary.as_deref_mut() {
+                Some(decoder) if from_auxiliary => decoder.decode_input(bytes),
+                _ => decoder.decode_input(bytes),
+            };
+            match decoded {
                 Ok(Some(decoded)) => {
                     counters.accepted += 1;
                     if let Mode::Capture { .. } = mode {
@@ -569,6 +623,9 @@ pub fn run_gated_with_devices(
         Ok(())
     })();
     decoder.reset();
+    if let Some(decoder) = auxiliary {
+        decoder.reset();
+    }
     let cleanup = pipeline.release_all(&mut send).map(|_| ());
     if let Err(error) = &cleanup {
         eprintln!("could not release mouse buttons: {error}");
@@ -646,6 +703,8 @@ mod tests {
 
     enum Event {
         Report(&'static [u8], bool),
+        Auxiliary(&'static [u8]),
+        AuxiliaryEnded,
         Idle,
     }
 
@@ -689,6 +748,12 @@ mod tests {
                     ready: at,
                     queued,
                 },
+                Event::Auxiliary(bytes) => Read::Auxiliary {
+                    bytes,
+                    ready: at,
+                    queued: false,
+                },
+                Event::AuxiliaryEnded => Read::AuxiliaryEnded,
                 Event::Idle => Read::Idle,
             })
         }
@@ -822,6 +887,77 @@ mod tests {
                 && statuses[1].ends_with("1 reads found a report already waiting"),
             "{}",
             statuses[1]
+        );
+    }
+
+    // IntuosV2 auxiliary reports: the first express key down, then up.
+    const KEY_DOWN: [u8; 10] = [0x11, 0x01, 0, 0, 0, 0, 0, 0, 0, 0];
+
+    #[test]
+    fn auxiliary_reads_use_their_decoder_and_losing_them_keeps_the_pen() {
+        use crate::actions::{Action, MouseButton};
+        let mut profile = profile();
+        profile.aux_buttons = vec!["mouse:forward".parse().unwrap()];
+        let clock = Rc::new(Cell::new(Instant::now()));
+        let start = clock.get();
+        let mut displays = FakeDisplays {
+            clock: clock.clone(),
+            start,
+            schedule: vec![(0, monitors(&[1920]))],
+        };
+        let mut source = FakeSource::new(
+            clock,
+            vec![
+                (100, Event::Report(&HOVER, false)),
+                (101, Event::Auxiliary(&KEY_DOWN)),
+                (102, Event::AuxiliaryEnded),
+                (103, Event::Report(&HOVER, false)),
+            ],
+        );
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let log = actions.clone();
+        let sink = crate::output::buttons::LocalActions::new(
+            move |transition: crate::actions::ActionTransition| {
+                log.borrow_mut().push((transition.action, transition.pressed));
+                Ok(())
+            },
+            |_| true,
+        );
+        let statuses = RefCell::new(Vec::new());
+        let mut auxiliary = crate::decoders::TabletDecoder::for_parser(
+            "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV2.IntuosV2ReportParser",
+            profile.tablet,
+        )
+        .unwrap();
+        let packets = RefCell::new(0);
+        run_gated_with_endpoints(
+            &mut source,
+            &mut displays,
+            &profile,
+            Mode::Driver,
+            &mut crate::decoders::TabletDecoder::pth_660(),
+            Some(&mut auxiliary),
+            &mut NoFilters,
+            |_| {
+                *packets.borrow_mut() += 1;
+                Ok(())
+            },
+            None,
+            Some(Box::new(sink)),
+            &|message: &str| statuses.borrow_mut().push(message.to_owned()),
+            || Ok(true),
+        )
+        .unwrap();
+        let forward = Action::Mouse(MouseButton::Forward);
+        assert_eq!(*actions.borrow(), [(forward, true), (forward, false)]);
+        assert_eq!(*packets.borrow(), 1, "the second hover at the same place moves nothing");
+        assert!(
+            statuses
+                .borrow()
+                .iter()
+                .any(|status| status.contains("Express keys and wheels disconnected")),
+            "{:?}",
+            statuses.borrow()
         );
     }
 

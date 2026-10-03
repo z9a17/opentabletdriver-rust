@@ -610,6 +610,7 @@ mod tests {
             max_pressure: 1023,
             width_mm: 10.0,
             height_mm: 10.0,
+            controls: Default::default(),
         };
         let mut decoder = TabletDecoder::for_parser(
             "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenReportParser",

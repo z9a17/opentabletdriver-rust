@@ -720,12 +720,6 @@ fn drive(
                 &selected.configuration,
             )?;
             plugins.validate_output_mode(profile.relative.is_some())?;
-            if selected.auxiliary.is_some() {
-                status(&format!(
-                    "{} auxiliary collection paired; auxiliary output is not enabled yet",
-                    selected.configuration.name
-                ));
-            }
             status(&format!(
                 "{} found; opening pen input",
                 selected.configuration.name

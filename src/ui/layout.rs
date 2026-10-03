@@ -70,6 +70,7 @@ impl App {
             Tab::Output => self.layout_output(content, &mut items, &mut shown, &measure, dc),
             Tab::Filters => self.layout_filters(content, &mut items, &mut shown, &measure, dc),
             Tab::Pen => self.layout_pen(content, &mut items, &mut shown, &measure, dc),
+            Tab::Aux => self.layout_aux(content, &mut items, &mut shown, &measure, dc),
             Tab::Console => self.layout_console(content, &mut items, &mut shown),
         }
         unsafe { ReleaseDC(self.hwnd, dc) };
@@ -77,6 +78,7 @@ impl App {
         self.set_tool_rect(2, self.tablet_view.map_or(RECT::default(), |v| v.rect));
 
         let mut all = self.static_controls();
+        all.extend(self.binding_controls());
         all.extend(
             self.properties
                 .iter()
@@ -671,32 +673,13 @@ impl App {
         }
 
         let top = content.top + height + gap;
-        let text = match self.editor.profile.output {
-            crate::config::OutputKind::Pen => "Pen output carries pressure, tilt and eraser state through Windows Ink. Pen button bindings are not implemented; the side buttons have no assigned actions.",
-            crate::config::OutputKind::Mouse => "Mouse output moves the cursor and maps tip or eraser contact to the left mouse button. Pen button bindings are not implemented; the side buttons have no assigned actions.",
-        };
-        let text_height = canvas::wrapped_height(
-            dc,
-            style.fonts.ui,
-            text,
-            content.right - content.left - s(24),
-        );
-        let body = self.group(
-            "Pen Buttons",
-            rect(
-                content.left,
-                top,
-                content.right,
-                top + s(24) + text_height + s(26),
-            ),
+        self.layout_pen_buttons(
+            rect(content.left, top, content.right, content.bottom),
             items,
+            shown,
+            measure,
+            dc,
         );
-        items.push(Item::Label(
-            draw::inset(body, s(12), s(12)),
-            text.into(),
-            Tone::Muted,
-            DT_LEFT | DT_WORDBREAK | DT_NOPREFIX,
-        ));
     }
 
     pub(super) fn layout_console(

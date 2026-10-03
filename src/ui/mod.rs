@@ -17,6 +17,7 @@
 mod app;
 mod area;
 mod background;
+mod bindings;
 mod canvas;
 mod client;
 mod commands;
@@ -30,6 +31,7 @@ mod paint;
 mod plugin_manager;
 mod presets;
 mod property_validation;
+mod shortcut;
 mod startup;
 mod theme;
 mod tray;
@@ -375,13 +377,15 @@ enum Tab {
     Output,
     Filters,
     Pen,
+    Aux,
     Console,
 }
 
-const TABS: [(Tab, &str); 4] = [
+const TABS: [(Tab, &str); 5] = [
     (Tab::Output, "Output"),
     (Tab::Filters, "Filters"),
     (Tab::Pen, "Pen Settings"),
+    (Tab::Aux, "Auxiliary Settings"),
     (Tab::Console, "Console"),
 ];
 
@@ -749,6 +753,11 @@ struct App {
     import_pending: bool,
     diagnostics_pending: bool,
     connected_tablets: Vec<String>,
+    /// Pen button, express key and wheel binding dropdowns.
+    binding_rows: Vec<bindings::BindingRow>,
+    wheel_fields: Vec<bindings::WheelField>,
+    /// The binding rows follow a detected tablet, not saved bindings.
+    bindings_detected: bool,
     /// Label controls keyed by the control they name.
     labels: HashMap<isize, HWND>,
     property_page: usize,

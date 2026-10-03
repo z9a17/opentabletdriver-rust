@@ -4,7 +4,89 @@
 //! them from the matched configuration's `Specifications`.
 
 use crate::protocol::{HEIGHT_MM, MAX_PRESSURE, MAX_X, MAX_Y, WIDTH_MM};
-use crate::tablets::TabletConfiguration;
+use crate::reports::{MAX_BUTTONS, MAX_WHEELS};
+use crate::tablets::{TabletConfiguration, TabletSpecifications};
+
+/// The buttons and wheels a configuration declares, which size its binding
+/// lists as upstream's `BindingSettings.MatchSpecifications` does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Controls {
+    pub pen_buttons: u8,
+    pub aux_buttons: u8,
+    wheels: [Wheel; MAX_WHEELS],
+    wheel_count: u8,
+}
+
+/// One wheel, ring or dial.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Wheel {
+    /// Device steps in a full turn: `AbsoluteWheelMax + 1` for an absolute
+    /// wheel, `RelativeWheelSteps` for a relative one (upstream's
+    /// `WheelSpecifications.StepCount`). Zero when the configuration has
+    /// neither; such a wheel has no rotation bindings.
+    pub steps: u32,
+    pub buttons: u8,
+}
+
+impl Wheel {
+    /// Degrees of rotation per device step, or `None` without a step count.
+    pub fn degrees_per_step(self) -> Option<f64> {
+        (self.steps != 0).then(|| 360.0 / f64::from(self.steps))
+    }
+}
+
+impl Controls {
+    /// Wheels past `MAX_WHEELS` are dropped; no report can carry them.
+    pub const fn new(pen_buttons: u8, aux_buttons: u8, wheels: &[Wheel]) -> Self {
+        let mut all = [Wheel {
+            steps: 0,
+            buttons: 0,
+        }; MAX_WHEELS];
+        let mut index = 0;
+        while index < wheels.len() && index < MAX_WHEELS {
+            all[index] = wheels[index];
+            index += 1;
+        }
+        Self {
+            pen_buttons,
+            aux_buttons,
+            wheels: all,
+            wheel_count: index as u8,
+        }
+    }
+
+    pub fn wheels(&self) -> &[Wheel] {
+        &self.wheels[..usize::from(self.wheel_count)]
+    }
+
+    fn from_specifications(specifications: &TabletSpecifications) -> Self {
+        let count = |value: Option<u32>| value.unwrap_or(0).min(MAX_BUTTONS as u32) as u8;
+        let wheels: Vec<Wheel> = specifications
+            .wheels
+            .iter()
+            .flatten()
+            .take(MAX_WHEELS)
+            .map(|wheel| Wheel {
+                steps: match (wheel.absolute_wheel_max, wheel.relative_wheel_steps) {
+                    (Some(max), None) => max.saturating_add(1),
+                    (None, Some(steps)) => steps,
+                    _ => 0,
+                },
+                buttons: count(wheel.button_count),
+            })
+            .collect();
+        Self::new(
+            count(specifications.pen.as_ref().and_then(|pen| pen.buttons())),
+            count(
+                specifications
+                    .auxiliary_buttons
+                    .as_ref()
+                    .and_then(|buttons| buttons.button_count),
+            ),
+            &wheels,
+        )
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TabletSpec {
@@ -16,6 +98,8 @@ pub struct TabletSpec {
     /// Active area in millimetres.
     pub width_mm: f64,
     pub height_mm: f64,
+    /// Declared buttons and wheels.
+    pub controls: Controls,
 }
 
 impl Default for TabletSpec {
@@ -32,6 +116,16 @@ impl TabletSpec {
         max_pressure: MAX_PRESSURE,
         width_mm: WIDTH_MM,
         height_mm: HEIGHT_MM,
+        // Two side buttons, eight express keys and the 72-position touch
+        // ring with its center button.
+        controls: Controls::new(
+            2,
+            8,
+            &[Wheel {
+                steps: 72,
+                buttons: 1,
+            }],
+        ),
     };
 
     /// The digitizer and pen specifications of a configuration.
@@ -73,6 +167,7 @@ impl TabletSpec {
                 .map_err(|_| format!("{name} pen MaxPressure {max_pressure} exceeds 65535"))?,
             width_mm: positive(digitizer.width, "Width")?,
             height_mm: positive(digitizer.height, "Height")?,
+            controls: Controls::from_specifications(specifications),
         })
     }
 

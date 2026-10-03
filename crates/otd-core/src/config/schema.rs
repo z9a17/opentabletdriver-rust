@@ -97,8 +97,11 @@ pub(super) fn import_diagnostics(
     let profile = &document["Profiles"][selected];
     if let Some(bindings) = profile["Bindings"].as_object() {
         for (name, value) in bindings {
-            // Pen buttons are imported one by one, with their own diagnostics.
-            if matches!(name.as_str(), "TipButton" | "EraserButton" | "PenButtons") {
+            // Buttons and wheels are imported one by one, with their own diagnostics.
+            if matches!(
+                name.as_str(),
+                "TipButton" | "EraserButton" | "PenButtons" | "AuxButtons" | "WheelBindings"
+            ) {
                 continue;
             }
             if matches!(
@@ -197,6 +200,8 @@ pub(super) fn extract_unknown_fields(document: &mut toml::Value) -> BTreeMap<Str
             "absolute",
             "bindings",
             "pen_buttons",
+            "aux_buttons",
+            "wheels",
             "output",
             "radial_follow",
             "disabled_radial_follow",
@@ -427,6 +432,16 @@ impl OtdSettingsDocument {
                     .any(|action| *action != crate::output::buttons::ButtonAction::None)
                 {
                     migrated_fields.push("Bindings.PenButtons".into());
+                }
+                if imported
+                    .aux_buttons
+                    .iter()
+                    .any(|action| *action != crate::output::buttons::ButtonAction::None)
+                {
+                    migrated_fields.push("Bindings.AuxButtons".into());
+                }
+                if imported.wheels.iter().any(|wheel| !wheel.is_unbound()) {
+                    migrated_fields.push("Bindings.WheelBindings".into());
                 }
                 if !imported.radial_follow.is_empty() {
                     migrated_fields.push(format!(
@@ -842,6 +857,18 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
         }
     }
     export_pen_buttons(selected, profile, &baseline)?;
+    let source_pen = baseline.output == super::OutputKind::Pen;
+    if profile.aux_buttons != baseline.aux_buttons {
+        ensure_object(&mut selected["Bindings"])?;
+        export_button_list(
+            &mut selected["Bindings"]["AuxButtons"],
+            "express key",
+            &profile.aux_buttons,
+            &baseline.aux_buttons,
+            source_pen,
+        )?;
+    }
+    export_wheels(selected, profile, &baseline, source_pen)?;
     if profile.radial_follow.len() != baseline.radial_follow.len() {
         return Err("OTD export cannot infer filter identity/order after adding or removing native Radial Follow entries. Export edits to existing entries or keep the Rust TOML profile.".into());
     }
@@ -948,6 +975,161 @@ fn export_pen_buttons(
         }
         write_pen_button(store, action, baseline.output == super::OutputKind::Pen)
             .map_err(|error| format!("cannot export pen button {}: {error}", index + 1))?;
+    }
+    Ok(())
+}
+
+fn check_actions(actions: &[crate::output::buttons::ButtonAction], noun: &str) -> Result<(), String> {
+    if actions.len() > super::MAX_PEN_BUTTONS {
+        return Err(format!(
+            "OTD export supports at most {} {noun} actions",
+            super::MAX_PEN_BUTTONS
+        ));
+    }
+    for action in actions {
+        if action.to_string().parse::<crate::output::buttons::ButtonAction>().as_ref() != Ok(action) {
+            return Err(format!("OTD export requires supported, nonempty {noun} actions"));
+        }
+    }
+    Ok(())
+}
+
+/// Reconciles one `PluginSettingStoreCollection` of button bindings, like
+/// `export_pen_buttons` without the output-kind rebinding.
+fn export_button_list(
+    stores: &mut Value,
+    noun: &str,
+    current: &[crate::output::buttons::ButtonAction],
+    baseline: &[crate::output::buttons::ButtonAction],
+    source_pen: bool,
+) -> Result<(), String> {
+    check_actions(current, noun)?;
+    if current == baseline {
+        return Ok(());
+    }
+    if current.len() < baseline.len() {
+        return Err(format!(
+            "OTD export cannot shrink the preserved {noun} list; set unwanted entries to none instead"
+        ));
+    }
+    if stores.is_null() {
+        *stores = json!([]);
+    }
+    let stores = stores
+        .as_array_mut()
+        .ok_or_else(|| format!("cannot edit preserved {noun}s: the source list is not an array"))?;
+    stores.resize(stores.len().max(current.len()), Value::Null);
+    for (index, action) in current.iter().enumerate() {
+        if baseline.get(index) == Some(action) {
+            continue;
+        }
+        write_pen_button(&mut stores[index], action, source_pen)
+            .map_err(|error| format!("cannot export {noun} {}: {error}", index + 1))?;
+    }
+    Ok(())
+}
+
+/// Reconciles changed wheels into `Bindings.WheelBindings`, adding
+/// `WheelBindingSettings` entries for wheels the source did not list.
+fn export_wheels(
+    selected: &mut Value,
+    profile: &Profile,
+    baseline: &Profile,
+    source_pen: bool,
+) -> Result<(), String> {
+    use crate::output::buttons::WheelBinding;
+
+    let unbound = WheelBinding::default();
+    let count = profile.wheels.len().max(baseline.wheels.len());
+    if (0..count).all(|index| {
+        profile.wheels.get(index).unwrap_or(&unbound) == baseline.wheels.get(index).unwrap_or(&unbound)
+    }) {
+        return Ok(());
+    }
+    ensure_object(&mut selected["Bindings"])?;
+    let wheels = &mut selected["Bindings"]["WheelBindings"];
+    if wheels.is_null() {
+        *wheels = json!([]);
+    }
+    let wheels = wheels
+        .as_array_mut()
+        .ok_or("cannot edit preserved wheels: source WheelBindings is not an array")?;
+    let step = |index: usize| {
+        profile
+            .tablet
+            .controls
+            .wheels()
+            .get(index)
+            .and_then(|wheel| wheel.degrees_per_step())
+    };
+    for index in 0..count {
+        let current = profile.wheels.get(index).unwrap_or(&unbound);
+        let old = baseline.wheels.get(index).unwrap_or(&unbound);
+        if current == old {
+            continue;
+        }
+        while wheels.len() <= index {
+            // Upstream writes one step as both thresholds of a new wheel.
+            let degrees = step(wheels.len()).unwrap_or(1.0);
+            wheels.push(json!({
+                "WheelButtons": [],
+                "ClockwiseRotation": null,
+                "ClockwiseActivationThreshold": degrees,
+                "CounterClockwiseRotation": null,
+                "CounterClockwiseActivationThreshold": degrees,
+            }));
+        }
+        let entry = &mut wheels[index];
+        ensure_object(entry)?;
+        let wheel = index + 1;
+        for (key, now, before, noun) in [
+            ("ClockwiseRotation", &current.clockwise, &old.clockwise, "clockwise rotation"),
+            (
+                "CounterClockwiseRotation",
+                &current.counter_clockwise,
+                &old.counter_clockwise,
+                "counter-clockwise rotation",
+            ),
+        ] {
+            check_actions(std::slice::from_ref(now), noun)?;
+            if now != before {
+                write_pen_button(&mut entry[key], now, source_pen)
+                    .map_err(|error| format!("cannot export wheel {wheel} {noun}: {error}"))?;
+            }
+        }
+        for (key, now, before) in [
+            (
+                "ClockwiseActivationThreshold",
+                current.clockwise_threshold,
+                old.clockwise_threshold,
+            ),
+            (
+                "CounterClockwiseActivationThreshold",
+                current.counter_clockwise_threshold,
+                old.counter_clockwise_threshold,
+            ),
+        ] {
+            if now == before {
+                continue;
+            }
+            let degrees = match now {
+                Some(value) if value.is_finite() && value > 0.0 => f64::from(value),
+                Some(_) => return Err(format!("wheel {wheel} thresholds must be positive")),
+                None => step(index).ok_or_else(|| {
+                    format!("wheel {wheel} has no step count to write as its default threshold")
+                })?,
+            };
+            set_field(entry, key, json!(degrees))?;
+        }
+        if current.buttons != old.buttons {
+            export_button_list(
+                &mut entry["WheelButtons"],
+                &format!("wheel {wheel} button"),
+                &current.buttons,
+                &old.buttons,
+                source_pen,
+            )?;
+        }
     }
     Ok(())
 }

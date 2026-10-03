@@ -3,8 +3,8 @@
 The buttons on the side of the pen (barrel buttons) can click, press keys or
 do nothing. This follows OpenTabletDriver's `BindingHandler`, which presses a
 button's binding when its state in a report changes and releases every pen
-button when the pen leaves range. Tablet express keys, wheels and rings are a
-separate task (B02 auxiliary, B03).
+button when the pen leaves range. Express keys, wheels and rings work the same
+way; see [express keys and wheels](EXPRESS_KEYS_AND_WHEELS.md).
 
 **Status:** implemented and covered by replay tests, but not yet tried with a
 real tablet. See [the validation checklist](HARDWARE_VALIDATION.md#pen-side-buttons-pending).
@@ -58,8 +58,8 @@ pen_buttons = ["mouse:right", "keys:Control+Z", "none"]
 | `mouse:left`, `mouse:right`, `mouse:middle`, `mouse:backward`, `mouse:forward` | a mouse button |
 | `keys:Control+Shift+Z` | a key or a chord, with OpenTabletDriver's key names |
 
-Buttons past the end of the list do nothing. The settings panel has no editor
-for pen buttons yet; it keeps them when it saves.
+Buttons past the end of the list do nothing. The panel's **Pen Settings** tab
+edits them; see [the binding editors](EXPRESS_KEYS_AND_WHEELS.md#panel).
 
 ## Offline command-line editing
 
@@ -118,7 +118,7 @@ Windows sends keys with `SendInput` as scan codes, so they are physical key
 positions: the keyboard layout decides the character. Linux presses evdev keys on
 a virtual keyboard, created when a profile has a key binding. Not every name works
 on every platform: the driver lists the ones it cannot press at start-up
-(`Pen button not applied: ...`) and those buttons do nothing. `F13` to `F24`, `Help`, `Pause`
+(`Binding not applied: ...`) and those buttons do nothing. `F13` to `F24`, `Help`, `Pause`
 and `KeypadEqual` are supported on Linux. macOS also supports F13 through F20
 and `KeypadEqual`, but rejects F21 through F24, Help, Pause, PrintScreen,
 ScrollLock, CapsLock, NumberLock, Insert and ContextMenu at startup. macOS uses
@@ -135,8 +135,7 @@ native validation; see [the macOS guide](../crates/otd-macos/README.md).
 
 ## Not done
 
-- A settings panel editor for pen buttons.
 - Toggle, preset, scroll and drag-only ("Enable drag bindings") behavior, and
   managed (`IBinding`) plugin bindings (B04, P06).
-- Express keys and tablet mouse buttons (B02 auxiliary/mouse, D04).
+- Tablet mouse buttons (B02 mouse). Express keys are done.
 - Barrel buttons 2 and 3 as separate buttons on Windows pen output.

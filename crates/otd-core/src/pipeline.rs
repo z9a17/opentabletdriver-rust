@@ -30,10 +30,13 @@ pub struct ReportPipeline {
     filters: Vec<RadialFollowSmoothingTabletSpace>,
     relative: Option<RelativeMapper>,
     output: MouseOutput,
-    /// Pen side buttons. Until the platform supplies an action sink they only
-    /// drive a pen device's barrel buttons.
+    /// Pen side buttons, express keys and wheels. Until the platform
+    /// supplies an action sink they only drive a pen device's barrel buttons.
     buttons: ButtonOutput,
     profile_buttons: Vec<crate::output::buttons::ButtonAction>,
+    aux_buttons: Vec<crate::output::buttons::ButtonAction>,
+    wheels: Vec<crate::output::buttons::WheelBinding>,
+    controls: crate::spec::Controls,
     /// The profile asks for pen output; the platform supplies the device.
     pen_requested: bool,
     pen: Option<PenOutput>,
@@ -66,6 +69,9 @@ impl ReportPipeline {
             output: MouseOutput::new(),
             buttons: ButtonOutput::new(&profile.pen_buttons, pen_requested, Box::new(NoActions)).0,
             profile_buttons: profile.pen_buttons.clone(),
+            aux_buttons: profile.aux_buttons.clone(),
+            wheels: profile.wheels.clone(),
+            controls: profile.tablet.controls,
             pen_requested,
             pen: None,
             max_pressure: u32::from(profile.tablet.max_pressure),
@@ -99,14 +105,29 @@ impl ReportPipeline {
         self.pen = Some(PenOutput::new(sink, self.max_pressure));
     }
 
-    /// Sends keys and mouse buttons for the pen side buttons through `sink`.
-    /// Returns a message for each binding the platform cannot carry out; those
-    /// buttons do nothing.
+    /// Sends keys and mouse buttons for the pen side buttons, express keys
+    /// and wheels through `sink`. Returns a message for each binding the
+    /// platform cannot carry out; those buttons do nothing.
     pub fn set_action_sink(&mut self, sink: Box<dyn ActionSink>) -> Vec<String> {
-        let (buttons, rejected) =
+        let (mut buttons, mut rejected) =
             ButtonOutput::new(&self.profile_buttons, self.pen_requested, sink);
+        rejected.extend(buttons.set_auxiliary(
+            &self.aux_buttons,
+            &self.wheels,
+            self.controls.wheels(),
+        ));
         self.buttons = buttons;
         rejected
+    }
+
+    /// The endpoint that reports express keys and wheels was lost: release
+    /// what it held. Pen output is unaffected.
+    pub fn release_auxiliary(&mut self) -> io::Result<bool> {
+        let result = self.buttons.release_auxiliary();
+        if result.is_err() {
+            self.faulted = true;
+        }
+        result
     }
 
     /// Compatibility wrapper for callers interested only in whether any packet
@@ -451,6 +472,12 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
             .or_else(|| values.tool.map(|tool| tool.tool == ToolType::Eraser))
         {
             self.pipeline.is_eraser = eraser;
+        }
+        if kind == ReportKind::Data {
+            // Express keys and wheels follow their own readings; a pen
+            // leaving range does not release them (upstream's
+            // `HandleOutOfRangeReport` releases pen buttons only).
+            self.pipeline.buttons.apply_auxiliary(values)?;
         }
         if kind == ReportKind::OutOfRange {
             self.pipeline.desired_contact = false;
@@ -1040,6 +1067,75 @@ mod tests {
             "leaving range releases the barrel"
         );
         assert!(actions(&log).is_empty(), "no mouse buttons in pen mode");
+    }
+
+    /// An IntuosV2 auxiliary report (upstream `IntuosV2AuxReport`): express
+    /// keys in byte 1, the ring button in byte 3 bit 0 and the ring in byte 4,
+    /// whose bit 7 means touched.
+    fn aux_report(keys: u8, ring: Option<u8>) -> [u8; 10] {
+        let mut report = [0u8; 10];
+        report[0] = 0x11;
+        report[1] = keys;
+        report[4] = ring.map_or(0, |position| 0x80 | position);
+        report
+    }
+
+    #[test]
+    fn express_keys_and_the_ring_reach_their_bindings_through_the_decoder() {
+        use crate::actions::{Action, KeyboardUsage, MouseButton};
+        use crate::decoders::{PenDecoder, TabletDecoder};
+        use crate::output::buttons::WheelBinding;
+        for output in [OutputKind::Mouse, OutputKind::Pen] {
+            let profile = Profile {
+                output,
+                aux_buttons: vec!["none".parse().unwrap(), "mouse:forward".parse().unwrap()],
+                wheels: vec![WheelBinding {
+                    clockwise: "keys:PageDown".parse().unwrap(),
+                    ..WheelBinding::default()
+                }],
+                ..profile(false, false)
+            };
+            let (mut pipeline, mapper, log) = buttons_pipeline(&profile);
+            if output == OutputKind::Pen {
+                pipeline.set_pen_sink(Box::new(|_: crate::output::pen::PenPacket| Ok(())));
+            }
+            let mut decoder = TabletDecoder::for_parser(
+                "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV2.IntuosV2ReportParser",
+                profile.tablet,
+            )
+            .unwrap();
+            for report in [
+                aux_report(0b10, None),
+                aux_report(0b10, Some(3)),
+                aux_report(0b00, Some(4)),
+                aux_report(0b00, Some(5)),
+                aux_report(0b00, None),
+            ] {
+                let input = decoder.decode_input(&report).unwrap().unwrap();
+                pipeline
+                    .process_input(
+                        input,
+                        Instant::now(),
+                        Some(mapper),
+                        &mut crate::plugins::NoFilters,
+                        |packet| panic!("an aux report moved the pointer: {packet:?}"),
+                    )
+                    .unwrap();
+            }
+            let page_down = Action::Key(KeyboardUsage::new(0x4e).unwrap());
+            assert_eq!(
+                actions(&log),
+                [
+                    (Action::Mouse(MouseButton::Forward), true),
+                    (Action::Mouse(MouseButton::Forward), false),
+                    (page_down, true),
+                    (page_down, false),
+                    (page_down, true),
+                    (page_down, false),
+                ],
+                "{output:?}"
+            );
+        }
     }
 
     #[test]
