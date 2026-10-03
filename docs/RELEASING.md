@@ -17,6 +17,18 @@ The packager writes Unix archive permissions explicitly on every build host. Dir
 
 There are no GitHub Actions runners. The owner requested manual testing after releases; do not run a separate fmt/Clippy/test/build-check suite. Building the actual release binaries and verifying their archive contents, architecture, version and checksums are required to produce the downloads. State the distinction in release notes. Do not claim macOS hardware support from a cross-build or live pen/cursor behavior from a device listing.
 
+## Pre-merge Windows test builds
+
+When changes are held for review, update the owner's test folder from the PR branch:
+
+```powershell
+python scripts/update-test-build.py
+```
+
+The default destination is `E:/OTD RUST TEST`. The command builds the Windows apps and managed bridge, verifies the package hashes and source revision, and copies runtime files into that folder. Extra local files are preserved. `data/TEST-BUILD.json` identifies the version, branch, commit and build time, so builds with the same package version can be distinguished. This does not reserve a release version, merge a PR, or publish assets.
+
+The updater never launches or stops a driver. Close a running test build yourself before replacing its executables. The test apps use the existing saved settings in `%LOCALAPPDATA%\OpenTabletDriverRust`; copying a build does not edit them. Running the test app and saving changes uses those settings as usual.
+
 ## Prepare the source
 
 Update the root Cargo package version and root package entry in Cargo.lock, finish the platform/backend edits, and merge the reviewed PR. Package a clean checkout of the exact `origin/main` commit. The Linux/macOS CLI version comes from the root Cargo.toml at build time. The build command records source state before and after compilation and refuses changes during a build. Clean builds hash the canonical Git tree, so Windows line endings do not prevent collecting packages from native build hosts. The packager consumes the resulting `OTD-BUILD.json` and verifies the source and binary hashes, so repackaging an older same-version executable cannot stamp it with a newer commit.
