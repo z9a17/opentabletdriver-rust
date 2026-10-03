@@ -57,6 +57,14 @@ def main():
         "purpose": "Unmerged test build; no release published",
     }
     payload["data/TEST-BUILD.json"] = (json.dumps(build, indent=2) + "\n").encode()
+    payload["TEST-BUILD.txt"] = (
+        f"Unmerged test build, not a release.\n\n"
+        f"Version: {build['version']}\n"
+        f"Branch: {build['branch']}\n"
+        f"Commit: {build['source_commit']}\n"
+        f"Built: {build['built_at_utc']}\n\n"
+        "See data/TEST-BUILD.json for build provenance.\n"
+    ).encode()
     # Resolve every destination before writing. Preserve files the package does not own.
     targets = {}
     for name in payload:
