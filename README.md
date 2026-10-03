@@ -16,7 +16,7 @@ The Windows build offers:
 - **Filters** to smooth the pen: a built-in Radial Follow smoothing filter, native filter DLLs, and supported existing OpenTabletDriver `.NET` filters, unchanged. Arbitrary plugin-owned threads and dependencies remain compatibility limits.
 - **Plugins:** browse and install from OpenTabletDriver's plugin catalog (checked against its SHA-256 hash), or install one from a file.
 - **Several tablets at once,** each with its own profile.
-- **Native control panel** in OpenTabletDriver's layout, with light and dark themes, a tray icon, and a tablet debugger that shows raw and decoded pen data live.
+- **Native control panel** in OpenTabletDriver's layout, with light and dark themes, configurable accent colors, a tray icon, and a tablet debugger that shows raw and decoded pen data live.
 - **Command line and background service** for scripting: profiles, presets, diagnostics and area conversion all work headless.
 - **Pen side buttons** click or press keys and shortcuts, with right and middle click defaults. The Windows CLI can inspect defaults, edit individual buttons into a new profile and export supported edits back to OTD settings. See [pen side buttons](docs/PEN_BUTTONS.md).
 
@@ -53,6 +53,8 @@ The driver and native panel run without .NET. To use existing OpenTabletDriver `
 Supported settings from an existing OpenTabletDriver installation are imported on first run. The Rust driver refuses to start alongside the original OpenTabletDriver daemon. Current Windows transport support is USB HID; WinUSB-only tablets remain unsupported.
 
 You can create a shortcut to `opentabletdriver-rust-ui.exe`; set its **Start in** field to the extracted folder. Enable **Tablets > Start with Windows** in the panel to launch it at sign-in. Closing the panel shuts down the daemon and waits for its process to exit after input cleanup; minimizing keeps both running in the tray.
+
+Choose **View > Theme > Accent color** to change the blue highlights throughout the panel and its settings windows. Blue remains the default. Pick a preset, follow the Windows accent color, or enter RGB/hex values under **Custom**. The choice is saved for future launches. Windows high-contrast colors take precedence.
 
 **View > Experimental settings** lets you select logical CPUs separately for the GUI and driver. Both default to All CPUs; lists such as `0,2,4-7` are accepted. Save and apply stores the choices without restarting tablet input. [Usage and limits](docs/EXPERIMENTAL_SETTINGS.md).
 

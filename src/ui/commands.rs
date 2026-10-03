@@ -477,27 +477,6 @@ pub(super) fn about(window: HWND) {
     );
 }
 
-thread_local! {
-    /// The color dialog's sixteen custom colors, for this panel session.
-    static CUSTOM_COLORS: Cell<[u32; 16]> = const { Cell::new([0x00FF_FFFF; 16]) };
-}
-
-/// The Windows color dialog, starting at `current`. `None` when cancelled.
-fn choose_color(window: HWND, current: Rgb) -> Option<Rgb> {
-    let mut custom = CUSTOM_COLORS.with(Cell::get);
-    let mut dialog = CHOOSECOLORW {
-        lStructSize: size_of::<CHOOSECOLORW>() as u32,
-        hwndOwner: window,
-        rgbResult: current.colorref(),
-        lpCustColors: custom.as_mut_ptr(),
-        Flags: CC_RGBINIT | CC_FULLOPEN,
-        ..Default::default()
-    };
-    let chosen = unsafe { ChooseColorW(&mut dialog) } != 0;
-    CUSTOM_COLORS.with(|colors| colors.set(custom));
-    chosen.then(|| Rgb::from_colorref(dialog.rgbResult))
-}
-
 pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
     if id == CMD_EXPERIMENTAL {
         match experimental::show(window) {
@@ -716,8 +695,10 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         }
         CMD_ACCENT_CUSTOM => {
             let current = with_app(|app| app.prefs.accent.base()).unwrap_or(Accent::Blue.base());
-            if let Some(color) = choose_color(window, current) {
-                with_app(|app| app.set_accent(Accent::Custom(color)));
+            match accent::show(window, current) {
+                Ok(Some(color)) => { with_app(|app| app.set_accent(Accent::Custom(color))); }
+                Ok(None) => {}
+                Err(error) => { with_app(|app| app.log(Level::Error, "Theme", error)); }
             }
         }
         CMD_THEME_SYSTEM | CMD_THEME_LIGHT | CMD_THEME_DARK => {
