@@ -21,8 +21,8 @@ use windows_sys::Win32::System::Threading::{
 /// ticks need sub-millisecond deadlines, which millisecond waits truncate.
 const PRECISE_WAIT: Duration = Duration::from_millis(50);
 
-pub use otd_core::session::Mode;
 use otd_core::decoders::{PenDecoder, TabletDecoder};
+pub use otd_core::session::Mode;
 use otd_core::session::{Read, ReportSource};
 use otd_core::tablets::DeviceIdentifier;
 
@@ -74,7 +74,11 @@ struct Reader {
 }
 
 impl Reader {
-    fn open(candidate: &Candidate, identifier: &DeviceIdentifier, driver_access: bool) -> io::Result<Self> {
+    fn open(
+        candidate: &Candidate,
+        identifier: &DeviceIdentifier,
+        driver_access: bool,
+    ) -> io::Result<Self> {
         let handle = if driver_access && initialization_writes(identifier) {
             candidate.open(true)?
         } else {
@@ -213,7 +217,11 @@ impl<'a> HidSource<'a> {
 
     /// Initializes the pen endpoint, then the auxiliary one. A failure on the
     /// auxiliary endpoint closes it and leaves the pen running.
-    fn initialize(&mut self, selected: &SelectedDevice<'_>, status: &impl Fn(&str)) -> io::Result<()> {
+    fn initialize(
+        &mut self,
+        selected: &SelectedDevice<'_>,
+        status: &impl Fn(&str),
+    ) -> io::Result<()> {
         hid::initialize(
             selected.pen,
             &self.pen.handle,
@@ -221,8 +229,7 @@ impl<'a> HidSource<'a> {
             &selected.configuration,
             self.stop,
         )?;
-        if let (Some(reader), Some((endpoint, identifier))) =
-            (&self.auxiliary, &selected.auxiliary)
+        if let (Some(reader), Some((endpoint, identifier))) = (&self.auxiliary, &selected.auxiliary)
             && let Err(error) = hid::initialize(
                 endpoint,
                 &reader.handle,
@@ -396,12 +403,19 @@ impl ReportSource for HidSource<'_> {
             count - 1
         };
         add(self.stop.raw());
-        let auxiliary = self.auxiliary.as_ref().map(|reader| add(reader.event.raw()));
+        let auxiliary = self
+            .auxiliary
+            .as_ref()
+            .map(|reader| add(reader.event.raw()));
         let pen = add(self.pen.event.raw());
         let notification = add(self.notification.event());
         // The timer is last, so a non-precise wait leaves it out.
         let timer_index = add(timer);
-        let waited = if precise { timer_index + 1 } else { timer_index };
+        let waited = if precise {
+            timer_index + 1
+        } else {
+            timer_index
+        };
         loop {
             // Other devices' notifications do not extend the wait.
             let result = if precise {
@@ -472,7 +486,9 @@ pub fn run(
         &profile,
         mode,
         &mut decoder,
-        auxiliary.as_mut().map(|decoder| decoder as &mut dyn PenDecoder),
+        auxiliary
+            .as_mut()
+            .map(|decoder| decoder as &mut dyn PenDecoder),
         plugins,
         |packet| output.as_ref().map_or(Ok(()), |output| output.send(packet)),
         pen,
@@ -488,7 +504,11 @@ pub fn run(
     result
 }
 
-fn announce_auxiliary(source: &HidSource<'_>, selected: &SelectedDevice<'_>, status: &impl Fn(&str)) {
+fn announce_auxiliary(
+    source: &HidSource<'_>,
+    selected: &SelectedDevice<'_>,
+    status: &impl Fn(&str),
+) {
     if source.auxiliary.is_some() {
         status(&format!(
             "{} express keys and wheels connected",
@@ -593,7 +613,8 @@ impl<'a> PreparedSession<'a> {
                 "prepared tablet endpoint disappeared before activation",
             ));
         }
-        self.source.initialize(self.selected, &|line| eprintln!("{line}"))?;
+        self.source
+            .initialize(self.selected, &|line| eprintln!("{line}"))?;
         // The prepared handles may have queued input while the previous
         // worker was still reading. Flush only after that worker has
         // quiesced, so the replacement cannot replay its already-processed
@@ -637,7 +658,9 @@ impl<'a> PreparedSession<'a> {
             &profile,
             Mode::Driver,
             &mut decoder,
-            auxiliary.as_mut().map(|decoder| decoder as &mut dyn PenDecoder),
+            auxiliary
+                .as_mut()
+                .map(|decoder| decoder as &mut dyn PenDecoder),
             plugins,
             |packet| output.send(packet),
             pen,

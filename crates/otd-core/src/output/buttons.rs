@@ -76,7 +76,10 @@ impl WheelBinding {
     pub fn is_unbound(&self) -> bool {
         self.clockwise == ButtonAction::None
             && self.counter_clockwise == ButtonAction::None
-            && self.buttons.iter().all(|action| *action == ButtonAction::None)
+            && self
+                .buttons
+                .iter()
+                .all(|action| *action == ButtonAction::None)
     }
 }
 
@@ -540,7 +543,10 @@ impl ButtonOutput {
         if changed {
             self.flush()?;
         }
-        if let Some(report) = values.absolute_analog.filter(|report| report.kind == AnalogKind::Wheel) {
+        if let Some(report) = values
+            .absolute_analog
+            .filter(|report| report.kind == AnalogKind::Wheel)
+        {
             for (wheel, position) in report.positions.as_slice().iter().enumerate() {
                 let Some(rotation) = self.rotations.get_mut(wheel) else {
                     break;
@@ -560,7 +566,10 @@ impl ButtonOutput {
                 self.rotate(wheel, delta)?;
             }
         }
-        if let Some(report) = values.relative_analog.filter(|report| report.kind == AnalogKind::Wheel) {
+        if let Some(report) = values
+            .relative_analog
+            .filter(|report| report.kind == AnalogKind::Wheel)
+        {
             for (wheel, delta) in report.deltas.as_slice().iter().enumerate() {
                 if wheel >= self.rotations.len() {
                     break;
@@ -940,7 +949,10 @@ mod tests {
         };
         let (mut out, log, fail) = output(&default_pen_buttons(), false);
         let rejected = out.set_auxiliary(
-            &["mouse:middle".parse().unwrap(), "keys:Control+Z".parse().unwrap()],
+            &[
+                "mouse:middle".parse().unwrap(),
+                "keys:Control+Z".parse().unwrap(),
+            ],
             &[wheel],
             crate::spec::TabletSpec::PTH_660.controls.wheels(),
         );
@@ -1048,7 +1060,11 @@ mod tests {
     fn turning_back_clears_the_other_direction() {
         let (mut out, log, _) = ring_output(Some(15.0));
         turn(&mut out, &[Some(0), Some(2), Some(1), Some(3)]);
-        assert_eq!(taps(&log, page_down()), 0, "10, then cleared, then 10 again");
+        assert_eq!(
+            taps(&log, page_down()),
+            0,
+            "10, then cleared, then 10 again"
+        );
         assert_eq!(taps(&log, page_up()), 0);
         turn(&mut out, &[Some(4)]);
         assert_eq!(taps(&log, page_down()), 1);
@@ -1126,7 +1142,11 @@ mod tests {
         *fail.borrow_mut() = false;
         // The next report reconciles: nothing was sent, nothing is held.
         out.apply_auxiliary(&ring(Some(1))).unwrap();
-        assert!(log.borrow().iter().all(|(action, _)| *action != page_down()));
+        assert!(
+            log.borrow()
+                .iter()
+                .all(|(action, _)| *action != page_down())
+        );
         assert!(!out.release_all().unwrap());
     }
 
@@ -1142,9 +1162,20 @@ mod tests {
             &[wheel.clone(), wheel],
             crate::spec::TabletSpec::PTH_660.controls.wheels(),
         );
-        assert_eq!(rejected.len(), 1, "the second wheel does not exist: {rejected:?}");
-        assert!(rejected[0].starts_with("wheel 1 clockwise"), "{}", rejected[0]);
-        let no_steps = [crate::spec::Wheel { steps: 0, buttons: 0 }];
+        assert_eq!(
+            rejected.len(),
+            1,
+            "the second wheel does not exist: {rejected:?}"
+        );
+        assert!(
+            rejected[0].starts_with("wheel 1 clockwise"),
+            "{}",
+            rejected[0]
+        );
+        let no_steps = [crate::spec::Wheel {
+            steps: 0,
+            buttons: 0,
+        }];
         let rejected = out.set_auxiliary(
             &[],
             &[WheelBinding {

@@ -118,7 +118,14 @@ impl TabletSpec {
         height_mm: HEIGHT_MM,
         // Two side buttons, eight express keys and the 72-position touch
         // ring with its center button.
-        controls: Controls::new(2, 8, &[Wheel { steps: 72, buttons: 1 }]),
+        controls: Controls::new(
+            2,
+            8,
+            &[Wheel {
+                steps: 72,
+                buttons: 1,
+            }],
+        ),
     };
 
     /// The digitizer and pen specifications of a configuration.
