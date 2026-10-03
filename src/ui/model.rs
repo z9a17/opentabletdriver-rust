@@ -258,7 +258,6 @@ pub struct Editor {
     pub profile: Profile,
     absolute_stash: Option<OtdMapping>,
     relative_stash: Option<RelativeSettings>,
-    radial_stash: RadialFollowSettings,
 }
 
 pub fn default_relative() -> RelativeSettings {
@@ -315,12 +314,10 @@ pub fn simple_mapping(profile: &Profile, displays: &DisplaySnapshot) -> OtdMappi
 
 impl Editor {
     pub fn new(profile: Profile) -> Self {
-        let radial_stash = profile.radial_follow.first().copied().unwrap_or_default();
         Self {
             profile,
             absolute_stash: None,
             relative_stash: None,
-            radial_stash,
         }
     }
 
@@ -636,14 +633,15 @@ impl Editor {
             .radial_follow
             .get(index)
             .copied()
-            .unwrap_or(self.radial_stash)
+            .or(self.profile.disabled_radial_follow)
+            .unwrap_or_default()
     }
 
     /// Edits of a disabled filter are kept for when it is enabled again.
     pub fn set_radial(&mut self, index: usize, settings: RadialFollowSettings) {
         match self.profile.radial_follow.get_mut(index) {
             Some(slot) => *slot = settings,
-            None => self.radial_stash = settings,
+            None => self.profile.disabled_radial_follow = Some(settings),
         }
     }
 
@@ -651,9 +649,12 @@ impl Editor {
         match target {
             FilterRef::Radial(index) => {
                 if enabled && self.profile.radial_follow.is_empty() {
-                    self.profile.radial_follow.push(self.radial_stash);
+                    self.profile.radial_follow.push(
+                        self.profile.disabled_radial_follow.take().unwrap_or_default(),
+                    );
                 } else if !enabled && index < self.profile.radial_follow.len() {
-                    self.radial_stash = self.profile.radial_follow.remove(index);
+                    self.profile.disabled_radial_follow =
+                        Some(self.profile.radial_follow.remove(index));
                 }
             }
             FilterRef::Plugin(index) => {
@@ -1211,6 +1212,37 @@ Minimum: 0, Maximum: 2"
         assert!(editor.profile.radial_follow.is_empty());
         editor.set_filter_enabled(FilterRef::Radial(0), true);
         assert_eq!(editor.radial(0).outer_radius, 0.7);
+    }
+
+    #[test]
+    fn disabled_radial_follow_survives_save_and_reopen() {
+        let settings = RadialFollowSettings {
+            outer_radius: 0.7039,
+            inner_radius: 0.302,
+            smoothing_coefficient: 0.302,
+            soft_knee_scale: 0.603,
+            smoothing_leak_coefficient: 0.201,
+        };
+        for initially_enabled in [false, true] {
+            let mut editor = Editor::new(Profile::default());
+            editor.set_filter_enabled(FilterRef::Radial(0), initially_enabled);
+            editor.set_radial(0, settings);
+            editor.set_filter_enabled(FilterRef::Radial(0), false);
+            let saved = editor.profile.to_toml().unwrap();
+            let loaded = Profile::from_toml_text(&saved, Path::new("profile.toml")).unwrap();
+            assert!(loaded.radial_follow.is_empty());
+            let mut reopened = Editor::new(loaded);
+            assert_eq!(
+                serde_json::to_value(reopened.radial(0)).unwrap(),
+                serde_json::to_value(settings).unwrap(),
+            );
+            reopened.set_filter_enabled(FilterRef::Radial(0), true);
+            assert_eq!(
+                serde_json::to_value(&reopened.profile.radial_follow).unwrap(),
+                serde_json::to_value(vec![settings]).unwrap(),
+            );
+            assert!(reopened.profile.disabled_radial_follow.is_none());
+        }
     }
 
     #[test]

@@ -107,6 +107,8 @@ pub struct Profile {
     /// Absolute output only; relative output always moves the mouse.
     pub output: OutputKind,
     pub radial_follow: Vec<RadialFollowSettings>,
+    /// Native filter values retained while disabled; never executed.
+    pub disabled_radial_follow: Option<RadialFollowSettings>,
     pub plugins: Vec<PluginConfig>,
     pub auto_enabled_radial_follow: usize,
     pub ignored_filters: usize,
@@ -141,6 +143,7 @@ impl Default for Profile {
             wheels: Vec::new(),
             output: OutputKind::Mouse,
             radial_follow: Vec::new(),
+            disabled_radial_follow: None,
             plugins: Vec::new(),
             auto_enabled_radial_follow: 0,
             ignored_filters: 0,
@@ -190,6 +193,8 @@ struct RawProfile {
     output: OutputKind,
     #[serde(default)]
     radial_follow: Vec<RadialFollowSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    disabled_radial_follow: Option<RadialFollowSettings>,
     #[serde(default)]
     plugins: Vec<PluginConfig>,
     /// The tablet a native profile is for, by configuration name.
@@ -1198,7 +1203,11 @@ impl Profile {
             );
         }
         let base = path.parent().unwrap_or_else(|| Path::new("."));
-        for filter in &raw.radial_follow {
+        for filter in raw
+            .radial_follow
+            .iter()
+            .chain(raw.disabled_radial_follow.iter())
+        {
             if ![
                 filter.outer_radius,
                 filter.inner_radius,
@@ -1265,6 +1274,7 @@ impl Profile {
             wheels,
             output: raw.output,
             radial_follow: raw.radial_follow,
+            disabled_radial_follow: raw.disabled_radial_follow,
             plugins,
             relative,
             monitor: raw.monitor,
@@ -1431,6 +1441,7 @@ impl Profile {
             },
             output: self.output,
             radial_follow: self.radial_follow.clone(),
+            disabled_radial_follow: self.disabled_radial_follow,
             plugins: self.plugins.clone(),
             tablet: self.target_tablet.clone(),
         };
@@ -1811,6 +1822,7 @@ mod tests {
             path.parent().unwrap().join("filters/test.dll")
         );
         assert!(Profile::from_toml_text("[[radial_follow]]\nouter_radius=nan\n", &path).is_err());
+        assert!(Profile::from_toml_text("[disabled_radial_follow]\nouter_radius=nan\n", &path).is_err());
         // Thresholds are checked against the tablet that runs the profile,
         // since other tablets report more pressure levels than the PTH-660.
         let above = Profile::from_toml_text("[bindings]\ntip_threshold_raw=8192\n", &path).unwrap();
