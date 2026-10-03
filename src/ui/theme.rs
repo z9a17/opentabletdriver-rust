@@ -31,8 +31,34 @@ impl Rgb {
         u32::from(self.0) | (u32::from(self.1) << 8) | (u32::from(self.2) << 16)
     }
 
-    fn from_colorref(value: u32) -> Self {
+    pub fn from_colorref(value: u32) -> Self {
         Self(value as u8, (value >> 8) as u8, (value >> 16) as u8)
+    }
+
+    /// Relative luminance (WCAG), 0 for black to 1 for white.
+    pub fn luminance(self) -> f32 {
+        let linear = |channel: u8| {
+            let value = f32::from(channel) / 255.0;
+            if value <= 0.040_45 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(self.0) + 0.7152 * linear(self.1) + 0.0722 * linear(self.2)
+    }
+
+    /// `#RRGGBB`.
+    pub fn text(self) -> String {
+        format!("#{:02X}{:02X}{:02X}", self.0, self.1, self.2)
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        let digits = text.trim().strip_prefix('#')?;
+        (digits.len() == 6)
+            .then(|| u32::from_str_radix(digits, 16).ok())
+            .flatten()
+            .map(Self::hex)
     }
 
     pub fn mix(self, other: Self, amount: f32) -> Self {
@@ -53,6 +79,117 @@ pub enum ThemeMode {
     System,
     Light,
     Dark,
+}
+
+/// The color of selection, focus, hot and pressed buttons, tabs, sliders and
+/// the area highlight. Blue is the original Windows blue; the others replace
+/// every blue of the light and dark palettes. High contrast keeps the system
+/// colors.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Accent {
+    #[default]
+    Blue,
+    Teal,
+    Green,
+    Gold,
+    Orange,
+    Red,
+    Pink,
+    Purple,
+    Violet,
+    Slate,
+    /// The Windows personalization accent color, read when the theme applies.
+    Windows,
+    Custom(Rgb),
+}
+
+impl Accent {
+    /// The menu's presets, in order, with their names.
+    pub const PRESETS: [(Accent, &str); 10] = [
+        (Accent::Blue, "Blue (default)"),
+        (Accent::Teal, "Teal"),
+        (Accent::Green, "Green"),
+        (Accent::Gold, "Gold"),
+        (Accent::Orange, "Orange"),
+        (Accent::Red, "Red"),
+        (Accent::Pink, "Pink"),
+        (Accent::Purple, "Purple"),
+        (Accent::Violet, "Violet"),
+        (Accent::Slate, "Slate"),
+    ];
+
+    /// The light palette's accent; the dark palette lightens it.
+    pub fn base(self) -> Rgb {
+        match self {
+            Accent::Blue => Rgb::hex(0x0078D7),
+            Accent::Teal => Rgb::hex(0x038387),
+            Accent::Green => Rgb::hex(0x107C10),
+            Accent::Gold => Rgb::hex(0x986F0B),
+            Accent::Orange => Rgb::hex(0xCA5010),
+            Accent::Red => Rgb::hex(0xD13438),
+            Accent::Pink => Rgb::hex(0xC30052),
+            Accent::Purple => Rgb::hex(0x8764B8),
+            Accent::Violet => Rgb::hex(0x5C2E91),
+            Accent::Slate => Rgb::hex(0x515C6B),
+            Accent::Windows => windows_accent().unwrap_or(Rgb::hex(0x0078D7)),
+            Accent::Custom(color) => color,
+        }
+    }
+
+    fn name(self) -> String {
+        match self {
+            Accent::Windows => "windows".into(),
+            Accent::Custom(color) => color.text(),
+            preset => format!("{preset:?}").to_ascii_lowercase(),
+        }
+    }
+
+    fn from_name(text: &str) -> Option<Self> {
+        if text.eq_ignore_ascii_case("windows") {
+            return Some(Accent::Windows);
+        }
+        Accent::PRESETS
+            .iter()
+            .map(|(accent, _)| *accent)
+            .find(|accent| accent.name().eq_ignore_ascii_case(text))
+            .or_else(|| Rgb::parse(text).map(Accent::Custom))
+    }
+}
+
+impl Serialize for Accent {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.name())
+    }
+}
+
+impl<'de> Deserialize<'de> for Accent {
+    /// An unknown value falls back to blue rather than discarding every
+    /// other panel preference.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        Ok(Accent::from_name(&text).unwrap_or_default())
+    }
+}
+
+/// `HKCU\Software\Microsoft\Windows\DWM\AccentColor`, stored as ABGR.
+pub fn windows_accent() -> Option<Rgb> {
+    registry_dword(
+        HKEY_CURRENT_USER,
+        "Software\\Microsoft\\Windows\\DWM",
+        "AccentColor",
+    )
+    .map(|abgr| Rgb::from_colorref(abgr & 0x00FF_FFFF))
+}
+
+/// White text, as Windows uses on accents, while it keeps the 3:1 contrast
+/// of a UI component on `background`; black otherwise. The original blues
+/// get white in the light palette and black in the dark one.
+fn text_on(background: Rgb) -> Rgb {
+    if 1.05 / (background.luminance() + 0.05) >= 3.0 {
+        Rgb::hex(0xFFFFFF)
+    } else {
+        Rgb::hex(0x000000)
+    }
 }
 
 /// Colors follow OpenTabletDriver's WPF controls on Windows: gray window,
@@ -207,6 +344,44 @@ impl Palette {
         }
     }
 
+    /// This palette with `accent` in place of every blue. The proportions
+    /// are those of the blue palettes (for example the light pressed border
+    /// is the accent 30% toward black), so Blue keeps its exact colors.
+    pub fn with_accent(self, accent: Accent) -> Self {
+        if self.high_contrast || accent == Accent::Blue {
+            return self;
+        }
+        let base = accent.base();
+        let white = Rgb::hex(0xFFFFFF);
+        if self.dark {
+            let light = base.mix(white, 0.3);
+            Self {
+                accent: light,
+                accent_text: text_on(light),
+                button_hot_border: light,
+                button_pressed: Rgb::hex(0x202020).mix(base, 0.35),
+                button_pressed_border: light,
+                selection: Rgb::hex(0x202020).mix(base, 0.35),
+                hover: Rgb::hex(0x373737).mix(base, 0.08),
+                area_fill: base.mix(white, 0.18),
+                ..self
+            }
+        } else {
+            Self {
+                accent: base,
+                accent_text: text_on(base),
+                button_hot: base.mix(white, 0.9),
+                button_hot_border: base,
+                button_pressed: base.mix(white, 0.8),
+                button_pressed_border: base.mix(Rgb::hex(0x000000), 0.3),
+                selection: base.mix(white, 0.8),
+                hover: base.mix(white, 0.9),
+                area_fill: base,
+                ..self
+            }
+        }
+    }
+
     /// Text shown on `selection` backgrounds.
     pub fn selection_text(&self) -> Rgb {
         if self.high_contrast {
@@ -262,7 +437,7 @@ pub fn high_contrast_active() -> bool {
     }
 }
 
-pub fn palette_for(mode: ThemeMode) -> Palette {
+pub fn palette_for(mode: ThemeMode, accent: Accent) -> Palette {
     if high_contrast_active() {
         return Palette::high_contrast();
     }
@@ -276,6 +451,7 @@ pub fn palette_for(mode: ThemeMode) -> Palette {
     } else {
         Palette::light()
     }
+    .with_accent(accent)
 }
 
 fn windows_build() -> u32 {
@@ -388,6 +564,8 @@ impl DarkMode {
 #[serde(default)]
 pub struct UiPrefs {
     pub theme: ThemeMode,
+    /// Replaces the panel's blue; blue by default.
+    pub accent: Accent,
     pub lock_aspect_ratio: bool,
     pub lock_display_to_usable_area: bool,
     pub lock_tablet_to_usable_area: bool,
@@ -405,6 +583,7 @@ impl Default for UiPrefs {
     fn default() -> Self {
         Self {
             theme: ThemeMode::System,
+            accent: Accent::Blue,
             lock_aspect_ratio: false,
             lock_display_to_usable_area: true,
             lock_tablet_to_usable_area: true,
@@ -455,8 +634,79 @@ mod tests {
     }
 
     #[test]
+    fn accents_round_trip_and_unknown_values_keep_other_preferences() {
+        for accent in Accent::PRESETS
+            .iter()
+            .map(|(accent, _)| *accent)
+            .chain([Accent::Windows, Accent::Custom(Rgb::hex(0x12AB9F))])
+        {
+            let prefs = UiPrefs {
+                accent,
+                ..UiPrefs::default()
+            };
+            let text = toml::to_string_pretty(&prefs).unwrap();
+            assert_eq!(toml::from_str::<UiPrefs>(&text).unwrap(), prefs, "{text}");
+        }
+        assert!(toml::to_string_pretty(&UiPrefs::default()).unwrap().contains("accent = \"blue\""));
+        let odd: UiPrefs = toml::from_str("theme = 'dark'\naccent = 'chartreuse'").unwrap();
+        assert_eq!((odd.theme, odd.accent), (ThemeMode::Dark, Accent::Blue));
+        assert_eq!(toml::from_str::<UiPrefs>("").unwrap().accent, Accent::Blue);
+    }
+
+    #[test]
+    fn blue_keeps_the_original_palettes_and_other_accents_replace_every_blue() {
+        let fields = |p: &Palette| {
+            [
+                p.accent,
+                p.accent_text,
+                p.button_hot,
+                p.button_hot_border,
+                p.button_pressed,
+                p.button_pressed_border,
+                p.selection,
+                p.hover,
+                p.area_fill,
+            ]
+        };
+        for palette in [Palette::light(), Palette::dark()] {
+            assert_eq!(fields(&palette.with_accent(Accent::Blue)), fields(&palette));
+            // The derivation reproduces the blue palette closely, so other
+            // accents keep its relationships.
+            let derived = palette.with_accent(Accent::Custom(Accent::Blue.base()));
+            for (made, original) in fields(&derived).iter().zip(fields(&palette)) {
+                let distance = [made.0.abs_diff(original.0), made.1.abs_diff(original.1), made.2.abs_diff(original.2)];
+                assert!(distance.iter().all(|d| *d <= 20), "{made:?} vs {original:?}");
+            }
+            for (accent, name) in Accent::PRESETS.iter().skip(1) {
+                let themed = palette.with_accent(*accent);
+                // No field still uses a blue from the original palette;
+                // neutral grays such as the dark hot button stay.
+                for (color, original) in fields(&themed).iter().zip(fields(&palette)) {
+                    let gray = original.0 == original.1 && original.1 == original.2;
+                    if !gray {
+                        assert_ne!(*color, original, "{name}");
+                    }
+                }
+                // Accent text stays readable: WCAG contrast at least 3:1.
+                let contrast = |a: Rgb, b: Rgb| {
+                    let (l1, l2) = (a.luminance().max(b.luminance()), a.luminance().min(b.luminance()));
+                    (l1 + 0.05) / (l2 + 0.05)
+                };
+                assert!(contrast(themed.accent, themed.accent_text) >= 3.0, "{name} accent text");
+                // Everything that is not an accent is unchanged.
+                assert_eq!((themed.window, themed.text, themed.error), (palette.window, palette.text, palette.error));
+            }
+        }
+        let contrast = Palette::high_contrast();
+        assert_eq!(contrast.with_accent(Accent::Red).accent, contrast.accent, "system colors win");
+    }
+
+    #[test]
     fn colors_convert_to_gdi_order() {
         assert_eq!(Rgb::hex(0x0078D7).colorref(), 0x00D7_7800);
         assert_eq!(Rgb(0, 0, 0).mix(Rgb(200, 100, 50), 0.5), Rgb(100, 50, 25));
+        assert_eq!(Rgb::parse("#0078d7"), Some(Rgb::hex(0x0078D7)));
+        assert_eq!(Rgb::hex(0x0078D7).text(), "#0078D7");
+        assert_eq!(Rgb::parse("0078D7"), None);
     }
 }

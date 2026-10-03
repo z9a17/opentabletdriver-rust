@@ -339,3 +339,31 @@ fn binding_pages_follow_the_detected_tablet_and_edit_the_profile() {
     LOOK.with(|slot| slot.borrow_mut().take());
     unsafe { DestroyWindow(window); }
 }
+
+#[test]
+fn accent_colors_replace_the_blue_on_every_page() {
+    let window = unsafe { CreateWindowExW(0, wide("STATIC").as_ptr(), wide("Accent pages").as_ptr(),
+        WS_POPUP, 0, 0, 760, 640, ptr::null_mut(), ptr::null_mut(), GetModuleHandleW(ptr::null()), ptr::null()) };
+    assert!(!window.is_null());
+    let mut app = fixture(window);
+    app.c.tabs.clear();
+    app.c.menus.clear();
+    app.create_controls().unwrap();
+    discover(&mut app, Ok(vec!["Wacom PTH-660".into()]));
+    let accents = [("blue", Accent::Blue), ("red", Accent::Red), ("green", Accent::Green), ("custom", Accent::Custom(Rgb::hex(0xFF8C00)))];
+    for (name, accent) in accents {
+        for (mode, base) in [("light", Palette::light()), ("dark", Palette::dark())] {
+            let palette = base.with_accent(accent);
+            update_look(|look| look.style.palette = palette);
+            for tab in [Tab::Output, Tab::Aux] {
+                app.select_tab(tab);
+                // Keyboard focus shows the accent on the first binding.
+                render_page(&app, &format!("accent-{name}-{mode}-{tab:?}"));
+            }
+            app.select_tab(Tab::Pen);
+        }
+    }
+    drop(app);
+    LOOK.with(|slot| slot.borrow_mut().take());
+    unsafe { DestroyWindow(window); }
+}

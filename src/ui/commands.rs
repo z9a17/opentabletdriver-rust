@@ -403,6 +403,20 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                     CMD_THEME_DARK,
                     "Dark",
                 );
+                unsafe { AppendMenuW(theme, MF_SEPARATOR, 0, ptr::null()) };
+                let colors = unsafe { CreatePopupMenu() };
+                let accent = app.prefs.accent;
+                for (index, (preset, name)) in Accent::PRESETS.iter().enumerate() {
+                    append(colors, MFT_RADIOCHECK | checked(accent == *preset), CMD_ACCENT_FIRST + index as u16, name);
+                }
+                unsafe { AppendMenuW(colors, MF_SEPARATOR, 0, ptr::null()) };
+                append(colors, MFT_RADIOCHECK | checked(accent == Accent::Windows), CMD_ACCENT_WINDOWS, "Windows accent color");
+                let custom = match accent {
+                    Accent::Custom(color) => format!("Custom ({})...", color.text()),
+                    _ => "Custom...".to_owned(),
+                };
+                append(colors, MFT_RADIOCHECK | checked(matches!(accent, Accent::Custom(_))), CMD_ACCENT_CUSTOM, &custom);
+                unsafe { AppendMenuW(theme, MF_POPUP, colors as usize, wide("Accent color").as_ptr()) };
                 unsafe { AppendMenuW(menu, MF_POPUP, theme as usize, wide("Theme").as_ptr()) };
                 append(menu, if app.control_busy { MF_GRAYED } else { MF_STRING },
                     CMD_EXPERIMENTAL, "Experimental settings...");
@@ -461,6 +475,27 @@ pub(super) fn about(window: HWND) {
         "About OpenTabletDriver Rust",
         MB_OK | MB_ICONINFORMATION,
     );
+}
+
+thread_local! {
+    /// The color dialog's sixteen custom colors, for this panel session.
+    static CUSTOM_COLORS: Cell<[u32; 16]> = const { Cell::new([0x00FF_FFFF; 16]) };
+}
+
+/// The Windows color dialog, starting at `current`. `None` when cancelled.
+fn choose_color(window: HWND, current: Rgb) -> Option<Rgb> {
+    let mut custom = CUSTOM_COLORS.with(Cell::get);
+    let mut dialog = CHOOSECOLORW {
+        lStructSize: size_of::<CHOOSECOLORW>() as u32,
+        hwndOwner: window,
+        rgbResult: current.colorref(),
+        lpCustColors: custom.as_mut_ptr(),
+        Flags: CC_RGBINIT | CC_FULLOPEN,
+        ..Default::default()
+    };
+    let chosen = unsafe { ChooseColorW(&mut dialog) } != 0;
+    CUSTOM_COLORS.with(|colors| colors.set(custom));
+    chosen.then(|| Rgb::from_colorref(dialog.rgbResult))
 }
 
 pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
@@ -671,6 +706,19 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
                 };
                 app.layout();
             });
+        }
+        id if (CMD_ACCENT_FIRST..CMD_ACCENT_FIRST + Accent::PRESETS.len() as u16).contains(&id) => {
+            let accent = Accent::PRESETS[(id - CMD_ACCENT_FIRST) as usize].0;
+            with_app(|app| app.set_accent(accent));
+        }
+        CMD_ACCENT_WINDOWS => {
+            with_app(|app| app.set_accent(Accent::Windows));
+        }
+        CMD_ACCENT_CUSTOM => {
+            let current = with_app(|app| app.prefs.accent.base()).unwrap_or(Accent::Blue.base());
+            if let Some(color) = choose_color(window, current) {
+                with_app(|app| app.set_accent(Accent::Custom(color)));
+            }
         }
         CMD_THEME_SYSTEM | CMD_THEME_LIGHT | CMD_THEME_DARK => {
             let mode = match id {
