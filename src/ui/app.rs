@@ -1904,6 +1904,7 @@ impl App {
         debugger::refresh_theme();
         experimental::refresh_theme();
         shortcut::refresh_theme();
+        accent::refresh_theme();
         let mut scrolling = vec![self.c.filter_list, self.c.log];
         if !self.tooltip.is_null() {
             scrolling.push(self.tooltip);

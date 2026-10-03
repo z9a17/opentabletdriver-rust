@@ -14,6 +14,7 @@
 //! painted through custom draw. Their painting reads the `LOOK` state, which
 //! is only ever borrowed briefly, so controls that repaint synchronously
 //! while an `App` handler runs still get the right colors.
+mod accent;
 mod app;
 mod area;
 mod background;
