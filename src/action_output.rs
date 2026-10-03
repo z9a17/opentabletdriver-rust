@@ -224,6 +224,15 @@ fn keyboard_scan_code(key: KeyboardUsage) -> Option<(u16, bool)> {
     Some((code & 0xff, code & 0xff00 == 0xe000))
 }
 
+/// The key at a physical position, from a keyboard message's scan code and
+/// extended-key flag: the inverse of the injection table, so a captured key
+/// is sent back as the same position.
+pub fn usage_for_scan_code(scan: u16, extended: bool) -> Option<KeyboardUsage> {
+    (0x04..=0xe7u16)
+        .filter_map(KeyboardUsage::new)
+        .find(|key| keyboard_scan_code(*key) == Some((scan, extended)))
+}
+
 /// Every session's held actions.
 static HELD: Mutex<ActionState> = Mutex::new(ActionState::new());
 // Created during session setup, so registration never allocates in a report.

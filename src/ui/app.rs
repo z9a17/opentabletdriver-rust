@@ -218,6 +218,9 @@ impl App {
             import_pending: false,
             diagnostics_pending: false,
             connected_tablets: Vec::new(),
+            binding_rows: Vec::new(),
+            wheel_fields: Vec::new(),
+            bindings_detected: false,
             labels: HashMap::new(),
             property_page: 0,
             invalid: HashSet::new(),
@@ -570,6 +573,7 @@ impl App {
         self.sync_areas(None);
         self.sync_relative(None);
         self.sync_pen(None);
+        self.sync_bindings();
         self.refresh_filters();
         self.update_save_tip();
     }
@@ -1188,6 +1192,8 @@ impl App {
             self.edit_threshold(hwnd == self.c.eraser_field, hwnd, &value);
         } else if let Some(index) = self.properties.iter().position(|row| row.hwnd == hwnd) {
             self.edit_property(index, &value);
+        } else {
+            self.edit_wheel_threshold(hwnd, &value);
         }
     }
 
@@ -1199,6 +1205,8 @@ impl App {
             self.sync_relative(None);
         } else if hwnd == self.c.tip_field || hwnd == self.c.eraser_field {
             self.sync_pen(None);
+        } else if self.is_wheel_field(hwnd) && !self.invalid.contains(&(hwnd as isize)) {
+            self.sync_wheel_fields(None);
         }
         if self.metadata_refresh_deferred {
             unsafe { PostMessageW(self.hwnd, WM_METADATA_REFRESH, 0, 0); }
@@ -1895,6 +1903,7 @@ impl App {
         plugin_manager::apply_theme();
         debugger::refresh_theme();
         experimental::refresh_theme();
+        shortcut::refresh_theme();
         let mut scrolling = vec![self.c.filter_list, self.c.log];
         if !self.tooltip.is_null() {
             scrolling.push(self.tooltip);

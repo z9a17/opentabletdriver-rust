@@ -267,6 +267,9 @@ impl App {
                                     Err(error) => self.log(Level::Warning, "Tablet", format!("Could not use the detected tablet's dimensions: {error}")),
                                 }
                             }
+                            // The binding rows follow the detected tablet's
+                            // buttons; the profile's bindings are unchanged.
+                            self.sync_bindings();
                             // A removal must clear the view even when no
                             // profile geometry changed or edits are pending.
                             self.refresh_tablet_view();

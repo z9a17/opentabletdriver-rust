@@ -506,6 +506,9 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         id if (ID_MENU..ID_MENU + MENUS.len() as u16).contains(&id) => {
             menu_bar_popup(window, (id - ID_MENU) as usize);
         }
+        id if (bindings::ID_BINDING..bindings::ID_BINDING + bindings::MAX_BINDING_ROWS).contains(&id) => {
+            bindings::choose(window, control);
+        }
         id if (ID_TAB..ID_TAB + TABS.len() as u16).contains(&id) => {
             with_app(|app| app.select_tab(TABS[(id - ID_TAB) as usize].0));
         }

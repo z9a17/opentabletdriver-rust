@@ -470,6 +470,20 @@ impl Editor {
         Some(Bounds::tablet_for(spec))
     }
 
+    /// The buttons and wheels of the detected, selected tablet, which size
+    /// the binding editors. Saved bindings do not prove which exist.
+    pub fn detected_controls(&self, connected: &[String]) -> Option<otd_core::spec::Controls> {
+        let target = self.profile.tablet_name().ok()?;
+        let name = match target.as_deref() {
+            Some(target) => connected.iter().find(|name| name.as_str() == target)?,
+            None => {
+                let [name] = connected else { return None; };
+                name
+            }
+        };
+        Some(otd_core::config::spec_for_tablet(name).ok()?.controls)
+    }
+
     /// Resolve the editor's transient geometry without naming/saving a target.
     pub fn update_detected_tablet(&mut self, connected: &[String]) -> Result<bool, String> {
         if self.profile.tablet_name()?.is_some() {

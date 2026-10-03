@@ -33,7 +33,8 @@ fn fixture(hwnd: HWND) -> App {
         metadata_generation: 0, metadata_refresh_deferred: false, edit_revision: 0,
         background_tx, background_rx, device_scan: background::DeviceScan::default(),
         device_strings_pending: false, import_pending: false, diagnostics_pending: false,
-        connected_tablets: Vec::new(), labels: HashMap::new(), property_page: 0,
+        connected_tablets: Vec::new(), binding_rows: Vec::new(), wheel_fields: Vec::new(),
+        bindings_detected: false, labels: HashMap::new(), property_page: 0,
         invalid: HashSet::new(), drag: None, context_area: AreaKind::Tablet,
         running: None, daemon_client: None, control_busy: false, daemon_instance: None,
         daemon_log_sequence: 0, closing: false, close_ready: false,
@@ -160,6 +161,180 @@ fn disconnected_preview_is_blank_through_discovery_layout_paint_and_reconnect() 
     assert_eq!(app.editor.profile.to_toml().unwrap(), invalid);
     assert_eq!(unsafe { IsWindowVisible(window) }, 0);
     assert!(app.daemon_client.is_none() && app.running.is_none());
+    drop(app);
+    LOOK.with(|slot| slot.borrow_mut().take());
+    unsafe { DestroyWindow(window); }
+}
+
+
+/// Renders the page items and the visible child controls the way the panel
+/// draws them (shared custom draw for buttons, palette text for labels) into
+/// a BMP under `OTD_AREA_TEST_OUTPUT`, when that is set.
+fn render_page(app: &App, name: &str) {
+    let Some(directory) = std::env::var_os("OTD_AREA_TEST_OUTPUT") else { return; };
+    let client = client_rect(app.hwnd);
+    let (width, height) = (client.right, client.bottom);
+    let info = BITMAPINFO { bmiHeader: BITMAPINFOHEADER {
+        biSize: size_of::<BITMAPINFOHEADER>() as u32, biWidth: width, biHeight: -height,
+        biPlanes: 1, biBitCount: 32, biCompression: BI_RGB, ..Default::default()
+    }, ..Default::default() };
+    unsafe {
+        let dc = CreateCompatibleDC(ptr::null_mut());
+        let mut bits = ptr::null_mut();
+        let bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, ptr::null_mut(), 0);
+        let previous = SelectObject(dc, bitmap);
+        let mut canvas = canvas::Canvas::new(dc, client).unwrap();
+        app.paint_items(&mut canvas, client);
+        canvas.present(dc);
+        let palette = app.palette();
+        for hwnd in app.static_controls().into_iter().chain(app.binding_controls()) {
+            if GetWindowLongW(hwnd, GWL_STYLE) as u32 & WS_VISIBLE == 0 { continue; }
+            let Some(info) = with_look(|look| look.info(hwnd)).flatten() else { continue; };
+            let mut bounds = RECT::default();
+            GetWindowRect(hwnd, &mut bounds);
+            MapWindowPoints(ptr::null_mut(), app.hwnd, (&mut bounds as *mut RECT).cast(), 2);
+            let saved = SaveDC(dc);
+            SetViewportOrgEx(dc, bounds.left, bounds.top, ptr::null_mut());
+            match info.kind {
+                Kind::Button | Kind::Dropdown | Kind::Tab(_) | Kind::Menu | Kind::Check => {
+                    let mut draw = NMCUSTOMDRAW { hdr: NMHDR { hwndFrom: hwnd, idFrom: 0, code: NM_CUSTOMDRAW },
+                        dwDrawStage: CDDS_PREPAINT, hdc: dc, ..Default::default() };
+                    paint::custom_draw(&mut draw);
+                }
+                Kind::Label | Kind::Field => {
+                    let mut area = rect(0, 0, bounds.right - bounds.left, bounds.bottom - bounds.top);
+                    let text = wide(&text(hwnd));
+                    SelectObject(dc, app.style().fonts.ui);
+                    SetBkMode(dc, TRANSPARENT as i32);
+                    SetTextColor(dc, palette.text.colorref());
+                    DrawTextW(dc, text.as_ptr(), -1, &mut area, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                }
+                _ => {}
+            }
+            RestoreDC(dc, saved);
+        }
+        GdiFlush();
+        let pixels = std::slice::from_raw_parts(bits as *const u32, (width * height) as usize);
+        let mut bmp = Vec::new();
+        bmp.extend_from_slice(b"BM");
+        bmp.extend_from_slice(&(54 + pixels.len() as u32 * 4).to_le_bytes());
+        bmp.extend_from_slice(&[0; 4]);
+        bmp.extend_from_slice(&54u32.to_le_bytes());
+        bmp.extend_from_slice(&40u32.to_le_bytes());
+        bmp.extend_from_slice(&width.to_le_bytes());
+        bmp.extend_from_slice(&(-height).to_le_bytes());
+        bmp.extend_from_slice(&1u16.to_le_bytes());
+        bmp.extend_from_slice(&32u16.to_le_bytes());
+        bmp.extend_from_slice(&[0; 24]);
+        for pixel in pixels { bmp.extend_from_slice(&pixel.to_le_bytes()); }
+        let directory = PathBuf::from(directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join(format!("{name}.bmp")), bmp).unwrap();
+        SelectObject(dc, previous);
+        DeleteObject(bitmap);
+        DeleteDC(dc);
+    }
+}
+
+/// Window rectangles of the controls a page shows.
+fn placed(app: &App, controls: &[HWND]) -> Vec<RECT> {
+    controls.iter().filter(|hwnd| unsafe { GetWindowLongW(**hwnd, GWL_STYLE) } as u32 & WS_VISIBLE != 0)
+        .map(|hwnd| {
+            let mut bounds = RECT::default();
+            unsafe {
+                GetWindowRect(*hwnd, &mut bounds);
+                MapWindowPoints(ptr::null_mut(), app.hwnd, (&mut bounds as *mut RECT).cast(), 2);
+            }
+            bounds
+        }).collect()
+}
+
+fn overlaps(a: &RECT, b: &RECT) -> bool {
+    a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
+}
+
+#[test]
+fn binding_pages_follow_the_detected_tablet_and_edit_the_profile() {
+    use bindings::BindingTarget;
+    use otd_core::output::buttons::ButtonAction;
+    let window = unsafe { CreateWindowExW(0, wide("STATIC").as_ptr(), wide("Binding pages").as_ptr(),
+        WS_POPUP, 0, 0, 760, 640, ptr::null_mut(), ptr::null_mut(), GetModuleHandleW(ptr::null()), ptr::null()) };
+    assert!(!window.is_null());
+    let mut app = fixture(window);
+    // The fixture's placeholder tabs and menus are replaced by real ones.
+    app.c.tabs.clear();
+    app.c.menus.clear();
+    app.create_controls().unwrap();
+    discover(&mut app, Ok(vec!["Wacom PTH-660".into()]));
+    let targets: Vec<BindingTarget> = app.binding_rows.iter().map(|row| row.target).collect();
+    let mut expected = vec![BindingTarget::Pen(0), BindingTarget::Pen(1)];
+    expected.extend((0..8).map(BindingTarget::Aux));
+    expected.extend([BindingTarget::Clockwise(0), BindingTarget::CounterClockwise(0), BindingTarget::WheelButton(0, 0)]);
+    assert_eq!(targets, expected, "two side buttons, eight express keys and the ring");
+    assert_eq!(app.wheel_fields.len(), 2);
+
+    for (tab, shown_rows) in [(Tab::Pen, 2), (Tab::Aux, 11)] {
+        app.select_tab(tab);
+        let rows: Vec<HWND> = app.binding_rows.iter()
+            .filter(|row| matches!(row.target, BindingTarget::Pen(_)) == (tab == Tab::Pen))
+            .flat_map(|row| [row.hwnd, row.label]).collect();
+        let others: Vec<HWND> = app.binding_rows.iter()
+            .filter(|row| matches!(row.target, BindingTarget::Pen(_)) != (tab == Tab::Pen))
+            .map(|row| row.hwnd).collect();
+        let mut controls = rows.clone();
+        if tab == Tab::Aux {
+            controls.extend(app.wheel_fields.iter().map(|field| field.hwnd));
+        }
+        let rects = placed(&app, &controls);
+        assert_eq!(rects.len(), controls.len(), "{tab:?}: every row and field is placed");
+        assert_eq!(rows.len(), shown_rows * 2);
+        assert!(placed(&app, &others).is_empty(), "{tab:?}: other rows are hidden");
+        let client = client_rect(app.hwnd);
+        for (index, a) in rects.iter().enumerate() {
+            assert!(a.left >= 0 && a.right <= client.right && a.bottom <= client.bottom - 48, "{tab:?}: {:?} inside the page", (a.left, a.top, a.right, a.bottom));
+            for b in &rects[index + 1..] {
+                assert!(!overlaps(a, b), "{tab:?}: {:?} overlaps {:?}", (a.left, a.top, a.right, a.bottom), (b.left, b.top, b.right, b.bottom));
+            }
+        }
+        for (name, palette) in [("dark", Palette::dark()), ("light", Palette::light()), ("high-contrast", Palette::high_contrast())] {
+            update_look(|look| look.style.palette = palette);
+            render_page(&app, &format!("bindings-{tab:?}-{name}"));
+        }
+        update_look(|look| look.style.palette = Palette::dark());
+    }
+
+    // Editing writes the profile and the dropdown text.
+    let key = ButtonAction::Keys(otd_core::keys::parse_chord("Control+Z").unwrap());
+    app.set_binding_action(BindingTarget::Aux(2), key.clone());
+    app.set_binding_action(BindingTarget::Clockwise(0), "keys:PageDown".parse().unwrap());
+    assert!(app.dirty);
+    assert_eq!(app.editor.profile.aux_buttons, [ButtonAction::None, ButtonAction::None, key]);
+    assert_eq!(text(app.binding_rows[4].hwnd), "LeftControl+Z");
+    let field = app.wheel_fields[0].hwnd;
+    set_text(field, "15");
+    app.field_changed(field);
+    assert_eq!(app.editor.profile.wheels[0].clockwise_threshold, Some(15.0));
+    set_text(field, "-3");
+    app.field_changed(field);
+    assert!(app.invalid.contains(&(field as isize)));
+    assert_eq!(app.editor.profile.wheels[0].clockwise_threshold, Some(15.0), "invalid text keeps the value");
+    set_text(field, "");
+    app.field_changed(field);
+    assert_eq!(app.editor.profile.wheels[0].clockwise_threshold, None, "empty is one wheel step");
+    app.select_tab(Tab::Aux);
+    render_page(&app, "bindings-Aux-edited");
+
+    // Without a tablet the rows show what the profile binds.
+    app.dirty = false;
+    discover(&mut app, Ok(Vec::new()));
+    let targets: Vec<BindingTarget> = app.binding_rows.iter().map(|row| row.target).collect();
+    assert_eq!(targets, [
+        BindingTarget::Pen(0), BindingTarget::Pen(1), BindingTarget::Pen(2),
+        BindingTarget::Aux(0), BindingTarget::Aux(1), BindingTarget::Aux(2),
+        BindingTarget::Clockwise(0), BindingTarget::CounterClockwise(0),
+    ]);
+    assert!(!app.bindings_detected);
+    render_page(&app, "bindings-Aux-absent");
     drop(app);
     LOOK.with(|slot| slot.borrow_mut().take());
     unsafe { DestroyWindow(window); }
