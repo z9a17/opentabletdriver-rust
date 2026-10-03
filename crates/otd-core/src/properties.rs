@@ -407,14 +407,14 @@ impl Filters for StageRecorder {
 }
 
 /// PreTransform filters run before mapping and Pixels filters after it, at
-/// most once each per report; a report without a detected pen resets them
-/// instead. Pixels filters receive absolute pixels or relative motion deltas.
+/// most once each per positional report, including cleared proximity flags.
+/// Pixels filters receive absolute pixels or relative motion deltas.
 #[test]
 fn filters_run_in_stage_order() {
     let desktop = desktop();
     let mut rng = Rng(0x5eed_0004);
     let mut buffer = Vec::new();
-    let mut seen = [0u32; 3];
+    let mut seen = [0u32; 2];
     for case in 0..200 {
         let relative = case % 3 == 2;
         let text = profile(if relative { RELATIVE } else { ABSOLUTE }, None);
@@ -435,25 +435,32 @@ fn filters_run_in_stage_order() {
             filters.calls.clear();
             let now = start + Duration::from_millis(u64::from(step) * 5);
             let _ = pipeline.process(pen, now, mapper, &mut filters, |_| Ok(()));
-            let detected = pen.in_range || pen.sense;
             let calls = filters.calls.as_str();
-            for (count, call) in seen.iter_mut().zip(['p', 'x', 'r']) {
+            for (count, call) in seen.iter_mut().zip(['p', 'x']) {
                 *count += u32::from(calls.contains(call));
             }
-            if !detected {
-                assert_eq!(calls, "r", "case {case}: {pen:?}");
-            } else {
-                let pre = if filters.pre { "p" } else { "" };
-                let allowed = [pre.to_owned(), format!("{pre}x")];
-                assert!(
-                    allowed.iter().any(|a| a == calls),
-                    "case {case}: calls {calls:?} for {pen:?}"
-                );
-                if !filters.pixels {
-                    assert!(!calls.contains('x'), "case {case}");
-                }
+            let pre = if filters.pre { "p" } else { "" };
+            let allowed = [pre.to_owned(), format!("{pre}x")];
+            assert!(
+                allowed.iter().any(|a| a == calls),
+                "case {case}: calls {calls:?} for {pen:?}"
+            );
+            if !filters.pixels {
+                assert!(!calls.contains('x'), "case {case}");
             }
         }
+        // Explicit endpoint-loss notifications remain positionless and reset
+        // filters, unlike IntuosV2 samples with cleared proximity flags.
+        filters.calls.clear();
+        pipeline.process_report(
+            crate::plugins::DispatchInput {
+                kind: crate::reports::ReportKind::OutOfRange,
+                values: crate::reports::ReportValues::default(),
+                raw: &[], pen: None, now: start + Duration::from_secs(2),
+            },
+            mapper, &mut filters, |_| Ok(()),
+        ).unwrap();
+        assert_eq!(filters.calls, "r", "case {case}: explicit loss must reset filters");
     }
     assert!(
         seen.iter().all(|&count| count > 500),

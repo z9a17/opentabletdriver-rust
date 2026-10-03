@@ -143,7 +143,7 @@ pub trait Filters {
     fn process_pre(&mut self, position: (f32, f32), pen: PenReport, now: Instant) -> (f32, f32);
     fn has_pixels(&self) -> bool;
     fn process_pixels(&mut self, position: (f32, f32), pen: PenReport, now: Instant) -> (f32, f32);
-    /// Clears filter state; called when the pen is no longer detected.
+    /// Clears filter state for an explicit positionless OutOfRange report.
     fn reset(&mut self);
     /// The name of a filter disabled by a failure since the last call.
     fn take_failure(&mut self) -> Option<&str>;
