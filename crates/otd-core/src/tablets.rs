@@ -296,7 +296,7 @@ pub enum ParserSupport {
 }
 
 /// What the live driver does with a parser's reports.
-pub const LIVE_SUPPORT: &str = "native decoder registered; the live driver uses pen position, pressure, tip, eraser and proximity, while separate auxiliary collections, buttons, wheels, strips and touch have no bindings yet; physical compatibility is unverified";
+pub const LIVE_SUPPORT: &str = "native decoder registered; the live driver uses pen position, pressure, tip, eraser, proximity, pen buttons, express keys and wheels (a separate auxiliary collection on Windows only), while strips, tablet mouse buttons and touch have no bindings yet; physical compatibility is unverified";
 
 /// Passthrough produces raw reports only, so it cannot drive input.
 pub fn parser_support(type_name: &str) -> ParserSupport {

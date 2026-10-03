@@ -1,5 +1,7 @@
-//! Windows device sessions: an overlapped HID reader that feeds the core's
-//! session loop at reader priority, ending on device removal or a stop event.
+//! Windows device sessions: overlapped HID readers for the pen collection and
+//! the tablet's auxiliary collection (express keys, wheels), which feed the
+//! core's session loop at reader priority, ending on device removal or a stop
+//! event.
 
 use std::io;
 use std::ptr;
@@ -20,7 +22,9 @@ use windows_sys::Win32::System::Threading::{
 const PRECISE_WAIT: Duration = Duration::from_millis(50);
 
 pub use otd_core::session::Mode;
+use otd_core::decoders::{PenDecoder, TabletDecoder};
 use otd_core::session::{Read, ReportSource};
+use otd_core::tablets::DeviceIdentifier;
 
 use crate::config::{OutputKind, Profile};
 use crate::display::WindowsDisplays;
@@ -42,19 +46,135 @@ fn wait(handles: &[HANDLE], timeout: u32) -> io::Result<Option<usize>> {
     }
 }
 
-/// Reads the pen collection with one overlapped read at a time. A read left
-/// pending by an idle timeout stays pending for the next call. Dropping the
-/// source cancels a pending read and waits for it, so the buffer is never
-/// freed while the read can still write to it.
+/// Whether initializing this endpoint writes feature or output reports, and
+/// so needs a handle with write access.
+fn initialization_writes(identifier: &DeviceIdentifier) -> bool {
+    [
+        &identifier.feature_init_report,
+        &identifier.output_init_report,
+    ]
+    .into_iter()
+    .any(|reports| {
+        reports
+            .as_ref()
+            .is_some_and(|reports| reports.iter().any(|report| !report.0.is_empty()))
+    })
+}
+
+/// One overlapped read at a time on one HID collection. A read left pending
+/// by an idle timeout stays pending for the next call. Dropping the reader
+/// cancels a pending read and waits for it, so the buffer is never freed
+/// while the read can still write to it.
+struct Reader {
+    handle: OwnedHandle,
+    event: Event,
+    buffer: Box<[u8]>,
+    operation: OVERLAPPED,
+    pending: bool,
+}
+
+impl Reader {
+    fn open(candidate: &Candidate, identifier: &DeviceIdentifier, driver_access: bool) -> io::Result<Self> {
+        let handle = if driver_access && initialization_writes(identifier) {
+            candidate.open(true)?
+        } else {
+            candidate.open_read()?
+        };
+        let event = Event::create(true)?;
+        Ok(Self {
+            operation: OVERLAPPED {
+                hEvent: event.raw(),
+                ..Default::default()
+            },
+            handle,
+            event,
+            // ReadFile needs room for the collection's whole input report.
+            buffer: vec![0; usize::from(candidate.input_length.max(1))].into_boxed_slice(),
+            pending: false,
+        })
+    }
+
+    /// Starts a read unless one is pending. `true` means a report was
+    /// already waiting in the HID class driver and is complete.
+    fn start(&mut self) -> io::Result<bool> {
+        if self.pending {
+            return Ok(false);
+        }
+        // ReadFile resets the event when it starts the read.
+        // https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-readfile
+        self.operation = OVERLAPPED {
+            hEvent: self.event.raw(),
+            ..Default::default()
+        };
+        let started = unsafe {
+            ReadFile(
+                self.handle.raw(),
+                self.buffer.as_mut_ptr(),
+                self.buffer.len() as u32,
+                ptr::null_mut(),
+                &mut self.operation,
+            )
+        };
+        if started != 0 {
+            return Ok(true);
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
+            return Err(error);
+        }
+        self.pending = true;
+        Ok(false)
+    }
+
+    /// The length of a completed read, or `None` if it was cancelled.
+    fn finish(&mut self) -> io::Result<Option<usize>> {
+        self.pending = false;
+        let mut transferred = 0u32;
+        if unsafe { GetOverlappedResult(self.handle.raw(), &self.operation, &mut transferred, 0) }
+            == 0
+        {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(ERROR_OPERATION_ABORTED as i32) {
+                return Ok(None);
+            }
+            return Err(error);
+        }
+        if transferred as usize > self.buffer.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "HID read exceeded its advertised input report length",
+            ));
+        }
+        Ok(Some(transferred as usize))
+    }
+
+    fn cancel(&mut self) {
+        if !self.pending {
+            return;
+        }
+        unsafe { CancelIoEx(self.handle.raw(), &self.operation) };
+        let mut ignored = 0;
+        // Cancellation is only a request; wait before reusing the buffer.
+        unsafe { GetOverlappedResult(self.handle.raw(), &self.operation, &mut ignored, 1) };
+        self.pending = false;
+    }
+}
+
+impl Drop for Reader {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
+/// The pen collection and, when the tablet has one and it opened, its
+/// auxiliary collection. The pen endpoint decides the session's lifetime;
+/// losing the auxiliary one only releases its actions.
 struct HidSource<'a> {
     candidate: &'a Candidate,
     notification: &'a Notification,
     stop: &'a Event,
-    handle: OwnedHandle,
-    read_event: Event,
-    buffer: Box<[u8]>,
-    operation: OVERLAPPED,
-    pending: bool,
+    pen: Reader,
+    auxiliary: Option<Reader>,
     label: String,
     /// Created on the first short wait; sessions without timer-driven
     /// filters never wait less than a second and never create it.
@@ -69,42 +189,75 @@ impl<'a> HidSource<'a> {
         driver_access: bool,
     ) -> io::Result<Self> {
         let candidate = selected.pen;
-        let writes = driver_access
-            && (selected
-                .identifier
-                .feature_init_report
-                .as_ref()
-                .is_some_and(|reports| reports.iter().any(|report| !report.0.is_empty()))
-                || selected
-                    .identifier
-                    .output_init_report
-                    .as_ref()
-                    .is_some_and(|reports| reports.iter().any(|report| !report.0.is_empty())));
-        let handle = if writes {
-            candidate.open(true)?
-        } else {
-            candidate.open_read()?
-        };
-        let read_event = Event::create(true)?;
+        let pen = Reader::open(candidate, &selected.identifier, driver_access)?;
+        let auxiliary = selected.auxiliary.as_ref().and_then(|(endpoint, identifier)| {
+            Reader::open(endpoint, identifier, driver_access)
+                .inspect_err(|error| {
+                    eprintln!("Auxiliary collection not opened; express keys and wheels do nothing: {error}");
+                })
+                .ok()
+        });
         Ok(Self {
             label: format!(
                 "HID input length {}, usage {:04x}:{:04x}",
                 candidate.input_length, candidate.usage_page, candidate.usage
             ),
-            operation: OVERLAPPED {
-                hEvent: read_event.raw(),
-                ..Default::default()
-            },
             candidate,
             notification,
             stop,
-            handle,
-            read_event,
-            // ReadFile needs room for the collection's whole input report.
-            buffer: vec![0; usize::from(candidate.input_length.max(1))].into_boxed_slice(),
-            pending: false,
+            pen,
+            auxiliary,
             timer: None,
         })
+    }
+
+    /// Initializes the pen endpoint, then the auxiliary one. A failure on the
+    /// auxiliary endpoint closes it and leaves the pen running.
+    fn initialize(&mut self, selected: &SelectedDevice<'_>, status: &impl Fn(&str)) -> io::Result<()> {
+        hid::initialize(
+            selected.pen,
+            &self.pen.handle,
+            &selected.identifier,
+            &selected.configuration,
+            self.stop,
+        )?;
+        if let (Some(reader), Some((endpoint, identifier))) =
+            (&self.auxiliary, &selected.auxiliary)
+            && let Err(error) = hid::initialize(
+                endpoint,
+                &reader.handle,
+                identifier,
+                &selected.configuration,
+                self.stop,
+            )
+        {
+            if error.kind() == io::ErrorKind::Interrupted {
+                return Err(error);
+            }
+            let message = format!(
+                "Auxiliary collection initialization failed; express keys and wheels do nothing: {error}"
+            );
+            eprintln!("{message}");
+            status(&message);
+            self.auxiliary = None;
+        }
+        Ok(())
+    }
+
+    /// The auxiliary endpoint's decoder, or `None` (closing the endpoint)
+    /// when there is none or its parser cannot be decoded.
+    fn auxiliary_decoder(&mut self, selected: &SelectedDevice<'_>) -> Option<TabletDecoder> {
+        let (_, identifier) = selected.auxiliary.as_ref()?;
+        self.auxiliary.as_ref()?;
+        let decoder = TabletDecoder::for_parser(identifier.parser(), selected.spec);
+        if decoder.is_none() {
+            eprintln!(
+                "Auxiliary collection uses {}, which this driver cannot decode; express keys and wheels do nothing",
+                identifier.parser()
+            );
+            self.auxiliary = None;
+        }
+        decoder
     }
 
     /// Arms the high-resolution timer to signal after `wait`.
@@ -133,14 +286,10 @@ impl<'a> HidSource<'a> {
     }
 
     fn cancel(&mut self) {
-        if !self.pending {
-            return;
+        self.pen.cancel();
+        if let Some(auxiliary) = &mut self.auxiliary {
+            auxiliary.cancel();
         }
-        unsafe { CancelIoEx(self.handle.raw(), &self.operation) };
-        let mut ignored = 0;
-        // Cancellation is only a request; wait before reusing the buffer.
-        unsafe { GetOverlappedResult(self.handle.raw(), &self.operation, &mut ignored, 1) };
-        self.pending = false;
     }
 
     fn stopped(&self) -> io::Result<bool> {
@@ -151,36 +300,52 @@ impl<'a> HidSource<'a> {
         }
     }
 
-    fn completed(&self, queued: bool) -> io::Result<Read<'_>> {
+    /// A synchronous ReadFile completion never enters the multi-event wait.
+    /// Recheck Stop before exposing it so a queued stream cannot starve Stop.
+    /// An asynchronous completion came from that wait, where Stop has
+    /// precedence, so it needs no second check.
+    fn pen_report(&mut self, queued: bool) -> io::Result<Read<'_>> {
         let ready = Instant::now();
-        let mut transferred = 0u32;
-        if unsafe { GetOverlappedResult(self.handle.raw(), &self.operation, &mut transferred, 0) }
-            == 0
-        {
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() == Some(ERROR_OPERATION_ABORTED as i32) {
-                return Ok(Read::Ended);
-            }
-            return Err(error);
-        }
-        // A synchronous ReadFile completion never enters the multi-event wait.
-        // Recheck before exposing it so a queued stream cannot starve Stop.
-        // An asynchronous completion came from that wait, where Stop has
-        // precedence, so it needs no second check.
+        let Some(length) = self.pen.finish()? else {
+            return Ok(Read::Ended);
+        };
         if queued && self.stopped()? {
             return Ok(Read::Ended);
         }
-        if transferred as usize > self.buffer.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "HID read exceeded its advertised input report length",
-            ));
-        }
         Ok(Read::Report {
-            bytes: &self.buffer[..transferred as usize],
+            bytes: &self.pen.buffer[..length],
             ready,
             queued,
         })
+    }
+
+    fn auxiliary_report(&mut self, queued: bool) -> io::Result<Read<'_>> {
+        let ready = Instant::now();
+        let finished = self.auxiliary.as_mut().map(Reader::finish);
+        match finished {
+            Some(Ok(Some(length))) => {
+                if queued && self.stopped()? {
+                    return Ok(Read::Ended);
+                }
+                match &self.auxiliary {
+                    Some(reader) => Ok(Read::Auxiliary {
+                        bytes: &reader.buffer[..length],
+                        ready,
+                        queued,
+                    }),
+                    None => Ok(Read::Idle),
+                }
+            }
+            Some(Ok(None)) => Ok(self.lose_auxiliary("read cancelled".into())),
+            Some(Err(error)) => Ok(self.lose_auxiliary(error.to_string())),
+            None => Ok(Read::Idle),
+        }
+    }
+
+    fn lose_auxiliary(&mut self, reason: String) -> Read<'static> {
+        eprintln!("Auxiliary collection stopped: {reason}");
+        self.auxiliary = None;
+        Read::AuxiliaryEnded
     }
 }
 
@@ -199,33 +364,18 @@ impl ReportSource for HidSource<'_> {
 
     // Each system call here costs about 0.2 us per report. Stop needs no
     // check of its own: the wait below sees it first, and a synchronous
-    // completion checks it in `completed`.
+    // completion checks it in `pen_report`/`auxiliary_report`.
     fn next(&mut self, timeout: Duration) -> io::Result<Read<'_>> {
-        if !self.pending {
-            // ReadFile resets the event when it starts the read.
-            // https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-readfile
-            self.operation = OVERLAPPED {
-                hEvent: self.read_event.raw(),
-                ..Default::default()
-            };
-            let started = unsafe {
-                ReadFile(
-                    self.handle.raw(),
-                    self.buffer.as_mut_ptr(),
-                    self.buffer.len() as u32,
-                    ptr::null_mut(),
-                    &mut self.operation,
-                )
-            };
-            if started != 0 {
-                // The report was already waiting in the HID class driver.
-                return self.completed(true);
+        if self.pen.start()? {
+            // The report was already waiting in the HID class driver.
+            return self.pen_report(true);
+        }
+        if let Some(auxiliary) = &mut self.auxiliary {
+            match auxiliary.start() {
+                Ok(true) => return self.auxiliary_report(true),
+                Ok(false) => {}
+                Err(error) => return Ok(self.lose_auxiliary(error.to_string())),
             }
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
-                return Err(error);
-            }
-            self.pending = true;
         }
         let until = Instant::now() + timeout;
         // An already-due deadline is an input/stop poll, not a new timer wakeup.
@@ -235,30 +385,40 @@ impl ReportSource for HidSource<'_> {
         } else {
             ptr::null_mut()
         };
-        let handles = [
-            self.stop.raw(),
-            self.read_event.raw(),
-            self.notification.event(),
-            timer,
-        ];
+        // Stop first, so it takes precedence when several are signaled. The
+        // rare auxiliary reports come before the pen's, so a pen stream
+        // cannot starve them.
+        let mut handles = [ptr::null_mut(); 5];
+        let mut count = 0;
+        let mut add = |handle: HANDLE| {
+            handles[count] = handle;
+            count += 1;
+            count - 1
+        };
+        add(self.stop.raw());
+        let auxiliary = self.auxiliary.as_ref().map(|reader| add(reader.event.raw()));
+        let pen = add(self.pen.event.raw());
+        let notification = add(self.notification.event());
+        // The timer is last, so a non-precise wait leaves it out.
+        let timer_index = add(timer);
+        let waited = if precise { timer_index + 1 } else { timer_index };
         loop {
             // Other devices' notifications do not extend the wait.
             let result = if precise {
-                wait(&handles, INFINITE)
+                wait(&handles[..waited], INFINITE)
             } else {
                 let remaining = until.saturating_duration_since(Instant::now());
                 let millis = u32::try_from(remaining.as_millis()).unwrap_or(u32::MAX);
-                wait(&handles[..3], millis)
+                wait(&handles[..waited], millis)
             };
             match result {
-                // Stop takes precedence when both stop and read are signaled.
-                Ok(Some(1)) => {
-                    self.pending = false;
-                    return self.completed(false);
+                Ok(Some(index)) if index == pen => return self.pen_report(false),
+                Ok(Some(index)) if Some(index) == auxiliary => {
+                    return self.auxiliary_report(false);
                 }
                 // Some HID device arrived or left; only this one matters.
-                Ok(Some(2)) if self.candidate.is_present() => {}
-                Ok(Some(3)) => return Ok(Read::Idle),
+                Ok(Some(index)) if index == notification && self.candidate.is_present() => {}
+                Ok(Some(index)) if index == timer_index => return Ok(Read::Idle),
                 Ok(Some(_)) => {
                     self.cancel();
                     return Ok(Read::Ended);
@@ -270,12 +430,6 @@ impl ReportSource for HidSource<'_> {
                 }
             }
         }
-    }
-}
-
-impl Drop for HidSource<'_> {
-    fn drop(&mut self) {
-        self.cancel();
     }
 }
 
@@ -296,18 +450,14 @@ pub fn run(
         matches!(mode, Mode::Driver),
     )?;
     if matches!(mode, Mode::Driver) {
-        hid::initialize(
-            selected.pen,
-            &source.handle,
-            &selected.identifier,
-            &selected.configuration,
-            stop_event,
-        )?;
+        source.initialize(selected, status)?;
     }
     let profile = profile
         .for_tablet(selected.spec)
         .map_err(io::Error::other)?;
     let mut decoder = selected.decoder()?;
+    let mut auxiliary = source.auxiliary_decoder(selected);
+    announce_auxiliary(&source, selected, status);
     let _debug = DebugDevice::set(selected);
     let _priority = ReaderPriority::raise();
     let mut output = if matches!(mode, Mode::Driver) {
@@ -316,12 +466,13 @@ pub fn run(
         None
     };
     let pen = pen_device(&profile, mode)?;
-    let result = otd_core::session::run_gated_with_devices(
+    let result = otd_core::session::run_gated_with_endpoints(
         &mut source,
         &mut WindowsDisplays,
         &profile,
         mode,
         &mut decoder,
+        auxiliary.as_mut().map(|decoder| decoder as &mut dyn PenDecoder),
         plugins,
         |packet| output.as_ref().map_or(Ok(()), |output| output.send(packet)),
         pen,
@@ -337,7 +488,16 @@ pub fn run(
     result
 }
 
-/// Key and button output for a driving session's pen side buttons.
+fn announce_auxiliary(source: &HidSource<'_>, selected: &SelectedDevice<'_>, status: &impl Fn(&str)) {
+    if source.auxiliary.is_some() {
+        status(&format!(
+            "{} express keys and wheels connected",
+            selected.configuration.name
+        ));
+    }
+}
+
+/// Key and button output for a driving session's buttons and wheels.
 fn action_sink(mode: Mode) -> io::Result<Option<Box<dyn otd_core::output::buttons::ActionSink>>> {
     if matches!(mode, Mode::Driver) {
         Ok(Some(Box::new(crate::action_output::SessionActions::new()?)))
@@ -368,8 +528,8 @@ impl DebugDevice {
         }
     }
 }
-/// A candidate owns its handle, event and read buffer before the old worker
-/// pauses. Preparation never initializes the tablet or issues a read.
+/// A candidate owns its handles, events and read buffers before the old
+/// worker pauses. Preparation never initializes the tablet or issues a read.
 pub(crate) struct PreparedSession<'a> {
     source: HidSource<'a>,
     selected: &'a SelectedDevice<'a>,
@@ -433,23 +593,20 @@ impl<'a> PreparedSession<'a> {
                 "prepared tablet endpoint disappeared before activation",
             ));
         }
-        hid::initialize(
-            self.selected.pen,
-            &self.source.handle,
-            &self.selected.identifier,
-            &self.selected.configuration,
-            self.source.stop,
-        )?;
-        // The prepared handle may have queued input while the previous worker
-        // was still reading. Flush only after that worker has quiesced, so the
-        // replacement cannot replay its already-processed pen/button reports.
+        self.source.initialize(self.selected, &|line| eprintln!("{line}"))?;
+        // The prepared handles may have queued input while the previous
+        // worker was still reading. Flush only after that worker has
+        // quiesced, so the replacement cannot replay its already-processed
+        // pen/button reports.
         // https://learn.microsoft.com/windows-hardware/drivers/ddi/hidsdi/nf-hidsdi-hidd_flushqueue
-        if !unsafe {
-            windows_sys::Win32::Devices::HumanInterfaceDevice::HidD_FlushQueue(
-                self.source.handle.raw(),
-            )
-        } {
-            return Err(io::Error::last_os_error());
+        for handle in std::iter::once(&self.source.pen.handle)
+            .chain(self.source.auxiliary.as_ref().map(|reader| &reader.handle))
+        {
+            if !unsafe {
+                windows_sys::Win32::Devices::HumanInterfaceDevice::HidD_FlushQueue(handle.raw())
+            } {
+                return Err(io::Error::last_os_error());
+            }
         }
         Ok(())
     }
@@ -469,15 +626,18 @@ impl<'a> PreparedSession<'a> {
         let mut decoder = self.selected.decoder()?;
         let _debug = DebugDevice::set(self.selected);
         let mut source = self.source;
+        let mut auxiliary = source.auxiliary_decoder(self.selected);
+        announce_auxiliary(&source, self.selected, status);
         let _priority = ReaderPriority::raise();
         let mut output = SessionOutput::new()?;
         let pen = pen_device(&profile, Mode::Driver)?;
-        let result = otd_core::session::run_gated_with_devices(
+        let result = otd_core::session::run_gated_with_endpoints(
             &mut source,
             &mut WindowsDisplays,
             &profile,
             Mode::Driver,
             &mut decoder,
+            auxiliary.as_mut().map(|decoder| decoder as &mut dyn PenDecoder),
             plugins,
             |packet| output.send(packet),
             pen,

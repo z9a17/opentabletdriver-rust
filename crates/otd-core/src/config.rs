@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::keys;
 use crate::mapping::{Crop, OtdArea, OtdMapping};
-use crate::output::buttons::{ButtonAction, default_pen_buttons};
+use crate::output::buttons::{ButtonAction, WheelBinding, default_pen_buttons};
 use crate::plugins::PluginConfig;
 use crate::protocol::MAX_PRESSURE;
 use crate::radial_follow::{FILTER_NAME, FILTER_PATH, RadialFollowSettings};
@@ -99,6 +99,11 @@ pub struct Profile {
     /// What each pen side button does, by button index. OpenTabletDriver's
     /// defaults are barrel buttons 1, 2 and 3. Buttons past the end do nothing.
     pub pen_buttons: Vec<ButtonAction>,
+    /// What each express key does, by button index. Upstream's default
+    /// binds none.
+    pub aux_buttons: Vec<ButtonAction>,
+    /// What each wheel, ring or dial does, by wheel index.
+    pub wheels: Vec<WheelBinding>,
     /// Absolute output only; relative output always moves the mouse.
     pub output: OutputKind,
     pub radial_follow: Vec<RadialFollowSettings>,
@@ -132,6 +137,8 @@ impl Default for Profile {
             relative: None,
             contact: ContactPolicy::default(),
             pen_buttons: default_pen_buttons(),
+            aux_buttons: Vec::new(),
+            wheels: Vec::new(),
             output: OutputKind::Mouse,
             radial_follow: Vec::new(),
             plugins: Vec::new(),
@@ -174,6 +181,11 @@ struct RawProfile {
     /// Pen button actions as text (see `ButtonAction`), absent for the defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pen_buttons: Option<Vec<String>>,
+    /// Express key actions as text, absent when none is bound.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    aux_buttons: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    wheels: Vec<RawWheel>,
     #[serde(default, skip_serializing_if = "OutputKind::is_mouse")]
     output: OutputKind,
     #[serde(default)]
@@ -183,6 +195,79 @@ struct RawProfile {
     /// The tablet a native profile is for, by configuration name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tablet: Option<String>,
+}
+
+/// One `[[wheels]]` entry; actions are `ButtonAction` text.
+#[derive(Deserialize, Serialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RawWheel {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    clockwise: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    counter_clockwise: Option<String>,
+    /// Degrees of rotation per activation; absent for one wheel step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    clockwise_threshold: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    counter_clockwise_threshold: Option<f32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    buttons: Vec<String>,
+}
+
+impl RawWheel {
+    fn parse(&self, wheel: usize) -> Result<WheelBinding, String> {
+        let action = |text: &Option<String>, field: &str| {
+            text.as_deref().map_or(Ok(ButtonAction::None), |text| {
+                text.parse::<ButtonAction>()
+                    .map_err(|error| format!("wheels[{wheel}].{field}: {error}"))
+            })
+        };
+        for (value, field) in [
+            (self.clockwise_threshold, "clockwise_threshold"),
+            (self.counter_clockwise_threshold, "counter_clockwise_threshold"),
+        ] {
+            if value.is_some_and(|value| !value.is_finite() || value <= 0.0) {
+                return Err(format!(
+                    "wheels[{wheel}].{field} must be a positive number of degrees"
+                ));
+            }
+        }
+        Ok(WheelBinding {
+            clockwise: action(&self.clockwise, "clockwise")?,
+            counter_clockwise: action(&self.counter_clockwise, "counter_clockwise")?,
+            clockwise_threshold: self.clockwise_threshold,
+            counter_clockwise_threshold: self.counter_clockwise_threshold,
+            buttons: parse_actions(&self.buttons, &format!("wheels[{wheel}].buttons"))?,
+        })
+    }
+
+    fn from_binding(binding: &WheelBinding) -> Self {
+        let text = |action: &ButtonAction| {
+            (*action != ButtonAction::None).then(|| action.to_string())
+        };
+        Self {
+            clockwise: text(&binding.clockwise),
+            counter_clockwise: text(&binding.counter_clockwise),
+            clockwise_threshold: binding.clockwise_threshold,
+            counter_clockwise_threshold: binding.counter_clockwise_threshold,
+            buttons: binding.buttons.iter().map(ToString::to_string).collect(),
+        }
+    }
+}
+
+/// Button actions from their TOML text, at most `MAX_PEN_BUTTONS`.
+fn parse_actions(texts: &[String], field: &str) -> Result<Vec<ButtonAction>, String> {
+    if texts.len() > MAX_PEN_BUTTONS {
+        return Err(format!("at most {MAX_PEN_BUTTONS} {field} are supported"));
+    }
+    texts
+        .iter()
+        .enumerate()
+        .map(|(index, text)| {
+            text.parse::<ButtonAction>()
+                .map_err(|error| format!("{field}[{index}]: {error}"))
+        })
+        .collect()
 }
 
 #[derive(Deserialize, Serialize)]
@@ -305,6 +390,10 @@ struct OtdBindings {
     /// Kept as JSON so one odd entry cannot fail the whole import.
     #[serde(default)]
     pen_buttons: serde_json::Value,
+    #[serde(default)]
+    aux_buttons: serde_json::Value,
+    #[serde(default)]
+    wheel_bindings: serde_json::Value,
 }
 
 fn default_activation_percent() -> f64 {
@@ -319,6 +408,8 @@ impl Default for OtdBindings {
             eraser_activation_threshold: 1.0,
             eraser_button: None,
             pen_buttons: serde_json::Value::Null,
+            aux_buttons: serde_json::Value::Null,
+            wheel_bindings: serde_json::Value::Null,
         }
     }
 }
@@ -448,33 +539,121 @@ fn import_pen_buttons(
     pen: bool,
     diagnostics: &mut Vec<ProfileDiagnostic>,
 ) -> Vec<ButtonAction> {
+    import_buttons(value, pen, "Bindings.PenButtons", "pen button", diagnostics)
+}
+
+/// One binding store (or null) as an action, or a diagnostic at `location`.
+fn import_store(
+    entry: &serde_json::Value,
+    pen: bool,
+    location: String,
+    noun: &str,
+    diagnostics: &mut Vec<ProfileDiagnostic>,
+) -> ButtonAction {
+    let action = if entry.is_null() {
+        Ok(ButtonAction::None)
+    } else {
+        serde_json::from_value::<OtdStore>(entry.clone())
+            .map_err(|error| format!("unreadable {noun} binding: {error}"))
+            .and_then(|store| pen_button_action(Some(&store), pen))
+    };
+    action.unwrap_or_else(|message| {
+        diagnostics.push(ProfileDiagnostic::unsupported(
+            location,
+            format!("{message}; this {noun} does nothing."),
+        ));
+        ButtonAction::None
+    })
+}
+
+/// A `PluginSettingStoreCollection` of button bindings at `location`.
+fn import_buttons(
+    value: &serde_json::Value,
+    pen: bool,
+    location: &str,
+    noun: &str,
+    diagnostics: &mut Vec<ProfileDiagnostic>,
+) -> Vec<ButtonAction> {
     let Some(entries) = value.as_array() else {
         return Vec::new();
     };
     let mut actions = Vec::with_capacity(entries.len().min(MAX_PEN_BUTTONS));
     for (index, entry) in entries.iter().take(MAX_PEN_BUTTONS).enumerate() {
-        let action = if entry.is_null() {
-            Ok(ButtonAction::None)
-        } else {
-            serde_json::from_value::<OtdStore>(entry.clone())
-                .map_err(|error| format!("unreadable pen button binding: {error}"))
-                .and_then(|store| pen_button_action(Some(&store), pen))
-        };
-        actions.push(action.unwrap_or_else(|message| {
-            diagnostics.push(ProfileDiagnostic::unsupported(
-                format!("Bindings.PenButtons[{index}]"),
-                format!("{message}; this pen button does nothing."),
-            ));
-            ButtonAction::None
-        }));
+        actions.push(import_store(
+            entry,
+            pen,
+            format!("{location}[{index}]"),
+            noun,
+            diagnostics,
+        ));
     }
     if entries.len() > MAX_PEN_BUTTONS {
         diagnostics.push(ProfileDiagnostic::unsupported(
-            "Bindings.PenButtons",
-            format!("Only the first {MAX_PEN_BUTTONS} pen buttons are applied."),
+            location,
+            format!("Only the first {MAX_PEN_BUTTONS} {noun}s are applied."),
         ));
     }
     actions
+}
+
+/// Upstream's `Bindings.WheelBindings`: one `WheelBindingSettings` per wheel.
+fn import_wheels(
+    value: &serde_json::Value,
+    pen: bool,
+    diagnostics: &mut Vec<ProfileDiagnostic>,
+) -> Vec<WheelBinding> {
+    let Some(entries) = value.as_array() else {
+        return Vec::new();
+    };
+    let mut wheels = Vec::new();
+    for (index, entry) in entries
+        .iter()
+        .take(crate::reports::MAX_WHEELS)
+        .enumerate()
+    {
+        let at = format!("Bindings.WheelBindings[{index}]");
+        let threshold = |name: &str| {
+            entry[name]
+                .as_f64()
+                .filter(|value| value.is_finite())
+                .map(|value| value as f32)
+        };
+        wheels.push(WheelBinding {
+            clockwise: import_store(
+                &entry["ClockwiseRotation"],
+                pen,
+                format!("{at}.ClockwiseRotation"),
+                "wheel rotation",
+                diagnostics,
+            ),
+            counter_clockwise: import_store(
+                &entry["CounterClockwiseRotation"],
+                pen,
+                format!("{at}.CounterClockwiseRotation"),
+                "wheel rotation",
+                diagnostics,
+            ),
+            clockwise_threshold: threshold("ClockwiseActivationThreshold"),
+            counter_clockwise_threshold: threshold("CounterClockwiseActivationThreshold"),
+            buttons: import_buttons(
+                &entry["WheelButtons"],
+                pen,
+                &format!("{at}.WheelButtons"),
+                "wheel button",
+                diagnostics,
+            ),
+        });
+    }
+    if entries.len() > crate::reports::MAX_WHEELS {
+        diagnostics.push(ProfileDiagnostic::unsupported(
+            "Bindings.WheelBindings",
+            format!(
+                "Only the first {} wheels are applied.",
+                crate::reports::MAX_WHEELS
+            ),
+        ));
+    }
+    wheels
 }
 
 fn radial_property(store: &OtdStore, name: &str, default: f64) -> Result<f64, String> {
@@ -862,6 +1041,14 @@ impl Profile {
             )
         };
         let pen_buttons = import_pen_buttons(&selected.bindings.pen_buttons, pen, &mut diagnostics);
+        let aux_buttons = import_buttons(
+            &selected.bindings.aux_buttons,
+            pen,
+            "Bindings.AuxButtons",
+            "express key",
+            &mut diagnostics,
+        );
+        let wheels = import_wheels(&selected.bindings.wheel_bindings, pen, &mut diagnostics);
         let mut radial_follow = Vec::new();
         let mut auto_enabled_radial_follow = 0;
         let mut ignored_filters = 0;
@@ -934,6 +1121,8 @@ impl Profile {
                 }
             },
             pen_buttons,
+            aux_buttons,
+            wheels,
             output: if pen {
                 OutputKind::Pen
             } else {
@@ -1049,22 +1238,21 @@ impl Profile {
         let target_tablet = raw.tablet;
         let pen_buttons = match &raw.pen_buttons {
             None => default_pen_buttons(),
-            Some(texts) => {
-                if texts.len() > MAX_PEN_BUTTONS {
-                    return Err(format!(
-                        "at most {MAX_PEN_BUTTONS} pen_buttons are supported"
-                    ));
-                }
-                texts
-                    .iter()
-                    .enumerate()
-                    .map(|(index, text)| {
-                        text.parse::<ButtonAction>()
-                            .map_err(|error| format!("pen_buttons[{index}]: {error}"))
-                    })
-                    .collect::<Result<_, _>>()?
-            }
+            Some(texts) => parse_actions(texts, "pen_buttons")?,
         };
+        let aux_buttons = parse_actions(&raw.aux_buttons, "aux_buttons")?;
+        if raw.wheels.len() > crate::reports::MAX_WHEELS {
+            return Err(format!(
+                "at most {} wheels are supported",
+                crate::reports::MAX_WHEELS
+            ));
+        }
+        let wheels = raw
+            .wheels
+            .iter()
+            .enumerate()
+            .map(|(index, wheel)| wheel.parse(index))
+            .collect::<Result<_, _>>()?;
         let mut profile = Self {
             settings_revision: raw.settings_revision,
             imported_otd: raw.imported_otd,
@@ -1073,6 +1261,8 @@ impl Profile {
             otd_mapping: raw.absolute,
             contact: raw.bindings,
             pen_buttons,
+            aux_buttons,
+            wheels,
             output: raw.output,
             radial_follow: raw.radial_follow,
             plugins,
@@ -1229,6 +1419,16 @@ impl Profile {
             bindings: self.contact,
             pen_buttons: (self.pen_buttons != default_pen_buttons())
                 .then(|| self.pen_buttons.iter().map(ToString::to_string).collect()),
+            aux_buttons: self.aux_buttons.iter().map(ToString::to_string).collect(),
+            wheels: {
+                // Trailing wheels that do nothing need no entry.
+                let used = self
+                    .wheels
+                    .iter()
+                    .rposition(|wheel| *wheel != WheelBinding::default())
+                    .map_or(0, |last| last + 1);
+                self.wheels[..used].iter().map(RawWheel::from_binding).collect()
+            },
             output: self.output,
             radial_follow: self.radial_follow.clone(),
             plugins: self.plugins.clone(),
@@ -2099,5 +2299,125 @@ mod tests {
         ] {
             assert!(Profile::from_toml_text(&invalid, Path::new("invalid.toml")).is_err());
         }
+    }
+
+    fn import_bindings(bindings: serde_json::Value) -> Profile {
+        let mut json = relative_profile();
+        for (key, value) in bindings.as_object().unwrap() {
+            json["Profiles"][0]["Bindings"][key] = value.clone();
+        }
+        Profile::from_otd_text(&json.to_string(), Path::new("bindings.json")).unwrap()
+    }
+
+    #[test]
+    fn imports_express_keys_and_wheels_with_their_thresholds() {
+        let profile = import_bindings(serde_json::json!({
+            "AuxButtons": [
+                store(KEY_BINDING, "Key", "E".into()),
+                null,
+                store(MULTI_KEY_BINDING, "Keys", "Control+Z".into()),
+                store("OpenTabletDriver.Desktop.Binding.PresetBinding", "Preset", "Art".into()),
+            ],
+            "WheelBindings": [{
+                "WheelButtons": [store(MOUSE_BINDING, "Button", "Middle".into())],
+                "ClockwiseRotation": store(KEY_BINDING, "Key", "PageDown".into()),
+                "ClockwiseActivationThreshold": 15.0,
+                "CounterClockwiseRotation": null,
+                "CounterClockwiseActivationThreshold": 5.0,
+                "StepSize": 5.0
+            }]
+        }));
+        let texts: Vec<String> = profile.aux_buttons.iter().map(ToString::to_string).collect();
+        assert_eq!(texts, ["keys:E", "none", "keys:LeftControl+Z", "none"]);
+        let wheel = &profile.wheels[0];
+        assert_eq!(wheel.clockwise.to_string(), "keys:PageDown");
+        assert_eq!(wheel.counter_clockwise, ButtonAction::None);
+        assert_eq!(
+            (wheel.clockwise_threshold, wheel.counter_clockwise_threshold),
+            (Some(15.0), Some(5.0))
+        );
+        assert_eq!(wheel.buttons[0].to_string(), "mouse:middle");
+        let unsupported: Vec<&str> = profile
+            .diagnostics
+            .iter()
+            .filter(|d| d.location.contains("AuxButtons") || d.location.contains("WheelBindings"))
+            .map(|d| d.location.as_str())
+            .collect();
+        assert_eq!(unsupported, ["Bindings.AuxButtons[3]"], "only the preset binding");
+    }
+
+    #[test]
+    fn express_keys_and_wheels_survive_a_toml_save_and_reload() {
+        let profile = Profile::from_toml_text(
+            concat!(
+                "aux_buttons = [\"keys:Control+Z\", \"none\", \"mouse:right\"]\n",
+                "[[wheels]]\n",
+                "clockwise = \"keys:PageDown\"\n",
+                "counter_clockwise = \"keys:PageUp\"\n",
+                "clockwise_threshold = 10.0\n",
+                "buttons = [\"keys:Escape\"]\n",
+            ),
+            Path::new("aux.toml"),
+        )
+        .unwrap();
+        assert_eq!(profile.aux_buttons.len(), 3);
+        assert_eq!(profile.wheels[0].clockwise_threshold, Some(10.0));
+        assert_eq!(profile.wheels[0].counter_clockwise_threshold, None);
+        let text = profile.to_toml().unwrap();
+        let reloaded = Profile::from_toml_text(&text, Path::new("aux.toml")).unwrap();
+        assert_eq!(reloaded.aux_buttons, profile.aux_buttons);
+        assert_eq!(reloaded.wheels, profile.wheels);
+        // Nothing bound writes nothing.
+        let empty = Profile {
+            wheels: vec![crate::output::buttons::WheelBinding::default(); 2],
+            ..Profile::default()
+        };
+        let text = empty.to_toml().unwrap();
+        assert!(!text.contains("wheels") && !text.contains("aux_buttons"), "{text}");
+        for bad in [
+            "aux_buttons = [\"keys:Mute\"]\n",
+            "[[wheels]]\nclockwise = \"wheel:1\"\n",
+            "[[wheels]]\nclockwise_threshold = 0.0\n",
+            "[[wheels]]\ncounter_clockwise_threshold = -5.0\n",
+            "[[wheels]]\nspeed = 2\n",
+        ] {
+            assert!(Profile::from_toml_text(bad, Path::new("bad.toml")).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn edited_express_keys_and_wheels_export_and_reimport() {
+        let mut profile = import_bindings(serde_json::json!({
+            "AuxButtons": [store(KEY_BINDING, "Key", "E".into()), null],
+        }));
+        profile.aux_buttons = ["keys:E", "keys:Control+Z", "mouse:middle"]
+            .into_iter()
+            .map(|action| action.parse().unwrap())
+            .collect();
+        profile.wheels = vec![crate::output::buttons::WheelBinding {
+            clockwise: "keys:PageDown".parse().unwrap(),
+            counter_clockwise_threshold: Some(20.0),
+            buttons: vec!["keys:Escape".parse().unwrap()],
+            ..Default::default()
+        }];
+        let exported = profile.to_otd_json().unwrap();
+        let json: serde_json::Value = serde_json::from_str(&exported).unwrap();
+        let bindings = &json["Profiles"][0]["Bindings"];
+        assert_eq!(bindings["AuxButtons"][1]["Path"], MULTI_KEY_BINDING);
+        assert_eq!(bindings["AuxButtons"][2]["Settings"][0]["Value"], "Middle");
+        let wheel = &bindings["WheelBindings"][0];
+        assert_eq!(wheel["ClockwiseRotation"]["Settings"][0]["Value"], "PageDown");
+        assert!(wheel["CounterClockwiseRotation"].is_null());
+        // A new wheel gets upstream's one-step thresholds unless set.
+        assert_eq!(wheel["ClockwiseActivationThreshold"], 5.0);
+        assert_eq!(wheel["CounterClockwiseActivationThreshold"], 20.0);
+        let reimported = Profile::from_otd_text(&exported, Path::new("exported.json")).unwrap();
+        assert_eq!(reimported.aux_buttons, profile.aux_buttons);
+        assert_eq!(reimported.wheels[0].clockwise, profile.wheels[0].clockwise);
+        assert_eq!(reimported.wheels[0].buttons, profile.wheels[0].buttons);
+        assert_eq!(reimported.wheels[0].counter_clockwise_threshold, Some(20.0));
+        // Shortening the archived list would drop source entries.
+        profile.aux_buttons.truncate(1);
+        assert!(profile.to_otd_json().is_err());
     }
 }

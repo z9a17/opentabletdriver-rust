@@ -5,7 +5,8 @@ use std::time::Duration;
 use otd_core::config::{
     ImportOptions, MAX_PEN_BUTTONS, NativeProfileCollection, OtdSettingsDocument, Profile,
 };
-use otd_core::output::buttons::ButtonAction;
+use otd_core::output::buttons::{ButtonAction, WheelBinding};
+use otd_core::reports::MAX_WHEELS;
 use otd_core::storage;
 use serde_json::{Value, json};
 
@@ -20,6 +21,8 @@ pub fn usage() -> &'static str {
   profiles get INPUT [--profile INDEX] [--section SECTION]
   profiles set PROFILE.toml --output NEW.toml [--sensitivity X,Y]
       [--relative-rotation DEGREES] [--reset-time MS] [--pen-button NUMBER=ACTION]
+      [--aux-button NUMBER=ACTION] [--wheel-clockwise WHEEL=ACTION]
+      [--wheel-counter-clockwise WHEEL=ACTION] [--wheel-threshold WHEEL=DEGREES]
   profiles paths
 
 Output files must not already exist. The source file is never overwritten.
@@ -31,9 +34,12 @@ filters or misc (default all). A collection defaults to its selected profile and
 a single Rust profile to index 0; OTD JSON requires --profile.
 Set writes a new profile with the next settings revision; it neither contacts
 the daemon nor applies the result. Relative options require relative output.
-Pen button numbers start at 1 (maximum 64). Repeat --pen-button for distinct
-buttons. Actions: none, barrel:1..3, mouse:left|right|middle|backward|forward,
-or keys:Control+Shift+Z. Quote key chords when required by your shell.
+Pen button and express key numbers start at 1 (maximum 64). Repeat
+--pen-button or --aux-button for distinct buttons. Actions: none, barrel:1..3,
+mouse:left|right|middle|backward|forward, or keys:Control+Shift+Z. Quote key
+chords when required by your shell. Wheel numbers start at 1 (maximum 8); each
+rotation threshold step presses and releases the wheel's action once, and
+--wheel-threshold sets both directions in degrees (default: one wheel step).
 OTD_RUST_PORTABLE_DIR selects an explicit absolute portable settings directory."
 }
 
@@ -43,7 +49,7 @@ OTD_RUST_PORTABLE_DIR selects an explicit absolute portable settings directory."
 const SECTIONS: [(&str, &[&str]); 5] = [
     ("areas", &["monitor", "rotation", "crop", "absolute"]),
     ("sensitivity", &["relative"]),
-    ("bindings", &["bindings", "pen_buttons"]),
+    ("bindings", &["bindings", "pen_buttons", "aux_buttons", "wheels"]),
     ("filters", &["radial_follow", "plugins"]),
     (
         "misc",
@@ -62,9 +68,21 @@ struct Options {
     relative_rotation: Option<f64>,
     reset_time_ms: Option<u64>,
     pen_buttons: Vec<(usize, ButtonAction)>,
+    aux_buttons: Vec<(usize, ButtonAction)>,
+    wheel_clockwise: Vec<(usize, ButtonAction)>,
+    wheel_counter_clockwise: Vec<(usize, ButtonAction)>,
+    wheel_thresholds: Vec<(usize, f32)>,
 }
 
 impl Options {
+    fn sets_bindings(&self) -> bool {
+        !(self.pen_buttons.is_empty()
+            && self.aux_buttons.is_empty()
+            && self.wheel_clockwise.is_empty()
+            && self.wheel_counter_clockwise.is_empty()
+            && self.wheel_thresholds.is_empty())
+    }
+
     fn sets_relative(&self) -> bool {
         self.sensitivity.is_some()
             || self.relative_rotation.is_some()
@@ -231,11 +249,40 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 }
                 profile.relative = Some(relative.validate()?);
             }
-            for (index, action) in &options.pen_buttons {
-                if profile.pen_buttons.len() <= *index {
-                    profile.pen_buttons.resize(*index + 1, ButtonAction::None);
+            for (list, edits) in [
+                (&mut profile.pen_buttons, &options.pen_buttons),
+                (&mut profile.aux_buttons, &options.aux_buttons),
+            ] {
+                for (index, action) in edits {
+                    if list.len() <= *index {
+                        list.resize(*index + 1, ButtonAction::None);
+                    }
+                    list[*index] = action.clone();
                 }
-                profile.pen_buttons[*index] = action.clone();
+            }
+            // Edited wheels past the current list start unbound.
+            let last = options
+                .wheel_clockwise
+                .iter()
+                .chain(&options.wheel_counter_clockwise)
+                .map(|(index, _)| *index)
+                .chain(options.wheel_thresholds.iter().map(|(index, _)| *index))
+                .max();
+            if let Some(last) = last
+                && profile.wheels.len() <= last
+            {
+                profile.wheels.resize(last + 1, WheelBinding::default());
+            }
+            for (index, action) in &options.wheel_clockwise {
+                profile.wheels[*index].clockwise = action.clone();
+            }
+            for (index, action) in &options.wheel_counter_clockwise {
+                profile.wheels[*index].counter_clockwise = action.clone();
+            }
+            for (index, degrees) in &options.wheel_thresholds {
+                let wheel = &mut profile.wheels[*index];
+                wheel.clockwise_threshold = Some(*degrees);
+                wheel.counter_clockwise_threshold = Some(*degrees);
             }
             profile.advance_revision()?;
             let output = options
@@ -336,10 +383,59 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> 
                 }
                 options.pen_buttons.push((index, action.parse()?));
             }
+            "--aux-button" => {
+                let value = option_value(&mut args, &flag)?;
+                let (index, action) = numbered(&value, &flag, MAX_PEN_BUTTONS)?;
+                if options.aux_buttons.iter().any(|(old, _)| *old == index) {
+                    return Err(format!("express key {} was specified more than once", index + 1));
+                }
+                options.aux_buttons.push((index, action.parse()?));
+            }
+            "--wheel-clockwise" | "--wheel-counter-clockwise" => {
+                let value = option_value(&mut args, &flag)?;
+                let (index, action) = numbered(&value, &flag, MAX_WHEELS)?;
+                let edits = if flag == "--wheel-clockwise" {
+                    &mut options.wheel_clockwise
+                } else {
+                    &mut options.wheel_counter_clockwise
+                };
+                if edits.iter().any(|(old, _)| *old == index) {
+                    return Err(format!("{flag} for wheel {} was specified more than once", index + 1));
+                }
+                edits.push((index, action.parse()?));
+            }
+            "--wheel-threshold" => {
+                let value = option_value(&mut args, &flag)?;
+                let (index, degrees) = numbered(&value, &flag, MAX_WHEELS)?;
+                let degrees = degrees
+                    .trim()
+                    .parse::<f32>()
+                    .ok()
+                    .filter(|degrees| degrees.is_finite() && *degrees > 0.0)
+                    .ok_or("--wheel-threshold requires a positive number of degrees")?;
+                if options.wheel_thresholds.iter().any(|(old, _)| *old == index) {
+                    return Err(format!("--wheel-threshold for wheel {} was specified more than once", index + 1));
+                }
+                options.wheel_thresholds.push((index, degrees));
+            }
             _ => return Err(format!("unknown profile option {flag:?}\n{}", usage())),
         }
     }
     Ok(options)
+}
+
+/// `NUMBER=VALUE` with a 1-based number up to `maximum`, as a 0-based index.
+fn numbered<'a>(text: &'a str, flag: &str, maximum: usize) -> Result<(usize, &'a str), String> {
+    let (number, value) = text
+        .split_once('=')
+        .ok_or_else(|| format!("{flag} requires NUMBER=VALUE, for example 1=keys:PageDown"))?;
+    let number = number
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .filter(|number| (1..=maximum).contains(number))
+        .ok_or_else(|| format!("{flag} number must be an integer from 1 to {maximum}"))?;
+    Ok((number - 1, value))
 }
 
 fn option_value(
@@ -375,8 +471,8 @@ fn validate_options(command: &str, options: &Options) -> Result<(), String> {
             usage()
         ));
     }
-    if !options.pen_buttons.is_empty() && command != "set" {
-        return Err("--pen-button applies only to profiles set".into());
+    if options.sets_bindings() && command != "set" {
+        return Err("binding options apply only to profiles set".into());
     }
     let valid = match command {
         "list" => {
@@ -407,7 +503,7 @@ fn validate_options(command: &str, options: &Options) -> Result<(), String> {
                 && options.output.is_some()
                 && options.name.is_none()
                 && !options.legacy
-                && (options.sets_relative() || !options.pen_buttons.is_empty())
+                && (options.sets_relative() || options.sets_bindings())
         }
         _ => false,
     };
@@ -524,6 +620,29 @@ fn profile_section(profile: &Profile, section: &str) -> Result<Value, String> {
     settings.insert(
         "pen_buttons".into(),
         json!(profile.pen_buttons.iter().map(ToString::to_string).collect::<Vec<_>>()),
+    );
+    settings.insert(
+        "aux_buttons".into(),
+        json!(profile.aux_buttons.iter().map(ToString::to_string).collect::<Vec<_>>()),
+    );
+    // Every wheel with every field; an absent threshold is one wheel step.
+    settings.insert(
+        "wheels".into(),
+        Value::Array(
+            profile
+                .wheels
+                .iter()
+                .map(|wheel| {
+                    json!({
+                        "clockwise": wheel.clockwise.to_string(),
+                        "counter_clockwise": wheel.counter_clockwise.to_string(),
+                        "clockwise_threshold": wheel.clockwise_threshold,
+                        "counter_clockwise_threshold": wheel.counter_clockwise_threshold,
+                        "buttons": wheel.buttons.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                    })
+                })
+                .collect(),
+        ),
     );
     if section == "all" {
         settings.insert(
@@ -679,5 +798,72 @@ mod tests {
         );
         assert!(!rejected.exists());
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn set_edits_express_keys_and_wheels_and_get_shows_them() {
+        let directory = std::env::temp_dir().join(format!(
+            "otd-aux-buttons-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let source = directory.join("source.toml");
+        let output = directory.join("edited.toml");
+        std::fs::write(&source, Profile::default().to_toml().unwrap()).unwrap();
+        run(vec![
+            "set".into(),
+            source.to_string_lossy().into_owned(),
+            "--output".into(),
+            output.to_string_lossy().into_owned(),
+            "--aux-button".into(),
+            "2=keys:Control+Z".into(),
+            "--wheel-clockwise".into(),
+            "1=keys:PageDown".into(),
+            "--wheel-counter-clockwise".into(),
+            "1=keys:PageUp".into(),
+            "--wheel-threshold".into(),
+            "1=10".into(),
+        ])
+        .unwrap();
+        let Input::Native(edited) = read_input(&output).unwrap() else {
+            panic!("native copy")
+        };
+        let bindings = profile_section(&edited, "bindings").unwrap();
+        assert_eq!(bindings["aux_buttons"], json!(["none", "keys:LeftControl+Z"]));
+        assert_eq!(
+            bindings["wheels"],
+            json!([{
+                "clockwise": "keys:PageDown",
+                "counter_clockwise": "keys:PageUp",
+                "clockwise_threshold": 10.0,
+                "counter_clockwise_threshold": 10.0,
+                "buttons": [],
+            }])
+        );
+        assert_eq!(edited.pen_buttons, otd_core::output::buttons::default_pen_buttons());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn auxiliary_options_are_bounded_distinct_and_set_only() {
+        for invalid in [
+            vec!["--aux-button", "0=none"],
+            vec!["--aux-button", "65=none"],
+            vec!["--aux-button", "1=keys:Mute"],
+            vec!["--aux-button", "1=none", "--aux-button", "1=mouse:right"],
+            vec!["--wheel-clockwise", "9=none"],
+            vec!["--wheel-clockwise", "1=wheel:up"],
+            vec!["--wheel-threshold", "1=0"],
+            vec!["--wheel-threshold", "1=nan"],
+            vec!["--wheel-threshold", "1=5", "--wheel-threshold", "1=6"],
+        ] {
+            assert!(options(&invalid).is_err(), "{invalid:?}");
+        }
+        let get = options(&["--aux-button", "1=none"]).unwrap();
+        assert!(validate_options("get", &get).is_err());
     }
 }
