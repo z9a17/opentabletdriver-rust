@@ -65,6 +65,20 @@ Upstream presses the tip or eraser binding when `pressure / MaxPressure * 100 > 
 - While reports flow, the thread compares a display fingerprint (the virtual screen and the monitor count) once a second. It re-reads the monitor layout only when the fingerprint changes, and always after a second without reports. Reading the fingerprint costs 0.36 µs; the full layout read costs 2.46 µs, allocates, and enumerates monitors (`cargo test --release --locked benchmark_display_checks -- --ignored --nocapture`).
 - Any HID device arriving or leaving, such as a keyboard or headset, used to make the thread enumerate every HID device in the system before checking whether the tablet was still there; reports waited while it ran. It now opens the tablet's own device path without access rights.
 
+## RadialFollow DLL on the native port
+
+A profile that enables the unchanged RadialFollow 0.3.0 tablet-space DLL used to host the .NET runtime in the daemon and cross into it for every report. The driver now runs that DLL's filter on the built-in port instead when the DLL's SHA-256 matches the release (conditions and opt-out in [plugins](PLUGINS_AND_UI.md#existing-opentabletdriver-net-plugins)). The bench harness (`examples/bench`) compared both paths on 5 October 2026. Setup: the development machine with osu! and a 0.16.2 daemon running, the 20,000-report osu! trace, the saved profile's settings, the 0.16.2 bridge and the user's installed DLL, and output to a discard sink:
+
+| Per report | Native port | DLL through the bridge |
+| --- | --- | --- |
+| Whole session loop, p50 / p99 / max | 250 / 311 ns / 2.1 µs | 491 / 822 ns / 10.3 µs |
+| Paced 200 Hz replay, filter and map, p50 / p99 / max | 1.27 / 1.63 / 5.4 µs | 3.82 / 5.20 µs / 1.48 ms |
+| Paced 200 Hz replay, signal to output, p50 / p99.9 / max | 6.3 / 10.0 / 12.1 µs | 8.6 / 19.6 µs / 1.49 ms |
+| First report after the filter is created | 6 µs | 6.4 ms |
+| Peak private memory / working set / threads of the harness process | 5.5 MB / 9.8 MB / 4 | 46.3 MB / 67.7 MB / 8 |
+
+The live 0.16.2 daemon running the DLL used 60 MB of private memory and 86 MB of working set. The memory row and these figures come from one run each, with background load not controlled. No tablet, `SendInput` or display was involved.
+
 ## Session summary
 
 When a device session ends (**Stop driver**, unplugging the tablet, or Ctrl+C in the console), the driver logs one line, which the panel shows in the Console:

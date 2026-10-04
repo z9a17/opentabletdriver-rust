@@ -350,6 +350,10 @@ fn run_companion(
     let selected = hid::select_device(&devices, database, Some(path), Some(name))
         .map_err(std::io::Error::other)?
         .ok_or_else(|| std::io::Error::other("the tablet is no longer connected"))?;
+    // A companion's own OpenTabletDriver profile has not been through this.
+    let mut profile = profile.clone();
+    crate::plugin_catalog::use_native_ports(&mut profile, |_| {});
+    let profile = &profile;
     let mut plugins = PluginChain::load_with_tablet(&profile.plugins, &selected.configuration)
         .map_err(std::io::Error::other)?;
     plugins

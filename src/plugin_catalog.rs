@@ -161,6 +161,24 @@ fn read_catalog(directory: &Path) -> Vec<PluginMetadata> {
     entries
 }
 
+/// Runs .NET filters that have a verified native port on that port instead
+/// (`Profile::use_native_ports`), so their reports skip the .NET bridge and
+/// the runtime is not loaded for them. Set `OTD_DISABLE_NATIVE_PORTS=1` to
+/// keep running the DLLs, for example to compare the two.
+pub fn use_native_ports(profile: &mut otd_core::config::Profile, log: impl Fn(&str)) {
+    if std::env::var_os("OTD_DISABLE_NATIVE_PORTS").is_some_and(|value| value != "0") {
+        return;
+    }
+    let moved = profile.use_native_ports(|path| {
+        crate::update::sha256(path).is_ok_and(|hash| hash == otd_core::radial_follow::DLL_SHA256)
+    });
+    if moved > 0 {
+        log(&format!(
+            "Running {moved} RadialFollow 0.3.0 filter(s) on the built-in port instead of the .NET bridge."
+        ));
+    }
+}
+
 /// Where plugins are installed: `Plugins` in this driver's data folder.
 pub fn plugins_directory() -> Result<PathBuf, String> {
     Ok(otd_core::storage::data_directory()?.join("Plugins"))

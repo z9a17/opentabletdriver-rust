@@ -627,7 +627,7 @@ fn run(
 }
 
 fn drive(
-    profile: Profile,
+    mut profile: Profile,
     stop_event: &Event,
     capture_seconds: Option<u64>,
     status: impl Fn(&str),
@@ -665,6 +665,7 @@ fn drive(
             && !plugin_catalog::recover_installations()? {
             return Err("Plugins are being installed or recovered; retry starting the driver after that finishes.".into());
         }
+        plugin_catalog::use_native_ports(&mut profile, |line| eprintln!("{line}"));
     }
     let _tools = capture_seconds
         .is_none()

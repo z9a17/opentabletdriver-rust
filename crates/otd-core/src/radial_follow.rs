@@ -8,6 +8,10 @@ use crate::spec::TabletSpec;
 
 pub const FILTER_PATH: &str = "RadialFollow.RadialFollowSmoothingTabletSpace";
 pub const FILTER_NAME: &str = "AbstractQbit's Radial Follow Smoothing (Tablet coordinates)";
+/// SHA-256 of the RadialFollow 0.3.0 release DLL this module ports. The
+/// differential fixture `tests/differential/osu-trace.json` was generated
+/// with this DLL.
+pub const DLL_SHA256: &str = "830d61f29c07b109398f1e001df3c7fbd359b1ad2491a6d12ccc243dacf16383";
 
 #[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -32,6 +36,34 @@ impl Default for RadialFollowSettings {
 }
 
 impl RadialFollowSettings {
+    /// Settings saved for the .NET filter, when they give every property.
+    /// The bridge leaves a missing property at the C# constructor's zero,
+    /// which this port does not model, so that returns `None`. A null selects
+    /// the property's default, as the bridge does. Unknown keys are ignored
+    /// like upstream.
+    pub fn from_dotnet_json(text: &str) -> Option<Self> {
+        let settings: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(text).ok()?;
+        let defaults = Self::default();
+        let property = |name: &str, default: f64| match settings.get(name)? {
+            serde_json::Value::Null => Some(default),
+            value => value.as_f64().filter(|value| value.is_finite()),
+        };
+        Some(Self {
+            outer_radius: property("OuterRadius", defaults.outer_radius)?,
+            inner_radius: property("InnerRadius", defaults.inner_radius)?,
+            smoothing_coefficient: property(
+                "SmoothingCoefficient",
+                defaults.smoothing_coefficient,
+            )?,
+            soft_knee_scale: property("SoftKneeScale", defaults.soft_knee_scale)?,
+            smoothing_leak_coefficient: property(
+                "SmoothingLeakCoefficient",
+                defaults.smoothing_leak_coefficient,
+            )?,
+        })
+    }
+
     pub fn clamped(mut self) -> Self {
         self.outer_radius = self.outer_radius.clamp(0.0, 1_000_000.0);
         self.inner_radius = self.inner_radius.clamp(0.0, 1_000_000.0);

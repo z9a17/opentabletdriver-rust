@@ -94,6 +94,11 @@ fn compare(fixture: &Value, case: &Value) -> Vec<String> {
     let name = case["name"].as_str().unwrap();
     let profile =
         Profile::from_toml_text(case["profile"].as_str().unwrap(), Path::new(name)).unwrap();
+    compare_profile(fixture, case, &profile)
+}
+
+fn compare_profile(fixture: &Value, case: &Value, profile: &Profile) -> Vec<String> {
+    let name = case["name"].as_str().unwrap();
     let desktop = &fixture["desktop"];
     let snapshot = DisplaySnapshot {
         virtual_screen: rect(&desktop["virtual_screen"]),
@@ -105,7 +110,7 @@ fn compare(fixture: &Value, case: &Value) -> Vec<String> {
             .collect(),
     };
     let relative = case["mode"] == "relative";
-    let mapper = (!relative).then(|| snapshot.mapper(&profile).unwrap());
+    let mapper = (!relative).then(|| snapshot.mapper(profile).unwrap());
     let screen = snapshot.virtual_screen;
     let unit = |span: i32| f64::from(span - 1) / 65_535.0;
     // Upstream's clamp boundary: the display area's right and bottom edges.
@@ -140,7 +145,7 @@ fn compare(fixture: &Value, case: &Value) -> Vec<String> {
         "{name}: one expectation per report"
     );
 
-    let mut pipeline = ReportPipeline::new(&profile).unwrap();
+    let mut pipeline = ReportPipeline::new(profile).unwrap();
     let start = Instant::now();
     let mut cursor = None;
     let (mut ours, mut theirs) = ((0i64, 0i64), (0f64, 0f64));
@@ -266,6 +271,41 @@ fn check(name: &str) {
 #[test]
 fn osu_play_matches_opentabletdriver() {
     check("osu-trace.json");
+}
+
+/// A profile that runs the unchanged RadialFollow DLL, as the panel saves
+/// it, matches upstream running that DLL once the native port replaces it.
+#[test]
+fn native_port_of_the_radial_follow_dll_matches_opentabletdriver() {
+    let fixture = load("osu-trace.json");
+    let case = fixture["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| {
+            case["profile"]
+                .as_str()
+                .unwrap()
+                .contains("[[radial_follow]]")
+        })
+        .unwrap();
+    let text = case["profile"].as_str().unwrap();
+    let (absolute, _) = text.split_once("[[radial_follow]]").unwrap();
+    // The plugin entry as the panel saved it in the development machine's
+    // driver.toml.
+    let plugin = r#"[[plugins]]
+path = 'Plugins\RadialFollow\RadialFollow.dll'
+kind = "dotnet"
+enabled = true
+type_name = "RadialFollow.RadialFollowSmoothingTabletSpace"
+settings_json = '{"InnerRadius":0.302,"OuterRadius":0.7039,"SmoothingCoefficient":0.302,"SmoothingLeakCoefficient":0.201,"SoftKneeScale":0.603}'
+"#;
+    let mut profile =
+        Profile::from_toml_text(&format!("{absolute}{plugin}"), Path::new("managed")).unwrap();
+    assert_eq!(profile.use_native_ports(|_| true), 1);
+    assert!(profile.plugins.iter().all(|plugin| !plugin.enabled));
+    let failures = compare_profile(&fixture, case, &profile);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]

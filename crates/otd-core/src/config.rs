@@ -1320,6 +1320,37 @@ impl Profile {
         Ok(())
     }
 
+    /// Runs enabled .NET Radial Follow (tablet coordinates) filters on the
+    /// native port instead, for DLLs `is_ported_dll` confirms are the ported
+    /// release (`radial_follow::DLL_SHA256`). Reports then skip the .NET
+    /// bridge, and the runtime is not loaded for them. Built-in filters run
+    /// before DLL filters, so only filters ahead of every other enabled
+    /// filter move, keeping the order. Moved entries are disabled in this
+    /// copy of the profile; saved settings are not touched. Returns how many
+    /// moved.
+    pub fn use_native_ports(&mut self, is_ported_dll: impl Fn(&Path) -> bool) -> usize {
+        if !self.radial_follow.is_empty() {
+            return 0;
+        }
+        let mut moved = 0;
+        for plugin in self
+            .plugins
+            .iter_mut()
+            .filter(|plugin| plugin.enabled && plugin.kind != crate::plugins::PluginKind::DotnetTool)
+        {
+            let settings = (plugin.kind == crate::plugins::PluginKind::Dotnet
+                && plugin.type_name == FILTER_PATH)
+                .then(|| RadialFollowSettings::from_dotnet_json(&plugin.settings_json))
+                .flatten()
+                .filter(|_| is_ported_dll(&plugin.path));
+            let Some(settings) = settings else { break };
+            self.radial_follow.push(settings);
+            plugin.enabled = false;
+            moved += 1;
+        }
+        moved
+    }
+
     pub fn tablet_name(&self) -> Result<Option<String>, String> {
         if let Some(name) = &self.target_tablet {
             // Explicit automatic selection overrides an imported document's name.
@@ -1810,6 +1841,70 @@ mod tests {
                 .crop
                 .valid()
         );
+    }
+
+    #[test]
+    fn verified_radial_follow_dll_runs_on_the_native_port_ahead_of_other_filters() {
+        const SAVED: &str = r#"{"InnerRadius":0.302,"OuterRadius":0.7039,"SmoothingCoefficient":0.302,"SmoothingLeakCoefficient":0.201,"SoftKneeScale":0.603}"#;
+        let plugin = |path: &str, kind: &str, type_name: &str, settings: &str| {
+            format!(
+                "[[plugins]]\npath='{path}'\nkind='{kind}'\nenabled=true\ntype_name='{type_name}'\nsettings_json='{settings}'\n"
+            )
+        };
+        let radial = |path: &str, settings: &str| plugin(path, "dotnet", FILTER_PATH, settings);
+        let other = plugin("other.dll", "dotnet", "Other.Filter", "{}");
+        let tool = plugin("tool.dll", "dotnet_tool", "Other.Tool", "{}");
+        let ported = |path: &Path| path.ends_with("radial.dll");
+        let load = |text: String| Profile::from_toml_text(&text, Path::new("driver.toml")).unwrap();
+
+        let mut profile = load(format!("{tool}{}", radial("radial.dll", SAVED)));
+        assert_eq!(profile.use_native_ports(ported), 1);
+        assert_eq!(profile.radial_follow.len(), 1);
+        let settings = profile.radial_follow[0];
+        assert_eq!(
+            (
+                settings.outer_radius,
+                settings.inner_radius,
+                settings.smoothing_coefficient,
+                settings.soft_knee_scale,
+                settings.smoothing_leak_coefficient
+            ),
+            (0.7039, 0.302, 0.302, 0.603, 0.201)
+        );
+        assert!(!profile.plugins[1].enabled);
+        assert!(profile.plugins[0].enabled, "tools keep running");
+        profile.validate_filter_execution().unwrap();
+
+        // A filter after the ported one keeps running after it, as before.
+        let mut profile = load(format!("{}{other}", radial("radial.dll", SAVED)));
+        assert_eq!(profile.use_native_ports(ported), 1);
+        assert!(profile.plugins[1].enabled);
+
+        // Built-in filters run first, so one behind another filter stays.
+        let mut profile = load(format!("{other}{}", radial("radial.dll", SAVED)));
+        assert_eq!(profile.use_native_ports(ported), 0);
+        assert!(profile.radial_follow.is_empty() && profile.plugins[1].enabled);
+
+        // Another DLL build, or a property left at the constructor's value.
+        for text in [
+            radial("modified.dll", SAVED),
+            radial("radial.dll", r#"{"InnerRadius":0.302}"#),
+            radial("radial.dll", r#"{"InnerRadius":"0.3","OuterRadius":1,"SmoothingCoefficient":1,"SmoothingLeakCoefficient":0,"SoftKneeScale":1}"#),
+        ] {
+            let mut profile = load(text);
+            assert_eq!(profile.use_native_ports(ported), 0);
+            assert!(profile.radial_follow.is_empty() && profile.plugins[0].enabled);
+        }
+
+        // Null selects the property's default, as the bridge does.
+        let mut profile = load(radial(
+            "radial.dll",
+            r#"{"InnerRadius":null,"OuterRadius":null,"SmoothingCoefficient":null,"SmoothingLeakCoefficient":null,"SoftKneeScale":null,"Unknown":1}"#,
+        ));
+        assert_eq!(profile.use_native_ports(ported), 1);
+        let defaults = RadialFollowSettings::default();
+        assert_eq!(profile.radial_follow[0].outer_radius, defaults.outer_radius);
+        assert_eq!(profile.radial_follow[0].smoothing_coefficient, defaults.smoothing_coefficient);
     }
 
     #[test]
