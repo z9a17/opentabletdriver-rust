@@ -545,6 +545,7 @@ pub fn run_gated_with_endpoints(
                 Some(decoder) if from_auxiliary => decoder.decode_input(bytes),
                 _ => decoder.decode_input(bytes),
             };
+            let mut timed_output = false;
             match decoded {
                 Ok(Some(decoded)) => {
                     counters.accepted += 1;
@@ -591,7 +592,7 @@ pub fn run_gated_with_endpoints(
                                 last_output_warning = Some(now);
                             }
                         }
-                        timing.record(source.now().saturating_duration_since(ready));
+                        timed_output = true;
                     }
                 }
                 Ok(None) => {
@@ -611,6 +612,9 @@ pub fn run_gated_with_endpoints(
             // While reports flow, re-read the monitors only when the cheap
             // fingerprint changed; the idle wait compares the full layout.
             let now = source.now();
+            if timed_output {
+                timing.record(now.saturating_duration_since(ready));
+            }
             if now >= next_refresh {
                 if layout.snapshot.is_some()
                     && (layout.snapshot_failed || displays.fingerprint() != layout.fingerprint)

@@ -1,0 +1,297 @@
+{
+  "cases": [
+    {
+      "allocations": 0,
+      "allocations_per_report": 0.0,
+      "description": "decode, contact state, absolute mapping and the output decision; no filter; packets discarded",
+      "first_report_us": [
+        7.4,
+        0.3,
+        0.3
+      ],
+      "name": "absolute",
+      "per_report_ns": {
+        "max": {
+          "max": 1643.1,
+          "median": 1502.8,
+          "min": 511.0,
+          "spread_pct": 75.3
+        },
+        "mean": {
+          "max": 124.5,
+          "median": 120.1,
+          "min": 115.2,
+          "spread_pct": 7.7
+        },
+        "p50": {
+          "max": 120.2,
+          "median": 120.2,
+          "min": 110.2,
+          "spread_pct": 8.3
+        },
+        "p95": {
+          "max": 150.3,
+          "median": 150.3,
+          "min": 120.2,
+          "spread_pct": 20.0
+        },
+        "p99": {
+          "max": 150.3,
+          "median": 150.3,
+          "min": 120.2,
+          "spread_pct": 20.0
+        },
+        "p999": {
+          "max": 200.4,
+          "median": 180.3,
+          "min": 160.3,
+          "spread_pct": 22.2
+        }
+      },
+      "reports": 20000,
+      "rounds": 3,
+      "setup_ms": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "thread_cpu_ns_per_report": 145.1,
+      "throughput_per_s": 6895363.0
+    },
+    {
+      "allocations": 0,
+      "allocations_per_report": 0.0,
+      "description": "as absolute, with the built-in Radial Follow port (the osu! profile)",
+      "first_report_us": [
+        0.5,
+        0.4,
+        0.3
+      ],
+      "name": "absolute+radial_follow",
+      "per_report_ns": {
+        "max": {
+          "max": 7858.8,
+          "median": 7047.3,
+          "min": 5830.9,
+          "spread_pct": 28.8
+        },
+        "mean": {
+          "max": 176.6,
+          "median": 171.3,
+          "min": 166.3,
+          "spread_pct": 6.0
+        },
+        "p50": {
+          "max": 170.3,
+          "median": 170.3,
+          "min": 170.3,
+          "spread_pct": 0.0
+        },
+        "p95": {
+          "max": 230.4,
+          "median": 220.4,
+          "min": 180.3,
+          "spread_pct": 22.7
+        },
+        "p99": {
+          "max": 280.5,
+          "median": 240.5,
+          "min": 200.4,
+          "spread_pct": 33.3
+        },
+        "p999": {
+          "max": 340.6,
+          "median": 300.6,
+          "min": 300.6,
+          "spread_pct": 13.3
+        }
+      },
+      "reports": 20000,
+      "rounds": 3,
+      "setup_ms": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "thread_cpu_ns_per_report": 194.5,
+      "throughput_per_s": 5139803.0
+    },
+    {
+      "allocations": 0,
+      "allocations_per_report": 0.0,
+      "description": "as absolute, with the unchanged RadialFollow 0.3.0 DLL through the .NET bridge instead of the built-in port",
+      "first_report_us": [
+        6655.2,
+        1126.0,
+        1220.8
+      ],
+      "name": "absolute+managed_radial_follow",
+      "per_report_ns": {
+        "max": {
+          "max": 485910.5,
+          "median": 11259.9,
+          "min": 2514.7,
+          "spread_pct": 4293.1
+        },
+        "mean": {
+          "max": 530.4,
+          "median": 437.4,
+          "min": 406.8,
+          "spread_pct": 28.3
+        },
+        "p50": {
+          "max": 400.8,
+          "median": 390.7,
+          "min": 380.7,
+          "spread_pct": 5.1
+        },
+        "p95": {
+          "max": 821.5,
+          "median": 711.3,
+          "min": 681.3,
+          "spread_pct": 19.7
+        },
+        "p99": {
+          "max": 1342.5,
+          "median": 861.6,
+          "min": 851.6,
+          "spread_pct": 57.0
+        },
+        "p999": {
+          "max": 1813.4,
+          "median": 1332.5,
+          "min": 1302.4,
+          "spread_pct": 38.3
+        }
+      },
+      "reports": 20000,
+      "rounds": 3,
+      "setup_ms": [
+        134.4,
+        3.1,
+        3.9
+      ],
+      "thread_cpu_ns_per_report": 460.7,
+      "throughput_per_s": 2170115.0
+    },
+    {
+      "allocations": 0,
+      "allocations_note": "counted from the 100th report to the end of each session",
+      "allocations_per_report": 0.0,
+      "description": "session::run over the trace with the osu! profile: decoding, pipeline, counters, timing and display checks; no HID read or SendInput",
+      "first_report_us": [],
+      "name": "session/absolute+radial_follow",
+      "per_report_ns": {
+        "max": {
+          "max": 3346.3,
+          "median": 2825.3,
+          "min": 2043.8,
+          "spread_pct": 46.1
+        },
+        "mean": {
+          "max": 261.9,
+          "median": 258.0,
+          "min": 257.9,
+          "spread_pct": 1.6
+        },
+        "p50": {
+          "max": 260.5,
+          "median": 260.5,
+          "min": 260.5,
+          "spread_pct": 0.0
+        },
+        "p95": {
+          "max": 320.6,
+          "median": 290.5,
+          "min": 280.5,
+          "spread_pct": 13.8
+        },
+        "p99": {
+          "max": 350.7,
+          "median": 330.6,
+          "min": 330.6,
+          "spread_pct": 6.1
+        },
+        "p999": {
+          "max": 410.8,
+          "median": 410.8,
+          "min": 400.8,
+          "spread_pct": 2.4
+        }
+      },
+      "reports": 20000,
+      "rounds": 3,
+      "setup_ms": [],
+      "thread_cpu_ns_per_report": 262.4,
+      "throughput_per_s": 3811121.0
+    }
+  ],
+  "driver": {
+    "commit": "ca2c5d9c7baf0fd6cb5af136ed97a54c5e1ae166",
+    "name": "opentabletdriver-rust",
+    "version": "0.16.7"
+  },
+  "harness": "rust",
+  "machine": {
+    "cpu": "AMD Ryzen 7 5800X3D 8-Core Processor",
+    "invariant_tsc": true,
+    "logical_cpus": 16,
+    "thread_cycle_hz": 3392907200.0,
+    "tsc_hz": 3393628730.0
+  },
+  "method": {
+    "allocations": "Rust allocations on the measuring thread during the timed pass",
+    "rounds": 3,
+    "timer": "rdtsc/rdtscp with lfence around each report, converted with the measured counter frequency",
+    "warmup_ms": 250
+  },
+  "replay": {
+    "allocations_after_warmup": 0,
+    "coalesced": 0,
+    "output_ns": {
+      "max": 330.6,
+      "mean": 27.5,
+      "p50": 30.1,
+      "p95": 40.1,
+      "p99": 40.1,
+      "p999": 40.1
+    },
+    "pipeline_ns": {
+      "max": 6402.0,
+      "mean": 975.1,
+      "p50": 1001.9,
+      "p95": 1332.5,
+      "p99": 1663.1,
+      "p999": 3747.0
+    },
+    "processed": 4000,
+    "rate_hz": 500.0,
+    "reports": 4000,
+    "send_input": false,
+    "signal_to_output_ns": {
+      "max": 11607.6,
+      "mean": 5982.5,
+      "p50": 5956.8,
+      "p95": 7313.1,
+      "p99": 8261.4,
+      "p999": 9852.6
+    },
+    "wake_ns": {
+      "max": 9100.6,
+      "mean": 5007.4,
+      "p50": 5020.0,
+      "p95": 6197.2,
+      "p99": 6887.6,
+      "p999": 8480.6
+    }
+  },
+  "schema": "otd-bench/1",
+  "trace": {
+    "fnv1a64": "719b88e0c722d0af",
+    "generator": "osu-synthetic-v1",
+    "rate_hz": 500.0,
+    "report_bytes": 192,
+    "reports": 20000,
+    "seed": 20260923
+  }
+}

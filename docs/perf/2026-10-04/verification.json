@@ -1,0 +1,33 @@
+{
+  "session_comparison": [
+    {
+      "reports_per_session": 20000,
+      "variant": "before",
+      "output_commits": 19038,
+      "malformed_reports": 0,
+      "output_failures": 0,
+      "timed_sessions": 30
+    },
+    {
+      "reports_per_session": 20000,
+      "variant": "after",
+      "output_commits": 19038,
+      "malformed_reports": 0,
+      "output_failures": 0,
+      "timed_sessions": 30
+    }
+  ],
+  "final_offline_script": {
+    "timing_endpoint": "pipeline_return_including_output",
+    "native_processed": 500,
+    "send_input": false,
+    "managed_processed": 500,
+    "summary_generated": true
+  },
+  "powershell_script_analyzer": {
+    "errors": 0,
+    "warnings": 0
+  },
+  "ordinary_test_suite": "Not run per repository release policy",
+  "live_validation": "Not run; owner requested offline audit"
+}

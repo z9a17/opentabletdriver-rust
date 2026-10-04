@@ -6,6 +6,8 @@ These are software measurements. They time the work between a report arriving an
 
 The results below were measured with 0.7.5. The [0.15.3 performance audit](AUDIT_FIXES_0.15.3.md) measured every release since then and OpenTabletDriver again on 1 October 2026. From 0.8.0 until 0.15.3 the idle daemon woke about 20 times a second instead of the 1.6 shown below, and from 0.9.0 the unchanged RadialFollow DLL cost about 530 ns per report through the .NET bridge (381 ns since 0.15.3) instead of 180 ns.
 
+The [4 October offline input audit](INPUT_AUDIT_2026-10-04.md) compares 0.16.7 with the pinned upstream at 500 Hz, includes the managed filter in paced replay, and measures synthetic CPU contention. Its small session optimization ships in 0.16.8. The reported streaming slowdown has not been reproduced with osu!lazer and OBS running.
+
 ## Results on the development machine
 
 Ryzen 7 5800X3D (16 logical CPUs), Windows 11 Pro build 26200, Ultimate Performance power plan, 23 September 2026. This driver 0.7.5 against OpenTabletDriver 0.6.7 on .NET 8.0.31, both replaying the same trace with the development machine's osu! profile. Each number is the median of three runs unless noted; the complete output is in [perf/2026-09-23](perf/2026-09-23/summary.md).
@@ -63,11 +65,15 @@ pwsh -File scripts/bench.ps1 -Runs 0 -Idle -UpstreamInstall <folder with OpenTab
 
 The script builds both harnesses, exports one workload, runs the Rust and upstream harnesses alternately, and writes `rust-N.json`, `upstream-N.json`, `environment.json`, optionally `idle.json`, and `summary.md` under `target/bench/<time>/`. `python scripts/bench-summary.py <directory>` rebuilds the summary.
 
-- `-SendInput` and `-ReplaySeconds` move the cursor. They remove button flags, so nothing is clicked, but leave the mouse alone while they run.
+- `-SendInput` moves the cursor, including during paced replay. It removes button flags, so nothing is clicked, but leave the mouse alone while it runs. Without this switch, `-ReplaySeconds` uses a discard sink.
 - `-Idle` starts this driver, then its panel, then upstream's daemon, then its daemon with the UX, and samples each for a minute. It refuses to run while any of them is already running and stops only what it started. Each driver takes the tablet while it runs.
 - `-UpstreamInstall` is a folder with upstream's released `OpenTabletDriver.Daemon.exe` and `OpenTabletDriver.UX.Wpf.exe`.
 
 `-Runs 0` skips the harnesses, for example to sample idle processes only. `-Only TEXT` runs only cases whose names contain TEXT; the replay still runs.
+
+For an offline run without cursor movement, use `-RateHz 500 -ReplaySeconds 8` and omit `-SendInput` and `-Idle`. `-WarmupMs` controls warm-up in both harnesses; `-CompatDirectory` selects the compiled managed bridge. When the unchanged RadialFollow DLL is available, Rust reports native and managed paced replays separately.
+
+The standalone Rust harness also accepts `--load-threads N` with paced replay. It creates normal-priority CPU workers for that replay and joins them when it finishes, including pipeline errors. This stresses scheduling; it does not emulate OBS, GPU contention or the HID queue. Load is limited to the machine's logical CPU count and replay duration to 60 seconds. Upstream has no matching load option; do not compare a stressed Rust run with an idle upstream run as if they had the same conditions.
 
 Each harness also runs on its own: `cargo run --release --locked --example bench -- --help` for this driver, and `dotnet target/bench/upstream-bin/OtdUpstreamBench.dll --workload <directory>/workload.json` for upstream after `dotnet build bench/upstream/OtdUpstreamBench.csproj -c Release -o target/bench/upstream-bin`. The Rust harness's `--export-workload <directory>` writes the workload.
 
@@ -79,7 +85,7 @@ Both harnesses replay the same trace through their driver's own report path with
 
 **Profile.** The development machine's osu! profile, as in `tests/golden/absolute-radial-follow.toml`: an 85 × 47.8125 mm area on the 2560 × 1440 primary monitor with clipping, the tip and eraser at 1 % pressure, and AbstractQbit's tablet-space Radial Follow (0.7039 / 0.302 mm, 0.302, 0.603, 0.201). Relative cases use 10 counts/mm with a 100 ms reset.
 
-**Rust harness** (`examples/bench`). It compiles the driver's own modules: decoding, the report pipeline, the session loop, the DLL plugin chain, the .NET bridge, `SendInput` and the reader priority. Reports carry timestamps 5 ms apart, so time-based filters behave as on a 200 Hz device.
+**Rust harness** (`examples/bench`). It compiles the driver's own modules: decoding, the report pipeline, the session loop, the DLL plugin chain, the .NET bridge, `SendInput` and the reader priority. The default timestamps are 5 ms apart (200 Hz); `-RateHz` or `--rate` changes the report rate in both the workload and replay.
 
 **Upstream harness** (`bench/upstream`). It builds against the pinned checkout's own projects and runs what upstream's daemon runs per report: `IntuosV2ReportParser.Parse`, the `DeviceReader` report event, the `InputDeviceTree` lock and `OutputMode.Read`. The pipeline is assembled as `DriverDaemon.SetSettings` does: the enabled filters, then a `BindingHandler` with the tip and eraser bound to the left button. It uses the daemon's settings: .NET 8, Release, TieredPGO and the default garbage collector. Pen buttons are left unbound; this driver has no pen-button bindings yet (B02).
 
@@ -93,6 +99,7 @@ Both harnesses replay the same trace through their driver's own report path with
 | `absolute+managed_radial_follow+read_buffer` (upstream) | As above, plus a new 192-byte array per report, as upstream's HID read returns. Rust reads into one reused buffer. |
 | `absolute+native_ema` (Rust) | The sample native filter DLL. |
 | `session/absolute+radial_follow` (Rust) | The whole device-session loop over the trace, with its counters, timing and display checks, but no HID read. |
+| `session/absolute+managed_radial_follow` (Rust) | The same session loop with the unchanged tablet-space RadialFollow DLL. |
 | `sendinput` | One `SendInput` cursor move per report, for the positions the osu! profile produces. |
 | `…+sendinput` | The osu! profile's whole report path including `SendInput`. |
 
@@ -100,9 +107,11 @@ Both harnesses replay the same trace through their driver's own report path with
 
 **Rounds and runs.** Each case warms up for one second, pauses 250 ms so .NET can finish tiered compilation, warms up for another 2,000 reports, then times every report of the trace once. That timed pass repeats seven times in one process, with a fresh pipeline each time. The script runs each harness three times, alternating, so the summary shows noise within a run and between processes.
 
-**Memory.** The Rust harness counts Rust heap allocations on the measuring thread during the timed pass. The upstream harness reports managed bytes allocated on that thread and garbage collections.
+**Memory.** The Rust harness counts Rust heap allocations on the measuring thread during the timed pass. This excludes the managed heap: a zero beside the managed filter does not establish zero allocations or absence of GC pauses. The bridge creates owned report snapshots so plugins can retain them safely. The upstream harness reports managed bytes allocated on that thread and garbage collections.
 
 **Paced replay.** A device thread sets an event once per report interval, standing in for the HID class driver completing a read. The reader thread wakes, decodes, runs the osu! profile's pipeline and calls `SendInput`. Wake delay, pipeline work and output are timed separately. The Rust reader runs at the driver's time-critical priority. Upstream's runs at AboveNormal in a High priority class process, as its daemon's reader does. A timer paces the device thread, but its lateness does not count, because wake delay starts when the event is set.
+
+From 0.16.8, `signal_to_output_ns` includes output time and ends when the pipeline returns, identified by `timing_endpoint`. Earlier harnesses subtracted output time; their historical tables retain that definition. The auto-reset event merges missed signals, whereas the HID class driver queues reports. This model does not measure actual HID backlog or pen-to-screen latency.
 
 **Idle.** With the tablet connected and the pen away, the script samples each process's CPU time, context switches of its threads (a proxy for wakeups), working set, private bytes, handles and threads over 60 seconds, after 10 seconds of warm-up.
 
