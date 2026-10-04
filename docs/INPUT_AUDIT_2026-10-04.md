@@ -6,7 +6,7 @@ The session optimization in 0.16.8 shares one monotonic-clock reading between re
 
 ## Scope and method
 
-Windows 11 Pro build 26200, Ryzen 7 5800X3D, 16 logical CPUs. The baseline is 0.16.7 at `ca2c5d9c7baf0fd6cb5af136ed97a54c5e1ae166`. Upstream is the project's pinned OpenTabletDriver 0.6.7 at [`736003e`](https://github.com/OpenTabletDriver/OpenTabletDriver/tree/736003ed72c8bbb28033b039d5a0bb76c344145c), not the current upstream release.
+Windows 11 Pro build 26300, Ryzen 7 5800X3D, 16 logical CPUs, FSOS AMD Gaming power plan. The baseline is 0.16.7 at `ca2c5d9c7baf0fd6cb5af136ed97a54c5e1ae166`. Upstream is the project's pinned OpenTabletDriver 0.6.7 at [`736003e`](https://github.com/OpenTabletDriver/OpenTabletDriver/tree/736003ed72c8bbb28033b039d5a0bb76c344145c), not the current upstream release.
 
 Both harnesses used the same 20,000-report synthetic PTH-660 trace and an 85 × 47.8125 mm area. The chosen replay rate was 500 Hz; the physical tablet's current rate was not measured. The unchanged tablet-space RadialFollow DLL has SHA256 `830d61f29c07b109398f1e001df3c7fbd359b1ad2491a6d12ccc243dacf16383` and uses the saved profile's 0.7039 / 0.302 mm radii, smoothing 0.302, soft knee 0.603 and leak 0.201.
 
