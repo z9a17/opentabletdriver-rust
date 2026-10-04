@@ -726,8 +726,8 @@
     "CAP-51": {
       "state": "open",
       "owner": "F04",
-      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/23",
-      "release": "v0.7.6",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/78",
+      "release": "v0.16.8",
       "evidence": [
         {
           "kind": "integration-tested",
@@ -742,6 +742,23 @@
           "link": "https://github.com/z9a17/opentabletdriver-rust/blob/6d470b280be4fd1d56ecd36f7d818e5ca0fbc6af/docs/perf/2026-09-23/summary.md",
           "result": "pass",
           "command": "pwsh -File scripts/bench.ps1 -Runs 3 -SendInput -ReplaySeconds 30"
+        },
+        {
+          "kind": "integration-tested",
+          "task": "F04",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "ca2c5d9c7baf0fd6cb5af136ed97a54c5e1ae166",
+          "source_dirty": true,
+          "platform": "Windows 11 Pro 10.0.26300, Ryzen 7 5800X3D, FSOS AMD Gaming power plan",
+          "architecture": "x86_64",
+          "date": "2026-10-04T14:30:00+02:00",
+          "tester": "Codex, offline synthetic audit on the development machine",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver/Devices/DeviceReader.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/blob/37c95452fabd0a4b55dafc993da856dd1097eef4/docs/perf/2026-10-04/summary.md",
+          "result": "pass",
+          "command": "pwsh -File scripts/bench.ps1 -OutputDirectory E:/AgentWork/tmp/otd-input-audit-20261004/final-harness-smoke -UpstreamRoot E:/AgentWork/tmp/otd-input-audit-20261004/upstream -RadialFollow \"C:/Users/maxi/AppData/Local/OpenTabletDriver/Plugins/AbstractQbit's Radial Follow Smoothing/RadialFollow.dll\" -CompatDirectory target/x86_64-pc-windows-msvc/release/compat -Runs 1 -Rounds 1 -Reports 1000 -RateHz 500 -WarmupMs 0 -ReplaySeconds 1 -Only absolute -SkipBuild",
+          "dll_sha256": "830d61f29c07b109398f1e001df3c7fbd359b1ad2491a6d12ccc243dacf16383",
+          "notes": "Measurement HEAD was the baseline with uncommitted harness extensions and the matched session optimization; final formatting and version metadata followed in PR 78. Raw paired/stress results and matching output counts are linked. No HID, SendInput, controlled live game/OBS or pen-to-screen measurement; capability stays open."
         }
       ],
       "blockers": [
