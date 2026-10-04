@@ -124,7 +124,8 @@ sealed unsafe class Replay(Workload workload, string radialFollowPath, string ra
                 }
                 coalesced += current - last - 1;
                 last = current;
-                ulong wokeAfter = woke - (ulong)Volatile.Read(ref signaled);
+                ulong stamped = (ulong)Volatile.Read(ref signaled);
+                ulong wokeAfter = woke > stamped ? woke - stamped : 0;
                 wake[processed] = wokeAfter;
                 byte[] data = workload.Reports[(last - 1) % workload.Reports.Length];
                 if (windowsPointer != null)
@@ -135,7 +136,7 @@ sealed unsafe class Replay(Workload workload, string radialFollowPath, string ra
                 ulong sent = windowsPointer?.LastFlushTicks ?? 0;
                 work[processed] = total - sent;
                 output[processed] = sent;
-                driver[processed] = wokeAfter + total - sent;
+                driver[processed] = wokeAfter + total;
                 processed++;
             }
             bytes = GC.GetAllocatedBytesForCurrentThread() - allocated;
@@ -163,6 +164,8 @@ sealed unsafe class Replay(Workload workload, string radialFollowPath, string ra
             ["processed"] = processed,
             ["coalesced"] = coalesced,
             ["send_input"] = sendInput,
+            ["model"] = "auto-reset event; missed signals coalesce rather than preserving a HID queue",
+            ["timing_endpoint"] = "pipeline_return_including_output",
             ["wake_ns"] = Stats.Json(Stats.Of(wake, processed, nsPerTick)),
             ["pipeline_ns"] = Stats.Json(Stats.Of(work, processed, nsPerTick)),
             ["output_ns"] = Stats.Json(Stats.Of(output, processed, nsPerTick)),

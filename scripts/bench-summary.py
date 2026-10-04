@@ -23,6 +23,7 @@ PAIRS = [
     ("osu! profile with a new read buffer per report", None, "absolute+managed_radial_follow+read_buffer"),
     ("Native EMA filter DLL", "absolute+native_ema", None),
     ("Whole session loop, osu! profile, no HID read or SendInput", "session/absolute+radial_follow", None),
+    ("Whole session loop, unchanged RadialFollow DLL, no HID read or SendInput", "session/absolute+managed_radial_follow", None),
     ("SendInput alone", "sendinput", "sendinput"),
     ("SendInput without cursor motion", "sendinput_still", None),
     ("osu! profile with SendInput", "absolute+radial_follow+sendinput", "absolute+managed_radial_follow+sendinput"),
@@ -87,25 +88,37 @@ def noise_runs(cases):
     return f"{(max(values) - min(values)) / middle * 100:.0f} %" if middle else "—"
 
 
-def replay_table(runs, harness):
-    replays = [run["replay"] for run in runs if run.get("replay")]
+def replay_table(runs, harness, field="replay"):
+    replays = [run[field] for run in runs if run.get(field)]
     if not replays:
         return []
+    # Separate rates, load levels and sinks instead of averaging unlike runs.
+    groups = {}
+    for replay in replays:
+        configuration = (
+            replay["rate_hz"],
+            replay.get("controlled_cpu_load_threads", 0),
+            replay["send_input"],
+            replay.get("timing_endpoint", "legacy_excluding_output"),
+        )
+        groups.setdefault(configuration, []).append(replay)
     rows = []
-    stages = [
-        ("wake_ns", "Wake after the report is signaled"),
-        ("pipeline_ns", "Decode, filter, map"),
-        ("signal_to_output_ns", "Signal to the SendInput call, per report"),
-        ("output_ns", "SendInput"),
-    ]
-    for key, label in stages:
-        if key not in replays[0]:
-            continue
-        values = {p: [replay[key][p] for replay in replays] for p in ("p50", "p99", "p999", "max")}
-        rows.append(f"| {harness} | {label} | {span(values['p50'])} | {span(values['p99'])} | {span(values['p999'])} | {span(values['max'])} |")
-    coalesced = sum(replay["coalesced"] for replay in replays)
-    processed = sum(replay["processed"] for replay in replays)
-    rows.append(f"| {harness} | Reports processed / merged because the reader was late | {processed} / {coalesced} | | | |")
+    for (rate, load, send_input, endpoint), samples in groups.items():
+        title = f"{harness}, {rate:g} Hz, {load} load threads"
+        stages = [
+            ("wake_ns", "Wake after the report is signaled"),
+            ("pipeline_ns", "Decode, filter, map (output time excluded)"),
+            ("signal_to_output_ns", "Signal to pipeline return, including output" if endpoint == "pipeline_return_including_output" else "Legacy total, output time excluded"),
+            ("output_ns", "SendInput" if send_input else "Discard sink"),
+        ]
+        for key, label in stages:
+            if key not in samples[0]:
+                continue
+            values = {p: [replay[key][p] for replay in samples] for p in ("p50", "p99", "p999", "max")}
+            rows.append(f"| {title} | {label} | {span(values['p50'])} | {span(values['p99'])} | {span(values['p999'])} | {span(values['max'])} |")
+        coalesced = sum(replay["coalesced"] for replay in samples)
+        processed = sum(replay["processed"] for replay in samples)
+        rows.append(f"| {title} | Reports processed / signals coalesced | {processed} / {coalesced} | | | |")
     return rows
 
 
@@ -125,7 +138,7 @@ def main():
         f"- Rust commit `{environment['commit']}`{' (uncommitted changes)' if environment['dirty_worktree'] else ''}; OpenTabletDriver `{environment['upstream_revision']}`",
         f"- {environment['os']}; {environment['cpu']}, {environment['logical_cpus']} logical CPUs; power plan {plan(environment['power_plan'])}",
     ]
-    if rust_runs and upstream_runs:
+    if rust_runs or upstream_runs:
         lines += harness_sections(rust_runs, upstream_runs)
     lines += idle_section(directory)
     (directory / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -133,20 +146,22 @@ def main():
 
 def harness_sections(rust_runs, upstream_runs):
     rust, upstream = by_case(rust_runs), by_case(upstream_runs)
+    sample = (rust_runs or upstream_runs)[0]
     lines = [
-        f"- Upstream runtime {upstream_runs[0]['runtime']['framework']}",
         (
-            f"- Trace `{rust_runs[0]['trace']['generator']}`: {rust_runs[0]['trace']['reports']} reports, "
-            f"FNV-1a `{rust_runs[0]['trace']['fnv1a64']}`; {len(rust_runs)} runs per harness, "
-            f"{rust_runs[0]['method']['rounds']} timed passes per case"
+            f"- Trace `{sample['trace']['generator']}`: {sample['trace']['reports']} reports, "
+            f"FNV-1a `{sample['trace']['fnv1a64']}`; {len(rust_runs)} Rust runs, {len(upstream_runs)} upstream runs, "
+            f"{sample['method']['rounds']} timed passes per case"
         ),
         "",
         "Per-report time is the median over runs of each run's median over timed passes; the range between runs follows in brackets.",
-        "Every row includes the harness's own timing overhead, shown in the first row. Upstream's memory column is managed bytes allocated per report.",
+        "Every row includes the harness's own timing overhead, shown in the first row. Rust's allocation counter excludes the managed heap; zero Rust allocations does not mean a managed filter allocates nothing. Upstream's memory column is managed bytes allocated per report.",
         "",
         "| Case | Rust p50 | OTD p50 | Rust p99 | OTD p99 | Rust p99.9 | OTD p99.9 | Rust memory | OTD memory |",
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
+    if upstream_runs:
+        lines.insert(0, f"- Upstream runtime {upstream_runs[0]['runtime']['framework']}")
     rows = [
         (label, rust.get(rust_name, []) if rust_name else [], upstream.get(upstream_name, []) if upstream_name else [])
         for label, rust_name, upstream_name in PAIRS
@@ -188,17 +203,21 @@ def harness_sections(rust_runs, upstream_runs):
             if runs[0].get("first_report_us"):
                 lines.append(f"| {harness} | {name} | {runs[0]['first_report_us'][0]:g} µs | {runs[0]['setup_ms'][0]:g} ms |")
 
-    replay_rows = replay_table(rust_runs, "Rust") + replay_table(upstream_runs, "OTD")
+    replay_rows = (
+        replay_table(rust_runs, "Rust native")
+        + replay_table(rust_runs, "Rust managed", "managed_replay")
+        + replay_table(upstream_runs, "OTD managed")
+    )
     if replay_rows:
-        replay = next(run["replay"] for run in rust_runs if run.get("replay"))
         lines += [
             "",
             "## Paced replay",
             "",
             (
-                f"{replay['rate_hz']:g} reports per second, SendInput {'on' if replay['send_input'] else 'off'}. "
                 "Rust's reader runs at time-critical priority; upstream's at AboveNormal in a High priority class "
-                "process, as its daemon does."
+                "process, as its daemon does. Rates, synthetic CPU load and output sinks are listed separately. "
+                "The auto-reset event coalesces missed signals; it does not reproduce the HID queue. "
+                "Compare drivers only at matching rates, sinks and load levels."
             ),
             "",
             "| Harness | Stage | p50 | p99 | p99.9 | max |",

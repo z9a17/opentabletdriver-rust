@@ -8,7 +8,8 @@ Builds the Rust harness (examples/bench) and the upstream harness
 alternately, several times. Each run writes JSON; scripts/bench-summary.py
 combines them into summary.md. See docs/PERFORMANCE.md.
 
--SendInput and -ReplaySeconds move the cursor (never clicking). -Idle starts
+-SendInput moves the cursor (never clicking), including during paced replay.
+Without -SendInput, -ReplaySeconds uses a discard sink. -Idle starts
 this driver, its panel, and upstream's daemon and UX in turn, and samples
 their CPU time, context switches and memory; it refuses to run while any of
 them is already running, and stops only the processes it started.
@@ -24,8 +25,11 @@ param(
     [ValidateRange(0, 20)][int]$Runs = 3,
     [ValidateRange(1, 50)][int]$Rounds = 7,
     [ValidateRange(1000, 1000000)][int]$Reports = 20000,
+    [ValidateRange(1, 10000)][double]$RateHz = 200,
+    [ValidateRange(0, 60000)][int]$WarmupMs = 1000,
+    [string]$CompatDirectory = 'target/release/compat',
     [switch]$SendInput,
-    [ValidateRange(0, 600)][double]$ReplaySeconds = 0,
+    [ValidateRange(0, 60)][double]$ReplaySeconds = 0,
     [switch]$Idle,
     # The folder holding upstream's OpenTabletDriver.Daemon.exe, for -Idle.
     [string]$UpstreamInstall,
@@ -160,12 +164,18 @@ try {
     $rustBench = 'target/release/examples/bench.exe'
     $upstreamBench = 'target/bench/upstream-bin/OtdUpstreamBench.dll'
     $workload = Join-Path $OutputDirectory 'workload'
-    Invoke-Native $rustBench @('--reports', "$Reports", '--export-workload', $workload)
+    Invoke-Native $rustBench @('--reports', "$Reports", '--rate', "$RateHz", '--export-workload', $workload)
 
     $commit = (git rev-parse HEAD).Trim()
     $dirty = [bool](git status --porcelain --untracked-files=no)
     $os = Get-CimInstance Win32_OperatingSystem
     $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+    $displays = @()
+    $driverPath = 'target/release/opentabletdriver-rust.exe'
+    if (Test-Path -LiteralPath $driverPath) {
+        $displays = @(& $driverPath displays)
+        if ($LASTEXITCODE -ne 0) { throw 'Display inventory failed' }
+    }
     $environment = [ordered]@{
         date = (Get-Date).ToString('o')
         commit = $commit
@@ -178,17 +188,18 @@ try {
         power_plan = ((powercfg /getactivescheme) -join ' ').Trim()
         rustc = ((rustc --version) -join ' ').Trim()
         dotnet_runtimes = @(dotnet --list-runtimes | Where-Object { $_ -like 'Microsoft.NETCore.App *' } | ForEach-Object { ($_ -split ' ')[1] })
-        displays = @(& 'target/release/opentabletdriver-rust.exe' displays)
-        options = [ordered]@{ runs = $Runs; rounds = $Rounds; reports = $Reports; send_input = [bool]$SendInput; replay_seconds = $ReplaySeconds; idle_seconds = $(if ($Idle) { $IdleSeconds } else { $null }) }
+        displays = $displays
+        displays_note = $(if ($displays.Count -gt 0) { 'CLI inventory' } else { 'Not collected; the benchmark uses its fixed synthetic desktop' })
+        options = [ordered]@{ runs = $Runs; rounds = $Rounds; reports = $Reports; rate_hz = $RateHz; warmup_ms = $WarmupMs; send_input = [bool]$SendInput; replay_seconds = $ReplaySeconds; idle_seconds = $(if ($Idle) { $IdleSeconds } else { $null }) }
     }
     $environment | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'environment.json') -Encoding utf8
 
     $env:OTD_BENCH_COMMIT = $commit
     $env:OTD_UPSTREAM_COMMIT = $upstreamRevision
-    $compat = (Resolve-Path -LiteralPath 'target/release/compat').Path
+    $compat = (Resolve-Path -LiteralPath $CompatDirectory).Path
     for ($run = 1; $run -le $Runs; $run++) {
         Write-Information "run $run of ${Runs}: Rust harness" -InformationAction Continue
-        $arguments = @('--reports', "$Reports", '--rounds', "$Rounds", '--compat', $compat, '--out', (Join-Path $OutputDirectory "rust-$run.json"))
+        $arguments = @('--reports', "$Reports", '--rate', "$RateHz", '--rounds', "$Rounds", '--warmup-ms', "$WarmupMs", '--compat', $compat, '--out', (Join-Path $OutputDirectory "rust-$run.json"))
         if ($radialFollowPath) { $arguments += @('--radialfollow', $radialFollowPath) }
         if ($SendInput) { $arguments += '--send-input' }
         if ($ReplaySeconds -gt 0) { $arguments += @('--replay-seconds', "$ReplaySeconds") }
@@ -196,7 +207,7 @@ try {
         Invoke-Native $rustBench $arguments
 
         Write-Information "run $run of ${Runs}: upstream harness" -InformationAction Continue
-        $arguments = @($upstreamBench, '--workload', (Join-Path $workload 'workload.json'), '--rounds', "$Rounds", '--out', (Join-Path $OutputDirectory "upstream-$run.json"))
+        $arguments = @($upstreamBench, '--workload', (Join-Path $workload 'workload.json'), '--rounds', "$Rounds", '--warmup-ms', "$WarmupMs", '--out', (Join-Path $OutputDirectory "upstream-$run.json"))
         if ($radialFollowPath) { $arguments += @('--radialfollow', $radialFollowPath) }
         if ($SendInput) { $arguments += '--send-input' }
         if ($ReplaySeconds -gt 0 -and $radialFollowPath) { $arguments += @('--replay-seconds', "$ReplaySeconds") }
@@ -213,17 +224,17 @@ try {
         $profilePath = (Resolve-Path -LiteralPath (Join-Path $workload 'osu-profile.toml')).Path
         $driver = (Resolve-Path -LiteralPath 'target/release/opentabletdriver-rust.exe').Path
         $panel = (Resolve-Path -LiteralPath 'target/release/opentabletdriver-rust-ui.exe').Path
-        $results += Measure-Idle -CycleRate $cycleRate -Scenario 'rust-daemon' -Start { Start-Process -FilePath $driver -ArgumentList @('run', '--config', "`"$profilePath`"") -WindowStyle Minimized -PassThru }
-        $results += Measure-Idle -CycleRate $cycleRate -Scenario 'rust-panel' -Start { Start-Process -FilePath $panel -PassThru }
+        $results += Measure-Idle -CycleRate $cycleRate -Scenario 'rust-daemon' -Start { Start-Process -FilePath $driver -ArgumentList @('run', '--config', "`"$profilePath`"") -WindowStyle Hidden -PassThru }
+        $results += Measure-Idle -CycleRate $cycleRate -Scenario 'rust-panel' -Start { Start-Process -FilePath $panel -WindowStyle Hidden -PassThru }
         if ($UpstreamInstall) {
             $daemon = Join-Path $UpstreamInstall 'OpenTabletDriver.Daemon.exe'
             $ux = Join-Path $UpstreamInstall 'OpenTabletDriver.UX.Wpf.exe'
-            $results += Measure-Idle -CycleRate $cycleRate -Scenario 'upstream-daemon' -Start { Start-Process -FilePath $daemon -WindowStyle Minimized -PassThru }
+            $results += Measure-Idle -CycleRate $cycleRate -Scenario 'upstream-daemon' -Start { Start-Process -FilePath $daemon -WindowStyle Hidden -PassThru }
             $results += Measure-Idle -CycleRate $cycleRate -Scenario 'upstream-daemon+ux' -Start {
-                $started = Start-Process -FilePath $daemon -WindowStyle Minimized -PassThru
+                $started = Start-Process -FilePath $daemon -WindowStyle Hidden -PassThru
                 Start-Sleep -Seconds 3
                 $started
-                Start-Process -FilePath $ux -PassThru
+                Start-Process -FilePath $ux -WindowStyle Hidden -PassThru
             }
         }
         $results | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'idle.json') -Encoding utf8

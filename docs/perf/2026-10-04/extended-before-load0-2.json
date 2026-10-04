@@ -1,0 +1,218 @@
+{
+  "cases": [
+    {
+      "allocations": 0,
+      "allocations_note": "counted from the 100th report to the end of each session",
+      "allocations_per_report": 0.0,
+      "description": "session::run over the trace with the osu! profile: decoding, pipeline, counters, timing and display checks; no HID read or SendInput",
+      "first_report_us": [],
+      "name": "session/absolute+radial_follow",
+      "per_report_ns": {
+        "max": {
+          "max": 2204.1,
+          "median": 1983.7,
+          "min": 1753.3,
+          "spread_pct": 22.7
+        },
+        "mean": {
+          "max": 271.1,
+          "median": 270.9,
+          "min": 270.2,
+          "spread_pct": 0.3
+        },
+        "p50": {
+          "max": 270.5,
+          "median": 270.5,
+          "min": 270.5,
+          "spread_pct": 0.0
+        },
+        "p95": {
+          "max": 290.5,
+          "median": 290.5,
+          "min": 290.5,
+          "spread_pct": 0.0
+        },
+        "p99": {
+          "max": 300.6,
+          "median": 300.6,
+          "min": 300.6,
+          "spread_pct": 0.0
+        },
+        "p999": {
+          "max": 360.7,
+          "median": 320.6,
+          "min": 320.6,
+          "spread_pct": 12.5
+        }
+      },
+      "reports": 20000,
+      "rounds": 3,
+      "setup_ms": [],
+      "thread_cpu_ns_per_report": 273.1,
+      "throughput_per_s": 3662199.0
+    },
+    {
+      "allocations": 0,
+      "allocations_note": "counted from the 100th report to the end of each session",
+      "allocations_per_report": 0.0,
+      "description": "session::run over the trace with the osu! profile: decoding, pipeline, counters, timing and display checks; no HID read or SendInput",
+      "first_report_us": [],
+      "name": "session/absolute+managed_radial_follow",
+      "per_report_ns": {
+        "max": {
+          "max": 3905948.6,
+          "median": 19366.3,
+          "min": 16440.8,
+          "spread_pct": 20083.9
+        },
+        "mean": {
+          "max": 1419.2,
+          "median": 1368.4,
+          "min": 1189.2,
+          "spread_pct": 16.8
+        },
+        "p50": {
+          "max": 1282.4,
+          "median": 1272.4,
+          "min": 811.5,
+          "spread_pct": 37.0
+        },
+        "p95": {
+          "max": 1743.3,
+          "median": 1532.9,
+          "min": 1132.1,
+          "spread_pct": 39.9
+        },
+        "p99": {
+          "max": 3927.4,
+          "median": 2164.1,
+          "min": 1613.0,
+          "spread_pct": 106.9
+        },
+        "p999": {
+          "max": 9167.2,
+          "median": 4728.9,
+          "min": 3196.0,
+          "spread_pct": 126.3
+        }
+      },
+      "reports": 20000,
+      "rounds": 3,
+      "setup_ms": [],
+      "thread_cpu_ns_per_report": 1584.4,
+      "throughput_per_s": 630877.0
+    }
+  ],
+  "driver": {
+    "commit": "ca2c5d9c7baf0fd6cb5af136ed97a54c5e1ae166+harness",
+    "name": "opentabletdriver-rust",
+    "version": "0.16.7"
+  },
+  "harness": "rust",
+  "machine": {
+    "cpu": "AMD Ryzen 7 5800X3D 8-Core Processor",
+    "invariant_tsc": true,
+    "logical_cpus": 16,
+    "thread_cycle_hz": 3392798520.0,
+    "tsc_hz": 3393629149.0
+  },
+  "managed_replay": {
+    "allocations_after_warmup": 0,
+    "coalesced": 0,
+    "controlled_cpu_load_threads": 0,
+    "model": "auto-reset event; missed signals coalesce rather than preserving a HID queue",
+    "output_ns": {
+      "max": 2504.7,
+      "mean": 30.2,
+      "p50": 30.1,
+      "p95": 40.1,
+      "p99": 40.1,
+      "p999": 50.1
+    },
+    "pipeline_ns": {
+      "max": 1309924.5,
+      "mean": 3853.4,
+      "p50": 3546.6,
+      "p95": 4809.0,
+      "p99": 6752.7,
+      "p999": 17963.7
+    },
+    "processed": 4000,
+    "rate_hz": 500.0,
+    "reports": 4000,
+    "send_input": false,
+    "signal_to_output_ns": {
+      "max": 1314748.8,
+      "mean": 8808.7,
+      "p50": 8345.6,
+      "p95": 10745.4,
+      "p99": 13198.3,
+      "p999": 26118.4
+    },
+    "wake_ns": {
+      "max": 33156.2,
+      "mean": 4925.0,
+      "p50": 4870.3,
+      "p95": 6282.9,
+      "p99": 7653.8,
+      "p999": 17091.4
+    }
+  },
+  "method": {
+    "allocations": "Rust allocations on the measuring thread during the timed pass",
+    "rounds": 3,
+    "timer": "rdtsc/rdtscp with lfence around each report, converted with the measured counter frequency",
+    "warmup_ms": 250
+  },
+  "replay": {
+    "allocations_after_warmup": 0,
+    "coalesced": 0,
+    "controlled_cpu_load_threads": 0,
+    "model": "auto-reset event; missed signals coalesce rather than preserving a HID queue",
+    "output_ns": {
+      "max": 50.1,
+      "mean": 28.0,
+      "p50": 30.1,
+      "p95": 40.1,
+      "p99": 40.1,
+      "p999": 40.1
+    },
+    "pipeline_ns": {
+      "max": 19155.9,
+      "mean": 1157.0,
+      "p50": 1172.2,
+      "p95": 1532.9,
+      "p99": 2154.0,
+      "p999": 4368.2
+    },
+    "processed": 4000,
+    "rate_hz": 500.0,
+    "reports": 4000,
+    "send_input": false,
+    "signal_to_output_ns": {
+      "max": 96493.7,
+      "mean": 6326.4,
+      "p50": 6092.0,
+      "p95": 7960.8,
+      "p99": 10207.7,
+      "p999": 45137.5
+    },
+    "wake_ns": {
+      "max": 94920.8,
+      "mean": 5141.4,
+      "p50": 4989.3,
+      "p95": 6502.8,
+      "p99": 8446.4,
+      "p999": 43775.0
+    }
+  },
+  "schema": "otd-bench/1",
+  "trace": {
+    "fnv1a64": "719b88e0c722d0af",
+    "generator": "osu-synthetic-v1",
+    "rate_hz": 500.0,
+    "report_bytes": 192,
+    "reports": 20000,
+    "seed": 20260923
+  }
+}

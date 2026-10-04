@@ -66,6 +66,7 @@ const USAGE: &str = "Usage: bench [options]
   --compat DIR            .NET bridge directory (default: OTD_COMPAT_DIR)
   --send-input            adds SendInput cases; moves the cursor, never clicks
   --replay-seconds N      paced replay length; 0 skips it (default 0)
+  --load-threads N        controlled CPU load during replay only (default 0)
   --only TEXT             runs only cases whose name contains TEXT
   --export-workload DIR   writes trace.bin, workload.json and osu-profile.toml
                           for the upstream harness and the daemon, then exits
@@ -176,6 +177,7 @@ struct Options {
     radial_follow: Option<PathBuf>,
     send_input: bool,
     replay_seconds: f64,
+    load_threads: usize,
     only: Option<String>,
     export: Option<PathBuf>,
     differential: Option<PathBuf>,
@@ -197,6 +199,7 @@ fn options() -> Result<Options, String> {
         radial_follow: None,
         send_input: false,
         replay_seconds: 0.0,
+        load_threads: 0,
         only: None,
         export: None,
         differential: None,
@@ -216,6 +219,7 @@ fn options() -> Result<Options, String> {
             "--compat" => unsafe { std::env::set_var("OTD_COMPAT_DIR", value()?) },
             "--send-input" => options.send_input = true,
             "--replay-seconds" => options.replay_seconds = number(&arg, &value()?)?,
+            "--load-threads" => options.load_threads = number(&arg, &value()?)?,
             "--only" => options.only = Some(value()?),
             "--export-workload" => options.export = Some(value()?.into()),
             "--export-differential" => options.differential = Some(value()?.into()),
@@ -231,6 +235,17 @@ fn options() -> Result<Options, String> {
     }
     if !(options.rate_hz.is_finite() && options.rate_hz >= 1.0) {
         return Err("--rate must be at least 1 Hz".into());
+    }
+    if !options.replay_seconds.is_finite() || !(0.0..=60.0).contains(&options.replay_seconds) {
+        return Err("--replay-seconds must be between 0 and 60".into());
+    }
+    let cpus = std::thread::available_parallelism()
+        .map_err(|error| error.to_string())?
+        .get();
+    if options.load_threads > cpus || (options.load_threads != 0 && options.replay_seconds == 0.0) {
+        return Err(format!(
+            "--load-threads must be between 0 and {cpus} and requires paced replay"
+        ));
     }
     Ok(options)
 }
@@ -465,8 +480,12 @@ impl Displays for FixedDisplays {
 /// The whole session loop over the trace: decoding, the pipeline, counters,
 /// timing, the once-a-second display check and the output call, without the
 /// HID read. Per-report time runs from one request for a report to the next.
-fn session_case(bench: &mut Bench, profile: &Profile) -> Result<Option<Value>, String> {
-    let name = "session/absolute+radial_follow";
+fn session_case<F: Filters>(
+    bench: &mut Bench,
+    profile: &Profile,
+    name: &str,
+    mut make_filters: impl FnMut() -> Result<F, String>,
+) -> Result<Option<Value>, String> {
     if !bench.wanted(name) {
         return Ok(None);
     }
@@ -475,7 +494,7 @@ fn session_case(bench: &mut Bench, profile: &Profile) -> Result<Option<Value>, S
     let mut rounds = Vec::new();
     let mut allocations = 0;
     for _ in 0..bench.options.rounds {
-        let run = |end: usize| -> Result<TraceSource, String> {
+        let mut run = |end: usize| -> Result<TraceSource, String> {
             // Touch the stamp buffer's pages first, so page faults do not land
             // inside timed reports.
             let mut stamps = vec![0; end + 1];
@@ -489,20 +508,31 @@ fn session_case(bench: &mut Bench, profile: &Profile) -> Result<Option<Value>, S
                 allocations: None,
             };
             let mut displays = FixedDisplays(desktop());
+            let mut filters = make_filters()?;
             session::run(
                 &mut source,
                 &mut displays,
                 profile,
                 Mode::Driver,
                 &mut otd_core::decoders::TabletDecoder::pth_660(),
-                &mut NoFilters,
+                &mut filters,
                 discard,
                 &|_: &str| {},
             )
             .map_err(|e| e.to_string())?;
             Ok(source)
         };
-        run(reports * 5)?;
+        let warming = Instant::now();
+        loop {
+            run(reports * 5)?;
+            if warming.elapsed() >= bench.options.warmup {
+                break;
+            }
+        }
+        // Match the pipeline cases: allow tiered managed compilation to
+        // finish before collecting the full-session distribution.
+        std::thread::sleep(Duration::from_millis(250));
+        run(2_000)?;
         let cycles = clock::thread_cycles();
         let wall = Instant::now();
         let source = run(reports)?;
@@ -527,7 +557,8 @@ fn session_case(bench: &mut Bench, profile: &Profile) -> Result<Option<Value>, S
         &[],
     );
     value["allocations"] = json!(allocations);
-    value["allocations_note"] = json!("counted from the 100th report to the end of each session");
+    value["allocations_note"] =
+        json!("Rust heap only, from the 100th report; managed heap allocations are not counted");
     Ok(Some(value))
 }
 
@@ -649,6 +680,13 @@ fn run() -> Result<(), String> {
 
     let mut plain = osu.clone();
     plain.radial_follow.clear();
+    let managed_config = options.radial_follow.as_ref().map(|path| PluginConfig {
+        path: path.clone(),
+        kind: PluginKind::Dotnet,
+        enabled: true,
+        type_name: "RadialFollow.RadialFollowSmoothingTabletSpace".into(),
+        settings_json: radial_follow_settings(&osu.radial_follow[0]).to_string(),
+    });
     let desktop = desktop();
     let mapper = Some(desktop.mapper(&osu)?);
     eprintln!("calibrating the time-stamp counter");
@@ -714,22 +752,27 @@ fn run() -> Result<(), String> {
             options.ema.display()
         );
     }
-    if let Some(path) = &options.radial_follow {
-        let settings = radial_follow_settings(&osu.radial_follow[0]).to_string();
-        let config = PluginConfig {
-            path: path.clone(),
-            kind: PluginKind::Dotnet,
-            enabled: true,
-            type_name: "RadialFollow.RadialFollowSmoothingTabletSpace".into(),
-            settings_json: settings,
-        };
+    if let Some(config) = &managed_config {
         cases.push(bench.case(
             "absolute+managed_radial_follow",
             "as absolute, with the unchanged RadialFollow 0.3.0 DLL through the .NET bridge instead of the built-in port",
             || pipeline(&plain, mapper, chain(config.clone())?, discard),
         )?);
     }
-    cases.push(session_case(&mut bench, &osu)?);
+    cases.push(session_case(
+        &mut bench,
+        &osu,
+        "session/absolute+radial_follow",
+        || Ok(NoFilters),
+    )?);
+    if let Some(config) = &managed_config {
+        cases.push(session_case(
+            &mut bench,
+            &plain,
+            "session/absolute+managed_radial_follow",
+            || chain(config.clone()),
+        )?);
+    }
 
     let mut cursor = None;
     if options.send_input {
@@ -786,15 +829,34 @@ fn run() -> Result<(), String> {
                 mapper,
                 rate_hz: options.rate_hz,
                 seconds: options.replay_seconds,
+                load_threads: options.load_threads,
                 send: options
                     .send_input
                     .then_some(send_moves as fn(MousePacket) -> io::Result<()>),
                 ns_per_tick: bench.ns_per_tick,
             }
-            .run()?,
+            .run(&mut NoFilters)?,
         )
     } else {
         None
+    };
+    let managed_replay = match &managed_config {
+        Some(config) if options.replay_seconds > 0.0 => Some(
+            replay::Replay {
+                trace: &trace,
+                profile: &plain,
+                mapper,
+                rate_hz: options.rate_hz,
+                seconds: options.replay_seconds,
+                load_threads: options.load_threads,
+                send: options
+                    .send_input
+                    .then_some(send_moves as fn(MousePacket) -> io::Result<()>),
+                ns_per_tick: bench.ns_per_tick,
+            }
+            .run(&mut chain(config.clone())?)?,
+        ),
+        _ => None,
     };
     if let Some(point) = cursor {
         unsafe { SetCursorPos(point.x, point.y) };
@@ -831,6 +893,7 @@ fn run() -> Result<(), String> {
         },
         "cases": cases.into_iter().flatten().collect::<Vec<_>>(),
         "replay": replay,
+        "managed_replay": managed_replay,
     });
     let text = serde_json::to_string_pretty(&results).map_err(|e| e.to_string())?;
     match &options.out {
