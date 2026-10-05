@@ -541,7 +541,44 @@ impl Editor {
         Ok(())
     }
 
+    /// Filters in the order they run. The built-in Radial Follow is listed
+    /// where it runs: in place of a Radial Follow DLL entry, or first.
     pub fn filters(&self) -> Vec<FilterItem> {
+        let mut items = self.radial_filters();
+        let anchor = self
+            .profile
+            .plugins
+            .iter()
+            .position(|plugin| {
+                plugin.kind == PluginKind::Dotnet
+                    && plugin.type_name == crate::radial_follow::FILTER_PATH
+            })
+            .unwrap_or(0);
+        let plugins: Vec<FilterItem> = self
+            .profile
+            .plugins
+            .iter()
+            .enumerate()
+            .map(|(index, plugin)| FilterItem {
+                target: FilterRef::Plugin(index),
+                name: plugin_name(plugin),
+                detail: plugin_detail(plugin),
+                enabled: plugin.enabled,
+            })
+            .collect();
+        let mut plugins = plugins.into_iter();
+        let mut ordered: Vec<FilterItem> = plugins.by_ref().take(anchor).collect();
+        ordered.append(&mut items);
+        ordered.extend(plugins);
+        ordered
+    }
+
+    /// The list row of a filter, as `filters` orders them.
+    pub fn list_index(&self, target: FilterRef) -> Option<usize> {
+        self.filters().iter().position(|item| item.target == target)
+    }
+
+    fn radial_filters(&self) -> Vec<FilterItem> {
         let mut items = Vec::new();
         let radial = &self.profile.radial_follow;
         let detail = "Built-in Rust port".to_owned();
@@ -563,14 +600,6 @@ impl Editor {
                 },
                 detail: detail.clone(),
                 enabled: true,
-            });
-        }
-        for (index, plugin) in self.profile.plugins.iter().enumerate() {
-            items.push(FilterItem {
-                target: FilterRef::Plugin(index),
-                name: plugin_name(plugin),
-                detail: plugin_detail(plugin),
-                enabled: plugin.enabled,
             });
         }
         items
@@ -1433,6 +1462,40 @@ Minimum: 0, Maximum: 2"
         editor.profile.plugins.push(plugin);
         editor.set_filter_enabled(FilterRef::Radial(0), true);
         assert!(editor.duplicate_radial_follow());
+    }
+
+    #[test]
+    fn built_in_radial_follow_is_listed_where_it_runs() {
+        let plugin = |type_name: &str| PluginConfig {
+            path: "C:/plugins/plugin.dll".into(),
+            kind: PluginKind::Dotnet,
+            enabled: false,
+            type_name: type_name.into(),
+            settings_json: "{}".into(),
+        };
+        let mut editor = Editor::new(Profile::default());
+        editor.profile.plugins.push(plugin("TemporalResampler"));
+        let order = |editor: &Editor| {
+            editor
+                .filters()
+                .iter()
+                .map(|item| item.target)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(order(&editor), [FilterRef::Radial(0), FilterRef::Plugin(0)]);
+        editor
+            .profile
+            .plugins
+            .push(plugin(crate::radial_follow::FILTER_PATH));
+        let expected = [
+            FilterRef::Plugin(0),
+            FilterRef::Radial(0),
+            FilterRef::Plugin(1),
+        ];
+        assert_eq!(order(&editor), expected);
+        editor.set_filter_enabled(FilterRef::Radial(0), true);
+        assert_eq!(order(&editor), expected, "enabling keeps its row");
+        assert_eq!(editor.list_index(FilterRef::Plugin(1)), Some(2));
     }
 
     #[test]

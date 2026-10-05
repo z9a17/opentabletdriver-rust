@@ -2075,11 +2075,13 @@ impl App {
             } else {
                 self.editor.profile.plugins.iter().position(same)
             };
-            if let Some(index) = index {
-                self.selected_filter = self.editor.profile.radial_follow.len().max(1) + index;
+            if let Some(row) =
+                index.and_then(|index| self.editor.list_index(FilterRef::Plugin(index)))
+            {
+                self.selected_filter = row;
             }
-        } else if let Some(FilterRef::Radial(index)) = target {
-            self.selected_filter = index;
+        } else if let Some(row) = target.and_then(|target| self.editor.list_index(target)) {
+            self.selected_filter = row;
         }
         self.property_page = page;
         self.drag = None;

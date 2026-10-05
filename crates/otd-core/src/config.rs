@@ -1320,6 +1320,29 @@ impl Profile {
         Ok(())
     }
 
+    /// Where the built-in Radial Follow runs among the enabled DLL filters
+    /// that `PluginChain` loads (all but tools), or `None` to run it before
+    /// them all. OpenTabletDriver runs filters in profile order, so the port
+    /// takes the place of a tablet-space Radial Follow DLL entry, enabled or
+    /// not. Switching between the two then keeps the filter order, which
+    /// changes how it combines with other pre-transform filters such as
+    /// resamplers.
+    pub fn builtin_filter_slot(&self) -> Option<usize> {
+        if self.radial_follow.is_empty() {
+            return None;
+        }
+        let anchor = self.plugins.iter().position(|plugin| {
+            plugin.kind == crate::plugins::PluginKind::Dotnet && plugin.type_name == FILTER_PATH
+        })?;
+        let slot = self.plugins[..anchor]
+            .iter()
+            .filter(|plugin| {
+                plugin.enabled && plugin.kind != crate::plugins::PluginKind::DotnetTool
+            })
+            .count();
+        (slot > 0).then_some(slot)
+    }
+
     pub fn tablet_name(&self) -> Result<Option<String>, String> {
         if let Some(name) = &self.target_tablet {
             // Explicit automatic selection overrides an imported document's name.
@@ -1602,6 +1625,45 @@ impl Profile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn built_in_radial_follow_takes_the_place_of_its_dll_entry() {
+        use crate::plugins::{PluginConfig, PluginKind};
+        let plugin = |type_name: &str, kind, enabled| PluginConfig {
+            path: "plugin.dll".into(),
+            kind,
+            enabled,
+            type_name: type_name.into(),
+            settings_json: "{}".into(),
+        };
+        let mut profile = Profile {
+            radial_follow: vec![RadialFollowSettings::default()],
+            plugins: vec![
+                plugin("TemporalResampler", PluginKind::Dotnet, true),
+                plugin("Disabled", PluginKind::Dotnet, false),
+                plugin("Tool", PluginKind::DotnetTool, true),
+                plugin(FILTER_PATH, PluginKind::Dotnet, false),
+                plugin("After", PluginKind::Dotnet, true),
+            ],
+            ..Profile::default()
+        };
+        // Only the enabled filter before the DLL entry runs before it.
+        assert_eq!(profile.builtin_filter_slot(), Some(1));
+        profile.plugins.swap(0, 3);
+        assert_eq!(profile.builtin_filter_slot(), None, "first in the list");
+        profile.plugins.remove(0);
+        assert_eq!(
+            profile.builtin_filter_slot(),
+            None,
+            "no DLL entry to replace"
+        );
+        profile
+            .plugins
+            .push(plugin(FILTER_PATH, PluginKind::Dotnet, false));
+        assert_eq!(profile.builtin_filter_slot(), Some(2));
+        profile.radial_follow.clear();
+        assert_eq!(profile.builtin_filter_slot(), None, "built-in disabled");
+    }
 
     fn windows_ink_settings(tip: &str, eraser: &str) -> String {
         format!(

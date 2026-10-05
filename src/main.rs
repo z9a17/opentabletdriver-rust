@@ -711,14 +711,11 @@ fn drive(
             if let Some(companions) = &mut companions {
                 companions.reserve_primary(&selected.pen.path_text(), &selected.configuration.name)?;
             }
-            let mut plugins = plugins::PluginChain::load_with_tablet(
-                if capture_seconds.is_none() {
-                    &profile.plugins
-                } else {
-                    &[]
-                },
-                &selected.configuration,
-            )?;
+            let mut plugins = if capture_seconds.is_none() {
+                plugins::PluginChain::load_for_profile(&profile, &selected.configuration)?
+            } else {
+                plugins::PluginChain::load_with_tablet(&[], &selected.configuration)?
+            };
             plugins.validate_output_mode(profile.relative.is_some())?;
             status(&format!(
                 "{} found; opening pen input",

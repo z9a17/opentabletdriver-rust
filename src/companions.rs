@@ -350,7 +350,7 @@ fn run_companion(
     let selected = hid::select_device(&devices, database, Some(path), Some(name))
         .map_err(std::io::Error::other)?
         .ok_or_else(|| std::io::Error::other("the tablet is no longer connected"))?;
-    let mut plugins = PluginChain::load_with_tablet(&profile.plugins, &selected.configuration)
+    let mut plugins = PluginChain::load_for_profile(profile, &selected.configuration)
         .map_err(std::io::Error::other)?;
     plugins
         .validate_output_mode(profile.relative.is_some())
