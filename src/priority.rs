@@ -12,6 +12,8 @@
 //!
 //! Windows 11 can run background processes, such as the panel minimized to
 //! the tray, under EcoQoS. The reader opts out while it holds this guard.
+//! The Experimental tab can additionally register the reader with MMCSS's
+//! Pro Audio task at session startup. That option is off by default.
 
 use std::ffi::c_void;
 use std::io;
@@ -29,6 +31,7 @@ const THREAD_PRIORITY_ERROR_RETURN: i32 = i32::MAX;
 /// Keeps the calling thread at reader priority until dropped.
 pub struct ReaderPriority {
     previous: i32,
+    mmcss: Option<ProAudio>,
 }
 
 impl ReaderPriority {
@@ -43,15 +46,68 @@ impl ReaderPriority {
         }
         // Unavailable before Windows 10 1709; the priority matters more.
         set_high_qos(true);
-        Self { previous }
+        Self {
+            previous,
+            mmcss: None,
+        }
+    }
+    /// The optional task is registered on the actual report thread and kept
+    /// for this session. Capture and benchmarks retain their explicit policy.
+    pub fn for_driver(mmcss: bool, status: &impl Fn(&str)) -> Self {
+        let mut priority = Self::raise();
+        if mmcss {
+            match ProAudio::register() {
+                Ok(task) => {
+                    priority.mmcss = Some(task);
+                    status("Report thread uses experimental MMCSS Pro Audio scheduling.");
+                }
+                Err(error) => {
+                    let message = format!("MMCSS Pro Audio scheduling could not be enabled; using time-critical scheduling: {error}");
+                    eprintln!("{message}");
+                    status(&message);
+                }
+            }
+        }
+        priority
     }
 }
 
 impl Drop for ReaderPriority {
     fn drop(&mut self) {
+        // MMCSS restores its prior state before we restore the pre-session
+        // thread priority. The HANDLE also keeps this guard !Send and !Sync.
+        drop(self.mmcss.take());
         set_high_qos(false);
         if self.previous != THREAD_PRIORITY_ERROR_RETURN {
             unsafe { SetThreadPriority(GetCurrentThread(), self.previous) };
+        }
+    }
+}
+
+/// Registers the calling thread until dropped on the same thread.
+/// https://learn.microsoft.com/windows/win32/api/avrt/nf-avrt-avrevertmmthreadcharacteristics
+struct ProAudio(windows_sys::Win32::Foundation::HANDLE);
+
+impl ProAudio {
+    fn register() -> io::Result<Self> {
+        use windows_sys::Win32::System::Threading::AvSetMmThreadCharacteristicsW;
+        let mut task = 0;
+        let handle = unsafe {
+            AvSetMmThreadCharacteristicsW(windows_sys::core::w!("Pro Audio"), &mut task)
+        };
+        if handle.is_null() {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(Self(handle))
+        }
+    }
+}
+
+impl Drop for ProAudio {
+    fn drop(&mut self) {
+        use windows_sys::Win32::System::Threading::AvRevertMmThreadCharacteristics;
+        if unsafe { AvRevertMmThreadCharacteristics(self.0) } == 0 {
+            eprintln!("could not leave MMCSS Pro Audio scheduling: {}", io::Error::last_os_error());
         }
     }
 }
@@ -99,11 +155,85 @@ mod tests {
         .unwrap();
     }
 
+    #[test]
+    fn mmcss_session_restores_the_calling_threads_priority() {
+        std::thread::spawn(|| {
+            let current = || unsafe { GetThreadPriority(GetCurrentThread()) };
+            let before = current();
+            let messages = std::cell::RefCell::new(Vec::new());
+            let guard = ReaderPriority::for_driver(true, &|message| {
+                messages.borrow_mut().push(message.to_owned());
+            });
+            let registered = guard.mmcss.is_some();
+            assert_eq!(messages.borrow().len(), 1);
+            if !registered {
+                assert_eq!(current(), THREAD_PRIORITY_TIME_CRITICAL);
+                assert!(messages.borrow()[0].contains("could not be enabled"));
+            }
+            drop(guard);
+            assert_eq!(current(), before);
+            println!("MMCSS registration succeeded: {registered}; previous priority restored");
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// Report initialization failure before waiting for benchmark signals.
+    /// A disconnected coordinator also cancels a late initialization.
+    fn initialize_benchmark_waiter<T>(
+        initialize: impl FnOnce() -> io::Result<T>,
+        ready: std::sync::mpsc::SyncSender<io::Result<()>>,
+    ) -> Option<T> {
+        match initialize() {
+            Ok(state) => ready.send(Ok(())).ok().map(|()| state),
+            Err(error) => {
+                let _ = ready.send(Err(error));
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn benchmark_startup_reports_registration_failure() {
+        let (ready, started) = std::sync::mpsc::sync_channel(0);
+        let waiter = std::thread::spawn(move || {
+            initialize_benchmark_waiter::<()>(
+                || Err(io::Error::other("MMCSS registration refused")),
+                ready,
+            )
+        });
+        let error = started
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("waiter must report a failed registration")
+            .unwrap_err();
+        assert_eq!(error.to_string(), "MMCSS registration refused");
+        assert_eq!(waiter.join().unwrap(), None);
+    }
+
+    #[test]
+    fn benchmark_startup_does_not_run_after_coordinator_exits() {
+        let (ready, started) = std::sync::mpsc::sync_channel(0);
+        drop(started);
+        assert_eq!(initialize_benchmark_waiter(|| Ok(42), ready), None);
+    }
+
+    #[test]
+    fn benchmark_startup_keeps_successful_initialization() {
+        let (ready, started) = std::sync::mpsc::sync_channel(0);
+        let waiter = std::thread::spawn(move || initialize_benchmark_waiter(|| Ok(42), ready));
+        started
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("waiter must signal successful initialization")
+            .unwrap();
+        assert_eq!(waiter.join().unwrap(), Some(42));
+    }
+
     /// Wakeup delay of a thread blocked on an event, like the reader waiting
     /// for a report, while busy threads occupy every logical CPU. Prints
-    /// percentiles; keeps all CPUs busy for about ten seconds.
+    /// percentiles; keeps all CPUs busy for fifteen seconds or more. Behind
+    /// time-critical load the desktop stops responding for several seconds.
     #[test]
-    #[ignore = "manual scheduling benchmark; saturates every CPU for about ten seconds"]
+    #[ignore = "manual scheduling benchmark; saturates every CPU for fifteen seconds or more"]
     fn benchmark_reader_wake_latency_under_load() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -117,11 +247,25 @@ mod tests {
         const SAMPLES: usize = 500;
         let cpus = std::thread::available_parallelism().map_or(8, |n| n.get());
         println!("{cpus} logical CPUs, {SAMPLES} wakeups per row, signals 3 ms apart");
+        let mmcss = ProAudio::register().is_ok();
+        if !mmcss {
+            println!("MMCSS is unavailable; its rows are skipped");
+        }
         for (load, load_priority) in [
             ("normal", THREAD_PRIORITY_NORMAL),
             ("above-normal", THREAD_PRIORITY_ABOVE_NORMAL),
+            ("time-critical", THREAD_PRIORITY_TIME_CRITICAL),
         ] {
-            for (waiter, raise) in [("normal", false), ("time-critical", true)] {
+            for (waiter, raise, task) in [
+                ("normal", false, false),
+                ("time-critical", true, false),
+                ("MMCSS Pro Audio", true, true),
+            ] {
+                // Behind time-critical load a normal thread runs only when
+                // Windows' starvation boost lifts it, every few seconds.
+                if (task && !mmcss) || (!raise && load_priority == THREAD_PRIORITY_TIME_CRITICAL) {
+                    continue;
+                }
                 let wake = Event::create(false).unwrap();
                 let ack = Event::create(false).unwrap();
                 let (wake_waiter, ack_waiter) =
@@ -130,9 +274,22 @@ mod tests {
                 let sent_waiter = sent.clone();
                 // The waiter and the signaler take their priorities before
                 // the load starts, so neither is starved while starting.
+                let (ready, started) = std::sync::mpsc::sync_channel(0);
                 let waiter_thread = std::thread::spawn(move || {
-                    let _priority = raise.then(ReaderPriority::raise);
-                    ack_waiter.signal().unwrap();
+                    let Some((_priority, _task)) = initialize_benchmark_waiter(
+                        || {
+                            let priority = raise.then(ReaderPriority::raise);
+                            let registration = if task {
+                                Some(ProAudio::register()?)
+                            } else {
+                                None
+                            };
+                            Ok((priority, registration))
+                        },
+                        ready,
+                    ) else {
+                        return Vec::new();
+                    };
                     let mut delays = Vec::with_capacity(SAMPLES);
                     for _ in 0..SAMPLES {
                         unsafe { WaitForSingleObject(wake_waiter.raw(), INFINITE) };
@@ -141,8 +298,22 @@ mod tests {
                     }
                     delays
                 });
-                unsafe { WaitForSingleObject(ack.raw(), INFINITE) };
+                match started.recv_timeout(Duration::from_secs(10)) {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        waiter_thread.join().unwrap();
+                        println!(
+                            "{load} load, {waiter} reader: skipped; initialization failed: {error}"
+                        );
+                        continue;
+                    }
+                    Err(error) => panic!("{waiter} reader did not initialize: {error}"),
+                }
                 let _signaler = ReaderPriority::raise();
+                // Keeps the signals 3 ms apart behind time-critical load. The
+                // delay is measured from the signal, so this does not affect it.
+                let _signaler_task =
+                    (load_priority == THREAD_PRIORITY_TIME_CRITICAL).then(ProAudio::register);
                 let stop = Arc::new(AtomicBool::new(false));
                 let spinners: Vec<_> = (0..cpus)
                     .map(|_| {

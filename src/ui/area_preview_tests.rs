@@ -372,7 +372,7 @@ fn accent_colors_replace_the_blue_on_every_page() {
 }
 
 #[test]
-fn experimental_tab_keeps_cpu_edits_separate_and_reloads_saved_choices() {
+fn experimental_tab_keeps_scheduling_edits_separate_and_reloads_saved_choices() {
     let window = unsafe { CreateWindowExW(0, wide("STATIC").as_ptr(), wide("Experimental tab").as_ptr(),
         WS_POPUP, 0, 0, 820, 600, ptr::null_mut(), ptr::null_mut(), GetModuleHandleW(ptr::null()), ptr::null()) };
     assert!(!window.is_null());
@@ -384,6 +384,9 @@ fn experimental_tab_keeps_cpu_edits_separate_and_reloads_saved_choices() {
     let page = app.experimental.as_ref().unwrap().window();
     let fields = [unsafe { GetDlgItem(page, 100) }, unsafe { GetDlgItem(page, 101) }];
     let saved = fields.map(text);
+    let mmcss = unsafe { GetDlgItem(page, 108) };
+    assert!(!mmcss.is_null());
+    let saved_mmcss = unsafe { SendMessageW(mmcss, BM_GETCHECK, 0, 0) };
     app.select_tab(Tab::Experimental);
     assert!(placed(&app, &[page]).len() == 1);
     assert!(placed(&app, &[app.c.save, app.c.apply]).is_empty(), "profile buttons must not appear on the CPU page");
@@ -393,12 +396,23 @@ fn experimental_tab_keeps_cpu_edits_separate_and_reloads_saved_choices() {
     unsafe { SendMessageW(page, WM_COMMAND, 102, 0); }
     assert_eq!(fields.map(text), ["All", "All"]);
     unsafe { SendMessageW(page, WM_COMMAND, IDOK as usize, 0); }
-    assert_eq!(app.experimental.as_ref().unwrap().take_result(), Some(crate::experimental::Settings::default()));
+    assert_eq!(app.experimental.as_ref().unwrap().take_result(), Some(crate::experimental::Settings {
+        mmcss: saved_mmcss == BST_CHECKED as isize, ..Default::default()
+    }));
+    unsafe {
+        SendMessageW(mmcss, BM_SETCHECK, BST_CHECKED as usize, 0);
+        SendMessageW(page, WM_COMMAND, IDOK as usize, 0);
+    }
+    assert_eq!(app.experimental.as_ref().unwrap().take_result(), Some(crate::experimental::Settings {
+        mmcss: true, ..Default::default()
+    }));
     assert!(!app.dirty);
     assert_eq!(app.edit_revision, 0);
     assert_eq!(crate::experimental::masks().unwrap().0, affinity, "capturing choices must not apply affinity");
     unsafe { SendMessageW(page, WM_COMMAND, IDCANCEL as usize, 0); }
     assert_eq!(fields.map(text), saved, "Reload saved must discard unsaved CPU edits");
+    assert_eq!(unsafe { SendMessageW(mmcss, BM_GETCHECK, 0, 0) }, saved_mmcss,
+        "Reload saved must discard unsaved MMCSS changes");
     for (name, palette) in [("dark", Palette::dark().with_accent(Accent::Red)), ("light", Palette::light().with_accent(Accent::Green)), ("contrast", Palette::high_contrast())] {
         update_look(|look| look.style.palette = palette);
         experimental::refresh_theme();

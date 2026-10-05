@@ -126,6 +126,15 @@ Missing permissions are reported as errors rather than retried indefinitely.
 Run waits for a supported tablet and rescans every two seconds after disconnect.
 Ctrl+C or SIGTERM cancels the session and destroys its virtual output device.
 
+While a session drives output, its report loop runs at real-time priority
+(`SCHED_FIFO` 40), so busy CPUs do not delay pen input
+([measurements](../../docs/REALTIME_SCHEDULING_2026-10-05.md)). This needs an
+rtprio limit, which audio packages often grant to a group such as `audio`,
+`realtime` or `pipewire`. Check yours with `ulimit -r`. If it is 0, add a file
+such as `/etc/security/limits.d/99-opentabletdriver-rust.conf` containing
+`<user> - rtprio 40`, then sign out and in. Without a limit the driver logs a
+hint and keeps normal priority. `OTD_RUST_REALTIME=0` keeps normal priority.
+
 ## Artist Mode and remaining scope
 
 The profile's [pen button actions](../../docs/PEN_BUTTONS.md) use the virtual

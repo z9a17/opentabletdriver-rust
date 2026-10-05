@@ -2350,7 +2350,7 @@ impl App {
     pub(super) fn apply_experimental(&mut self, settings: crate::experimental::Settings) {
         if self.submit_control(client::ClientCommand::Experimental(settings)) {
             if let Some(page) = &self.experimental { page.set_busy(true); }
-            self.log(Level::Info, "Experimental", "Applying and saving CPU affinity. The Console reports completion or failure; tablet input will not restart.");
+            self.log(Level::Info, "Experimental", "Saving experimental settings and applying CPU affinity. Use Stop, then Start to apply MMCSS changes.");
         } else if let Some(page) = &self.experimental {
             page.set_busy(true);
             page.complete(&Err("The daemon is busy or unavailable. See the Console and retry Save and apply.".into()));

@@ -476,7 +476,11 @@ pub fn run(
         eprintln!("{}", plugins.describe(&profile));
     }
     let _debug = DebugDevice::set(selected);
-    let _priority = ReaderPriority::raise();
+    let _priority = if matches!(mode, Mode::Driver) {
+        ReaderPriority::for_driver(crate::experimental::mmcss_enabled(), status)
+    } else {
+        ReaderPriority::raise()
+    };
     let mut output = if matches!(mode, Mode::Driver) {
         Some(SessionOutput::new()?)
     } else {
@@ -652,7 +656,7 @@ impl<'a> PreparedSession<'a> {
         let mut source = self.source;
         let mut auxiliary = source.auxiliary_decoder(self.selected);
         announce_auxiliary(&source, self.selected, status);
-        let _priority = ReaderPriority::raise();
+        let _priority = ReaderPriority::for_driver(crate::experimental::mmcss_enabled(), status);
         let mut output = SessionOutput::new()?;
         let pen = pen_device(&profile, Mode::Driver)?;
         let result = otd_core::session::run_gated_with_endpoints(

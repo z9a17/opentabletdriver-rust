@@ -32,7 +32,7 @@ python scripts/parity-evidence.py validate
 python -m unittest discover -s scripts/tests -p 'test_parity_*.py'
 ```
 
-Manual benchmarks print their results rather than pass or fail. The first keeps every CPU busy for about ten seconds; see [input latency](../INPUT_LATENCY.md) for recorded results:
+Manual benchmarks print their results rather than pass or fail. The first keeps every CPU busy for fifteen seconds or more; see [input latency](../INPUT_LATENCY.md) for recorded results:
 
 ```powershell
 cargo test --release --locked benchmark_reader_wake_latency_under_load -- --ignored --nocapture --test-threads 1

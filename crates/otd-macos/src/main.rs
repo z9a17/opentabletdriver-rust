@@ -8,6 +8,8 @@ mod ffi;
 mod macos;
 #[cfg(target_os = "macos")]
 mod keymap;
+#[cfg(target_os = "macos")]
+mod realtime;
 
 const USAGE: &str = "OpenTabletDriver Rust macOS CLI\n\
 Usage: opentabletdriver-rust-macos list\n\
@@ -227,6 +229,7 @@ mod app {
             eprintln!("Partial parser support: {reason}");
         }
         eprintln!("macOS native CLI: hardware validation pending; Ctrl+C stops and releases contact.");
+        let _realtime = matches!(mode, Mode::Driver).then(crate::realtime::TimeConstraint::raise);
         session::run_gated_with_devices(&mut source, displays, profile, mode, &mut decoder, &mut NoFilters,
             |packet| match &mouse { Some(mouse) => mouse.borrow_mut().send(packet), None => Ok(()) },
             None, actions, &|line| eprintln!("{line}"), || Ok(true))
