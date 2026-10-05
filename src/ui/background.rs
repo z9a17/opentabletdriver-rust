@@ -431,9 +431,13 @@ impl App {
             );
             return;
         }
-        let first = self.editor.filters().len();
+        let first_plugin = self.editor.profile.plugins.len();
         let count = entries.len();
         self.editor.profile.plugins.extend(entries);
+        let first = self
+            .editor
+            .list_index(FilterRef::Plugin(first_plugin))
+            .unwrap_or(0);
         self.mark_dirty();
         if self.editing_controls() || !select_added {
             self.metadata_changed();

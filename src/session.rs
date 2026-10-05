@@ -472,6 +472,9 @@ pub fn run(
     let mut decoder = selected.decoder()?;
     let mut auxiliary = source.auxiliary_decoder(selected);
     announce_auxiliary(&source, selected, status);
+    if matches!(mode, Mode::Driver) {
+        eprintln!("{}", plugins.describe(&profile));
+    }
     let _debug = DebugDevice::set(selected);
     let _priority = ReaderPriority::raise();
     let mut output = if matches!(mode, Mode::Driver) {
