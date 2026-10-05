@@ -12,6 +12,8 @@
 //!
 //! Windows 11 can run background processes, such as the panel minimized to
 //! the tray, under EcoQoS. The reader opts out while it holds this guard.
+//! The Experimental tab can additionally register the reader with MMCSS's
+//! Pro Audio task at session startup. That option is off by default.
 
 use std::ffi::c_void;
 use std::io;
@@ -29,6 +31,7 @@ const THREAD_PRIORITY_ERROR_RETURN: i32 = i32::MAX;
 /// Keeps the calling thread at reader priority until dropped.
 pub struct ReaderPriority {
     previous: i32,
+    mmcss: Option<ProAudio>,
 }
 
 impl ReaderPriority {
@@ -43,15 +46,68 @@ impl ReaderPriority {
         }
         // Unavailable before Windows 10 1709; the priority matters more.
         set_high_qos(true);
-        Self { previous }
+        Self {
+            previous,
+            mmcss: None,
+        }
+    }
+    /// The optional task is registered on the actual report thread and kept
+    /// for this session. Capture and benchmarks retain their explicit policy.
+    pub fn for_driver(mmcss: bool, status: &impl Fn(&str)) -> Self {
+        let mut priority = Self::raise();
+        if mmcss {
+            match ProAudio::register() {
+                Ok(task) => {
+                    priority.mmcss = Some(task);
+                    status("Report thread uses experimental MMCSS Pro Audio scheduling.");
+                }
+                Err(error) => {
+                    let message = format!("MMCSS Pro Audio scheduling could not be enabled; using time-critical scheduling: {error}");
+                    eprintln!("{message}");
+                    status(&message);
+                }
+            }
+        }
+        priority
     }
 }
 
 impl Drop for ReaderPriority {
     fn drop(&mut self) {
+        // MMCSS restores its prior state before we restore the pre-session
+        // thread priority. The HANDLE also keeps this guard !Send and !Sync.
+        drop(self.mmcss.take());
         set_high_qos(false);
         if self.previous != THREAD_PRIORITY_ERROR_RETURN {
             unsafe { SetThreadPriority(GetCurrentThread(), self.previous) };
+        }
+    }
+}
+
+/// Registers the calling thread until dropped on the same thread.
+/// https://learn.microsoft.com/windows/win32/api/avrt/nf-avrt-avrevertmmthreadcharacteristics
+struct ProAudio(windows_sys::Win32::Foundation::HANDLE);
+
+impl ProAudio {
+    fn register() -> io::Result<Self> {
+        use windows_sys::Win32::System::Threading::AvSetMmThreadCharacteristicsW;
+        let mut task = 0;
+        let handle = unsafe {
+            AvSetMmThreadCharacteristicsW(windows_sys::core::w!("Pro Audio"), &mut task)
+        };
+        if handle.is_null() {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(Self(handle))
+        }
+    }
+}
+
+impl Drop for ProAudio {
+    fn drop(&mut self) {
+        use windows_sys::Win32::System::Threading::AvRevertMmThreadCharacteristics;
+        if unsafe { AvRevertMmThreadCharacteristics(self.0) } == 0 {
+            eprintln!("could not leave MMCSS Pro Audio scheduling: {}", io::Error::last_os_error());
         }
     }
 }
@@ -99,27 +155,27 @@ mod tests {
         .unwrap();
     }
 
-    /// Registers the calling thread with MMCSS's Pro Audio task until
-    /// dropped. MMCSS runs it at 23–26 while the category's threads stay
-    /// within their CPU share, and at 1–7 once they exceed it.
-    struct ProAudio(windows_sys::Win32::Foundation::HANDLE);
-
-    impl ProAudio {
-        fn register() -> Option<Self> {
-            use windows_sys::Win32::System::Threading::AvSetMmThreadCharacteristicsW;
-            let mut task = 0;
-            let handle = unsafe {
-                AvSetMmThreadCharacteristicsW(windows_sys::core::w!("Pro Audio"), &mut task)
-            };
-            (!handle.is_null()).then(|| Self(handle))
-        }
-    }
-
-    impl Drop for ProAudio {
-        fn drop(&mut self) {
-            use windows_sys::Win32::System::Threading::AvRevertMmThreadCharacteristics;
-            unsafe { AvRevertMmThreadCharacteristics(self.0) };
-        }
+    #[test]
+    fn mmcss_session_restores_the_calling_threads_priority() {
+        std::thread::spawn(|| {
+            let current = || unsafe { GetThreadPriority(GetCurrentThread()) };
+            let before = current();
+            let messages = std::cell::RefCell::new(Vec::new());
+            let guard = ReaderPriority::for_driver(true, &|message| {
+                messages.borrow_mut().push(message.to_owned());
+            });
+            let registered = guard.mmcss.is_some();
+            assert_eq!(messages.borrow().len(), 1);
+            if !registered {
+                assert_eq!(current(), THREAD_PRIORITY_TIME_CRITICAL);
+                assert!(messages.borrow()[0].contains("could not be enabled"));
+            }
+            drop(guard);
+            assert_eq!(current(), before);
+            println!("MMCSS registration succeeded: {registered}; previous priority restored");
+        })
+        .join()
+        .unwrap();
     }
 
     /// Report initialization failure before waiting for benchmark signals.
@@ -191,7 +247,7 @@ mod tests {
         const SAMPLES: usize = 500;
         let cpus = std::thread::available_parallelism().map_or(8, |n| n.get());
         println!("{cpus} logical CPUs, {SAMPLES} wakeups per row, signals 3 ms apart");
-        let mmcss = ProAudio::register().is_some();
+        let mmcss = ProAudio::register().is_ok();
         if !mmcss {
             println!("MMCSS is unavailable; its rows are skipped");
         }
@@ -224,7 +280,7 @@ mod tests {
                         || {
                             let priority = raise.then(ReaderPriority::raise);
                             let registration = if task {
-                                Some(ProAudio::register().ok_or_else(io::Error::last_os_error)?)
+                                Some(ProAudio::register()?)
                             } else {
                                 None
                             };

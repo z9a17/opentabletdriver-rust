@@ -724,9 +724,10 @@ impl ControlHandler for Daemon {
                     .map_err(|error| ControlError::new(ErrorCode::InvalidRequest, error))?;
                 crate::experimental::save_driver_at(&path, &settings)
                     .map_err(|error| ControlError::new(ErrorCode::InvalidRequest, error))?;
-                self.log(format!("Experimental CPU affinity saved. GUI: {}; driver: {}.",
+                self.log(format!("Experimental settings saved. GUI CPUs: {}; driver CPUs: {}; MMCSS Pro Audio: {} for the next tablet session.",
                     crate::experimental::format_cpus(&settings.ui_cpus),
-                    crate::experimental::format_cpus(&settings.driver_cpus)));
+                    crate::experimental::format_cpus(&settings.driver_cpus),
+                    if settings.mmcss { "enabled" } else { "disabled" }));
                 Ok(Reply::ExperimentalSaved)
             }
             Command::GetConfiguration { expected } => {

@@ -2,6 +2,7 @@
 //! report callbacks. Empty CPU lists retain the Windows scheduler defaults.
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use windows_sys::Win32::System::Threading::{
     GetActiveProcessorGroupCount, GetCurrentProcess, GetProcessAffinityMask, SetProcessAffinityMask,
 };
@@ -11,6 +12,14 @@ use windows_sys::Win32::System::Threading::{
 pub struct Settings {
     pub ui_cpus: Vec<u16>,
     pub driver_cpus: Vec<u16>,
+    pub mmcss: bool,
+}
+
+// New sessions read this once; applying settings never interrupts input.
+static DRIVER_MMCSS: AtomicBool = AtomicBool::new(false);
+
+pub fn mmcss_enabled() -> bool {
+    DRIVER_MMCSS.load(Ordering::Relaxed)
 }
 
 pub fn path() -> Result<PathBuf, String> {
@@ -96,7 +105,7 @@ fn selected_mask(cpus: &[u16], available: usize) -> Result<usize, String> {
 pub fn validate(settings: &Settings) -> Result<(), String> {
     // Do not mistake a group-local mask for the CPU numbers of a large system.
     if unsafe { GetActiveProcessorGroupCount() } > 1 {
-        if settings != &Settings::default() {
+        if !settings.ui_cpus.is_empty() || !settings.driver_cpus.is_empty() {
             return Err("CPU pinning currently supports one Windows processor group, up to 64 logical CPUs. Keep both fields set to All on this computer.".into());
         }
         return Ok(());
@@ -137,6 +146,7 @@ pub fn save_driver_at(path: &Path, settings: &Settings) -> Result<(), String> {
         }
         return Err(error);
     }
+    DRIVER_MMCSS.store(settings.mmcss, Ordering::Relaxed);
     Ok(())
 }
 
@@ -145,6 +155,7 @@ pub fn apply_saved(ui: bool) -> Result<(), String> {
     // before reading its independent choice, including when the file is bad.
     if !ui { apply(&[])?; }
     let settings = load()?;
+    if !ui { DRIVER_MMCSS.store(settings.mmcss, Ordering::Relaxed); }
     // Default GUI settings retain external launcher affinity. An explicit All
     // in the dialog resets a prior app selection.
     let cpus = if ui { &settings.ui_cpus } else { &settings.driver_cpus };
@@ -172,9 +183,11 @@ mod tests {
 
     #[test]
     fn settings_round_trip_and_reject_unknown_keys() {
-        let settings = Settings { ui_cpus: vec![0,2], driver_cpus: vec![1,3] };
+        let settings = Settings { ui_cpus: vec![0,2], driver_cpus: vec![1,3], mmcss: true };
         assert_eq!(toml::from_str::<Settings>(&toml::to_string(&settings).unwrap()).unwrap(), settings);
         assert_eq!(toml::from_str::<Settings>("").unwrap(), Settings::default());
+        let legacy = toml::from_str::<Settings>("ui_cpus = [0]\ndriver_cpus = [1]").unwrap();
+        assert_eq!(legacy, Settings { ui_cpus: vec![0], driver_cpus: vec![1], mmcss: false });
         assert!(toml::from_str::<Settings>("driver_core = 1").is_err());
     }
 
@@ -192,16 +205,18 @@ mod tests {
         let directory = std::env::temp_dir().join(format!("otd-affinity-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("experimental.toml");
-        let settings = Settings { ui_cpus: vec![cpu], driver_cpus: vec![cpu] };
+        let settings = Settings { ui_cpus: vec![cpu], driver_cpus: vec![cpu], mmcss: true };
         save_driver_at(&path, &settings).unwrap();
         assert_eq!(masks().unwrap().0, 1usize << cpu);
         assert_eq!(load_at(&path).unwrap(), settings);
+        assert!(mmcss_enabled());
         apply(&[]).unwrap();
         assert_eq!(masks().unwrap().0, system);
-        let invalid = Settings { ui_cpus: vec![64], driver_cpus: Vec::new() };
+        let invalid = Settings { ui_cpus: vec![64], driver_cpus: Vec::new(), mmcss: false };
         assert!(save_driver_at(&path, &invalid).is_err());
         assert_eq!(masks().unwrap().0, system);
         assert_eq!(load_at(&path).unwrap(), settings);
+        assert!(mmcss_enabled(), "a rejected save must retain the prior scheduling choice");
         let mut permissions = std::fs::metadata(&path).unwrap().permissions();
         permissions.set_readonly(true);
         std::fs::set_permissions(&path, permissions).unwrap();
@@ -213,6 +228,7 @@ mod tests {
         std::fs::set_permissions(&path, permissions).unwrap();
         save_driver_at(&path, &Settings::default()).unwrap();
         assert_eq!(load_at(&path).unwrap(), Settings::default());
+        assert!(!mmcss_enabled());
         std::fs::remove_dir_all(directory).unwrap();
     }
 }

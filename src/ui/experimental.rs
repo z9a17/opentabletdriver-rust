@@ -9,6 +9,8 @@ const NOTICE: u16 = 103;
 const DESCRIPTION: u16 = 105;
 const AVAILABLE: u16 = 106;
 const HELP: u16 = 107;
+const MMCSS: u16 = 108;
+const MMCSS_HELP: u16 = 109;
 
 thread_local! {
     static WINDOW: Cell<HWND> = const { Cell::new(ptr::null_mut()) };
@@ -35,6 +37,7 @@ struct Dialog {
     window: HWND,
     settings: Settings,
     fields: [HWND; 2],
+    mmcss: HWND,
     controls: Vec<(HWND, RECT)>,
     fonts: Option<FontSet>,
     dpi: u32,
@@ -56,6 +59,7 @@ impl Dialog {
         if control.is_null() { return Err(std::io::Error::last_os_error().to_string()); }
         let kind = match class {
             "EDIT" => Kind::Field,
+            "BUTTON" if style & BS_TYPEMASK as u32 == BS_AUTOCHECKBOX as u32 => Kind::Check,
             "BUTTON" => Kind::Button,
             _ => Kind::Label,
         };
@@ -76,11 +80,11 @@ impl Dialog {
             return Err(std::io::Error::last_os_error().to_string());
         }
         set_text(window, "Experimental settings");
-        self.add("STATIC", "CPU affinity", TITLE, SS_LEFT, rect(16,16,604,38))?;
-        self.add("STATIC", "Choose logical CPUs independently for the GUI and driver process. Use All for automatic scheduling, or numbers such as 0,2,4-7. CPU numbers start at 0; they are logical processors, not physical cores.",
-            DESCRIPTION, SS_LEFT | SS_NOPREFIX, rect(16,44,604,98))?;
+        self.add("STATIC", "CPU affinity and scheduling", TITLE, SS_LEFT, rect(16,16,604,38))?;
+        self.add("STATIC", "Choose logical CPUs for the GUI and driver independently. Use All for automatic scheduling, or lists such as 0,2,4-7. Numbers identify logical processors.",
+            DESCRIPTION, SS_LEFT | SS_NOPREFIX, rect(16,44,604,82))?;
         for (index, label) in ["&GUI CPUs", "&Driver CPUs"].iter().enumerate() {
-            let top = 112 + index as i32 * 42;
+            let top = 94 + index as i32 * 42;
             self.add("STATIC", label, 0, SS_LEFT, rect(16,top+4,124,top+28))?;
             let cpus = if index == 0 { &self.settings.ui_cpus } else { &self.settings.driver_cpus };
             self.fields[index] = self.add("EDIT", &format_cpus(cpus), 100 + index as u16,
@@ -95,12 +99,17 @@ impl Dialog {
             let cpus: Vec<u16> = (0..64).filter(|cpu| mask & (1usize << cpu) != 0).collect();
             format!("Available logical CPUs: {}.", format_cpus(&cpus))
         }).unwrap_or_else(|error| error);
-        self.add("STATIC", &available, AVAILABLE, SS_LEFT | SS_NOPREFIX, rect(16,198,604,242))?;
-        self.add("STATIC", "Save and apply stores these choices for future launches and updates both processes without restarting tablet input. All resets a previous CPU selection. On systems with multiple Windows processor groups, keep both fields set to All.",
-            HELP, SS_LEFT | SS_NOPREFIX, rect(16,250,604,306))?;
+        self.add("STATIC", &available, AVAILABLE, SS_LEFT | SS_NOPREFIX, rect(16,176,604,206))?;
+        self.mmcss = self.add("BUTTON", "&MMCSS Pro Audio scheduling", MMCSS,
+            WS_TABSTOP | BS_AUTOCHECKBOX as u32, rect(16,214,604,240))?;
+        unsafe { SendMessageW(self.mmcss, BM_SETCHECK, usize::from(self.settings.mmcss), 0); }
+        self.add("STATIC", "Use the Windows Pro Audio scheduling task for the report thread. Off by default; performance can vary under audio/video load.",
+            MMCSS_HELP, SS_LEFT | SS_NOPREFIX, rect(16,246,604,282))?;
+        self.add("STATIC", "Save applies CPU choices now. Restart tablet input for MMCSS changes. Keep CPU fields set to All on systems with multiple processor groups.",
+            HELP, SS_LEFT | SS_NOPREFIX, rect(16,288,604,322))?;
         self.notice = self.add("STATIC", self.load_warning.clone().unwrap_or_else(||
             "Changes are experimental. The Console reports save/application failures.".into()).as_str(),
-            NOTICE, SS_LEFT | SS_NOPREFIX, rect(16,316,604,374))?;
+            NOTICE, SS_LEFT | SS_NOPREFIX, rect(16,330,604,374))?;
         self.add("BUTTON", "&All CPUs", 102, WS_TABSTOP | BS_PUSHBUTTON as u32, rect(16,388,124,420))?;
         self.add("BUTTON", "&Save and apply", IDOK as u16, WS_TABSTOP | BS_DEFPUSHBUTTON as u32, rect(328,388,474,420))?;
         self.add("BUTTON", if self.embedded() { "&Reload saved" } else { "Cancel" }, IDCANCEL as u16,
@@ -190,7 +199,8 @@ impl Dialog {
     fn accept(&mut self) {
         let candidate = (|| {
             let settings = Settings { ui_cpus: parse_cpus(&text(self.fields[0]))?,
-                driver_cpus: parse_cpus(&text(self.fields[1]))? };
+                driver_cpus: parse_cpus(&text(self.fields[1]))?,
+                mmcss: unsafe { SendMessageW(self.mmcss, BM_GETCHECK, 0, 0) } == BST_CHECKED as isize };
             crate::experimental::validate(&settings)?;
             Ok::<_, String>(settings)
         })();
@@ -236,7 +246,8 @@ impl Dialog {
         for (field, cpus) in self.fields.iter().zip([&self.settings.ui_cpus, &self.settings.driver_cpus]) {
             set_text(*field, &format_cpus(cpus));
         }
-        set_text(self.notice, self.load_warning.as_deref().unwrap_or("Reloaded saved CPU choices. Changes apply only when you choose Save and apply."));
+        unsafe { SendMessageW(self.mmcss, BM_SETCHECK, usize::from(self.settings.mmcss), 0); }
+        set_text(self.notice, self.load_warning.as_deref().unwrap_or("Reloaded saved choices. Choose Save and apply to store changes."));
         unsafe { RedrawWindow(self.window, ptr::null(), ptr::null_mut(), RDW_INVALIDATE | RDW_ALLCHILDREN); }
     }
 }
@@ -269,7 +280,7 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wp: WPARAM, lp: 
             with_look(|look| {
                 let palette = look.style.palette;
                 let color = match unsafe { GetDlgCtrlID(control) } as u16 {
-                    DESCRIPTION | AVAILABLE | HELP => palette.muted,
+                    DESCRIPTION | AVAILABLE | HELP | MMCSS_HELP => palette.muted,
                     NOTICE => {
                         let state = unsafe { &*state }.try_borrow().ok();
                         if state.as_ref().is_some_and(|state| state.invalid) { palette.error }
@@ -325,6 +336,7 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wp: WPARAM, lp: 
                     if state.embedded() { state.reload(); } else { unsafe { EndDialog(window, 0); } }
                 }
                 102 => { for field in state.fields { set_text(field,"All"); } state.clear_validation(); }
+                MMCSS => state.clear_validation(),
                 _ => return 0,
             }
             1
@@ -368,7 +380,7 @@ impl Page {
     pub(super) fn create(parent: HWND) -> Result<Self, String> {
         let (settings, load_warning) = load_choices();
         let state = Box::new(RefCell::new(Dialog {
-            window: ptr::null_mut(), settings, fields: [ptr::null_mut(); 2], controls: Vec::new(),
+            window: ptr::null_mut(), settings, fields: [ptr::null_mut(); 2], mmcss: ptr::null_mut(), controls: Vec::new(),
             fonts: None, dpi: 96, notice: ptr::null_mut(), result: None, error: None, load_warning,
             invalid: false, busy: false, dark_mode: theme::DarkMode::load(), icons: [ptr::null_mut(); 2],
         }));
@@ -422,7 +434,7 @@ impl Page {
 
     pub(super) fn set_busy(&self, busy: bool) {
         self.state.borrow_mut().busy = busy;
-        if busy { set_text(self.state.borrow().notice, "Saving and applying CPU affinity. The Console reports any failure."); }
+        if busy { set_text(self.state.borrow().notice, "Saving experimental settings and applying CPU affinity. The Console reports any failure."); }
         unsafe { EnableWindow(self.window, i32::from(!busy)); }
     }
 
@@ -431,7 +443,7 @@ impl Page {
         if !state.busy { return; }
         state.busy = false;
         state.load_warning = result.as_ref().err().cloned();
-        set_text(state.notice, state.load_warning.as_deref().unwrap_or("Saved and applied CPU choices. Tablet input was not restarted."));
+        set_text(state.notice, state.load_warning.as_deref().unwrap_or("Settings saved; CPU choices applied. Use Stop, then Start for MMCSS changes."));
         unsafe { EnableWindow(self.window, 1); RedrawWindow(self.window, ptr::null(), ptr::null_mut(), RDW_INVALIDATE | RDW_ALLCHILDREN); }
     }
 }
@@ -497,7 +509,7 @@ mod tests {
             filters: Vec::new(), log: VecDeque::new(), log_columns: [0;3], brushes: RefCell::new(Vec::new()),
         }));
         let state = RefCell::new(Dialog { window: ptr::null_mut(), settings: Settings::default(),
-            fields: [ptr::null_mut();2], controls: Vec::new(), fonts: None, dpi: 96, notice: ptr::null_mut(),
+            fields: [ptr::null_mut();2], mmcss: ptr::null_mut(), controls: Vec::new(), fonts: None, dpi: 96, notice: ptr::null_mut(),
             result: None, error: None, load_warning: None, invalid: false, busy: false,
             dark_mode: theme::DarkMode::load(), icons: [ptr::null_mut();2] });
         let template = Template { dialog: DLGTEMPLATE {
