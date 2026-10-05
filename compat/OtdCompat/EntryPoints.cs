@@ -252,8 +252,11 @@ sealed class Instance : IDisposable
     {
         if (Environment.CurrentManagedThreadId != ownerThread)
             throw new InvalidOperationException("Timers must fire on the graph's owning thread.");
-        if (Interlocked.Exchange(ref consuming, 1) != 0)
+        // Only the owning thread reads or writes `consuming` (OnEmit checks the
+        // thread first), so a plain check avoids a locked instruction per call.
+        if (consuming != 0)
             throw new InvalidOperationException("Reentrant timer tick of the same filter is unsupported.");
+        Volatile.Write(ref consuming, 1);
         graphContinuation = continuation;
         try
         {
@@ -329,12 +332,32 @@ sealed class Instance : IDisposable
         });
     }
 
+    /// Compiles the plugin's Consume before the first report; see Precompiler.
+    internal void PrecompileConsume()
+    {
+        try
+        {
+            Type type = filter.GetType();
+            Type positioned = typeof(IPositionedPipelineElement<IDeviceReport>);
+            foreach (Type contract in positioned.GetInterfaces().Append(positioned))
+            {
+                if (contract.GetMethod(nameof(filter.Consume)) is not { } consume) continue;
+                InterfaceMapping map = type.GetInterfaceMap(contract);
+                int index = Array.IndexOf(map.InterfaceMethods, consume);
+                if (index >= 0) Precompiler.Prepare(map.TargetMethods[index]);
+            }
+        }
+        catch (Exception) { }
+    }
+
     public void ConsumeGraph(IDeviceReport report, Action<IDeviceReport> continuation)
     {
         if (Environment.CurrentManagedThreadId != ownerThread || Volatile.Read(ref asyncEmission) != 0)
             throw new NotSupportedException("Asynchronous plugin emissions require the P05 scheduler.");
-        if (Interlocked.Exchange(ref consuming, 1) != 0)
+        // Owner-thread state, as in TickGraph: no locked instruction per report.
+        if (consuming != 0)
             throw new InvalidOperationException("Reentrant consumption of the same filter is unsupported.");
+        Volatile.Write(ref consuming, 1);
         graphContinuation = continuation;
         try
         {

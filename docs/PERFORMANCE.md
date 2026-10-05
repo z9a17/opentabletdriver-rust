@@ -8,6 +8,8 @@ The results below were measured with 0.7.5. The [0.15.3 performance audit](AUDIT
 
 The [4 October offline input audit](INPUT_AUDIT_2026-10-04.md) compares 0.16.7 with the pinned upstream at 500 Hz, includes the managed filter in paced replay, and measures synthetic CPU contention. Its small session optimization ships in 0.16.8. The reported streaming slowdown has not been reproduced with osu!lazer and OBS running.
 
+The [5 October performance audit](PERFORMANCE_AUDIT_2026-10-05.md) makes the .NET bridge test report interfaces once per type and compile its report path when the graph is created, and removes the `fmod` call from relative mode. In an offline Linux comparison, one report through the bridge took about 28 % less time, the first report after the graph is created took under 1 ms instead of about 7 ms, and native relative processing about 7 % less. It has not been measured on Windows.
+
 ## Results on the development machine
 
 Ryzen 7 5800X3D (16 logical CPUs), Windows 11 Pro build 26200, Ultimate Performance power plan, 23 September 2026. This driver 0.7.5 against OpenTabletDriver 0.6.7 on .NET 8.0.31, both replaying the same trace with the development machine's osu! profile. Each number is the median of three runs unless noted; the complete output is in [perf/2026-09-23](perf/2026-09-23/summary.md).

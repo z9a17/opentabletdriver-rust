@@ -1,0 +1,30 @@
+== HEAD run 1
+absolute                     min   89.5 ns  median   94.3 ns
+absolute+radial_follow       min  149.1 ns  median  154.8 ns
+relative                     min   46.1 ns  median   50.4 ns
+relative+radial_follow       min  149.3 ns  median  157.8 ns
+== new run 1
+absolute                     min   87.4 ns  median   91.3 ns
+absolute+radial_follow       min  148.2 ns  median  153.2 ns
+relative                     min   42.7 ns  median   45.7 ns
+relative+radial_follow       min  148.6 ns  median  151.1 ns
+== HEAD run 2
+absolute                     min   89.8 ns  median   92.9 ns
+absolute+radial_follow       min  148.6 ns  median  160.0 ns
+relative                     min   45.7 ns  median   47.4 ns
+relative+radial_follow       min  149.1 ns  median  151.7 ns
+== new run 2
+absolute                     min   87.7 ns  median   93.2 ns
+absolute+radial_follow       min  147.6 ns  median  150.8 ns
+relative                     min   42.3 ns  median   43.6 ns
+relative+radial_follow       min  147.5 ns  median  151.1 ns
+== HEAD run 3
+absolute                     min   90.3 ns  median  105.3 ns
+absolute+radial_follow       min  147.4 ns  median  163.7 ns
+relative                     min   45.3 ns  median   46.6 ns
+relative+radial_follow       min  149.3 ns  median  151.3 ns
+== new run 3
+absolute                     min   87.4 ns  median   89.1 ns
+absolute+radial_follow       min  148.3 ns  median  151.8 ns
+relative                     min   42.5 ns  median   44.2 ns
+relative+radial_follow       min  147.2 ns  median  150.4 ns
