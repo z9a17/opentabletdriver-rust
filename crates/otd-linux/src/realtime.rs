@@ -21,6 +21,14 @@ const PRIORITY: libc::c_int = 40;
 /// Children of the driver do not inherit the policy.
 const SCHED_RESET_ON_FORK: libc::c_int = 0x4000_0000;
 
+fn scheduling_parameters(priority: libc::c_int) -> libc::sched_param {
+    // SAFETY: sched_param contains only integers and timespecs. musl adds
+    // sporadic-scheduling fields that must stay zero for the policies we use.
+    let mut param: libc::sched_param = unsafe { std::mem::zeroed() };
+    param.sched_priority = priority;
+    param
+}
+
 /// Keeps the calling thread at real-time priority until dropped.
 pub struct RealtimePriority {
     previous: Option<(libc::c_int, libc::sched_param)>,
@@ -32,7 +40,7 @@ impl RealtimePriority {
             return Self { previous: None };
         }
         // SAFETY: plain-data out-parameters for the calling thread (pid 0).
-        let mut param = libc::sched_param { sched_priority: 0 };
+        let mut param = scheduling_parameters(0);
         let policy = unsafe { libc::sched_getscheduler(0) };
         if policy < 0 || unsafe { libc::sched_getparam(0, &mut param) } != 0 {
             return Self { previous: None };
@@ -49,9 +57,7 @@ impl RealtimePriority {
             if priority <= 0 {
                 continue;
             }
-            let wanted = libc::sched_param {
-                sched_priority: priority,
-            };
+            let wanted = scheduling_parameters(priority);
             // SAFETY: valid policy and parameter for the calling thread.
             if unsafe {
                 libc::sched_setscheduler(0, libc::SCHED_FIFO | SCHED_RESET_ON_FORK, &wanted)
@@ -129,7 +135,7 @@ mod tests {
         std::thread::spawn(|| {
             let policy = || unsafe { libc::sched_getscheduler(0) };
             let priority = || {
-                let mut param = libc::sched_param { sched_priority: 0 };
+                let mut param = scheduling_parameters(0);
                 assert_eq!(unsafe { libc::sched_getparam(0, &mut param) }, 0);
                 param.sched_priority
             };
@@ -358,7 +364,7 @@ mod tests {
                         (delays.take(), applied)
                     });
                     let writer = scope.spawn(move || {
-                        let param = libc::sched_param { sched_priority: 80 };
+                        let param = scheduling_parameters(80);
                         unsafe { libc::sched_setscheduler(0, libc::SCHED_FIFO, &param) };
                         let mut fifo = std::fs::OpenOptions::new()
                             .write(true)
