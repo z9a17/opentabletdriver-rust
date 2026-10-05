@@ -11,6 +11,7 @@
 //! lifts the limit. Without either the loop keeps normal scheduling.
 //! `OTD_RUST_REALTIME=0` disables the change.
 
+use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Above every normal thread, below threaded interrupt handlers (50), which
@@ -83,10 +84,34 @@ impl RealtimePriority {
 impl Drop for RealtimePriority {
     fn drop(&mut self) {
         if let Some((policy, param)) = self.previous {
-            // SAFETY: restores the thread's own earlier policy, which lowering
-            // from SCHED_FIFO always permits.
-            unsafe { libc::sched_setscheduler(0, policy, &param) };
+            if let Err(error) = restore_policy(policy, |wanted| {
+                // SAFETY: the saved priority and policy belong to this thread.
+                if unsafe { libc::sched_setscheduler(0, wanted, &param) } == 0 {
+                    Ok(())
+                } else {
+                    Err(io::Error::last_os_error())
+                }
+            }) {
+                eprintln!("could not restore the report thread's scheduling: {error}");
+            }
         }
+    }
+}
+
+fn restore_policy(
+    policy: libc::c_int,
+    mut apply: impl FnMut(libc::c_int) -> io::Result<()>,
+) -> io::Result<()> {
+    match apply(policy) {
+        // Without CAP_SYS_NICE, Linux refuses to clear reset-on-fork even
+        // when lowering FIFO to SCHED_OTHER. Keep the flag to restore the
+        // saved policy and priority; privileged callers restore both exactly.
+        Err(error)
+            if error.raw_os_error() == Some(libc::EPERM) && policy & SCHED_RESET_ON_FORK == 0 =>
+        {
+            apply(policy | SCHED_RESET_ON_FORK)
+        }
+        result => result,
     }
 }
 
@@ -103,7 +128,13 @@ mod tests {
     fn guard_restores_the_previous_policy() {
         std::thread::spawn(|| {
             let policy = || unsafe { libc::sched_getscheduler(0) };
+            let priority = || {
+                let mut param = libc::sched_param { sched_priority: 0 };
+                assert_eq!(unsafe { libc::sched_getparam(0, &mut param) }, 0);
+                param.sched_priority
+            };
             let before = policy();
+            let before_priority = priority();
             {
                 let guard = RealtimePriority::raise();
                 // Containers and users without an rtprio limit fall back.
@@ -113,10 +144,58 @@ mod tests {
                     assert_eq!(policy(), before);
                 }
             }
-            assert_eq!(policy(), before);
+            assert_eq!(
+                policy() & !SCHED_RESET_ON_FORK,
+                before & !SCHED_RESET_ON_FORK
+            );
+            assert_eq!(priority(), before_priority);
         })
         .join()
         .unwrap();
+    }
+
+    #[test]
+    fn unprivileged_restore_keeps_reset_on_fork() {
+        let mut current = libc::SCHED_FIFO | SCHED_RESET_ON_FORK;
+        restore_policy(libc::SCHED_OTHER, |wanted| {
+            // Linux's permission rule also applies to non-real-time policies.
+            if current & SCHED_RESET_ON_FORK != 0 && wanted & SCHED_RESET_ON_FORK == 0 {
+                return Err(io::Error::from_raw_os_error(libc::EPERM));
+            }
+            current = wanted;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(current, libc::SCHED_OTHER | SCHED_RESET_ON_FORK);
+    }
+
+    #[test]
+    fn privileged_restore_uses_the_exact_previous_policy() {
+        let mut policies = Vec::new();
+        restore_policy(libc::SCHED_OTHER, |wanted| {
+            policies.push(wanted);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(policies, [libc::SCHED_OTHER]);
+    }
+
+    #[test]
+    fn restore_reports_errors_without_unnecessary_retries() {
+        for (policy, errno, expected_calls) in [
+            (libc::SCHED_OTHER, libc::EPERM, 2),
+            (libc::SCHED_OTHER | SCHED_RESET_ON_FORK, libc::EPERM, 1),
+            (libc::SCHED_OTHER, libc::EINVAL, 1),
+        ] {
+            let mut calls = 0;
+            let error = restore_policy(policy, |_| {
+                calls += 1;
+                Err(io::Error::from_raw_os_error(errno))
+            })
+            .unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(errno));
+            assert_eq!(calls, expected_calls);
+        }
     }
 
     /// Time from a report's arrival to its output through the driver's own

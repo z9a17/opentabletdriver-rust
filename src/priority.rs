@@ -111,7 +111,7 @@ mod tests {
             let handle = unsafe {
                 AvSetMmThreadCharacteristicsW(windows_sys::core::w!("Pro Audio"), &mut task)
             };
-            (!handle.is_null()).then_some(Self(handle))
+            (!handle.is_null()).then(|| Self(handle))
         }
     }
 
@@ -120,6 +120,56 @@ mod tests {
             use windows_sys::Win32::System::Threading::AvRevertMmThreadCharacteristics;
             unsafe { AvRevertMmThreadCharacteristics(self.0) };
         }
+    }
+
+    /// Report initialization failure before waiting for benchmark signals.
+    /// A disconnected coordinator also cancels a late initialization.
+    fn initialize_benchmark_waiter<T>(
+        initialize: impl FnOnce() -> io::Result<T>,
+        ready: std::sync::mpsc::SyncSender<io::Result<()>>,
+    ) -> Option<T> {
+        match initialize() {
+            Ok(state) => ready.send(Ok(())).ok().map(|()| state),
+            Err(error) => {
+                let _ = ready.send(Err(error));
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn benchmark_startup_reports_registration_failure() {
+        let (ready, started) = std::sync::mpsc::sync_channel(0);
+        let waiter = std::thread::spawn(move || {
+            initialize_benchmark_waiter::<()>(
+                || Err(io::Error::other("MMCSS registration refused")),
+                ready,
+            )
+        });
+        let error = started
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("waiter must report a failed registration")
+            .unwrap_err();
+        assert_eq!(error.to_string(), "MMCSS registration refused");
+        assert_eq!(waiter.join().unwrap(), None);
+    }
+
+    #[test]
+    fn benchmark_startup_does_not_run_after_coordinator_exits() {
+        let (ready, started) = std::sync::mpsc::sync_channel(0);
+        drop(started);
+        assert_eq!(initialize_benchmark_waiter(|| Ok(42), ready), None);
+    }
+
+    #[test]
+    fn benchmark_startup_keeps_successful_initialization() {
+        let (ready, started) = std::sync::mpsc::sync_channel(0);
+        let waiter = std::thread::spawn(move || initialize_benchmark_waiter(|| Ok(42), ready));
+        started
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("waiter must signal successful initialization")
+            .unwrap();
+        assert_eq!(waiter.join().unwrap(), Some(42));
     }
 
     /// Wakeup delay of a thread blocked on an event, like the reader waiting
@@ -168,10 +218,22 @@ mod tests {
                 let sent_waiter = sent.clone();
                 // The waiter and the signaler take their priorities before
                 // the load starts, so neither is starved while starting.
+                let (ready, started) = std::sync::mpsc::sync_channel(0);
                 let waiter_thread = std::thread::spawn(move || {
-                    let _priority = raise.then(ReaderPriority::raise);
-                    let _task = task.then(|| ProAudio::register().expect("MMCSS registration"));
-                    ack_waiter.signal().unwrap();
+                    let Some((_priority, _task)) = initialize_benchmark_waiter(
+                        || {
+                            let priority = raise.then(ReaderPriority::raise);
+                            let registration = if task {
+                                Some(ProAudio::register().ok_or_else(io::Error::last_os_error)?)
+                            } else {
+                                None
+                            };
+                            Ok((priority, registration))
+                        },
+                        ready,
+                    ) else {
+                        return Vec::new();
+                    };
                     let mut delays = Vec::with_capacity(SAMPLES);
                     for _ in 0..SAMPLES {
                         unsafe { WaitForSingleObject(wake_waiter.raw(), INFINITE) };
@@ -180,7 +242,17 @@ mod tests {
                     }
                     delays
                 });
-                unsafe { WaitForSingleObject(ack.raw(), INFINITE) };
+                match started.recv_timeout(Duration::from_secs(10)) {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        waiter_thread.join().unwrap();
+                        println!(
+                            "{load} load, {waiter} reader: skipped; initialization failed: {error}"
+                        );
+                        continue;
+                    }
+                    Err(error) => panic!("{waiter} reader did not initialize: {error}"),
+                }
                 let _signaler = ReaderPriority::raise();
                 // Keeps the signals 3 ms apart behind time-critical load. The
                 // delay is measured from the signal, so this does not affect it.

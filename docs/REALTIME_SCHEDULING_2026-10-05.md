@@ -17,13 +17,13 @@ This driver already ran its Windows report thread at time-critical priority, 15,
 
 ## Changes
 
-**Linux.** While a session drives output, the report loop runs under `SCHED_FIFO` at priority 40. That is above every normal thread and below threaded interrupt handlers (50) and audio servers. `SCHED_RESET_ON_FORK` keeps child processes at normal priority. Without `CAP_SYS_NICE`, the loop uses the highest priority up to 40 that the user's `RLIMIT_RTPRIO` allows. If the limit is zero, it keeps normal priority and logs once how to grant a limit. The previous policy returns when the session ends, so the two-second rescan between sessions runs at normal priority. The kernel's real-time throttling still reserves 5 % of each second for normal threads by default. Capture mode is unchanged.
+**Linux.** While a session drives output, the report loop runs under `SCHED_FIFO` at priority 40. That is above every normal thread and below threaded interrupt handlers (50) and audio servers. `SCHED_RESET_ON_FORK` keeps child processes at normal priority. Without `CAP_SYS_NICE`, the loop uses the highest priority up to 40 that the user's `RLIMIT_RTPRIO` allows. If the limit is zero, it keeps normal priority and logs once how to grant a limit. The previous policy and priority return when the session ends, so the two-second rescan between sessions normally runs at normal priority. Restoring them first tries the original flags; if permission is denied, it retries while retaining `SCHED_RESET_ON_FORK`, because [clearing that flag requires `CAP_SYS_NICE`](https://github.com/torvalds/linux/blob/v6.18/kernel/sched/syscalls.c#L500). A failed restoration is logged. The kernel's real-time throttling still reserves 5 % of each second for normal threads by default. Capture mode is unchanged.
 
 **macOS.** While a session drives output, the report thread uses the time-constraint policy with the reader values from pull request 5071: no period, 1 ms of computation within a 2 ms constraint, preemptible. The kernel returns a thread that keeps overrunning its budget to normal scheduling. The standard policy returns when the session ends.
 
 **Both.** `OTD_RUST_REALTIME=0` keeps normal scheduling. The log states which scheduling the report loop uses.
 
-**Windows.** The report thread is unchanged. `benchmark_reader_wake_latency_under_load` adds time-critical busy threads, and a reader registered with MMCSS's Pro Audio task, so MMCSS can be measured on the development machine before any decision.
+**Windows.** The report thread is unchanged. `benchmark_reader_wake_latency_under_load` adds time-critical busy threads, and a reader registered with MMCSS's Pro Audio task, so MMCSS can be measured on the development machine before any decision. Each reader reports its initialization result before CPU load starts. A failed MMCSS registration skips that row with its error, even if the earlier availability probe succeeded. The startup wait has a ten-second timeout, and a disconnected coordinator cancels a late initialization.
 
 ## Measurements
 
@@ -60,6 +60,7 @@ Check the current limit with `ulimit -r`. If it is 0, add a file such as `/etc/s
 ## Limits
 
 - No tablet, hidraw node, `uinput` device, game or display was involved. The container runs as root, so `SCHED_FIFO` came from `CAP_SYS_NICE`. A user without a limit was tested as `nobody`: the loop kept normal priority and logged the hint. The container cannot raise `RLIMIT_RTPRIO`, so the path that uses a limit below 40 did not run.
+- Restoration regression tests cover retaining reset-on-fork without privilege, exact restoration with privilege, and reporting failures. On Windows, an offline permission model also exercised the actual Linux guard with limits of 0, 20, 40 and 95, with `CAP_SYS_NICE`, with the opt-out, and across repeated sessions. All cases restored the saved policy and priority. The updated Linux code and tests cross-check successfully; these checks do not execute the Linux kernel permission path.
 - The macOS change was type-checked and linted for Intel and Apple Silicon. Its test was not run; no Mac was available.
-- The extended Windows benchmark was type-checked and linted, not run.
+- Four targeted Windows tests pass: the existing priority guard test and startup regressions for failed registration, successful initialization, and a disconnected coordinator. The extended CPU-saturating Windows benchmark was not run.
 - Real-time priority shortens waiting for a CPU. It does not change USB polling, compositor or display latency.
