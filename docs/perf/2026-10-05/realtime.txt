@@ -1,0 +1,49 @@
+# Real-time scheduling raw output, 5 October 2026
+
+## benchmark_report_loop_under_load (three runs)
+
+    cargo test -p otd-linux --release --locked benchmark_report_loop_under_load -- --ignored --nocapture
+
+    4 logical CPUs, 3000 reports per row, 1 ms apart
+    session ended: read=3000 accepted=3000 ignored=0 malformed=0 output_commits=3000 output_failures=0
+    0 busy threads, normal reader: p50 53.6 us, p99 166.0 us, p99.9 184.7 us, max 194.9 us, 0/3000 over 1 ms
+    session ended: read=3000 accepted=3000 ignored=0 malformed=0 output_commits=3000 output_failures=0
+    0 busy threads, SCHED_FIFO reader: p50 44.9 us, p99 124.8 us, p99.9 149.8 us, max 172.1 us, 0/3000 over 1 ms
+    session ended: read=3000 accepted=3000 ignored=0 malformed=0 output_commits=3000 output_failures=0
+    4 busy threads, normal reader: p50 20.1 us, p99 329256.8 us, p99.9 329268.8 us, max 329270.1 us, 1331/3000 over 1 ms
+    session ended: read=3000 accepted=3000 ignored=0 malformed=0 output_commits=3000 output_failures=0
+    4 busy threads, SCHED_FIFO reader: p50 26.9 us, p99 602.7 us, p99.9 612.5 us, max 613.3 us, 0/3000 over 1 ms
+    4 logical CPUs, 3000 reports per row, 1 ms apart
+    session ended: read=3000 accepted=3000 ignored=0 malformed=0 output_commits=3000 output_failures=0
+    0 busy threads, normal reader: p50 55.8 us, p99 131.2 us, p99.9 250.6 us, max 1139.2 us, 1/3000 over 1 ms
+    session ended: read=3000 accepted=3000 ignored=0 malformed=0 output_commits=3000 output_failures=0
+    0 busy threads, SCHED_FIFO reader: p50 57.3 us, p99 136.8 us, p99.9 203.7 us, max 790.6 us, 0/3000 over 1 ms
+    session ended: read=3000 accepted=3000 ignored=0 malformed=0 output_commits=3000 output_failures=0
+    4 busy threads, normal reader: p50 21.7 us, p99 94930.7 us, p99.9 116912.1 us, max 119907.3 us, 1312/3000 over 1 ms
+    session ended: read=3000 accepted=3000 ignored=0 malformed=0 output_commits=3000 output_failures=0
+    4 busy threads, SCHED_FIFO reader: p50 20.0 us, p99 304.0 us, p99.9 314.6 us, max 315.8 us, 0/3000 over 1 ms
+
+Third run, on the final code (session lines omitted):
+
+    4 logical CPUs, 3000 reports per row, 1 ms apart
+    0 busy threads, normal reader: p50 51.5 us, p99 143.0 us, p99.9 429.3 us, max 1987.3 us, 2/3000 over 1 ms
+    0 busy threads, SCHED_FIFO reader: p50 60.1 us, p99 180.1 us, p99.9 284.8 us, max 514.1 us, 0/3000 over 1 ms
+    4 busy threads, normal reader: p50 14944.7 us, p99 120965.4 us, p99.9 147928.8 us, max 150923.6 us, 1951/3000 over 1 ms
+    4 busy threads, SCHED_FIFO reader: p50 17.8 us, p99 42.0 us, p99.9 61.6 us, max 122.8 us, 0/3000 over 1 ms
+
+## Bare poll reader (scratch harness, not in the repository)
+
+A writer thread at SCHED_FIFO 80 writes an 8-byte monotonic timestamp to a Unix socket pair every 1 ms; the reader blocks in poll and records now minus the timestamp. 3,000 samples per row. Arguments: reader policy (other or fifo at priority 40) and the number of spinning normal-priority threads.
+
+    reader=other ok=true load=0           p50=   52.8us p99=   131.4us p99.9=   201.2us max=   813.4us
+    reader=other ok=true load=4           p50=   21.5us p99=100016.5us p99.9=113003.7us max=114998.9us
+    reader=other ok=true load=8           p50=   24.0us p99=169943.3us p99.9=189935.7us max=191932.4us
+    reader=fifo  ok=true load=0           p50=   52.6us p99=   139.1us p99.9=   494.6us max=   563.1us
+    reader=fifo  ok=true load=4           p50=   18.4us p99=    35.9us p99.9=    62.7us max=    81.2us
+    reader=fifo  ok=true load=8           p50=   19.7us p99=    54.5us p99.9=   205.5us max=   311.0us
+    reader=other ok=true load=0           p50=   59.4us p99=   147.8us p99.9=   471.0us max=   935.1us
+    reader=other ok=true load=4           p50= 5540.1us p99=104433.3us p99.9=113418.9us max=115396.2us
+    reader=other ok=true load=8           p50=16113.7us p99=148005.1us p99.9=148007.2us max=148017.8us
+    reader=fifo  ok=true load=0           p50=   61.4us p99=   150.9us p99.9=   247.7us max=   278.7us
+    reader=fifo  ok=true load=4           p50=   19.2us p99=    36.4us p99.9=    86.7us max=   107.9us
+    reader=fifo  ok=true load=8           p50=   23.8us p99=    55.9us p99.9=   111.7us max=   150.6us

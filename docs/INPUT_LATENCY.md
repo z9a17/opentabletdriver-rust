@@ -19,7 +19,7 @@ The effect shows when every CPU is busy. The benchmark below measures how long a
 | Normal priority | p50 3.0 µs, p99 4.1 µs, max 7.1 µs | p50 3.2 µs, p99 4.3 µs, max 12.1 µs |
 | Above-normal priority | p50 2.5 ms, p99 14.3 ms, max 15.3 ms; 369 of 500 over 1 ms | p50 3.4 µs, p99 134 µs, max 202 µs |
 
-Results vary between runs. In an earlier prototype of the same measurement, single normal-priority wakeups behind normal-priority load took up to 7.6 ms. To reproduce, run the following; it keeps every CPU busy for about ten seconds:
+Results vary between runs. In an earlier prototype of the same measurement, single normal-priority wakeups behind normal-priority load took up to 7.6 ms. Since 0.16.10 the benchmark also runs time-critical busy threads, and a reader registered with MMCSS's Pro Audio task; those rows have not been measured yet ([real-time scheduling](REALTIME_SCHEDULING_2026-10-05.md#decisions)). To reproduce, run the following; it keeps every CPU busy for fifteen seconds or more, and behind the time-critical threads the desktop stops responding for several seconds:
 
     cargo test --release --locked benchmark_reader_wake_latency_under_load -- --ignored --nocapture --test-threads 1
 

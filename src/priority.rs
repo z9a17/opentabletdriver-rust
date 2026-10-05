@@ -99,11 +99,35 @@ mod tests {
         .unwrap();
     }
 
+    /// Registers the calling thread with MMCSS's Pro Audio task until
+    /// dropped. MMCSS runs it at 23–26 while the category's threads stay
+    /// within their CPU share, and at 1–7 once they exceed it.
+    struct ProAudio(windows_sys::Win32::Foundation::HANDLE);
+
+    impl ProAudio {
+        fn register() -> Option<Self> {
+            use windows_sys::Win32::System::Threading::AvSetMmThreadCharacteristicsW;
+            let mut task = 0;
+            let handle = unsafe {
+                AvSetMmThreadCharacteristicsW(windows_sys::core::w!("Pro Audio"), &mut task)
+            };
+            (!handle.is_null()).then_some(Self(handle))
+        }
+    }
+
+    impl Drop for ProAudio {
+        fn drop(&mut self) {
+            use windows_sys::Win32::System::Threading::AvRevertMmThreadCharacteristics;
+            unsafe { AvRevertMmThreadCharacteristics(self.0) };
+        }
+    }
+
     /// Wakeup delay of a thread blocked on an event, like the reader waiting
     /// for a report, while busy threads occupy every logical CPU. Prints
-    /// percentiles; keeps all CPUs busy for about ten seconds.
+    /// percentiles; keeps all CPUs busy for fifteen seconds or more. Behind
+    /// time-critical load the desktop stops responding for several seconds.
     #[test]
-    #[ignore = "manual scheduling benchmark; saturates every CPU for about ten seconds"]
+    #[ignore = "manual scheduling benchmark; saturates every CPU for fifteen seconds or more"]
     fn benchmark_reader_wake_latency_under_load() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -117,11 +141,25 @@ mod tests {
         const SAMPLES: usize = 500;
         let cpus = std::thread::available_parallelism().map_or(8, |n| n.get());
         println!("{cpus} logical CPUs, {SAMPLES} wakeups per row, signals 3 ms apart");
+        let mmcss = ProAudio::register().is_some();
+        if !mmcss {
+            println!("MMCSS is unavailable; its rows are skipped");
+        }
         for (load, load_priority) in [
             ("normal", THREAD_PRIORITY_NORMAL),
             ("above-normal", THREAD_PRIORITY_ABOVE_NORMAL),
+            ("time-critical", THREAD_PRIORITY_TIME_CRITICAL),
         ] {
-            for (waiter, raise) in [("normal", false), ("time-critical", true)] {
+            for (waiter, raise, task) in [
+                ("normal", false, false),
+                ("time-critical", true, false),
+                ("MMCSS Pro Audio", true, true),
+            ] {
+                // Behind time-critical load a normal thread runs only when
+                // Windows' starvation boost lifts it, every few seconds.
+                if (task && !mmcss) || (!raise && load_priority == THREAD_PRIORITY_TIME_CRITICAL) {
+                    continue;
+                }
                 let wake = Event::create(false).unwrap();
                 let ack = Event::create(false).unwrap();
                 let (wake_waiter, ack_waiter) =
@@ -132,6 +170,7 @@ mod tests {
                 // the load starts, so neither is starved while starting.
                 let waiter_thread = std::thread::spawn(move || {
                     let _priority = raise.then(ReaderPriority::raise);
+                    let _task = task.then(|| ProAudio::register().expect("MMCSS registration"));
                     ack_waiter.signal().unwrap();
                     let mut delays = Vec::with_capacity(SAMPLES);
                     for _ in 0..SAMPLES {
@@ -143,6 +182,10 @@ mod tests {
                 });
                 unsafe { WaitForSingleObject(ack.raw(), INFINITE) };
                 let _signaler = ReaderPriority::raise();
+                // Keeps the signals 3 ms apart behind time-critical load. The
+                // delay is measured from the signal, so this does not affect it.
+                let _signaler_task =
+                    (load_priority == THREAD_PRIORITY_TIME_CRITICAL).then(ProAudio::register);
                 let stop = Arc::new(AtomicBool::new(false));
                 let spinners: Vec<_> = (0..cpus)
                     .map(|_| {

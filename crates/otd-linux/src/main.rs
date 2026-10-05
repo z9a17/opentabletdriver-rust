@@ -15,9 +15,11 @@ mod keymap;
 mod sysfs;
 
 #[cfg(target_os = "linux")]
+mod displays;
+#[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-mod displays;
+mod realtime;
 
 #[cfg(target_os = "linux")]
 fn main() {
@@ -376,6 +378,7 @@ mod app {
             selected.device, source.file(), &selected.identifier,
             &selected.configuration, &STOP,
         ).map_err(SessionError::hardware)?;
+        let _realtime = crate::realtime::RealtimePriority::raise();
         if let Some(tablet) = pen {
             return session::run_gated_with_devices(
                 &mut source, displays, profile, Mode::Driver,
