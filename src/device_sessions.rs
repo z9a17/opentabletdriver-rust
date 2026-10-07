@@ -70,6 +70,7 @@ pub(crate) struct Registry {
     pub shutting_down: bool,
 }
 pub(crate) enum Request {
+    Refresh(mpsc::SyncSender<Result<SessionList, String>>),
     Apply { id: SessionId, profile: Profile, generation: u64 },
     Stop { id: SessionId, generation: u64 },
     Start { id: SessionId, generation: u64 },
@@ -89,6 +90,19 @@ impl Handle {
         let registry = self.registry.lock().map_err(|_| "device registry poisoned")?;
         Ok(SessionList { sessions: registry.entries.values().map(|entry| entry.snapshot.clone()).collect(),
             selected_id: registry.selected.clone() })
+    }
+    /// Explicit discovery completes on the supervisor, independently of live
+    /// readers. New devices can still be preparing when metadata is returned.
+    pub fn refresh(&self) -> Result<SessionList, String> {
+        {
+            let registry = self.registry.lock().map_err(|_| "device registry poisoned")?;
+            if registry.shutting_down { return Err("device supervisor is stopping".into()); }
+        }
+        let (reply, response) = mpsc::sync_channel(1);
+        self.requests.try_send(Request::Refresh(reply)).map_err(|error| format!("device discovery was not accepted: {error}"))?;
+        if let Ok(wake) = self.wake.lock() { let _ = wake.signal(); }
+        response.recv_timeout(std::time::Duration::from_secs(2))
+            .map_err(|error| format!("device discovery did not complete within its control deadline: {error}"))?
     }
     pub fn select(&self, id: &str) -> Result<(), String> {
         let mut registry = self.registry.lock().map_err(|_| "device registry poisoned")?;

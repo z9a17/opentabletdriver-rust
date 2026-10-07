@@ -226,6 +226,8 @@ fn supervise(profile: Profile, handle: Handle, requests: mpsc::Receiver<Request>
     let mut rescan = true;
     let mut scanned = std::time::Instant::now();
     let mut was_enabled = false;
+    let mut failed_scan = false;
+    let mut refresh_replies: Vec<mpsc::SyncSender<Result<crate::device_sessions::SessionList, String>>> = Vec::new();
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         while !stop.load(Ordering::Acquire) {
             if unsafe { windows_sys::Win32::System::Threading::ResetEvent(wake.raw()) } == 0 { return Err(std::io::Error::last_os_error().to_string()); }
@@ -233,8 +235,10 @@ fn supervise(profile: Profile, handle: Handle, requests: mpsc::Receiver<Request>
             let now_enabled = enabled.load(Ordering::Acquire);
             if now_enabled && !was_enabled { rescan = true; }
             was_enabled = now_enabled;
-            if rescan || scanned.elapsed() >= super::RESCAN {
-                let devices = hid::enumerate_with_database(database).map_err(|error| error.to_string())?;
+            if rescan || scanned.elapsed() >= if failed_scan { Duration::from_secs(2) } else { super::RESCAN } {
+                match hid::enumerate_with_database(database) {
+                Ok(devices) => {
+                failed_scan = false;
                 if handle.primary_id()?.is_none() {
                     if let Ok(Some(primary)) = hid::select_device(&devices, database, profile.device_path.as_deref(), profile.tablet_name()?.as_deref()) {
                         handle.reserve_primary(&primary)?;
@@ -273,13 +277,32 @@ fn supervise(profile: Profile, handle: Handle, requests: mpsc::Receiver<Request>
                 if let Ok(mut registry) = handle.registry.lock() {
                     for (id, entry) in &mut registry.entries { entry.snapshot.connected = connected.contains(id); }
                 }
+                let snapshot = handle.snapshot();
+                for reply in refresh_replies.drain(..) { let _ = reply.send(snapshot.clone()); }
+                }
+                Err(error) => {
+                    failed_scan = true;
+                    let error = format!("Device discovery failed; existing sessions remain active: {error}");
+                    eprintln!("{error}");
+                    for reply in refresh_replies.drain(..) { let _ = reply.send(Err(error.clone())); }
+                }
+                }
                 scanned = std::time::Instant::now();
                 rescan = false;
             }
-            for request in requests.try_iter() {
-                let (id, generation) = match &request { Request::Apply { id, generation, .. } | Request::Stop { id, generation } | Request::Start { id, generation } => (id.clone(), *generation) };
+            for request in requests.try_iter().take(16) {
+                let request = match request {
+                    Request::Refresh(reply) => {
+                        if refresh_replies.len() == 16 { let _ = reply.send(Err("device discovery queue is full".into())); }
+                        else { refresh_replies.push(reply); rescan = true; }
+                        continue;
+                    }
+                    request => request,
+                };
+                let (id, generation) = match &request { Request::Apply { id, generation, .. } | Request::Stop { id, generation } | Request::Start { id, generation } => (id.clone(), *generation), Request::Refresh(_) => unreachable!() };
                 let result = if let Some(transaction) = sessions.get_mut(&id) {
                     match request {
+                        Request::Refresh(_) => unreachable!(),
                         Request::Apply { profile, .. } => {
                             let stopped = handle.registry.lock().map_err(|_| "device registry poisoned")?.entries.get(&id).is_some_and(|entry| !entry.enabled);
                             if stopped && transaction.active.is_none() && transaction.phase.is_none() {
