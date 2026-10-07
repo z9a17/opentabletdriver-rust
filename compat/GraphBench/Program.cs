@@ -72,6 +72,7 @@ unsafe class GraphProbe
     static void Main(string[] args)
     {
         System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
+        if (args.Length > 2 && args[2] == "contracts") { Contracts(args); return; }
         if (args.Length > 2 && args[2] == "cold") { Cold(args); return; }
         using var instance = new Instance(new JObject {
             ["assembly_path"] = args[0], ["type_name"] = "SettingsFixture.DefaultsFilter",
@@ -136,5 +137,32 @@ unsafe class GraphProbe
                 Console.WriteLine($"deadline_with_timer trial={trial} bytes/query={used / 100000.0:F1} ns/query={elapsed * 1e9 / Stopwatch.Frequency / 100000:F1}");
             }
         } finally { timerHandle.Free(); }
+    }
+
+    // Offline lifecycle contract mode; no display query, hardware or input.
+    static void Contracts(string[] args)
+    {
+        var scope = new HostServices();
+        if (scope.GetService(typeof(IDisposable)) != null)
+            throw new Exception("Service lookup must use exact registered types.");
+        scope.Dispose();
+        try { scope.GetService(typeof(IServiceProvider)); throw new Exception("Retired services remain usable."); }
+        catch (ObjectDisposedException) { }
+        using var instance = new Instance(new JObject {
+            ["assembly_path"] = args[0], ["type_name"] = "SettingsFixture.ServicesFilter",
+            ["tablet"] = JObject.Parse(File.ReadAllText(args[1])),
+            ["settings"] = new JObject { ["Frequency"] = 17 }
+        });
+        if (!instance.HasTimers || instance.NextTickMicros(Stopwatch.GetTimestamp()) < 0)
+            throw new Exception("Injected filter timer was not scheduled.");
+        string marker = Path.Combine(args.Length > 3 ? args[3] : Path.GetDirectoryName(args[0])!, "service-tool-marker.txt");
+        using (var tool = new ToolInstance(new JObject {
+            ["assembly_path"] = args[0], ["type_name"] = "SettingsFixture.ServicesTool",
+            ["settings"] = new JObject { ["MarkerPath"] = marker }
+        }))
+            if (File.ReadAllText(marker) != "started") throw new Exception("Tool did not initialize.");
+        if (File.ReadAllText(marker) != "started stopped") throw new Exception("Tool was not disposed.");
+        File.Delete(marker);
+        Console.WriteLine("PASS service/settings/tablet/callback/tool lifecycle contracts");
     }
 }
