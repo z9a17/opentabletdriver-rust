@@ -21,6 +21,7 @@ namespace OpenTabletDriver.Devices
             };
         }
 
+        internal Func<IDisposable> HostedReportScope;
         private readonly Thread workerThread;
         private bool initialized, connected;
 
@@ -107,6 +108,7 @@ namespace OpenTabletDriver.Devices
                 while (Connected)
                 {
                     var data = ReportStream.Read();
+                    using var hostedCallback = HostedReportScope?.Invoke();
                     if (Parser.Parse(data) is T report)
                         OnReport(report);
 

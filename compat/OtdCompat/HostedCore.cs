@@ -16,19 +16,28 @@ sealed class HostedCore : IDisposable, IServiceProvider
     readonly ulong scope;
     readonly CancellationToken cancellation;
     readonly JObject? source;
-    readonly object gate = new();
+    readonly object gate;
     readonly Dictionary<string, (InputDeviceTree Tree, JObject Identity)> trees = new();
     bool disposed;
     internal RootHub Root { get; }
     internal Driver Driver { get; }
     internal HostedCore(ManagedProviders providers, ulong scope, CancellationToken cancellation, JObject? source)
     {
+        gate = providers.Sync;
         this.providers = providers; this.scope = scope; this.cancellation = cancellation; this.source = source;
         Root = RootHub.WithProvider(this);
         Root.HostedEndpointTransform = endpoint => endpoint is HostedEndpoint ? endpoint : HostedCustomDevices.Wrap(endpoint, scope, cancellation);
         Root.HostedEndpointsChanged = endpoints => HostedCustomDevices.Publish(scope, endpoints);
         Driver = new NativeDriver(this, Root, providers, providers);
+        providers.DevicesChanged += NativeChanged;
+        providers.TabletsChanged += NativeTabletsChanged;
 
+    }
+    void NativeChanged(object? sender, DevicesChangedEventArgs args) => RefreshAfterChange();
+    void NativeTabletsChanged(object? sender, IEnumerable<TabletReference> args) => RefreshAfterChange();
+    void RefreshAfterChange() {
+        try { lock (gate) { if (!disposed) Refresh(); } }
+        catch (Exception error) { Log.Exception(error); }
     }
     public object? GetService(Type type) => type == typeof(IDeviceHubsProvider) ? providers : providers.Get(type);
     internal bool Refresh()
@@ -66,6 +75,7 @@ sealed class HostedCore : IDisposable, IServiceProvider
                             var identifier = endpoint["Identifier"]!.ToObject<DeviceIdentifier>()!;
                             var reader = new InputDevice(Driver, new HostedEndpoint(endpoint, scope, cancellation), configuration, identifier);
                             if (reader.ReportStream == null) { reader.Dispose(); throw new IOException("Original reader could not acquire an actual shared stream."); }
+                            reader.HostedReportScope = () => ServiceClient.Report();
                             readers.Add(reader);
                         }
                         var tree = new InputDeviceTree(configuration, readers);
@@ -74,6 +84,12 @@ sealed class HostedCore : IDisposable, IServiceProvider
                     } catch { foreach (var reader in readers) reader.Dispose(); throw; }
                 }
                 Driver.PublishHostedTrees(replacement.Values.Select(value => value.Tree));
+                foreach (var previous in trees) {
+                    if (!replacement.TryGetValue(previous.Key, out var retained) || !ReferenceEquals(previous.Value.Tree, retained.Tree)) {
+                        var release = (JObject)previous.Value.Identity.DeepClone(); release.Remove("members"); release["managed_output"] = false;
+                        _ = RetireAndRelease(previous.Value.Tree, release);
+                    }
+                }
                 trees.Clear(); foreach (var item in replacement) trees.Add(item.Key, item.Value);
                 return trees.Count != 0;
             } catch {
@@ -95,8 +111,8 @@ sealed class HostedCore : IDisposable, IServiceProvider
     {
         lock (gate) {
             ObjectDisposedException.ThrowIf(disposed, this);
-            if (trees.Count != 1) throw new InvalidOperationException("Concrete InputDeviceTree injection requires an exact source context or one uniquely owned tablet.");
-            return trees.Values.Single().Tree;
+            if (Driver.InputDevices.Length != 1) throw new InvalidOperationException("Concrete InputDeviceTree injection requires an exact source context or one uniquely owned tablet.");
+            return Driver.InputDevices.Single();
         }
     }
     internal InputDevice SelectedInput() => SelectedTree().InputDevices.FirstOrDefault()
@@ -110,6 +126,8 @@ sealed class HostedCore : IDisposable, IServiceProvider
                 // Scope retirement must not synchronously await its own native apply.
                 _ = RetireAndRelease(item.Tree, payload);
             }
+            providers.DevicesChanged -= NativeChanged;
+            providers.TabletsChanged -= NativeTabletsChanged;
             Driver?.Dispose(); trees.Clear();
             Root.HostedDispose();
             HostedCustomDevices.Remove(scope);

@@ -12,6 +12,8 @@ skips duplicate initialization for that marker only; InputDeviceTree.OutputMode
 calls an internal ownership handoff before assignment; RootHub.HostedDispose
 unhooks actual hub events without enumerating disposed native scopes; internal
 RootHub enumeration transform/publication routes actual custom hub endpoints
-through the native sole-reader broker without changing public contracts. All other source is pinned.
+through the native sole-reader broker without changing public contracts; internal
+DeviceReader callback scopes reject synchronous I/O/ownership waits on its own
+report callback. Hosted tree publication keeps actual disconnect notifications. All other source is pinned.
 The project references exact upstream dependency versions, and grants only
 OtdCompat internal access. No physical hub or second physical handle is created.

@@ -56,7 +56,18 @@ namespace OpenTabletDriver
             {
                 var previous = _inputDeviceTrees;
                 _inputDeviceTrees = trees.ToImmutableArray();
+                foreach (var tree in _inputDeviceTrees.Where(tree => !previous.Contains(tree)))
+                    tree.Disconnected += HostedDisconnected;
                 DisposeDevices(previous.Where(tree => !_inputDeviceTrees.Contains(tree)).ToImmutableArray());
+                TabletsChanged?.Invoke(this, Tablets);
+            }
+        }
+
+        private void HostedDisconnected(object sender, EventArgs args)
+        {
+            if (sender is InputDeviceTree tree)
+            {
+                ImmutableInterlocked.Update(ref _inputDeviceTrees, current => current.Remove(tree));
                 TabletsChanged?.Invoke(this, Tablets);
             }
         }

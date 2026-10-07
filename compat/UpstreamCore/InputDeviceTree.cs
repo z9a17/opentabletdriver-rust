@@ -54,10 +54,11 @@ namespace OpenTabletDriver
         /// </summary>
         private IOutputMode? outputMode;
         private volatile bool hostedRetired;
+        private readonly object hostedAssignment = new();
         internal void HostedRetire()
         {
             hostedRetired = true;
-            lock (sync) { outputMode?.Dispose(); outputMode = null; }
+            lock (hostedAssignment) lock (sync) { outputMode?.Dispose(); outputMode = null; }
         }
         internal Action<bool>? HostedOutputOwnership;
         public IOutputMode? OutputMode
@@ -66,9 +67,13 @@ namespace OpenTabletDriver
             {
                 // Admission precedes assignment: two output owners must never coexist.
                 // Host callback refuses waits from this tree's report callback.
-                if (ReferenceEquals(outputMode, value)) return;
-                HostedOutputOwnership?.Invoke(value != null);
-                lock (sync) outputMode = value;
+                lock (hostedAssignment)
+                {
+                    if (hostedRetired && value != null) throw new ObjectDisposedException(nameof(InputDeviceTree));
+                    if (ReferenceEquals(outputMode, value)) return;
+                    HostedOutputOwnership?.Invoke(value != null);
+                    lock (sync) outputMode = value;
+                }
             }
             get { lock (sync) return outputMode; }
         }

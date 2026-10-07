@@ -41,6 +41,7 @@ sealed partial class ManagedProviders : IDriver, IDeviceConfigurationProvider, I
     readonly CancellationTokenSource lifetime = new();
     readonly List<ProviderParser> parsers = [];
     readonly object gate = new();
+    internal object Sync => gate;
     EventHandler<IEnumerable<TabletReference>>? tabletsChanged;
     EventHandler<DevicesChangedEventArgs>? devicesChanged;
     EventHandler<LogMessage>? message;
@@ -358,6 +359,10 @@ sealed class HostPluginManager : DesktopPluginManager
         // Delegates keep their real scope; Reset never changes reader ownership.
         AddService<IServiceProvider>(() => services);
         AddService<IDriver>(() => (IDriver)services.GetService(typeof(IDriver))!);
+        AddService<OpenTabletDriver.Driver>(() => (OpenTabletDriver.Driver)services.GetService(typeof(OpenTabletDriver.Driver))!);
+        AddService<OpenTabletDriver.InputDeviceTree>(() => (OpenTabletDriver.InputDeviceTree)services.GetService(typeof(OpenTabletDriver.InputDeviceTree))!);
+        AddService<OpenTabletDriver.InputDevice>(() => (OpenTabletDriver.InputDevice)services.GetService(typeof(OpenTabletDriver.InputDevice))!);
+        AddService<OpenTabletDriver.Devices.RootHub>(() => (OpenTabletDriver.Devices.RootHub)services.GetService(typeof(OpenTabletDriver.Devices.RootHub))!);
         AddService<IDriverDaemon>(() => (IDriverDaemon)services.GetService(typeof(IDriverDaemon))!);
         AddService<IDeviceConfigurationProvider>(() => (IDeviceConfigurationProvider)services.GetService(typeof(IDeviceConfigurationProvider))!);
         AddService<IReportParserProvider>(() => (IReportParserProvider)services.GetService(typeof(IReportParserProvider))!);

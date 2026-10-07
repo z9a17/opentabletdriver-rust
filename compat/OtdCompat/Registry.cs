@@ -184,6 +184,7 @@ sealed class ParserSession : IDisposable
     IDeviceReport? sourceReport;
     ulong sourceSequence;
     bool sourceConsumed = true;
+    readonly JObject? sourceSession;
     readonly Type type;
     readonly RegistryGeneration? generation;
     readonly int ownerThread = Environment.CurrentManagedThreadId;
@@ -191,8 +192,9 @@ sealed class ParserSession : IDisposable
     IReportParser<IDeviceReport>? parser;
     bool disposed;
     internal byte[]? Pending { get; private set; }
-    internal ParserSession(string name, RegistryGeneration? selected = null, bool frozen = false)
+    internal ParserSession(string name, RegistryGeneration? selected = null, bool frozen = false, JObject? sourceSession = null)
     {
+        this.sourceSession = sourceSession?.DeepClone() as JObject;
         (type, generation) = InstalledRegistry.AcquireParser(name, selected, frozen);
         try {
             Reset();
@@ -211,7 +213,7 @@ sealed class ParserSession : IDisposable
         try
         {
             created = HostServices.Construct(type) ?? throw new InvalidOperationException("Cannot construct report parser.");
-            services = new HostServices(); services.Inject(type, created);
+            services = new HostServices(); services.ConfigureSource(new JObject { ["source_session"] = sourceSession }); services.Inject(type, created);
             parser = (IReportParser<IDeviceReport>)created;
         }
         catch { try { HostServices.DisposePlugin(created); } finally { services?.Dispose(); services = null; } throw; }
@@ -316,6 +318,18 @@ public static unsafe partial class EntryPoints
             return GCHandle.ToIntPtr(GCHandle.Alloc(parser));
         }
         catch (Exception error) { lastError = error.GetBaseException().Message; return 0; }
+    }
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static nint CreateHostedGraphParser(nint graph, byte* json, uint length)
+    {
+        try {
+            if (json == null || length is < 1 or > 32768) throw new ArgumentException("Invalid hosted parser request.");
+            JObject config = JObject.Parse(Encoding.UTF8.GetString(new ReadOnlySpan<byte>(json, (int)length)));
+            var pipeline = graph == 0 ? null : (SynchronousGraph)GCHandle.FromIntPtr(graph).Target!;
+            var parser = new ParserSession(config.Value<string>("parser") ?? throw new ArgumentException("Original parser name is required."),
+                pipeline?.SourceGeneration, frozen: pipeline != null, sourceSession: config["source_session"] as JObject);
+            return GCHandle.ToIntPtr(GCHandle.Alloc(parser));
+        } catch (Exception error) { lastError = error.GetBaseException().Message; return 0; }
     }
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static int DecodeDebugParser(nint context, byte* raw, uint length, byte* output, int capacity)
