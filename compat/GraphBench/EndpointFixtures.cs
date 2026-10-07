@@ -20,8 +20,30 @@ unsafe static class EndpointProbe
     }
     static object Value(EndpointInstance endpoint) => typeof(EndpointInstance).GetProperty("Value", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(endpoint)!;
     static int Count(object value, string property) => (int)value.GetType().GetProperty(property)!.GetValue(value)!;
+    // Exercise both matched alternatives and an auxiliary-open failure without
+    // constructing any plugin or host input service.
+    static void MatchedIdentifiers()
+    {
+        var first = new DeviceIdentifier { VendorID = 1, ProductID = 10, ReportParser = "Fixture.First" };
+        var matched = new DeviceIdentifier { VendorID = 1, ProductID = 20, ReportParser = "Fixture.Matched" };
+        var auxiliary = new DeviceIdentifier { VendorID = 1, ProductID = 30, ReportParser = "Fixture.Auxiliary" };
+        var properties = new TabletConfiguration { Name = "Matched alternatives", DigitizerIdentifiers = [first, matched], AuxiliaryDeviceIdentifiers = [auxiliary] };
+        var config = new JObject { ["tablet"] = JObject.FromObject(properties), ["identifiers"] = JArray.FromObject(new[] { matched, auxiliary }) };
+        var reference = Instance.CreateTabletReference(config);
+        if (!reference.Identifiers.Select(identifier => identifier.ProductID).SequenceEqual(new[] { 20, 30 })
+            || reference.Properties.DigitizerIdentifiers.Count != 2 || reference.Properties.DigitizerIdentifiers[0].ProductID != 10)
+            throw new Exception("Live identifiers must describe matched opened endpoints while Properties preserve every configuration alternative.");
+        config["identifiers"] = JArray.FromObject(new[] { matched });
+        reference = Instance.CreateTabletReference(config);
+        if (reference.Identifiers.Single().ProductID != 20 || reference.Properties.AuxiliaryDeviceIdentifiers?.Count != 1)
+            throw new Exception("An unopened auxiliary must disappear from Identifiers without erasing configured Properties.");
+        config["identifiers"] = new JArray();
+        try { Instance.CreateTabletReference(config); throw new Exception("An empty explicit endpoint list was accepted."); }
+        catch (ArgumentException) { }
+    }
     public static void Run(string[] args)
     {
+        MatchedIdentifiers();
         var config = new JObject { ["assembly_path"] = args[0], ["tablet"] = JObject.Parse(File.ReadAllText(args[1])),
             ["owner"] = 7, ["keys"] = new JObject { ["A"] = 4 }, ["settings"] = new JObject(), ["pen"] = false, ["relative"] = false };
         config["type_name"] = "SettingsFixture.EndpointBinding";

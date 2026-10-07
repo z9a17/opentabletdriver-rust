@@ -149,11 +149,10 @@ abstract class EndpointInstance : IDisposable
         services = new HostServices(() => { CheckThread(); var timer = new SessionTimer(); timers.Add(timer); return timer; },
             type => type == typeof(IVirtualKeyboard) ? keyboard :
                 actualPointer != null && IsPointerService(type) && type.IsInstanceOfType(actualPointer) ? actualPointer : Pointer.Resolve(type));
-        var configuration = config["tablet"]?.ToObject<TabletConfiguration>() ?? throw new ArgumentException("tablet missing");
-        Tablet = new TabletReference(configuration, configuration.DigitizerIdentifiers.Take(1));
         object? value = null;
         try
         {
+            Tablet = Instance.CreateTabletReference(config);
             Type type = context.LoadFromAssemblyPath(path).GetType(config.Value<string>("type_name") ?? "", true)!;
             PluginEligibility.RequireLoadable(type);
             if (!contract.IsAssignableFrom(type)) throw new NotSupportedException($"'{type.FullName}' does not implement {contract.Name}.");

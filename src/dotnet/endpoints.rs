@@ -8,7 +8,7 @@ use otd_core::config::{OutputKind, Profile};
 use otd_core::output::buttons::{ActionSink, ButtonOutput, ScrollAxis, ScrollPulse};
 use otd_core::plugins::{ManagedCommand, PluginConfig};
 use otd_core::reports::{ReportKind, ReportValues};
-use otd_core::tablets::TabletConfiguration;
+use otd_core::tablets::{DeviceIdentifier, TabletConfiguration};
 use super::GraphReport;
 
 type Create = unsafe extern "C" fn(*const u8, usize) -> *mut c_void;
@@ -39,14 +39,14 @@ impl Api {
     }
 }
 fn api() -> Result<&'static Api, String> { super::bridge()?.endpoints.as_ref().ok_or_else(|| "The installed .NET bridge lacks unchanged output/binding support; replace data/compat with this release's files.".into()) }
-fn envelope(config: &PluginConfig, profile: &Profile, tablet: &TabletConfiguration, owner: u32) -> Result<serde_json::Value, String> {
+fn envelope(config: &PluginConfig, profile: &Profile, tablet: &TabletConfiguration, owner: u32, identifiers: Option<&[DeviceIdentifier]>) -> Result<serde_json::Value, String> {
     config.validate()?;
     let keys: serde_json::Map<String, serde_json::Value> = otd_core::keys::names()
         .filter(|(_, key)| crate::action_output::supports(Action::Key(*key)))
         .map(|(name, usage)| (name.into(), serde_json::json!(usage.usage()))).collect();
     Ok(serde_json::json!({ "assembly_path": config.path.canonicalize().map_err(|error| format!("{}: {error}", config.path.display()))?,
         "type_name": config.type_name, "settings": serde_json::from_str::<serde_json::Value>(&config.settings_json).map_err(|error| error.to_string())?,
-        "tablet": tablet, "pen": profile.output == OutputKind::Pen, "relative": profile.relative.is_some(), "owner": owner, "keys": keys }))
+        "tablet": tablet, "identifiers": identifiers, "pen": profile.output == OutputKind::Pen, "relative": profile.relative.is_some(), "owner": owner, "keys": keys }))
 }
 struct Endpoint { context: *mut c_void }
 impl Endpoint {
@@ -72,7 +72,11 @@ impl Drop for Endpoint { fn drop(&mut self) { if let Ok(api) = api() { unsafe { 
 pub struct OutputSession { endpoint: Endpoint }
 impl OutputSession {
     pub fn new(config: &PluginConfig, profile: &Profile, tablet: &TabletConfiguration) -> Result<Self, String> {
-        let mut value = envelope(config, profile, tablet, 4096)?;
+        Self::new_with_identifiers(config, profile, tablet, None)
+    }
+    pub(crate) fn new_with_identifiers(config: &PluginConfig, profile: &Profile, tablet: &TabletConfiguration,
+        identifiers: Option<&[DeviceIdentifier]>) -> Result<Self, String> {
+        let mut value = envelope(config, profile, tablet, 4096, identifiers)?;
         value["disable_pressure"] = profile.contact.disable_pressure.into(); value["disable_tilt"] = profile.contact.disable_tilt.into();
         if let Some(relative) = profile.relative {
             value["sensitivity_x"] = serde_json::json!(relative.sensitivity.0); value["sensitivity_y"] = serde_json::json!(relative.sensitivity.1);
@@ -112,10 +116,14 @@ pub fn wrap_sink(profile: &Profile, tablet: &TabletConfiguration, native: Box<dy
     wrap_sink_with_output(profile, tablet, native, None)
 }
 pub(crate) fn wrap_sink_with_output(profile: &Profile, tablet: &TabletConfiguration, native: Box<dyn ActionSink>, output: Option<&OutputSession>) -> Result<Box<dyn ActionSink>, String> {
+    wrap_sink_with_identifiers(profile, tablet, native, output, None)
+}
+pub(crate) fn wrap_sink_with_identifiers(profile: &Profile, tablet: &TabletConfiguration, native: Box<dyn ActionSink>,
+    output: Option<&OutputSession>, identifiers: Option<&[DeviceIdentifier]>) -> Result<Box<dyn ActionSink>, String> {
     let slots = ButtonOutput::managed_slots(profile);
     if slots.is_empty() { return Ok(native); }
     let bindings = slots.into_iter().map(|(owner, config)| {
-        let mut value = envelope(&config, profile, tablet, owner)?;
+        let mut value = envelope(&config, profile, tablet, owner, identifiers)?;
         if let Some(output) = output { value["output_context"] = serde_json::json!(output.endpoint.context as usize); }
         let endpoint = Endpoint::create(&value, false)?;
         Ok(Binding { owner, config, endpoint, failed: false })

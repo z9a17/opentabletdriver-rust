@@ -215,6 +215,16 @@ struct HidSource<'a> {
     timer: Option<OwnedHandle>,
 }
 
+fn opened_identifiers(primary: &DeviceIdentifier, auxiliary: Option<&DeviceIdentifier>,
+    auxiliary_opened: bool) -> Vec<DeviceIdentifier> {
+    let mut identifiers = Vec::with_capacity(1 + usize::from(auxiliary_opened));
+    identifiers.push(primary.clone());
+    if let Some(auxiliary) = auxiliary.filter(|_| auxiliary_opened) {
+        identifiers.push(auxiliary.clone());
+    }
+    identifiers
+}
+
 impl<'a> HidSource<'a> {
     fn open(
         selected: &'a SelectedDevice<'a>,
@@ -243,6 +253,11 @@ impl<'a> HidSource<'a> {
             auxiliary,
             timer: None,
         })
+    }
+
+    fn identifiers(&self, selected: &SelectedDevice<'_>) -> Vec<DeviceIdentifier> {
+        opened_identifiers(&selected.identifier,
+            selected.auxiliary.as_ref().map(|(_, identifier)| identifier), self.auxiliary.is_some())
     }
 
     /// Initializes the pen endpoint, then the auxiliary one. A failure on the
@@ -484,7 +499,6 @@ pub fn run(
     plugins: &mut PluginChain,
     status: &impl Fn(&str),
 ) -> io::Result<()> {
-    plugins.reset();
     let mut source = HidSource::open(
         selected,
         notification,
@@ -499,6 +513,14 @@ pub fn run(
         .map_err(io::Error::other)?;
     let mut decoder = selected.decoder()?;
     let mut auxiliary = source.auxiliary_decoder(selected);
+    if matches!(mode, Mode::Driver) {
+        plugins.bind_identifiers(&profile, &selected.configuration, &source.identifiers(selected))
+            .map_err(io::Error::other)?;
+    }
+    plugins.reset();
+    if let Some(name) = plugins.take_failure() {
+        return Err(io::Error::other(format!("Plugin failed during reset notification: {name}")));
+    }
     announce_auxiliary(&source, selected, status);
     if matches!(mode, Mode::Driver) {
         eprintln!("{}", plugins.describe(&profile));
@@ -655,6 +677,10 @@ impl<'a> PreparedSession<'a> {
         })
     }
 
+    pub fn identifiers(&self) -> Vec<DeviceIdentifier> {
+        self.source.identifiers(self.selected)
+    }
+
     pub fn activate(&mut self) -> io::Result<()> {
         if !self.selected.pen.is_present() {
             return Err(io::Error::new(
@@ -698,9 +724,16 @@ impl<'a> PreparedSession<'a> {
             .for_tablet(self.selected.spec)
             .map_err(io::Error::other)?;
         let mut decoder = self.selected.decoder()?;
-        let _debug = DebugDevice::set(self.selected, &self.source);
         let mut source = self.source;
         let mut auxiliary = source.auxiliary_decoder(self.selected);
+        if plugins.bind_identifiers(&profile, &self.selected.configuration, &source.identifiers(self.selected))
+            .map_err(io::Error::other)? {
+            plugins.reset();
+            if let Some(name) = plugins.take_failure() {
+                return Err(io::Error::other(format!("Plugin failed during endpoint reset notification: {name}")));
+            }
+        }
+        let _debug = DebugDevice::set(self.selected, &source);
         announce_auxiliary(&source, self.selected, status);
         let _priority = ReaderPriority::for_driver(crate::experimental::mmcss_enabled(), status);
         let mut output = SessionOutput::new()?;
@@ -747,4 +780,17 @@ pub fn companion_wake(
 ) -> io::Result<bool> {
     let millis = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX - 1);
     Ok(wait(&[stop_event.raw(), notification.event()], millis)? == Some(1))
+}
+
+#[cfg(test)]
+mod identifier_metadata_tests {
+    use super::*;
+    #[test]
+    fn discovered_but_unopened_auxiliary_is_not_a_live_identifier() {
+        let primary = DeviceIdentifier { product_id: Some(2), report_parser: Some("Matched.Digitizer".into()), ..Default::default() };
+        let auxiliary = DeviceIdentifier { product_id: Some(3), report_parser: Some("Matched.Auxiliary".into()), ..Default::default() };
+        assert_eq!(opened_identifiers(&primary, Some(&auxiliary), true), [primary.clone(), auxiliary.clone()]);
+        assert_eq!(opened_identifiers(&primary, Some(&auxiliary), false), [primary.clone()]);
+        assert_eq!(opened_identifiers(&primary, None, false), [primary]);
+    }
 }

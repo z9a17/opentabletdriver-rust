@@ -2,7 +2,7 @@
 //! by parsing or saving a profile. Loading occurs only for explicit inspection
 //! or when starting output. Native processing allocates no report storage;
 //! managed filters receive independently owned snapshots for safe retention.
-use otd_core::tablets::{Database, Role, TabletConfiguration};
+use otd_core::tablets::{Database, DeviceIdentifier, Role, TabletConfiguration};
 use otd_plugin_api::{ABI_VERSION, FilterApi, Header, Sample};
 use std::ffi::{OsStr, c_void};
 use std::os::windows::ffi::OsStrExt;
@@ -293,6 +293,11 @@ impl Plugin {
         config: &PluginConfig,
         tablet: &TabletConfiguration,
     ) -> Result<Self, String> {
+        Self::load_with_identifiers(config, tablet, None)
+    }
+
+    fn load_with_identifiers(config: &PluginConfig, tablet: &TabletConfiguration,
+        identifiers: Option<&[DeviceIdentifier]>) -> Result<Self, String> {
         config.validate()?;
         let (api, library) = if config.kind == PluginKind::Dotnet {
             (crate::dotnet::filter_api()?, None)
@@ -333,7 +338,8 @@ impl Plugin {
                 "assembly_path": config.path.canonicalize().map_err(|e| e.to_string())?,
                 "type_name": config.type_name,
                 "settings": serde_json::from_str::<serde_json::Value>(&config.settings_json).map_err(|e| e.to_string())?,
-                "tablet": tablet
+                "tablet": tablet,
+                "identifiers": identifiers
             }).to_string()
         } else {
             config.settings_json.clone()
@@ -460,6 +466,8 @@ pub struct PluginChain {
     graph: Option<crate::dotnet::Graph>,
     managed_output: Option<crate::dotnet::endpoints::OutputSession>,
     plugins: Vec<Plugin>,
+    /// Matched, actually opened endpoints; captured only at session setup.
+    identifiers: Option<Vec<DeviceIdentifier>>,
     has_pre: bool,
     has_pixels: bool,
     /// Runs the host's built-in filters before `plugins[slot]` instead of
@@ -513,7 +521,7 @@ impl PluginChain {
         configs: &[PluginConfig],
         tablet: &TabletConfiguration,
     ) -> Result<Self, String> {
-        Self::load_with_builtins(configs, tablet, None)
+        Self::load_with_builtins(configs, tablet, None, None)
     }
 
     /// Loads the profile's filters with its built-in filters at the slot
@@ -522,9 +530,19 @@ impl PluginChain {
         profile: &crate::config::Profile,
         tablet: &TabletConfiguration,
     ) -> Result<Self, String> {
-        let mut chain = Self::load_with_builtins(&profile.plugins, tablet, profile.builtin_filter_slot())?;
+        Self::load_profile(profile, tablet, None)
+    }
+
+    pub fn load_for_profile_with_identifiers(profile: &crate::config::Profile,
+        tablet: &TabletConfiguration, identifiers: &[DeviceIdentifier]) -> Result<Self, String> {
+        Self::load_profile(profile, tablet, Some(identifiers))
+    }
+
+    fn load_profile(profile: &crate::config::Profile, tablet: &TabletConfiguration,
+        identifiers: Option<&[DeviceIdentifier]>) -> Result<Self, String> {
+        let mut chain = Self::load_with_builtins(&profile.plugins, tablet, profile.builtin_filter_slot(), identifiers)?;
         if let Some(config) = profile.managed_output.as_ref().filter(|config| config.enabled) {
-            let output = crate::dotnet::endpoints::OutputSession::new(config, profile, tablet)?;
+            let output = crate::dotnet::endpoints::OutputSession::new_with_identifiers(config, profile, tablet, identifiers)?;
             if chain.graph.is_none() { chain.graph = graph::create_if(&chain.plugins, chain.builtin_slot, true)?; }
             chain.graph.as_mut().ok_or("managed output graph was not created")?.attach_output(&output)?;
             chain.managed_output = Some(output);
@@ -536,11 +554,12 @@ impl PluginChain {
         configs: &[PluginConfig],
         tablet: &TabletConfiguration,
         builtin_slot: Option<usize>,
+        identifiers: Option<&[DeviceIdentifier]>,
     ) -> Result<Self, String> {
         let plugins = configs
             .iter()
             .filter(|p| p.enabled && p.kind != PluginKind::DotnetTool)
-            .map(|config| Plugin::load_with_tablet(config, tablet))
+            .map(|config| Plugin::load_with_identifiers(config, tablet, identifiers))
             .collect::<Result<Vec<_>, _>>()?;
         let has_pre = plugins
             .iter()
@@ -554,6 +573,7 @@ impl PluginChain {
         Ok(Self {
             graph,
             managed_output: None,
+            identifiers: identifiers.map(<[DeviceIdentifier]>::to_vec),
             plugins,
             has_pre,
             has_pixels,
@@ -563,11 +583,22 @@ impl PluginChain {
         })
     }
 
+    /// A newly opened/reopened endpoint set may differ after auxiliary failure.
+    /// Reconstruct at this cold boundary before creating any host output sink.
+    pub fn bind_identifiers(&mut self, profile: &crate::config::Profile,
+        tablet: &TabletConfiguration, identifiers: &[DeviceIdentifier]) -> Result<bool, String> {
+        if self.identifiers.as_deref() == Some(identifiers) { return Ok(false); }
+        let replacement = Self::load_for_profile_with_identifiers(profile, tablet, identifiers)?;
+        replacement.validate_output_mode(profile.relative.is_some())?;
+        *self = replacement;
+        Ok(true)
+    }
+
     /// Binds to this graph's exact output instance; third-party pointers retain
     /// their own real services/prerequisites rather than a native substitute.
     pub fn wrap_action_sink(&self, profile: &crate::config::Profile, tablet: &TabletConfiguration,
         native: Box<dyn otd_core::output::buttons::ActionSink>) -> Result<Box<dyn otd_core::output::buttons::ActionSink>, String> {
-        crate::dotnet::endpoints::wrap_sink_with_output(profile, tablet, native, self.managed_output.as_ref())
+        crate::dotnet::endpoints::wrap_sink_with_identifiers(profile, tablet, native, self.managed_output.as_ref(), self.identifiers.as_deref())
     }
 
     /// The filters in the order they run and the settings they run with, for
@@ -815,6 +846,7 @@ mod tests {
         let mut chain = PluginChain {
             graph: None,
             managed_output: None,
+            identifiers: None,
             plugins: vec![
                 fake(
                     PipelineStage::Pixels,
@@ -906,6 +938,8 @@ mod tests {
             let mut seen = 0f32;
             let mut chain = PluginChain {
                 graph: None,
+                managed_output: None,
+                identifiers: None,
                 plugins: vec![Plugin {
                     api: FilterApi {
                         header: Header::V1,
@@ -1049,5 +1083,28 @@ mod tests {
         sample.x = 600.0;
         assert!(plugin.process(&mut sample));
         assert_eq!(sample.x, 600.0);
+    }
+}
+
+#[cfg(test)]
+mod identifier_setup_tests {
+    use super::*;
+    #[test]
+    fn unchanged_opened_endpoint_membership_retains_the_chain() {
+        let tablet = current_tablet();
+        let identifiers = vec![tablet.digitizer_identifiers[0].clone()];
+        let profile = crate::config::Profile::default();
+        let mut chain = PluginChain::load_for_profile_with_identifiers(&profile, tablet, &identifiers).unwrap();
+        let epoch = chain.epoch;
+        let storage = chain.identifiers.as_ref().unwrap().as_ptr();
+        for _ in 0..4 {
+            assert!(!chain.bind_identifiers(&profile, tablet, &identifiers).unwrap());
+            assert_eq!(chain.epoch, epoch);
+            assert_eq!(chain.identifiers.as_ref().unwrap().as_ptr(), storage);
+        }
+        let mut with_auxiliary = identifiers.clone();
+        with_auxiliary.push(DeviceIdentifier { product_id: Some(999), ..Default::default() });
+        assert!(chain.bind_identifiers(&profile, tablet, &with_auxiliary).unwrap());
+        assert_eq!(chain.identifiers.as_deref(), Some(with_auxiliary.as_slice()));
     }
 }

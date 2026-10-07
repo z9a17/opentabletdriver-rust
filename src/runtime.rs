@@ -281,19 +281,17 @@ fn run(
             if profile.relative.is_none() { crate::display::read_snapshot()?.mapper(&profile.for_tablet(selected.spec)?)?; }
             profile_loaded = true;
         }
-        // These stay on this thread and survive a quiesce/failed replacement.
-        // Construction/reset executes trusted plugin code (including its
-        // reset/range-loss callback), but has no live input or host output sink.
-        let mut plugins = PluginChain::load_for_profile(&profile, &selected.configuration)?;
+        if cancelled.load(Ordering::Acquire) { return Ok(()); }
+        let source = PreparedSession::new(&selected, &notification, interrupt)
+            .map_err(|error| format!("HID preparation failed: {error}"))?;
+        // Metadata names the endpoints actually opened, not configuration
+        // alternatives. Preparation still issues no input read or init write.
+        let mut plugins = PluginChain::load_for_profile_with_identifiers(
+            &profile, &selected.configuration, &source.identifiers())?;
         plugins.validate_output_mode(profile.relative.is_some())?;
         reset_plugins(&mut plugins)?;
-        if cancelled.load(Ordering::Acquire) {
-            return Ok(());
-        }
-        let mut prepared = Some(
-            PreparedSession::new(&selected, &notification, interrupt)
-                .map_err(|error| format!("HID preparation failed: {error}"))?,
-        );
+        if cancelled.load(Ordering::Acquire) { return Ok(()); }
+        let mut prepared = Some(source);
         notify(Notice::PreparedProfile(Box::new(profile.clone())))?;
         notify(Notice::Prepared)?;
         loop {

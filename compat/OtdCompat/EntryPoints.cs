@@ -176,8 +176,7 @@ sealed class Instance : IDisposable
             services.Inject(type, created);
             providerTimers = services.ProviderInjected;
             ApplySettings(type, created, config["settings"] as JObject ?? new JObject());
-            InjectTablet(type, created, config["tablet"]?.ToObject<TabletConfiguration>()
-                ?? throw new ArgumentException("tablet configuration missing"));
+            HostServices.Complete(type, created, CreateTabletReference(config));
             Position = filter.Position;
             if (Position is not (PipelinePosition.PreTransform or PipelinePosition.PostTransform))
                 throw new NotSupportedException($"Unsupported plugin pipeline position: {Position}.");
@@ -265,10 +264,20 @@ sealed class Instance : IDisposable
         }
     }
 
-    static void InjectTablet(Type type, object value, TabletConfiguration configuration)
+    // Properties remain the full matched configuration; Identifiers describe
+    // the live InputDeviceTree, rather than its first configured alternative.
+    internal static TabletReference CreateTabletReference(JObject config)
     {
-        var tablet = new TabletReference(configuration, configuration.DigitizerIdentifiers.Take(1));
-        HostServices.Complete(type, value, tablet);
+        var configuration = config["tablet"]?.ToObject<TabletConfiguration>()
+            ?? throw new ArgumentException("tablet configuration missing");
+        var supplied = config["identifiers"];
+        if (supplied is null || supplied.Type == JTokenType.Null)
+            return new TabletReference(configuration, configuration.DigitizerIdentifiers.Take(1));
+        if (supplied is not JArray array || array.Count is < 1 or > 2)
+            throw new ArgumentException("identifiers must contain the opened digitizer and optional auxiliary endpoint");
+        var identifiers = array.Select(item => item.ToObject<DeviceIdentifier>()
+            ?? throw new ArgumentException("opened identifier missing")).ToArray();
+        return new TabletReference(configuration, identifiers);
     }
 
     void OnEmit(IDeviceReport? value)
