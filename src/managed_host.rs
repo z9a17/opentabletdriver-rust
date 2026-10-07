@@ -59,7 +59,9 @@ impl Owner {
                 }
                 // Native-only profiles do not initialize CLR, enumerate devices
                 // or send recurring control requests for managed services.
-                if crate::dotnet::initialized() { let _ = observer_backend.refresh(false, false, true); }
+                if crate::dotnet::initialized() && crate::managed_services::snapshots_requested() {
+                    let _ = observer_backend.refresh(false, false, true);
+                }
                 std::thread::park_timeout(Duration::from_millis(250));
             }
         }).map_err(|error| error.to_string())?;

@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 const MAX_TICKETS: usize = 64;
 const MAX_BYTES: usize = 4 * 1024 * 1024;
@@ -78,6 +78,8 @@ struct State {
 struct Engine { state: Mutex<State>, ready: Condvar }
 static HOST: OnceLock<Mutex<Option<Arc<Engine>>>> = OnceLock::new();
 static NEXT_TICKET: AtomicU64 = AtomicU64::new(1);
+static SNAPSHOTS_REQUESTED: AtomicBool = AtomicBool::new(false);
+pub fn snapshots_requested() -> bool { SNAPSHOTS_REQUESTED.load(Ordering::Acquire) }
 fn host() -> Option<Arc<Engine>> { HOST.get_or_init(|| Mutex::new(None)).lock().ok()?.clone() }
 fn reply(result: Result<Value, String>) -> Vec<u8> {
     let value = match result { Ok(result) => serde_json::json!({"ok":true,"result":result}),
@@ -102,6 +104,7 @@ impl Host {
         let bytes = reply(Ok(value));
         let mut slot = HOST.get_or_init(|| Mutex::new(None)).lock().map_err(|_| "Managed owner lock poisoned.")?;
         if slot.is_some() { return Err("Managed service owner already installed.".into()); }
+        SNAPSHOTS_REQUESTED.store(false, Ordering::Release);
         let engine = Arc::new(Engine { state: Mutex::new(State { stopped: false,
             snapshot: bytes, version: snapshot.version, daemon_identity: snapshot.daemon_identity, tickets: HashMap::new(),
             source_sessions: snapshot.source_sessions,
@@ -202,6 +205,7 @@ unsafe extern "C" fn request(op: u32, scope: u64, input: *const u8, len: u32, ou
         || state.queued_bytes + len as usize > MAX_QUEUED_BYTES { return -2; }
     let Ok(id) = NEXT_TICKET.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| value.checked_add(1)) else { return -5 };
     let completed = (operation == Operation::Snapshot).then(|| state.snapshot.clone());
+    if operation == Operation::Snapshot { SNAPSHOTS_REQUESTED.store(true, Ordering::Release); }
     state.tickets.insert(id, Ticket { deadline: now + TTL, reply: completed });
     if operation != Operation::Snapshot {
         let expected_daemon = state.daemon_identity.clone();
