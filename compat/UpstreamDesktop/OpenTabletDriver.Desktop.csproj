@@ -12,6 +12,7 @@
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <PackageLicenseExpression>LGPL-3.0-or-later</PackageLicenseExpression>
   </PropertyGroup>
+  <ItemGroup><InternalsVisibleTo Include="OtdCompat" /></ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../UpstreamCore/OpenTabletDriver.csproj" />
     <PackageReference Include="OpenTabletDriver.Native" Version="[0.6.7]" />

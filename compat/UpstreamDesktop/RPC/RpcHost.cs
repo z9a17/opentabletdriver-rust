@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
 using System.Threading;
@@ -15,17 +16,22 @@ namespace OpenTabletDriver.Desktop.RPC
 
         public async Task Run(T host, CancellationToken ct)
         {
-            while (!ct.IsCancellationRequested)
+            // Native hosting must own every connected client's lifetime, not
+            // return from shutdown while fire-and-forget dispatch is still live.
+            var clients = new List<Task>();
+            try
             {
-                var stream = CreateStream();
-                try
+                while (!ct.IsCancellationRequested)
                 {
-                    await stream.WaitForConnectionAsync(ct);
+                    var stream = CreateStream();
+                    try { await stream.WaitForConnectionAsync(ct).ConfigureAwait(false); }
+                    catch { await stream.DisposeAsync().ConfigureAwait(false); throw; }
+                    clients.RemoveAll(task => task.IsCompleted);
+                    clients.Add(RespondToRpcRequestAsync(host, stream, ct));
                 }
-                catch (OperationCanceledException) { } // ignore exceptions caused by daemon shutting down
-
-                _ = RespondToRpcRequestAsync(host, stream, ct);
             }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+            finally { await Task.WhenAll(clients).ConfigureAwait(false); }
         }
 
         private async Task RespondToRpcRequestAsync(T host, NamedPipeServerStream stream, CancellationToken ct)
@@ -44,8 +50,8 @@ namespace OpenTabletDriver.Desktop.RPC
                 Log.Exception(ex);
             }
 
-            ConnectionStateChanged?.Invoke(this, false);
-            await stream.DisposeAsync();
+            try { ConnectionStateChanged?.Invoke(this, false); }
+            finally { await stream.DisposeAsync().ConfigureAwait(false); }
         }
 
         private NamedPipeServerStream CreateStream()
