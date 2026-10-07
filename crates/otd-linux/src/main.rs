@@ -367,12 +367,14 @@ mod app {
         // failures are fatal; reconnect only retries actual hardware loss.
         // Resource discovery covers every binding group, including Artist Mode
         // profiles whose pointer is otherwise absent.
-        let actions = || profile.pen_buttons.iter().chain(&profile.aux_buttons).chain(&profile.mouse_buttons)
+        let non_pen_actions = || profile.aux_buttons.iter().chain(&profile.mouse_buttons)
             .chain([&profile.mouse_scroll_up, &profile.mouse_scroll_down])
             .chain(profile.wheels.iter().flat_map(|wheel| [&wheel.clockwise, &wheel.counter_clockwise]
                 .into_iter().chain(wheel.buttons.iter())));
+        let actions = || profile.pen_buttons.iter().chain(non_pen_actions());
         let keys = actions().any(|action| matches!(action, ButtonAction::Keys(_)));
-        let clicks = actions().any(|action| matches!(action, ButtonAction::Mouse(_) | ButtonAction::Scroll(_)));
+        let clicks = actions().any(|action| matches!(action, ButtonAction::Mouse(_) | ButtonAction::Scroll(_)))
+            || non_pen_actions().any(|action| matches!(action, ButtonAction::Barrel(1 | 2)));
         let keyboard = keys.then(VirtualKeyboard::create).transpose().map_err(SessionError::Fatal)?;
         let pen = if profile.output == OutputKind::Pen {
             Some(VirtualTablet::create(displays.0.virtual_screen).map_err(SessionError::Fatal)?)
