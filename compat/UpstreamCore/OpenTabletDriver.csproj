@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework><AssemblyName>OpenTabletDriver</AssemblyName>
+    <RootNamespace>OpenTabletDriver</RootNamespace><Version>0.6.7</Version>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks><Nullable>disable</Nullable><ImplicitUsings>disable</ImplicitUsings>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile><PackageLicenseExpression>LGPL-3.0-or-later</PackageLicenseExpression>
+    <NoWarn>VSTHRD100;VSTHRD101;VSTHRD110;VSTHRD200</NoWarn>
+  </PropertyGroup>
+  <ItemGroup><InternalsVisibleTo Include="OtdCompat" /></ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="HidSharpCore" Version="[1.3.0]" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="[10.0.1]" />
+    <PackageReference Include="Newtonsoft.Json" Version="[13.0.4]" />
+    <PackageReference Include="OpenTabletDriver.Plugin" Version="[0.6.7]" />
+    <PackageReference Include="OpenTabletDriver.Native" Version="[0.6.7]" />
+    <PackageReference Include="OpenTabletDriver.Configurations" Version="[0.6.7]" />
+  </ItemGroup>
+  <ItemGroup><EmbeddedResource Include="Configurations/*/*.json" /></ItemGroup>
+</Project>

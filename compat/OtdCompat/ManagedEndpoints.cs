@@ -161,6 +161,7 @@ abstract class EndpointInstance : IDisposable
             if (!contract.IsAssignableFrom(type)) throw new NotSupportedException($"'{type.FullName}' does not implement {contract.Name}.");
             value = HostServices.Construct(type) ?? throw new InvalidOperationException("Cannot construct plugin.");
             Value = value;
+            services.ConfigureSource(config);
             services.Inject(type, value);
             Instance.ApplySettings(type, value, config["settings"] as JObject ?? new JObject());
             HostServices.Complete(type, value, Tablet);

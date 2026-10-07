@@ -19,9 +19,23 @@ namespace OtdCompat;
 
 // Real interface providers over host-owned readers/state. Concrete upstream
 // Driver/InputDevice/RootHub are deliberately never constructed as empty stubs.
-sealed class ManagedProviders : IDriver, IDeviceConfigurationProvider, IReportParserProvider,
+sealed partial class ManagedProviders : IDriver, IDeviceConfigurationProvider, IReportParserProvider,
     IDeviceHubsProvider, ICompositeDeviceHub, IDriverDaemon, IDisposable
 {
+    internal ManagedProviders(JObject? sourceSession = null) { this.sourceSession = sourceSession?.DeepClone() as JObject; }
+    readonly JObject? sourceSession;
+    HostedCore? core;
+    HostedCore Core {
+        get {
+            lock (gate) {
+                if (core != null) return core;
+                var created = new HostedCore(this, scope, lifetime.Token, sourceSession);
+                core = created; // Parser dependency injection sees this same concrete Driver.
+                try { created.Refresh(); return created; }
+                catch { core = null; created.Dispose(); throw; }
+            }
+        }
+    }
     static long nextScope;
     readonly ulong scope = checked((ulong)Interlocked.Increment(ref nextScope));
     readonly CancellationTokenSource lifetime = new();
@@ -42,7 +56,11 @@ sealed class ManagedProviders : IDriver, IDeviceConfigurationProvider, IReportPa
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         if (!ServiceClient.Available) return null;
-        if (type == typeof(IDriver) || type == typeof(IDeviceConfigurationProvider)
+        if (type == typeof(OpenTabletDriver.Driver) || type == typeof(IDriver)) return Core.Driver;
+        if (type == typeof(OpenTabletDriver.InputDeviceTree)) return Core.SelectedTree();
+        if (type == typeof(OpenTabletDriver.InputDevice)) return Core.SelectedInput();
+        if (type == typeof(OpenTabletDriver.Devices.RootHub) || type == typeof(ICompositeDeviceHub) || type == typeof(IDeviceHub)) return Core.Root;
+        if (type == typeof(IDeviceConfigurationProvider)
             || type == typeof(IReportParserProvider) || type == typeof(IDeviceHubsProvider)
             || type == typeof(IDeviceHub) || type == typeof(ICompositeDeviceHub) || type == typeof(IDriverDaemon)) return this;
         if (type == typeof(PluginManager) || type == typeof(DesktopPluginManager)
@@ -73,10 +91,10 @@ sealed class ManagedProviders : IDriver, IDeviceConfigurationProvider, IReportPa
     public IEnumerable<TabletReference> Tablets => OwnedRead<TabletReference[]>("tablets");
     public IEnumerable<TabletConfiguration> TabletConfigurations => OwnedRead<TabletConfiguration[]>("configurations");
     public IEnumerable<IDeviceHub> DeviceHubs { get { lifetime.Token.ThrowIfCancellationRequested(); return [nativeHub ??= new HostedNativeHub(this)]; } }
-    public void ConnectDeviceHub<T>() where T : IDeviceHub => throw new NotSupportedException("Custom managed hubs require an explicit native reader-owner integration.");
-    public void ConnectDeviceHub(IDeviceHub instance) => throw new NotSupportedException("Custom managed hubs require an explicit native reader-owner integration.");
-    public void DisconnectDeviceHub<T>() where T : IDeviceHub => throw new NotSupportedException("The native reader owner controls attached device hubs.");
-    public void DisconnectDeviceHub(IDeviceHub instance) => throw new NotSupportedException("The native reader owner controls attached device hubs.");
+    public void ConnectDeviceHub<T>() where T : IDeviceHub => Core.Root.ConnectDeviceHub<T>();
+    public void ConnectDeviceHub(IDeviceHub instance) => Core.Root.ConnectDeviceHub(instance);
+    public void DisconnectDeviceHub<T>() where T : IDeviceHub => Core.Root.DisconnectDeviceHub<T>();
+    public void DisconnectDeviceHub(IDeviceHub instance) => Core.Root.DisconnectDeviceHub(instance);
     public IEnumerable<IDeviceEndpoint> GetDevices() { lifetime.Token.ThrowIfCancellationRequested(); return Endpoints(ServiceClient.Snapshot()); }
     IDeviceEndpoint[] Endpoints(JObject snapshot) => Require(snapshot, "devices").Children()
         .Select(data => (IDeviceEndpoint)new HostedEndpoint((JObject)data, scope, lifetime.Token)).ToArray();
@@ -91,7 +109,7 @@ sealed class ManagedProviders : IDriver, IDeviceConfigurationProvider, IReportPa
     {
         lock (gate) { ObjectDisposedException.ThrowIf(disposed, this);
             if (parsers.Count >= 256) throw new InvalidOperationException("Provider scope exceeds 256 owned parser instances.");
-            var parser = new ProviderParser(name); parsers.Add(parser); return parser; }
+            var parser = new ProviderParser(name, this); parsers.Add(parser); return parser; }
     }
     public event EventHandler<IEnumerable<TabletReference>> TabletsChanged {
         add { lock (gate) { ObjectDisposedException.ThrowIf(disposed, this); tabletsChanged += value; StartMonitor(); } }
@@ -220,6 +238,7 @@ sealed class ManagedProviders : IDriver, IDeviceConfigurationProvider, IReportPa
                 try { parser.Dispose(); } catch (Exception error) { (failures ??= []).Add(error); }
             }
             parsers.Clear();
+            core?.Dispose();
             if (failures != null) throw new AggregateException("Provider parser disposal failed.", failures);
         }
         // No join of plugin event handlers here: a handler may be waiting on
@@ -238,11 +257,12 @@ sealed class ProviderParser : IReportParser<IDeviceReport>, IDisposable
 {
     readonly object gate = new();
     readonly RegistryGeneration? generation;
-    readonly HostServices services = new();
+    readonly HostServices services;
     readonly IReportParser<IDeviceReport> parser;
     bool disposed;
-    internal ProviderParser(string name)
+    internal ProviderParser(string name, ManagedProviders? owner = null)
     {
+        services = new HostServices(input: owner == null ? null : owner.Get);
         var selected = InstalledRegistry.AcquireParser(name); generation = selected.Generation;
         object? value = null;
         try { value = HostServices.Construct(selected.Type) ?? throw new InvalidOperationException("Cannot construct original report parser.");
@@ -256,7 +276,7 @@ sealed class ProviderParser : IReportParser<IDeviceReport>, IDisposable
     } }
 }
 
-sealed class HostedEndpoint(JObject data, ulong scope, CancellationToken cancellation) : IDeviceEndpoint
+sealed partial class HostedEndpoint(JObject data, ulong scope, CancellationToken cancellation) : OpenTabletDriver.IHostedDeviceEndpoint
 {
     T Property<T>(string name) => data[name] is { Type: not JTokenType.Null } value ? value.ToObject<T>()!
         : throw new NotSupportedException($"Cached endpoint '{DevicePath}' has no '{name}' metadata.");
@@ -272,13 +292,13 @@ sealed class HostedEndpoint(JObject data, ulong scope, CancellationToken cancell
     public string DevicePath => data.Value<string>(nameof(DevicePath)) ?? throw new InvalidOperationException("Endpoint has no actual path.");
     public bool CanOpen => Property<bool>(nameof(CanOpen));
     public IDictionary<string, string> DeviceAttributes => Property<Dictionary<string, string>>(nameof(DeviceAttributes));
-    public IDeviceEndpointStream Open() => throw new NotSupportedException("Native reader sharing/stream I/O owner has not been registered; a second HID handle will not be opened.");
+    public IDeviceEndpointStream Open() => HostedSharedStream.Open(data, scope, cancellation);
     public string GetDeviceString(byte index)
     {
         cancellation.ThrowIfCancellationRequested();
         if (data["DeviceStrings"] is JObject strings && strings[index.ToString(System.Globalization.CultureInfo.InvariantCulture)] is { } cached)
             return cached.Value<string>()!;
-        ServiceClient.RequireBlockingAllowed();
+        ServiceClient.RequireIoAllowed();
         return ServiceClient.Request(3, scope, new JObject { ["path"] = DevicePath, ["index"] = index }, cancellation)
             .GetAwaiter().GetResult().Value<string>()!;
     }

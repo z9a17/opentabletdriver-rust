@@ -1,4 +1,5 @@
 using System.Numerics;
+using Newtonsoft.Json.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using OpenTabletDriver.Plugin.Attributes;
@@ -17,6 +18,8 @@ sealed class HostServices(Func<ITimer>? timer = null, Func<Type, object?>? input
     IVirtualScreen? display;
     ManagedProviders? providers;
     int disposed;
+    JObject? sourceSession;
+    internal void ConfigureSource(JObject config) { sourceSession = config["source_session"] as JObject; }
     public bool ProviderInjected { get; private set; }
     public object? GetService(Type serviceType)
     {
@@ -26,7 +29,7 @@ sealed class HostServices(Func<ITimer>? timer = null, Func<Type, object?>? input
         if (serviceType == typeof(IVirtualScreen) && OperatingSystem.IsWindows())
             return display ??= new WindowsScreen();
         if (input?.Invoke(serviceType) is { } value) return value;
-        return (providers ??= new ManagedProviders()).Get(serviceType);
+        return (providers ??= new ManagedProviders(sourceSession)).Get(serviceType);
     }
 
     public void Dispose() { if (Interlocked.Exchange(ref disposed, 1) == 0) providers?.Dispose(); }

@@ -185,6 +185,7 @@ sealed class Instance : IDisposable
                     throw new InvalidOperationException("Pipeline timers must be acquired on the graph's owning thread.");
                 var timer = new SessionTimer(); timers.Add(timer); return timer;
             });
+            services.ConfigureSource(config);
             services.Inject(type, created);
             providerTimers = services.ProviderInjected;
             ApplySettings(type, created, config["settings"] as JObject ?? new JObject());
@@ -507,6 +508,7 @@ sealed class ToolInstance : IDisposable
                 throw new NotSupportedException($"'{type.FullName}' is not an OpenTabletDriver tool.");
             created = HostServices.Construct(type) ?? throw new InvalidOperationException("Cannot construct tool");
             tool = (OpenTabletDriver.Plugin.ITool)created;
+            services.ConfigureSource(config);
             services.Inject(type, created);
             Instance.ApplySettings(type, created, config["settings"] as JObject ?? new JObject());
             HostServices.Complete(type, created, tablet: null);
