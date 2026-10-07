@@ -1,4 +1,6 @@
 using System.Numerics;
+using Newtonsoft.Json.Linq;
+using OpenTabletDriver.Desktop.Interop.Input.Keyboard;
 using OpenTabletDriver.Desktop.Interop;
 using OpenTabletDriver.Plugin.Platform.Keyboard;
 using OpenTabletDriver.Plugin.Platform.Pointer;
@@ -22,7 +24,7 @@ sealed class OriginalInputServices : IDisposable
             ObjectDisposedException.ThrowIf(disposed, this);
             if (type == typeof(ITimer)) { var value = new ScopedTimer(DesktopInterop.Timer); owned.Add(value); return value; }
             if (type == typeof(IVirtualKeyboard)) {
-                if (keyboard == null) { keyboard = new ScopedKeyboard(DesktopInterop.VirtualKeyboard ?? throw new PlatformNotSupportedException("Original virtual keyboard is unavailable on this platform.")); owned.Add(keyboard); }
+                if (keyboard == null) { keyboard = new ScopedKeyboard(); owned.Add(keyboard); }
                 return keyboard;
             }
             if (type == typeof(IAbsolutePointer)) {
@@ -48,60 +50,85 @@ sealed class OriginalInputServices : IDisposable
             if (failures != null) throw new AggregateException("Original input scope cleanup failed.", failures);
         }
     }
-    // Original Windows platform objects are per-service instances. Scoped key
-    // ownership also protects multiple managed tools sharing the same OS key.
-    static readonly object KeysGate = new(), ButtonsGate = new();
-    static readonly Dictionary<string,int> Keys = new(StringComparer.Ordinal);
-    static readonly Dictionary<MouseButton,int> Buttons = new();
-    sealed class ScopedKeyboard(IVirtualKeyboard original) : IVirtualKeyboard, IDisposable
+    // Key/button transitions enter the same native ownership ledger as tablet
+    // bindings. Position/scroll still use the actual pinned platform pointer.
+    sealed class InputOwner : IDisposable
     {
-        readonly HashSet<string> held = new(StringComparer.Ordinal);
-        volatile bool disposed;
-        public IEnumerable<string> SupportedKeys => original.SupportedKeys;
-        public void Press(string key) { lock (KeysGate) {
-            ObjectDisposedException.ThrowIf(disposed, this);
-            if (held.Contains(key)) { original.Press(key); return; }
-            int count = Keys.GetValueOrDefault(key);
-            if (count == 0) original.Press(key);
-            held.Add(key); Keys[key] = checked(count + 1);
-        } }
-        public void Release(string key) { lock (KeysGate) {
-            if (!held.Remove(key)) return;
-            int count = Keys[key] - 1;
-            if (count == 0) { Keys.Remove(key); original.Release(key); } else Keys[key] = count;
-        } }
+        static long identity;
+        readonly ulong scope = checked((ulong)Interlocked.Increment(ref identity));
+        readonly object gate = new();
+        readonly CancellationTokenSource lifetime = new();
+        Task? heartbeat;
+        bool disposed;
+        internal void Send(JObject payload) {
+            lock (gate) {
+                ObjectDisposedException.ThrowIf(disposed, this);
+                payload["lease_ms"] = 15000;
+                // This uses the independent native input lane, which never
+                // waits for daemon/profile transactions or managed callbacks.
+                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                ServiceClient.Request(12, scope, payload, deadline.Token).GetAwaiter().GetResult();
+                heartbeat ??= Task.Run(Renew);
+            }
+        }
+        async Task Renew() {
+            while (!lifetime.IsCancellationRequested) {
+                try {
+                    await Task.Delay(3000, lifetime.Token).ConfigureAwait(false);
+                    lock (gate) {
+                        if (disposed) return;
+                        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                        ServiceClient.Request(12, scope, new JObject { ["type"]="renew",["lease_ms"]=15000 },deadline.Token).GetAwaiter().GetResult();
+                    }
+                } catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { return; }
+                catch (Exception error) { LogFailure(error); return; }
+            }
+        }
+        public void Dispose() {
+            lock (gate) {
+                if (disposed) return; disposed = true; lifetime.Cancel();
+                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                ServiceClient.Request(13,scope,new JObject(),deadline.Token).GetAwaiter().GetResult();
+            }
+        }
+        static void LogFailure(Exception error) => OpenTabletDriver.Plugin.Log.Exception(error);
+    }
+    sealed class ScopedKeyboard : IVirtualKeyboard, IDisposable
+    {
+        readonly InputOwner owner = new();
+        readonly Dictionary<string,uint> codes;
+        readonly string platform;
+        internal ScopedKeyboard() {
+            if (OperatingSystem.IsWindows()) { platform="windows"; codes=WindowsVirtualKeyboard.EtoKeysymToVK.ToDictionary(pair=>pair.Key,pair=>(uint)pair.Value,StringComparer.Ordinal); }
+            else if (OperatingSystem.IsLinux()) { platform="linux"; codes=EvdevVirtualKeyboard.EtoKeysymToEventCode.ToDictionary(pair=>pair.Key,pair=>(uint)pair.Value,StringComparer.Ordinal); }
+            else if (OperatingSystem.IsMacOS()) { platform="macos"; codes=MacOSVirtualKeyboard.EtoKeysymToVK.ToDictionary(pair=>pair.Key,pair=>(uint)pair.Value,StringComparer.Ordinal); }
+            else throw new PlatformNotSupportedException("Original keyboard platform is unavailable.");
+        }
+        public IEnumerable<string> SupportedKeys => codes.Keys;
+        void Send(string key,bool held) {
+            if (!codes.TryGetValue(key,out uint code)) throw new KeyNotFoundException($"Original keyboard has no key '{key}'.");
+            owner.Send(new JObject { ["type"]="key",["platform"]=platform,["code"]=code,["key"]=key,["held"]=held });
+        }
+        public void Press(string key) => Send(key,true);
+        public void Release(string key) => Send(key,false);
         public void Press(IEnumerable<string> keys) { foreach (string key in keys) Press(key); }
         public void Release(IEnumerable<string> keys) { foreach (string key in keys) Release(key); }
-        public void Dispose() { lock (KeysGate) { if (disposed) return; disposed = true; foreach (string key in held.ToArray()) Release(key); } }
+        public void Dispose() => owner.Dispose();
     }
     abstract class ScopedMouse(object original) : IMouseButtonHandler, IMouseScrollHandler, ISynchronousPointer, IDisposable
     {
         protected readonly object Original = original;
-        readonly HashSet<MouseButton> held = [];
+        readonly InputOwner owner = new();
         volatile bool disposed;
         protected T Require<T>() => Original is T value ? value : throw new NotSupportedException($"Actual original pointer has no {typeof(T).Name} capability.");
-        protected void Check() => ObjectDisposedException.ThrowIf(disposed, this);
-        public void MouseDown(MouseButton button) { lock (ButtonsGate) {
-            Check(); if (held.Contains(button)) return;
-            int count = Buttons.GetValueOrDefault(button);
-            if (count == 0) Require<IMouseButtonHandler>().MouseDown(button);
-            held.Add(button); Buttons[button] = checked(count + 1);
-        } }
-        public void MouseUp(MouseButton button) { lock (ButtonsGate) {
-            if (!held.Remove(button)) return;
-            int count = Buttons[button] - 1;
-            if (count == 0) { Buttons.Remove(button); Require<IMouseButtonHandler>().MouseUp(button); } else Buttons[button] = count;
-        } }
+        protected void Check() => ObjectDisposedException.ThrowIf(disposed,this);
+        public void MouseDown(MouseButton button) { Check(); owner.Send(new JObject { ["type"]="button",["code"]=(uint)button,["held"]=true }); }
+        public void MouseUp(MouseButton button) { Check(); owner.Send(new JObject { ["type"]="button",["code"]=(uint)button,["held"]=false }); }
         public void ScrollVertically(int amount) { Check(); Require<IMouseScrollHandler>().ScrollVertically(amount); }
         public void ScrollHorizontally(int amount) { Check(); Require<IMouseScrollHandler>().ScrollHorizontally(amount); }
         public void Flush() { Check(); if (Original is ISynchronousPointer sync) sync.Flush(); }
         public void Reset() { Check(); if (Original is ISynchronousPointer sync) sync.Reset(); }
-        public void Dispose() { lock (ButtonsGate) {
-            if (disposed) return;
-            foreach (var button in held.ToArray()) MouseUp(button);
-            if (Original is ISynchronousPointer sync) sync.Flush();
-            disposed = true;
-        } }
+        public void Dispose() { if (disposed) return; disposed=true; owner.Dispose(); }
     }
     sealed class ScopedAbsolute(IAbsolutePointer original) : ScopedMouse(original), IAbsolutePointer
     { public void SetPosition(Vector2 position) { Check(); Require<IAbsolutePointer>().SetPosition(position); } }
