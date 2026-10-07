@@ -235,9 +235,14 @@ impl Daemon {
             target_generation: next, accepted_pending: true })
     }
     pub(crate) fn primary_apply(&mut self, id: &str, generation: u64, profile_toml: String) -> Result<crate::device_sessions::SessionReceipt, ControlError> {
+        self.primary_apply_with_inhibit(id, generation, profile_toml, None)
+    }
+    fn primary_apply_with_inhibit(&mut self, id: &str, generation: u64, profile_toml: String,
+        inhibit: Option<u32>) -> Result<crate::device_sessions::SessionReceipt, ControlError> {
         self.primary_device_guard(id, generation)?;
         let next = generation.checked_add(1).ok_or_else(|| ControlError::new(ErrorCode::Internal, "device generation exhausted"))?;
-        let (profile, text) = Self::prepare(Some(profile_toml))?;
+        let (mut profile, text) = Self::prepare(Some(profile_toml))?;
+        profile.binding_inhibit = inhibit;
         self.device_sessions().unwrap().validate_profile(id, &profile).map_err(|error| ControlError::new(ErrorCode::InvalidProfile, error))?;
         if self.worker.is_none() && self.primary_stopped {
             let handle = self.device_sessions().unwrap();
@@ -253,6 +258,22 @@ impl Daemon {
         self.device_sessions().unwrap().primary_pending(next, crate::device_sessions::SessionState::Running);
         Ok(crate::device_sessions::SessionReceipt { id: id.to_owned(), device_generation: generation,
             target_generation: next, accepted_pending: true })
+    }
+    fn apply_device_profile(&mut self, expected: WorkerIdentity, id: String, generation: u64,
+        profile_toml: String, inhibit: Option<u32>) -> Result<Reply, ControlError> {
+        self.check_identity(&expected)?;
+        let handle = self.device_sessions().ok_or_else(|| ControlError::new(ErrorCode::Busy,
+            "device supervisor is unavailable"))?;
+        let primary = handle.snapshot().map_err(|error| ControlError::new(ErrorCode::Internal, error))?
+            .sessions.iter().any(|session| session.id == id && session.primary);
+        let receipt = if primary { self.primary_apply_with_inhibit(&id, generation, profile_toml, inhibit)? }
+            else {
+                let (mut profile, _) = Self::prepare(Some(profile_toml))?;
+                profile.binding_inhibit = inhibit;
+                handle.apply(&id, generation, profile)
+                    .map_err(|error| ControlError::new(ErrorCode::Conflict, error))?
+            };
+        Ok(Reply::DeviceOperationAccepted { receipt })
     }
     fn device_lifecycle(&mut self, id: &str, generation: u64, start: bool)
         -> Result<crate::device_sessions::SessionReceipt, ControlError> {
@@ -1096,18 +1117,10 @@ impl ControlHandler for Daemon {
                 Ok(Reply::DeviceProfile { identity: self.identity(), id, device_generation, profile_toml })
             }
             Command::ApplyDeviceProfile { expected, id, device_generation, profile_toml } => {
-                self.check_identity(&expected)?;
-                let handle = self.device_sessions().ok_or_else(|| ControlError::new(ErrorCode::Busy,
-                    "device supervisor is unavailable"))?;
-                let primary = handle.snapshot().map_err(|error| ControlError::new(ErrorCode::Internal, error))?
-                    .sessions.iter().any(|session| session.id == id && session.primary);
-                let receipt = if primary { self.primary_apply(&id, device_generation, profile_toml)? }
-                    else {
-                        let (profile, _) = Self::prepare(Some(profile_toml))?;
-                        handle.apply(&id, device_generation, profile)
-                            .map_err(|error| ControlError::new(ErrorCode::Conflict, error))?
-                    };
-                Ok(Reply::DeviceOperationAccepted { receipt })
+                self.apply_device_profile(expected, id, device_generation, profile_toml, None)
+            }
+            Command::ApplyDeviceProfileWithInhibit { expected, id, device_generation, profile_toml, binding_inhibit } => {
+                self.apply_device_profile(expected, id, device_generation, profile_toml, Some(binding_inhibit))
             }
             Command::StopDevice { expected, id, device_generation } => {
                 self.check_identity(&expected)?;

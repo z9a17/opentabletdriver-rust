@@ -76,7 +76,10 @@ pub fn original_application_info() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({"AppDataDirectory":data,"SettingsFile":collection::path()?,
         "PluginDirectory":crate::plugin_catalog::plugins_directory()?,
         "PresetDirectory":otd_core::presets::PresetStore::user()?.directory(),"LogDirectory":data,
-        "TemporaryDirectory":std::env::temp_dir(),"CacheDirectory":null,"BackupDirectory":null,"TrashDirectory":null,
+        // DesktopPluginManager.Clean recursively removes its temporary/trash
+        // folders. Never expose the process-wide system temp directory as one.
+        "TemporaryDirectory":data.join("compat-temp"),"CacheDirectory":data.join("cache"),
+        "BackupDirectory":data.join("backup"),"TrashDirectory":data.join("trash"),
         "ConfigurationDirectory":otd_core::config::configurations_directory()}))
 }
 pub fn invoke_original(method: &str, params: &serde_json::Value) -> Result<serde_json::Value, String> {
