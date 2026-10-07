@@ -132,6 +132,9 @@ pub enum Command {
         expected: WorkerIdentity,
         start_id: u64,
         capacity_bytes: u32,
+        /// Renewable ownership lease, including frozen drains. The daemon
+        /// stops an abandoned tap on its bounded control poll after expiry;
+        /// this is not a physical packet timestamp cutoff.
         lease_ms: u32,
     },
     /// Acknowledge only previously durable packets. Repeating this read with
@@ -188,6 +191,7 @@ pub struct DebugCaptureStatus {
     pub oversized: u64,
     pub acknowledged_sequence: u64,
     pub stop_reason: Option<DebugCaptureStopReason>,
+    /// Remaining ownership lifetime, including while the tap is frozen.
     pub lease_remaining_ms: u64,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]

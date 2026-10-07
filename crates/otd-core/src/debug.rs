@@ -266,14 +266,15 @@ impl FullCapture {
     }
     fn expire(&self, ring: &mut Ring, now: Instant) {
         let state = self.state.load(Ordering::Acquire);
-        if state & ACTIVE != 0 && self.micros(now) >= self.deadline_us.load(Ordering::Acquire) {
+        // Expiration and renewal share this control-thread mutex. The report
+        // producer never freezes a lease using a deadline sampled before a
+        // concurrent renewal. The daemon polls even without incoming reports.
+        if state & ACTIVE != 0 && state & SEQUENCE_MASK == SEQUENCE_MASK {
+            self.state.fetch_and(!ACTIVE, Ordering::AcqRel);
+            ring.stop_reason = Some(CaptureStopReason::SequenceLimit);
+        } else if state & ACTIVE != 0 && self.micros(now) >= self.deadline_us.load(Ordering::Acquire) {
             self.state.fetch_and(!ACTIVE, Ordering::AcqRel);
             ring.stop_reason = Some(CaptureStopReason::LeaseExpired);
-        }
-        if self.state.load(Ordering::Acquire) & ACTIVE == 0 && ring.stop_reason.is_none() {
-            ring.stop_reason = Some(if state & SEQUENCE_MASK == SEQUENCE_MASK {
-                CaptureStopReason::SequenceLimit
-            } else { CaptureStopReason::LeaseExpired });
         }
     }
     fn status(&self, ring: &Ring, now: Instant) -> CaptureStatus {
@@ -293,9 +294,10 @@ impl FullCapture {
             lost_tap: lost, overflow: ring.overflow,
             oversized: ring.oversized, acknowledged_sequence: ring.acknowledged,
             stop_reason: ring.stop_reason,
-            lease_remaining_ms: if active {
-                self.deadline_us.load(Ordering::Acquire).saturating_sub(self.micros(now)) / 1_000
-            } else { 0 },
+            // Ownership remains leased while frozen so abandoned Stop or
+            // disconnect drains cannot block every future capture forever.
+            lease_remaining_ms: self.deadline_us.load(Ordering::Acquire)
+                .saturating_sub(self.micros(now)) / 1_000,
         }
     }
     fn start(&self, start_id: u64, session: u64, device: Device, report_length: usize,
@@ -324,7 +326,7 @@ impl FullCapture {
             }
             let state = self.state.load(Ordering::Acquire);
             if state & ACTIVE != 0 || self.resolved.load(Ordering::Acquire) != state & SEQUENCE_MASK ||
-                previous.stop_reason != Some(CaptureStopReason::LeaseExpired) {
+                self.micros(now) < self.deadline_us.load(Ordering::Acquire) {
                 return Err(CaptureError::Busy);
             }
         }
@@ -362,11 +364,7 @@ impl FullCapture {
         if session == 0 || self.session.load(Ordering::Relaxed) != session { return; }
         loop {
             if state & ACTIVE == 0 { return; }
-            if self.micros(ready) >= self.deadline_us.load(Ordering::Acquire) ||
-                state & SEQUENCE_MASK == SEQUENCE_MASK {
-                let _ = self.state.compare_exchange(state, state & !ACTIVE, Ordering::AcqRel, Ordering::Relaxed);
-                return;
-            }
+            if state & SEQUENCE_MASK == SEQUENCE_MASK { return; }
             match self.state.compare_exchange(state, state + 1, Ordering::AcqRel, Ordering::Acquire) {
                 Ok(_) => break,
                 Err(changed) => {
@@ -428,9 +426,9 @@ impl FullCapture {
                 ring.count -= 1;
             }
         }
-        if self.state.load(Ordering::Acquire) & ACTIVE != 0 {
-            self.deadline_us.store(self.micros(now).saturating_add(u64::from(lease_ms) * 1_000), Ordering::Release);
-        }
+        // Valid reads renew ownership even after Stop, while keeping the tap
+        // frozen. Long drains stay protected; abandoned frozen rings expire.
+        self.deadline_us.store(self.micros(now).saturating_add(u64::from(lease_ms) * 1_000), Ordering::Release);
         let mut packets = Vec::new();
         let mut budget = 0;
         let mut next = after_sequence;
@@ -652,15 +650,15 @@ mod tests {
         assert!(!expired.capture.active);
         assert_eq!(expired.capture.last_sequence, 1);
         assert_eq!(expired.capture.stop_reason, Some(CaptureStopReason::LeaseExpired));
-        assert_eq!(expired.capture.lease_remaining_ms, 0);
+        assert_eq!(expired.capture.lease_remaining_ms, 1_000);
         let replacement = engine.start(2, 8, Device { name: "other".into(), parser: "parser".into() },
-            8, None, MIN_CAPTURE_BYTES, 1_000, now + Duration::from_secs(2)).unwrap();
+            8, None, MIN_CAPTURE_BYTES, 1_000, now + Duration::from_secs(3)).unwrap();
         assert_ne!(replacement.epoch, started.epoch);
         engine.freeze_session(7);
         assert!(engine.read(replacement.epoch, 8, 0, 512, 0, 1_000,
-            now + Duration::from_secs(2)).unwrap().capture.active);
+            now + Duration::from_secs(3)).unwrap().capture.active);
         engine.freeze_session(8);
-        let ended = engine.stop(replacement.epoch, 8, now + Duration::from_secs(2)).unwrap();
+        let ended = engine.stop(replacement.epoch, 8, now + Duration::from_secs(3)).unwrap();
         assert_eq!(ended.stop_reason, Some(CaptureStopReason::SessionEnded));
     }
     #[test]
@@ -695,6 +693,81 @@ mod tests {
         assert!(engine.start(1, 7, started.device, 8, None, MIN_CAPTURE_BYTES * 2,
             1_000, now).is_err());
         assert!(engine.read(started.epoch, 7, 1, 1, 0, 1_000, now).is_err());
+    }
+    #[test]
+    fn abandoned_requested_and_disconnected_captures_release_ownership_after_lease() {
+        let now = Instant::now();
+        for reason in [CaptureStopReason::Requested, CaptureStopReason::SessionEnded] {
+            let engine = FullCapture::new();
+            let started = begin(&engine, 8, MIN_CAPTURE_BYTES, now);
+            if reason == CaptureStopReason::Requested {
+                engine.stop(started.epoch, 7, now).unwrap();
+            } else { engine.freeze_session(7); }
+            let replacement = |at| engine.start(2, 8, Device { name: "new".into(), parser: "parser".into() },
+                8, None, MIN_CAPTURE_BYTES, 1_000, at);
+            assert!(matches!(replacement(now + Duration::from_millis(999)), Err(CaptureError::Busy)));
+            let reclaimed = replacement(now + Duration::from_millis(1_000)).unwrap();
+            assert!(reclaimed.active);
+            assert_ne!(reclaimed.epoch, started.epoch);
+            assert!(matches!(engine.stop(started.epoch, 7, now), Err(CaptureError::Conflict)));
+        }
+    }
+    #[test]
+    fn frozen_drain_renews_ownership_without_rearming_the_report_tap() {
+        let engine = FullCapture::new();
+        let now = Instant::now();
+        let started = begin(&engine, 8, MIN_CAPTURE_BYTES, now);
+        engine.stop(started.epoch, 7, now).unwrap();
+        let drain = engine.read(started.epoch, 7, 0, 512, 0, 1_000,
+            now + Duration::from_millis(900)).unwrap();
+        assert!(!drain.capture.active);
+        assert_eq!(drain.capture.stop_reason, Some(CaptureStopReason::Requested));
+        assert_eq!(drain.capture.lease_remaining_ms, 1_000);
+        engine.record(7, &[1], now + Duration::from_millis(1_200), false);
+        let replacement = |at| engine.start(2, 8, Device { name: "new".into(), parser: "parser".into() },
+            8, None, MIN_CAPTURE_BYTES, 1_000, at);
+        assert!(matches!(replacement(now + Duration::from_millis(1_200)), Err(CaptureError::Busy)));
+        let final_status = engine.stop(started.epoch, 7, now + Duration::from_millis(1_300)).unwrap();
+        assert_eq!(final_status.last_sequence, 0);
+        assert_eq!(final_status.stop_reason, Some(CaptureStopReason::Requested));
+        assert!(replacement(now + Duration::from_millis(1_900)).unwrap().active);
+    }
+    #[test]
+    fn report_crossing_old_deadline_cannot_freeze_a_control_read_renewal() {
+        let engine = FullCapture::new();
+        let now = Instant::now();
+        let started = begin(&engine, 8, MIN_CAPTURE_BYTES, now);
+        // Read took its timestamp at 900 ms and acquired the mutex. Its report
+        // producer reaches the old deadline before Read publishes renewal.
+        // Previously the producer froze ACTIVE from that stale deadline while
+        // Read held the mutex, despite the valid concurrent renewal.
+        let mut guard = engine.ring.lock().unwrap();
+        engine.record(7, &[1], now + Duration::from_millis(1_000), false);
+        engine.deadline_us.store(1_900_000, Ordering::Release);
+        engine.expire(guard.as_mut().unwrap(), now + Duration::from_millis(900));
+        drop(guard);
+        let batch = engine.read(started.epoch, 7, 0, 512, 0, 1_000,
+            now + Duration::from_millis(1_000)).unwrap();
+        assert!(batch.capture.active);
+        assert_eq!(batch.capture.stop_reason, None);
+        assert_eq!(batch.capture.last_sequence, 1);
+        assert_eq!(batch.capture.lost_tap, 1);
+        assert_eq!(batch.capture.pending_reports, 0);
+    }
+    #[test]
+    fn control_poll_expiration_freezes_sequence_limit_explicitly() {
+        let engine = FullCapture::new();
+        let now = Instant::now();
+        let started = begin(&engine, 8, MIN_CAPTURE_BYTES, now);
+        engine.state.store((started.epoch << 32) | ACTIVE | SEQUENCE_MASK, Ordering::Release);
+        engine.resolved.store(SEQUENCE_MASK, Ordering::Release);
+        let mut guard = engine.ring.lock().unwrap();
+        let ring = guard.as_mut().unwrap();
+        engine.expire(ring, now);
+        let status = engine.status(ring, now);
+        assert!(!status.active);
+        assert_eq!(status.stop_reason, Some(CaptureStopReason::SequenceLimit));
+        assert_eq!(status.last_sequence, SEQUENCE_MASK);
     }
     #[test]
     fn packets_labels_and_lifetimes_belong_to_one_session() {
