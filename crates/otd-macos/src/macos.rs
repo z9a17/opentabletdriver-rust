@@ -12,12 +12,12 @@ use std::time::{Duration, Instant};
 
 use otd_core::display::{DisplayFingerprint, DisplaySnapshot};
 use otd_core::actions::{Action, ActionTransition, MouseButton};
-use otd_core::output::buttons::{ActionSink, LocalActions};
+use otd_core::output::buttons::{ActionSink, LocalActions, ScrollAxis, ScrollPulse};
 use otd_core::endpoint_match::{Endpoint, Transport};
 use otd_core::mapping::Rect;
 use otd_core::output::{MousePacket, flags};
 use otd_core::session::{Displays, Read, ReportSource};
-use otd_core::tablets::{DeviceIdentifier, TabletConfiguration};
+use otd_core::tablets::{Database, DeviceIdentifier, TabletConfiguration};
 
 use crate::{descriptor, ffi};
 
@@ -121,11 +121,36 @@ pub struct Device {
     pub name: String,
     handle: Owned,
     uses_report_ids: bool,
+    usb_parent: Option<IoObject>,
+    pub string_error: Option<String>,
+}
+
+impl Device {
+    pub fn indexed_string(&self, index: u8) -> io::Result<String> {
+        let service = self.usb_parent.as_ref().ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported,
+            "USB parent service is unavailable for indexed string requests"))?;
+        crate::usb::Strings::open(service.0)?.read(index)
+    }
+    fn indexed_string_checked(&self, index: u8, check: impl FnMut() -> io::Result<()>) -> io::Result<String> {
+        let service = self.usb_parent.as_ref().ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported,
+            "USB parent service is unavailable for indexed string requests"))?;
+        crate::usb::Strings::open(service.0)?.read_checked(index, check)
+    }
+}
+
+fn check_discovery(stop: Option<&AtomicBool>, deadline: Option<Instant>) -> io::Result<()> {
+    if stop.is_some_and(|stop| stop.load(Ordering::Acquire)) {
+        return Err(io::Error::new(io::ErrorKind::Interrupted, "USB discovery/initialization cancelled"));
+    }
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        return Err(io::Error::new(io::ErrorKind::TimedOut, "capture deadline elapsed during USB discovery/initialization"));
+    }
+    Ok(())
 }
 
 /// Enumerates services without opening unrelated keyboards or pointing devices.
 /// Registry IDs identify live endpoints; the USB parent identifies the tablet.
-pub fn enumerate() -> io::Result<Vec<Device>> {
+pub fn enumerate(database: &Database, stop: Option<&AtomicBool>, deadline: Option<Instant>) -> io::Result<Vec<Device>> {
     let mut iterator = 0;
     // SAFETY: IOServiceMatching returns a dictionary consumed by matching.
     let matching = unsafe { ffi::IOServiceMatching(c"IOHIDDevice".as_ptr()) };
@@ -135,6 +160,7 @@ pub fn enumerate() -> io::Result<Vec<Device>> {
     let iterator = IoObject(iterator);
     let mut devices = Vec::new();
     loop {
+        check_discovery(stop, deadline)?;
         let service = IoObject(unsafe { ffi::IOIteratorNext(iterator.0) });
         if service.0 == 0 { break; }
         let handle = Owned(unsafe { ffi::IOHIDDeviceCreate(ptr::null(), service.0) }.cast_const());
@@ -154,6 +180,7 @@ pub fn enumerate() -> io::Result<Vec<Device>> {
         if unsafe { ffi::IORegistryEntryGetRegistryEntryID(service.0, &mut registry_id) } != 0 { continue; }
         let mut attributes = BTreeMap::new();
         let mut physical_id = format!("hid:{registry_id}");
+        let mut usb_parent = None;
         // Traverse only the retained parent chain, collecting actual interface
         // and USB-device identity; never assume descriptor string indices.
         let mut current = service;
@@ -166,13 +193,14 @@ pub fn enumerate() -> io::Result<Vec<Device>> {
                 if unsafe { ffi::IORegistryEntryGetRegistryEntryID(current.0, &mut parent_id) } == 0 {
                     physical_id = format!("usb:{parent_id}");
                 }
+                usb_parent = Some(current);
                 break;
             }
             let mut parent = 0;
             if unsafe { ffi::IORegistryEntryGetParentEntry(current.0, c"IOService".as_ptr(), &mut parent) } != 0 { break; }
             current = IoObject(parent);
         }
-        devices.push(Device {
+        let mut device = Device {
             endpoint: Endpoint {
                 path: format!("IOHID:{registry_id}"), physical_id,
                 transport: Transport::UsbHid, vendor_id: vendor, product_id: product,
@@ -184,8 +212,36 @@ pub fn enumerate() -> io::Result<Vec<Device>> {
                 attributes: Some(attributes),
             },
             name: string(property(hid, "Product")).unwrap_or_else(|| "USB HID device".into()),
-            handle, uses_report_ids: lengths.uses_report_ids,
-        });
+            handle, uses_report_ids: lengths.uses_report_ids, usb_parent, string_error: None,
+        };
+        // Request only indices declared by plausible configured tablet endpoints.
+        // Never open unrelated keyboards/mice or guess descriptor indices.
+        let indices: std::collections::BTreeSet<u8> = database.find(vendor, product)
+            .filter(|candidate| otd_core::endpoint_match::matches_report_lengths(&device.endpoint, candidate.identifier))
+            .flat_map(|candidate| candidate.identifier.device_strings.iter().flat_map(BTreeMap::keys))
+            .filter_map(|index| index.parse::<u8>().ok()).collect();
+        if !indices.is_empty() {
+            let result = (|| -> io::Result<()> {
+                let parent = device.usb_parent.as_ref().ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported,
+                    "USB parent service is unavailable for indexed string matching"))?;
+                let mut strings = crate::usb::Strings::open(parent.0)?;
+                for index in indices {
+                    check_discovery(stop, deadline)?;
+                    match strings.read_checked(index, || check_discovery(stop, deadline)) {
+                        Ok(value) => { device.endpoint.strings.insert(index, value); }
+                        Err(error) if matches!(error.kind(), io::ErrorKind::Interrupted | io::ErrorKind::TimedOut)
+                            && (stop.is_some_and(|stop| stop.load(Ordering::Acquire)) || deadline.is_some_and(|deadline| Instant::now() >= deadline)) => return Err(error),
+                        Err(error) => { device.string_error.get_or_insert_with(|| error.to_string()); }
+                    }
+                }
+                Ok(())
+            })();
+            if let Err(error) = result {
+                if matches!(error.kind(), io::ErrorKind::Interrupted | io::ErrorKind::TimedOut) { return Err(error); }
+                device.string_error = Some(error.to_string());
+            }
+        }
+        devices.push(device);
     }
     devices.sort_by(|a, b| a.endpoint.path.cmp(&b.endpoint.path));
     Ok(devices)
@@ -285,9 +341,12 @@ impl<'a> HidSource<'a> {
     }
 
     pub fn initialize(&mut self, identifier: &DeviceIdentifier, configuration: &TabletConfiguration, capture_deadline: Option<Instant>) -> io::Result<()> {
-        if identifier.initialization_strings.as_ref().is_some_and(|strings| !strings.is_empty()) {
-            return Err(io::Error::new(io::ErrorKind::Unsupported,
-                "this tablet requires USB initialization string requests, which the macOS CLI backend does not implement; refusing partial initialization"));
+        for index in identifier.initialization_strings.iter().flatten() {
+            if self.stopped() { return Err(io::Error::new(io::ErrorKind::Interrupted, "initialization cancelled")); }
+            if capture_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "capture deadline elapsed during string initialization"));
+            }
+            self.device.indexed_string_checked(*index, || check_discovery(Some(self.stop), capture_deadline))?;
         }
         let delay = configuration.attributes.as_ref().and_then(|a| a.get("FeatureInitDelayMs"))
             .map(|text| text.parse::<u32>().map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid FeatureInitDelayMs")))
@@ -400,6 +459,8 @@ pub struct NativeDisplays {
     explicit: Option<Rect>,
     pub geometry: Rc<Cell<Rect>>,
     last: DisplayFingerprint,
+    layout: [Rect; 32],
+    changed: bool,
 }
 
 fn active_displays() -> io::Result<([Rect; 32], usize, Rect)> {
@@ -436,28 +497,36 @@ fn active_displays() -> io::Result<([Rect; 32], usize, Rect)> {
 
 impl NativeDisplays {
     pub fn new(explicit: Option<Rect>) -> io::Result<Self> {
-        let (screen, monitors) = if let Some(rectangle) = explicit { (rectangle, 1) }
-            else { let (_, count, screen) = active_displays()?; (screen, count as i32) };
+        let (layout, monitors, screen) = if let Some(rectangle) = explicit {
+            let mut layout = [rectangle; 32];
+            layout[1..].fill(Rect { left: 0, top: 0, right: 0, bottom: 0 });
+            (layout, 1, rectangle)
+        } else { let (layout, count, screen) = active_displays()?; (layout, count as i32, screen) };
         Ok(Self { explicit, geometry: Rc::new(Cell::new(screen)),
-            last: DisplayFingerprint { virtual_screen: screen, monitors } })
+            last: DisplayFingerprint { virtual_screen: screen, monitors }, layout, changed: false })
     }
 }
 
 impl Displays for NativeDisplays {
     fn fingerprint(&mut self) -> DisplayFingerprint {
         if self.explicit.is_none() {
-            if let Ok((_, count, screen)) = active_displays() {
+            if let Ok((layout, count, screen)) = active_displays() {
+                self.changed |= layout != self.layout;
+                self.layout = layout;
                 self.last = DisplayFingerprint { virtual_screen: screen, monitors: count as i32 };
                 self.geometry.set(screen);
             }
         }
         self.last
     }
+    fn topology_changed(&mut self) -> bool { self.changed }
     fn snapshot(&mut self) -> Result<DisplaySnapshot, String> {
         if let Some(screen) = self.explicit { return Ok(DisplaySnapshot { virtual_screen: screen, monitors: vec![screen] }); }
         let (rectangles, count, screen) = active_displays().map_err(|error| error.to_string())?;
         self.geometry.set(screen);
         self.last = DisplayFingerprint { virtual_screen: screen, monitors: count as i32 };
+        self.layout = rectangles;
+        self.changed = false;
         Ok(DisplaySnapshot { virtual_screen: screen, monitors: rectangles[..count].to_vec() })
     }
 }
@@ -470,6 +539,24 @@ pub struct Mouse {
 }
 
 impl Mouse {
+    pub fn send_scroll(&mut self, pulse: ScrollPulse) -> io::Result<()> {
+        // Match MacOSVirtualMouse: negate the binding pulse and use pixel units.
+        // Separate scroll events preserve the reusable mouse event objects.
+        let amount = pulse.delta.wrapping_neg();
+        let (vertical, horizontal) = match pulse.axis {
+            ScrollAxis::Vertical => (amount, 0), ScrollAxis::Horizontal => (0, amount),
+        };
+        let event = Owned(unsafe { ffi::CGEventCreateScrollWheelEvent2(ptr::null(), 0, 2, vertical, horizontal, 0) });
+        if event.0.is_null() { return Err(io::Error::other("cannot create CoreGraphics scroll event")); }
+        let flags = self.event_flags();
+        unsafe {
+            ffi::CGEventSetFlags(event.0, flags);
+            ffi::CGEventSetTimestamp(event.0, event_timestamp()?);
+            ffi::CGEventPost(0, event.0);
+        }
+        Ok(())
+    }
+
     pub fn new(geometry: Rc<Cell<Rect>>) -> io::Result<Self> {
         output_permission()?;
         // SAFETY: private CGEvent source and distinct reusable mouse event
@@ -644,6 +731,8 @@ fn event_timestamp() -> io::Result<u64> {
 /// Shares native pointer state with tip output so one hold cannot release the
 /// other's left button, and drag events see the held side buttons/modifiers.
 pub fn action_sink(mouse: Rc<RefCell<Mouse>>) -> Box<dyn ActionSink> {
+    let scroll = Rc::clone(&mouse);
     Box::new(LocalActions::new(move |transition| mouse.borrow_mut().send_action(transition),
-        |action| match action { Action::Mouse(_) => true, Action::Key(key) => crate::keymap::key_code(key).is_some() }))
+        |action| match action { Action::Mouse(_) => true, Action::Key(key) => crate::keymap::key_code(key).is_some() })
+        .with_scroll(move |pulse| scroll.borrow_mut().send_scroll(pulse)))
 }

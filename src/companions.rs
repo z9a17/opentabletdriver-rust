@@ -354,7 +354,7 @@ fn run_companion(
     let mut profile = profile.clone();
     crate::plugin_catalog::use_native_ports(&mut profile, |_| {});
     let profile = &profile;
-    let mut plugins = PluginChain::load_with_tablet(&profile.plugins, &selected.configuration)
+    let mut plugins = PluginChain::load_for_profile(profile, &selected.configuration)
         .map_err(std::io::Error::other)?;
     plugins
         .validate_output_mode(profile.relative.is_some())

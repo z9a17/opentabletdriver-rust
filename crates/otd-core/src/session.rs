@@ -88,6 +88,8 @@ pub trait ReportSource {
 pub trait Displays {
     /// Called once a second while reports flow, so it must be cheap.
     fn fingerprint(&mut self) -> DisplayFingerprint;
+    /// A backend may detect rectangle changes which preserve aggregate bounds.
+    fn topology_changed(&mut self) -> bool { false }
     fn snapshot(&mut self) -> Result<DisplaySnapshot, String>;
 }
 
@@ -442,13 +444,15 @@ pub fn run_gated_with_endpoints(
     let outcome = (|| -> io::Result<()> {
         loop {
             // Timer-driven filters tick on this thread, between reads.
-            let mut tick = match mode {
+            let filter_tick = match mode {
                 Mode::Driver if pipeline.is_relative() || layout.mapper.is_some() => {
                     filters.next_tick()
                 }
                 Mode::Driver => None,
                 Mode::Capture { .. } => None,
             };
+            let binding_tick = if matches!(mode, Mode::Driver) { pipeline.next_binding_tick(source.now()) } else { None };
+            let mut tick = filter_tick.into_iter().chain(binding_tick).min();
             if pipeline.needs_cleanup() || tick.is_some_and(|wait| wait.is_zero()) {
                 let mut output = |packet| {
                     send(packet)?;
@@ -458,9 +462,15 @@ pub fn run_gated_with_endpoints(
                 let ticked = if pipeline.needs_cleanup() {
                     pipeline.release_all(&mut output).map(|_| ())
                 } else {
-                    pipeline
-                        .process_tick(source.now(), layout.mapper, filters, output)
-                        .map(|_| ())
+                    let now = source.now();
+                    let filtered = if filter_tick.is_some_and(|wait| wait.is_zero()) {
+                        pipeline.process_tick(now, layout.mapper, filters, output).map(|_| ())
+                    } else { Ok(()) };
+                    filtered.and_then(|()| {
+                        if binding_tick.is_some_and(|wait| wait.is_zero()) {
+                            pipeline.process_binding_tick(now)
+                        } else { Ok(()) }
+                    })
                 };
                 if let Some(name) = filters.take_failure() {
                     status(&format!(
@@ -477,10 +487,12 @@ pub fn run_gated_with_endpoints(
                 }
                 // Always reach the input/stop poll after one tick, even if a
                 // slow or failed timer still reports an overdue deadline.
-                tick = match mode {
+                let filter_tick = match mode {
                     Mode::Driver if pipeline.is_relative() || layout.mapper.is_some() => filters.next_tick(),
                     _ => None,
                 };
+                let binding_tick = if matches!(mode, Mode::Driver) { pipeline.next_binding_tick(source.now()) } else { None };
+                tick = filter_tick.into_iter().chain(binding_tick).min();
             }
             let timeout = match mode {
                 Mode::Capture { deadline, limit } => {
@@ -540,7 +552,7 @@ pub fn run_gated_with_endpoints(
                 timing.queued += 1;
             }
             counters.read += 1;
-            crate::debug::record(bytes);
+            crate::debug::record_at(bytes, ready, from_auxiliary);
             let decoded = match auxiliary.as_deref_mut() {
                 Some(decoder) if from_auxiliary => decoder.decode_input(bytes),
                 _ => decoder.decode_input(bytes),
@@ -617,7 +629,7 @@ pub fn run_gated_with_endpoints(
             }
             if now >= next_refresh {
                 if layout.snapshot.is_some()
-                    && (layout.snapshot_failed || displays.fingerprint() != layout.fingerprint)
+                    && (layout.snapshot_failed || displays.fingerprint() != layout.fingerprint || displays.topology_changed())
                 {
                     layout.refresh(displays, profile, &mut pipeline, &mut send);
                 }
@@ -718,6 +730,7 @@ mod tests {
         clock: Rc<Cell<Instant>>,
         events: VecDeque<(u64, Event)>,
         start: Instant,
+        waits: Vec<Duration>,
     }
 
     impl FakeSource {
@@ -727,6 +740,7 @@ mod tests {
                 clock,
                 events: events.into(),
                 start,
+                waits: Vec::new(),
             }
         }
     }
@@ -740,7 +754,8 @@ mod tests {
             self.clock.get()
         }
 
-        fn next(&mut self, _timeout: Duration) -> io::Result<Read<'_>> {
+        fn next(&mut self, timeout: Duration) -> io::Result<Read<'_>> {
+            self.waits.push(timeout);
             let Some((at_ms, event)) = self.events.pop_front() else {
                 return Ok(Read::Ended);
             };
@@ -896,6 +911,47 @@ mod tests {
 
     // IntuosV2 auxiliary reports: the first express key down, then up.
     const KEY_DOWN: [u8; 10] = [0x11, 0x01, 0, 0, 0, 0, 0, 0, 0, 0];
+
+    #[test]
+    fn native_scroll_repeats_between_reads_and_capture_and_activation_gate_send_nothing() {
+        const KEY_UP: [u8; 10] = [0x11, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        for (capture, activated) in [(false, true), (true, true), (false, false)] {
+            let mut profile = profile();
+            profile.aux_buttons = vec!["scroll:vertical:-120:10".parse().unwrap()];
+            let clock = Rc::new(Cell::new(Instant::now()));
+            let start = clock.get();
+            let mut displays = FakeDisplays { clock: clock.clone(), start, schedule: vec![(0, monitors(&[1920]))] };
+            let mut source = FakeSource::new(clock.clone(), vec![
+                (100, Event::Auxiliary(&KEY_DOWN)), (135, Event::Idle),
+                (145, Event::Idle), (150, Event::Auxiliary(&KEY_UP)), (190, Event::Idle),
+            ]);
+            let pulses = Rc::new(RefCell::new(Vec::new()));
+            let log = pulses.clone();
+            let timing = clock.clone();
+            let sink = crate::output::buttons::LocalActions::new(|_| Ok(()), |_| true)
+                .with_scroll(move |pulse| { log.borrow_mut().push((timing.get(), pulse)); Ok(()) });
+            let mut auxiliary = crate::decoders::TabletDecoder::for_parser(
+                "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV2.IntuosV2ReportParser", profile.tablet,
+            ).unwrap();
+            let mode = if capture { Mode::Capture { deadline: start + Duration::from_secs(1), limit: 10 } } else { Mode::Driver };
+            run_gated_with_endpoints(
+                &mut source, &mut displays, &profile, mode,
+                &mut crate::decoders::TabletDecoder::pth_660(), Some(&mut auxiliary), &mut NoFilters,
+                |_| Ok(()), None, Some(Box::new(sink)), &|_: &str| {}, || Ok(activated),
+            ).unwrap();
+            if !activated {
+                assert!(source.waits.is_empty(), "activation rejection never reads input");
+            }
+            if capture || !activated {
+                assert!(pulses.borrow().is_empty(), "capture or activation rejection must not inject scroll");
+            } else {
+                let pulses = pulses.borrow();
+                assert_eq!(pulses.iter().map(|(at, _)| at.duration_since(start).as_millis()).collect::<Vec<_>>(), [100, 135, 145]);
+                assert!(pulses.iter().all(|(_, pulse)| pulse.delta == 120));
+                assert_eq!(source.waits, [Duration::from_secs(1), Duration::from_millis(10), Duration::from_millis(10), Duration::from_millis(10), Duration::from_secs(1), Duration::from_secs(1)], "release restores idle polling and missed periods do not busy-loop");
+            }
+        }
+    }
 
     #[test]
     fn auxiliary_reads_use_their_decoder_and_losing_them_keeps_the_pen() {

@@ -184,6 +184,7 @@ impl App {
                 tip_slider: null,
                 tip_field: null,
                 eraser_binding: null,
+                pen_policy: [null; 3],
                 eraser_slider: null,
                 eraser_field: null,
                 log: null,
@@ -234,6 +235,7 @@ impl App {
             daemon_log_sequence: 0,
             closing: false,
             close_ready: false,
+            recording_close_pending: false,
             update_restart_pending: false,
             update_close_approved: false,
             updates: updates::UpdateState::default(),
@@ -323,6 +325,10 @@ impl App {
         self.labels.insert(self.c.eraser_binding as isize, label);
         self.c.eraser_field = self.labeled_field(ID_ERASER_FIELD, "Eraser Threshold")?;
         self.c.eraser_slider = self.slider(ID_ERASER_SLIDER)?;
+        for (index, label) in ["Drag only", "Disable pressure", "Disable tilt"].iter().enumerate() {
+            self.c.pen_policy[index] = self.control("BUTTON", label, ID_PEN_POLICY + index as u16,
+                WS_TABSTOP | BS_AUTOCHECKBOX as u32, Kind::Check, Surface::Group)?;
+        }
         let cue = wide("Tip switch");
         for field in [self.c.tip_field, self.c.eraser_field] {
             unsafe { SendMessageW(field, EM_SETCUEBANNER, 1, cue.as_ptr() as isize) };
@@ -405,6 +411,7 @@ impl App {
         all.extend_from_slice(&c.display);
         all.extend_from_slice(&c.tablet);
         all.extend_from_slice(&c.relative);
+        all.extend_from_slice(&c.pen_policy);
         all.extend(self.labels.values().copied());
         all.extend(self.experimental.as_ref().map(experimental::Page::window));
         all
@@ -493,6 +500,11 @@ impl App {
         self.dark_mode
             .apply_control(self.tooltip, self.palette().dark);
         unsafe { SendMessageW(self.tooltip, TTM_SETMAXTIPWIDTH, 0, self.s(460) as isize) };
+        for (hwnd, tip) in self.c.pen_policy.into_iter().zip([
+            "Pen buttons require pressure to activate. Changes take effect with Save or Apply.",
+            "Suppress pen pressure when the output supports pressure.",
+            "Suppress pen tilt when the output supports tilt.",
+        ]) { self.add_tool(hwnd, 0, tip); }
         // Upstream's area editor tool tips.
         self.add_tool(self.hwnd, 1, "You can right click the area editor to set the area to a display, adjust alignment, or resize the area.");
         self.add_tool(self.hwnd, 2, "You can right click the area editor to enable aspect ratio locking, adjust alignment, or resize the area.");
@@ -635,6 +647,10 @@ impl App {
     }
 
     pub(super) fn sync_pen(&mut self, skip: Option<HWND>) {
+        let contact = &self.editor.profile.contact;
+        for (hwnd, checked) in self.c.pen_policy.into_iter().zip([contact.drag_only, contact.disable_pressure, contact.disable_tilt]) {
+            unsafe { SendMessageW(hwnd, BM_SETCHECK, usize::from(checked), 0); }
+        }
         for eraser in [false, true] {
             let (binding, slider, field) = if eraser {
                 (
@@ -791,12 +807,21 @@ impl App {
         self.refresh_deferred_metadata();
     }
 
+    fn page_plugins(&self) -> Vec<model::FilterItem> {
+        if self.tab == Tab::Tools { self.editor.tools() } else { self.editor.filters() }
+    }
+
+    pub(super) fn page_plugin_index(&self, target: FilterRef) -> Option<usize> {
+        self.page_plugins().iter().position(|item| item.target == target)
+    }
+
     pub(super) fn refresh_filter_list(&mut self) {
         self.hovered_filter = None;
-        if self.tab == Tab::Filters {
+        if matches!(self.tab, Tab::Filters | Tab::Tools) {
             self.ensure_plugin_metadata();
         }
-        let mut items = self.editor.filters();
+        set_text(self.c.filter_list, if self.tab == Tab::Tools { "Tools" } else { "Filters" });
+        let mut items = self.page_plugins();
         for item in &mut items {
             if let FilterRef::Plugin(index) = item.target
                 && let Some(metadata) = self.metadata_for(&self.editor.profile.plugins[index])
@@ -1603,6 +1628,17 @@ impl App {
         }
     }
 
+    pub(super) fn pen_policy_toggled(&mut self, index: usize) {
+        let Some(hwnd) = self.c.pen_policy.get(index).copied() else { return; };
+        let value = unsafe { SendMessageW(hwnd, BM_GETCHECK, 0, 0) } == BST_CHECKED as isize;
+        let slot = match index {
+            0 => &mut self.editor.profile.contact.drag_only,
+            1 => &mut self.editor.profile.contact.disable_pressure,
+            _ => &mut self.editor.profile.contact.disable_tilt,
+        };
+        if *slot != value { *slot = value; self.mark_dirty(); }
+    }
+
     pub(super) fn set_binding(&mut self, eraser: bool, enabled: bool) {
         if self.editor.binding_enabled(eraser) != enabled {
             self.editor.set_binding_enabled(eraser, enabled);
@@ -1872,13 +1908,16 @@ impl App {
         if self.tab == tab {
             return;
         }
-        if self.tab == Tab::Filters && !self.can_leave_filter() {
+        if matches!(self.tab, Tab::Filters | Tab::Tools) && !self.can_leave_filter() {
             return;
         }
         self.tab = tab;
         self.drag = None;
         update_look(|look| look.tab = tab);
-        if tab == Tab::Filters {
+        if tab == Tab::Mouse { self.property_page = 0; }
+        if matches!(tab, Tab::Filters | Tab::Tools) {
+            self.selected_filter = 0;
+            self.property_page = 0;
             self.refresh_filters();
         }
         for hwnd in &self.c.tabs {
@@ -2075,17 +2114,19 @@ impl App {
             } else {
                 self.editor.profile.plugins.iter().position(same)
             };
-            if let Some(index) = index {
-                self.selected_filter = self.editor.profile.radial_follow.len().max(1) + index;
+            if let Some(row) =
+                index.and_then(|index| self.page_plugin_index(FilterRef::Plugin(index)))
+            {
+                self.selected_filter = row;
             }
-        } else if let Some(FilterRef::Radial(index)) = target {
-            self.selected_filter = index;
+        } else if let Some(row) = target.and_then(|target| self.page_plugin_index(target)) {
+            self.selected_filter = row;
         }
         self.property_page = page;
         self.drag = None;
         self.sync_all();
         self.layout();
-        let count = self.editor.filters().len();
+        let count = self.page_plugins().len();
         unsafe { SendMessageW(self.c.filter_list, LB_SETTOPINDEX, top.min(count.saturating_sub(1)), 0); }
         self.update_title();
     }
@@ -2348,7 +2389,7 @@ impl App {
     pub(super) fn apply_experimental(&mut self, settings: crate::experimental::Settings) {
         if self.submit_control(client::ClientCommand::Experimental(settings)) {
             if let Some(page) = &self.experimental { page.set_busy(true); }
-            self.log(Level::Info, "Experimental", "Applying and saving CPU affinity. The Console reports completion or failure; tablet input will not restart.");
+            self.log(Level::Info, "Experimental", "Saving experimental settings and applying CPU affinity. Use Stop, then Start to apply MMCSS changes.");
         } else if let Some(page) = &self.experimental {
             page.set_busy(true);
             page.complete(&Err("The daemon is busy or unavailable. See the Console and retry Save and apply.".into()));
@@ -2528,8 +2569,23 @@ impl App {
 
     /// Close waits for daemon cleanup and process exit off the window thread.
     pub(super) fn begin_close(&mut self) -> bool {
+        // Freeze/drain capture while its daemon API is still reachable. The
+        // timer resumes this method after the debugger's writer has finished.
+        if debugger::is_open() {
+            self.closing = true;
+            self.recording_close_pending = true;
+            self.drag = None;
+            debugger::close();
+            self.show_status("Finishing debugger recording before shutdown...".into(), Level::Info, false);
+            unsafe { EnableWindow(self.hwnd, 0); SetTimer(self.hwnd, 0xD06, 33, None); }
+            plugin_manager::set_restart_pending(true);
+            return false;
+        }
         if self.update_close_approved {
             self.closing = true;
+            // Updater cleanup has already completed. Recording may still
+            // defer window destruction, so the deferred WM_CLOSE must be ready.
+            self.close_ready = true;
             self.save_prefs();
             return true;
         }
@@ -2548,7 +2604,12 @@ impl App {
                 unsafe { EnableWindow(self.hwnd, 0); }
                 plugin_manager::set_restart_pending(true);
             }
-            Err(error) => self.log(Level::Error, "Daemon", error),
+            Err(error) => {
+                self.closing = false;
+                unsafe { EnableWindow(self.hwnd, 1); }
+                plugin_manager::set_restart_pending(false);
+                self.log(Level::Error, "Daemon", error);
+            }
         }
         false
     }

@@ -15,9 +15,11 @@ mod keymap;
 mod sysfs;
 
 #[cfg(target_os = "linux")]
+mod displays;
+#[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-mod displays;
+mod realtime;
 
 #[cfg(target_os = "linux")]
 fn main() {
@@ -363,8 +365,16 @@ mod app {
             .map_err(SessionError::hardware)?;
         // Establish every output resource before initialization writes. Permission
         // failures are fatal; reconnect only retries actual hardware loss.
-        let keys = profile.pen_buttons.iter().any(|action| matches!(action, ButtonAction::Keys(_)));
-        let clicks = profile.pen_buttons.iter().any(|action| matches!(action, ButtonAction::Mouse(_)));
+        // Resource discovery covers every binding group, including Artist Mode
+        // profiles whose pointer is otherwise absent.
+        let non_pen_actions = || profile.aux_buttons.iter().chain(&profile.mouse_buttons)
+            .chain([&profile.mouse_scroll_up, &profile.mouse_scroll_down])
+            .chain(profile.wheels.iter().flat_map(|wheel| [&wheel.clockwise, &wheel.counter_clockwise]
+                .into_iter().chain(wheel.buttons.iter())));
+        let actions = || profile.pen_buttons.iter().chain(non_pen_actions());
+        let keys = actions().any(|action| matches!(action, ButtonAction::Keys(_)));
+        let clicks = actions().any(|action| matches!(action, ButtonAction::Mouse(_) | ButtonAction::Scroll(_)))
+            || non_pen_actions().any(|action| matches!(action, ButtonAction::Barrel(1 | 2)));
         let keyboard = keys.then(VirtualKeyboard::create).transpose().map_err(SessionError::Fatal)?;
         let pen = if profile.output == OutputKind::Pen {
             Some(VirtualTablet::create(displays.0.virtual_screen).map_err(SessionError::Fatal)?)
@@ -376,6 +386,7 @@ mod app {
             selected.device, source.file(), &selected.identifier,
             &selected.configuration, &STOP,
         ).map_err(SessionError::hardware)?;
+        let _realtime = crate::realtime::RealtimePriority::raise();
         if let Some(tablet) = pen {
             return session::run_gated_with_devices(
                 &mut source, displays, profile, Mode::Driver,

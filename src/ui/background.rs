@@ -431,22 +431,22 @@ impl App {
             );
             return;
         }
-        let first = self.editor.filters().len();
+        let first_plugin = self.editor.profile.plugins.len();
         let count = entries.len();
         self.editor.profile.plugins.extend(entries);
+        let page = if self.editor.profile.plugins[first_plugin].kind == PluginKind::DotnetTool {
+            Tab::Tools
+        } else { Tab::Filters };
         self.mark_dirty();
         if self.editing_controls() || !select_added {
             self.metadata_changed();
         } else {
-            self.selected_filter = first;
+            if self.tab != page { self.select_tab(page); }
+            self.selected_filter = self.page_plugin_index(FilterRef::Plugin(first_plugin)).unwrap_or(0);
             self.refresh_filters();
-            if self.tab == Tab::Filters {
-                self.layout();
-            } else {
-                self.select_tab(Tab::Filters);
-            }
+            self.layout();
         }
-        self.log(Level::Info, "Plugins", format!("Added {count} filter entr{} disabled. Select one, check its settings, then enable it.", if count == 1 { "y" } else { "ies" }));
+        self.log(Level::Info, "Plugins", format!("Added {count} plugin entr{} disabled. Select one, check its settings, then enable it.", if count == 1 { "y" } else { "ies" }));
     }
 
     pub(super) fn detect_tablet(&mut self) {

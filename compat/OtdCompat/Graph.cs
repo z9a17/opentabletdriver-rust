@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Numerics;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using OpenTabletDriver.Plugin.Tablet;
@@ -78,6 +79,12 @@ unsafe sealed class SynchronousGraph
     int currentEmitter = -1;
     public int FailedIndex { get; private set; } = -1;
     public string? Error { get; private set; }
+    // The interfaces a concrete report type implements never change, so each
+    // type is tested once instead of on every bridge call: 28 type tests per
+    // report on the fused path before. Two entries cover a pen stream
+    // interleaved with another report type. Owner thread only.
+    Type? shapeType, previousShapeType;
+    uint shape, previousShape;
 
     public SynchronousGraph(ReadOnlySpan<GraphNode> nodes)
     {
@@ -89,6 +96,8 @@ unsafe sealed class SynchronousGraph
         pre = CreateStage(owned, 1, transform);
         post = CreateStage(owned, 2, output);
         timed = pre.Concat(post).Where(node => node.Filter is { HasTimers: true }).ToArray();
+        Precompiler.Bridge();
+        foreach (Node node in pre.Concat(post)) node.Filter?.PrecompileConsume();
     }
 
     Node[] CreateStage(GraphNode[] descriptions, uint stage, Action<IDeviceReport> end)
@@ -237,7 +246,8 @@ unsafe sealed class SynchronousGraph
         if (failed) throw new GraphAbort();
         try
         {
-            GraphReport frame = Export(report);
+            GraphReport frame;
+            uint capabilities = Export(report, &frame);
             byte[] raw = report.Raw ?? throw new InvalidOperationException("Report.Raw is null.");
             fixed (byte* bytes = raw)
             {
@@ -248,9 +258,9 @@ unsafe sealed class SynchronousGraph
                 var updatedPosition = new Vector2(frame.X, frame.Y);
                 // Transform (2, or 4 fused with output) moves the report itself,
                 // as upstream's output mode does.
-                if (operation != 3 && report is IAbsolutePositionReport position
+                if (operation != 3 && (capabilities & Position) != 0
                     && (operation is 2 or 4 || originalPosition != updatedPosition))
-                    position.Position = updatedPosition;
+                    Unsafe.As<IAbsolutePositionReport>(report).Position = updatedPosition;
                 return result == 0;
             }
         }
@@ -285,65 +295,112 @@ unsafe sealed class SynchronousGraph
         return values;
     }
 
-    static GraphReport Export(IDeviceReport report)
+    /// The report's capabilities: SynchronousGraph flags plus OutOfRange and
+    /// PenSnapshot markers. Computed once per concrete type.
+    uint ShapeOf(IDeviceReport report)
     {
-        GraphReport f = default;
-        f.Version = 2; f.Size = (uint)sizeof(GraphReport);
-        f.Kind = report is OutOfRangeReport ? 1u : 0;
-        if (report is IAbsolutePositionReport position)
-        { Vector2 value = position.Position; f.Flags |= Position; f.X = value.X; f.Y = value.Y; }
-        if (report is ITabletReport tablet)
+        Type type = report.GetType();
+        if (ReferenceEquals(type, shapeType)) return shape;
+        if (ReferenceEquals(type, previousShapeType))
         {
+            (shapeType, previousShapeType) = (previousShapeType, shapeType);
+            (shape, previousShape) = (previousShape, shape);
+            return shape;
+        }
+        uint value = 0;
+        if (report is OutOfRangeReport) value |= OutOfRangeShape;
+        if (report is IAbsolutePositionReport) value |= Position;
+        if (report is ITabletReport) value |= Tablet;
+        if (report is IEraserReport) value |= Eraser;
+        if (report is ITiltReport) value |= Tilt;
+        if (report is IProximityReport) value |= Proximity;
+        if (report is IToolReport) value |= Tool;
+        if (report is IAuxReport) value |= Aux;
+        if (report is IMouseReport) value |= Mouse;
+        if (report is IAbsoluteAnalogReport) value |= Absolute;
+        if (report is IAbsoluteWheelReport) value |= AbsoluteWheel;
+        if (report is IRelativeAnalogReport) value |= Relative;
+        if (report is IRelativeWheelReport) value |= RelativeWheel;
+        if (report is IWheelButtonReport) value |= WheelButtons;
+        if (report is ITouchReport) value |= Touch;
+        if (report is PenSnapshot) value |= PenSnapshotShape;
+        // COM and dynamically castable objects answer interface tests per
+        // instance; test those on every call, as before.
+        if (type.IsCOMObject || report is IDynamicInterfaceCastable) return value;
+        previousShapeType = shapeType; previousShape = shape;
+        shapeType = type; shape = value;
+        return value;
+    }
+    const uint OutOfRangeShape = 1u << 30, PenSnapshotShape = 1u << 31;
+
+    // Each Unsafe.As below is guarded by the cached shape of this exact type.
+    uint Export(IDeviceReport report, GraphReport* frame)
+    {
+        uint s = ShapeOf(report);
+        ref GraphReport f = ref *frame;
+        *frame = default;
+        f.Version = 2; f.Size = (uint)sizeof(GraphReport);
+        f.Kind = (s & OutOfRangeShape) != 0 ? 1u : 0;
+        if ((s & Position) != 0)
+        { Vector2 value = Unsafe.As<IAbsolutePositionReport>(report).Position; f.Flags |= Position; f.X = value.X; f.Y = value.Y; }
+        if ((s & Tablet) != 0)
+        {
+            var tablet = Unsafe.As<ITabletReport>(report);
             f.Flags |= Tablet; f.Pressure = tablet.Pressure;
             bool[] buttons = tablet.PenButtons;
             f.PenBits = Pack(buttons); f.PenCount = (uint)buttons.Length;
         }
-        if (report is IEraserReport eraser) { f.Flags |= Eraser; f.Eraser = eraser.Eraser ? 1u : 0; }
-        if (report is ITiltReport tilt)
-        { Vector2 value = tilt.Tilt; f.Flags |= Tilt; f.TiltX = value.X; f.TiltY = value.Y; }
-        if (report is IProximityReport proximity)
-        { f.Flags |= Proximity; f.Near = proximity.NearProximity ? 1u : 0; f.Distance = proximity.HoverDistance; }
-        if (report is IToolReport tool)
+        if ((s & Eraser) != 0) { f.Flags |= Eraser; f.Eraser = Unsafe.As<IEraserReport>(report).Eraser ? 1u : 0; }
+        if ((s & Tilt) != 0)
+        { Vector2 value = Unsafe.As<ITiltReport>(report).Tilt; f.Flags |= Tilt; f.TiltX = value.X; f.TiltY = value.Y; }
+        if ((s & Proximity) != 0)
         {
+            var proximity = Unsafe.As<IProximityReport>(report);
+            f.Flags |= Proximity; f.Near = proximity.NearProximity ? 1u : 0; f.Distance = proximity.HoverDistance;
+        }
+        if ((s & Tool) != 0)
+        {
+            var tool = Unsafe.As<IToolReport>(report);
             if (tool.Tool is not (OpenTabletDriver.Plugin.Tablet.ToolType.Pen or OpenTabletDriver.Plugin.Tablet.ToolType.Eraser))
                 throw new NotSupportedException("Unknown report tool type.");
             f.Flags |= Tool; f.Serial = tool.Serial; f.ToolID = tool.RawToolID; f.ToolType = (uint)tool.Tool;
         }
-        if (report is IAuxReport aux)
-        { bool[] buttons = aux.AuxButtons; f.Flags |= Aux; f.AuxBits = Pack(buttons); f.AuxCount = (uint)buttons.Length; }
-        if (report is IMouseReport mouse)
+        if ((s & Aux) != 0)
+        { bool[] buttons = Unsafe.As<IAuxReport>(report).AuxButtons; f.Flags |= Aux; f.AuxBits = Pack(buttons); f.AuxCount = (uint)buttons.Length; }
+        if ((s & Mouse) != 0)
         {
+            var mouse = Unsafe.As<IMouseReport>(report);
             bool[] buttons = mouse.MouseButtons; Vector2 scroll = mouse.Scroll;
             f.Flags |= Mouse; f.MouseBits = Pack(buttons); f.MouseCount = (uint)buttons.Length;
             f.ScrollX = scroll.X; f.ScrollY = scroll.Y;
         }
-        if (report is IAbsoluteAnalogReport absolute)
+        if ((s & Absolute) != 0)
         {
-            uint?[] values = absolute.AnalogPositions ?? throw new InvalidOperationException("Null analog array.");
+            uint?[] values = Unsafe.As<IAbsoluteAnalogReport>(report).AnalogPositions ?? throw new InvalidOperationException("Null analog array.");
             if (values.Length > 16) throw new NotSupportedException("Report exceeds 16 analog channels.");
-            f.Flags |= Absolute; if (report is IAbsoluteWheelReport) f.Flags |= AbsoluteWheel;
+            f.Flags |= Absolute; if ((s & AbsoluteWheel) != 0) f.Flags |= AbsoluteWheel;
             f.AbsoluteCount = (uint)values.Length;
             for (int i = 0; i < values.Length; i++) if (values[i] is uint value)
             { f.AbsolutePresent |= 1u << i; f.AbsoluteValues[i] = value; }
         }
-        if (report is IRelativeAnalogReport relative)
+        if ((s & Relative) != 0)
         {
-            int[] values = relative.AnalogDeltas ?? throw new InvalidOperationException("Null analog array.");
+            int[] values = Unsafe.As<IRelativeAnalogReport>(report).AnalogDeltas ?? throw new InvalidOperationException("Null analog array.");
             if (values.Length > 16) throw new NotSupportedException("Report exceeds 16 analog channels.");
-            f.Flags |= Relative; if (report is IRelativeWheelReport) f.Flags |= RelativeWheel;
+            f.Flags |= Relative; if ((s & RelativeWheel) != 0) f.Flags |= RelativeWheel;
             f.RelativeCount = (uint)values.Length;
             for (int i = 0; i < values.Length; i++) f.RelativeValues[i] = values[i];
         }
-        if (report is IWheelButtonReport wheel)
+        if ((s & WheelButtons) != 0)
         {
-            bool[][] values = wheel.WheelButtons ?? throw new InvalidOperationException("Null wheel array.");
+            bool[][] values = Unsafe.As<IWheelButtonReport>(report).WheelButtons ?? throw new InvalidOperationException("Null wheel array.");
             if (values.Length > 8) throw new NotSupportedException("Report exceeds 8 wheels.");
             f.Flags |= WheelButtons; f.WheelCount = (uint)values.Length;
             for (int i = 0; i < values.Length; i++) { f.WheelBits[i] = Pack(values[i]); f.WheelCounts[i] = (uint)values[i].Length; }
         }
-        if (report is ITouchReport touch)
+        if ((s & Touch) != 0)
         {
-            TouchPoint[] values = touch.Touches ?? throw new InvalidOperationException("Null touch array.");
+            TouchPoint[] values = Unsafe.As<ITouchReport>(report).Touches ?? throw new InvalidOperationException("Null touch array.");
             if (values.Length > 32) throw new NotSupportedException("Report exceeds 32 touches.");
             f.Flags |= Touch; f.TouchCount = (uint)values.Length;
             for (int i = 0; i < values.Length; i++) if (values[i] is { } point)
@@ -352,11 +409,12 @@ unsafe sealed class SynchronousGraph
                 f.TouchXY[i * 2] = point.Position.X; f.TouchXY[i * 2 + 1] = point.Position.Y;
             }
         }
-        if (report is PenSnapshot { NativeTipSwitch: bool tip }) { f.Flags |= NativeTip; f.TipSwitch = tip ? 1u : 0; }
-        return f;
+        if ((s & PenSnapshotShape) != 0 && Unsafe.As<PenSnapshot>(report).NativeTipSwitch is bool tip)
+        { f.Flags |= NativeTip; f.TipSwitch = tip ? 1u : 0; }
+        return s;
     }
 
-    static IDeviceReport Import(GraphReport* f)
+    IDeviceReport Import(GraphReport* f)
     {
         if (f == null || f->Version != 2 || f->Size != sizeof(GraphReport)
             || f->RawLength > ushort.MaxValue || (f->Raw == null && f->RawLength != 0))
@@ -398,44 +456,57 @@ unsafe sealed class SynchronousGraph
             _ => throw new NotSupportedException($"Unsupported native report capabilities: 0x{f->Flags:x}.")
         };
         report.Raw = raw;
-        if (report is IAbsolutePositionReport position) position.Position = new Vector2(f->X, f->Y);
-        if (report is ITabletReport tablet)
-        { tablet.Pressure = f->Pressure; tablet.PenButtons = Unpack(f->PenBits, f->PenCount); }
-        if (report is PenSnapshot pen) pen.NativeTipSwitch = (f->Flags & NativeTip) != 0 ? f->TipSwitch != 0 : null;
-        if (report is IEraserReport eraser) eraser.Eraser = f->Eraser != 0;
-        if (report is ITiltReport tilt) tilt.Tilt = new Vector2(f->TiltX, f->TiltY);
-        if (report is IProximityReport proximity)
-        { proximity.NearProximity = f->Near != 0; proximity.HoverDistance = f->Distance; }
-        if (report is IToolReport tool)
+        // Each Unsafe.As below is guarded by the cached shape of this exact type.
+        uint s = ShapeOf(report);
+        if ((s & Position) != 0) Unsafe.As<IAbsolutePositionReport>(report).Position = new Vector2(f->X, f->Y);
+        if ((s & Tablet) != 0)
         {
+            var tablet = Unsafe.As<ITabletReport>(report);
+            tablet.Pressure = f->Pressure; tablet.PenButtons = Unpack(f->PenBits, f->PenCount);
+        }
+        if ((s & PenSnapshotShape) != 0)
+            Unsafe.As<PenSnapshot>(report).NativeTipSwitch = (f->Flags & NativeTip) != 0 ? f->TipSwitch != 0 : null;
+        if ((s & Eraser) != 0) Unsafe.As<IEraserReport>(report).Eraser = f->Eraser != 0;
+        if ((s & Tilt) != 0) Unsafe.As<ITiltReport>(report).Tilt = new Vector2(f->TiltX, f->TiltY);
+        if ((s & Proximity) != 0)
+        {
+            var proximity = Unsafe.As<IProximityReport>(report);
+            proximity.NearProximity = f->Near != 0; proximity.HoverDistance = f->Distance;
+        }
+        if ((s & Tool) != 0)
+        {
+            var tool = Unsafe.As<IToolReport>(report);
             if (f->ToolType > 1) throw new ArgumentException("Invalid tool type.");
             tool.Serial = f->Serial; tool.RawToolID = f->ToolID; tool.Tool = (ToolType)f->ToolType;
         }
-        if (report is IAuxReport aux) aux.AuxButtons = Unpack(f->AuxBits, f->AuxCount);
-        if (report is IMouseReport mouse)
-        { mouse.MouseButtons = Unpack(f->MouseBits, f->MouseCount); mouse.Scroll = new Vector2(f->ScrollX, f->ScrollY); }
-        if (report is IAbsoluteAnalogReport absolute)
+        if ((s & Aux) != 0) Unsafe.As<IAuxReport>(report).AuxButtons = Unpack(f->AuxBits, f->AuxCount);
+        if ((s & Mouse) != 0)
+        {
+            var mouse = Unsafe.As<IMouseReport>(report);
+            mouse.MouseButtons = Unpack(f->MouseBits, f->MouseCount); mouse.Scroll = new Vector2(f->ScrollX, f->ScrollY);
+        }
+        if ((s & Absolute) != 0)
         {
             if (f->AbsoluteCount > 16) throw new ArgumentException("Invalid absolute analog capacity.");
             var positions = new uint?[f->AbsoluteCount];
             for (int i = 0; i < positions.Length; i++) if ((f->AbsolutePresent & (1u << i)) != 0) positions[i] = f->AbsoluteValues[i];
-            absolute.AnalogPositions = positions;
+            Unsafe.As<IAbsoluteAnalogReport>(report).AnalogPositions = positions;
         }
-        if (report is IRelativeAnalogReport relative)
+        if ((s & Relative) != 0)
         {
             if (f->RelativeCount > 16) throw new ArgumentException("Invalid relative analog capacity.");
             var deltas = new int[f->RelativeCount];
             for (int i = 0; i < deltas.Length; i++) deltas[i] = f->RelativeValues[i];
-            relative.AnalogDeltas = deltas;
+            Unsafe.As<IRelativeAnalogReport>(report).AnalogDeltas = deltas;
         }
-        if (report is IWheelButtonReport wheel)
+        if ((s & WheelButtons) != 0)
         {
             if (f->WheelCount > 8) throw new ArgumentException("Invalid wheel capacity.");
             var buttons = new bool[f->WheelCount][];
             for (int i = 0; i < buttons.Length; i++) buttons[i] = Unpack(f->WheelBits[i], f->WheelCounts[i]);
-            wheel.WheelButtons = buttons;
+            Unsafe.As<IWheelButtonReport>(report).WheelButtons = buttons;
         }
-        if (report is ITouchReport)
+        if ((s & Touch) != 0)
         {
             if (f->TouchCount > 32) throw new ArgumentException("Invalid touch capacity.");
             var points = new TouchPoint[f->TouchCount];
@@ -445,6 +516,50 @@ unsafe sealed class SynchronousGraph
             else if (report is AuxTouchSnapshot auxTouch) auxTouch.Touches = points;
         }
         return report;
+    }
+}
+
+// The first report through a new graph used to wait while the runtime compiled
+// the bridge's report path and the plugin's Consume: about 7 ms in the offline
+// harness. The graph is created on the session thread before the first read,
+// so compile them then. Preparing compiles a method without calling it. Best
+// effort: a method that cannot be prepared here compiles on its first call.
+static class Precompiler
+{
+    const BindingFlags Declared = BindingFlags.Instance | BindingFlags.Static
+        | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+    static int bridgePrepared;
+
+    public static void Bridge()
+    {
+        if (Interlocked.Exchange(ref bridgePrepared, 1) != 0) return;
+        try
+        {
+            Prepare(typeof(SynchronousGraph));
+            Prepare(typeof(Instance));
+            foreach (Type type in typeof(SynchronousGraph).Assembly.GetTypes())
+                if (!type.IsInterface && typeof(IDeviceReport).IsAssignableFrom(type)) Prepare(type);
+            foreach (string name in new[] { nameof(EntryPoints.DispatchGraph), nameof(EntryPoints.DispatchGraph2),
+                nameof(EntryPoints.TickGraph), nameof(EntryPoints.TickGraph2), nameof(EntryPoints.GraphNextTick) })
+                if (typeof(EntryPoints).GetMethod(name, Declared) is { } entry) Prepare(entry);
+        }
+        catch (Exception error) { Console.Error.WriteLine($".NET bridge precompilation skipped: {error.GetBaseException().Message}"); }
+    }
+
+    public static void Prepare(Type type)
+    {
+        foreach (MethodInfo method in type.GetMethods(Declared)) Prepare(method);
+        foreach (ConstructorInfo constructor in type.GetConstructors(Declared)) Prepare(constructor);
+        // Lambdas and the graph's nodes.
+        foreach (Type nested in type.GetNestedTypes(Declared)) Prepare(nested);
+    }
+
+    public static void Prepare(MethodBase method)
+    {
+        if (method.IsAbstract || method.ContainsGenericParameters || (method.DeclaringType?.ContainsGenericParameters ?? false))
+            return;
+        try { RuntimeHelpers.PrepareMethod(method.MethodHandle); }
+        catch (Exception) { }
     }
 }
 

@@ -35,6 +35,9 @@ pub struct ReportPipeline {
     buttons: ButtonOutput,
     profile_buttons: Vec<crate::output::buttons::ButtonAction>,
     aux_buttons: Vec<crate::output::buttons::ButtonAction>,
+    mouse_buttons: Vec<crate::output::buttons::ButtonAction>,
+    mouse_scroll_up: crate::output::buttons::ButtonAction,
+    mouse_scroll_down: crate::output::buttons::ButtonAction,
     wheels: Vec<crate::output::buttons::WheelBinding>,
     controls: crate::spec::Controls,
     /// The profile asks for pen output; the platform supplies the device.
@@ -50,12 +53,27 @@ pub struct ReportPipeline {
 impl ReportPipeline {
     pub fn new(profile: &Profile) -> Result<Self, String> {
         profile.validate_filter_execution()?;
+        profile.contact.validate_percentages()?;
+        profile.validate_actions()?;
         let pen_requested = profile.output == OutputKind::Pen;
         if pen_requested && profile.relative.is_some() {
             return Err("pen output is absolute; choose mouse output for relative mode".into());
         }
+        let mut contact = profile.contact;
+        // Native raw-threshold edits remain authoritative. Retain an imported
+        // percentage only while it represents that raw threshold on this tablet.
+        for (percent, raw) in [
+            (&mut contact.tip_threshold_percent, contact.tip_threshold_raw),
+            (&mut contact.eraser_threshold_percent, contact.eraser_threshold_raw),
+        ] {
+            if let (Some(value), Some(raw)) = (*percent, raw) {
+                if crate::config::activation_raw_for(f64::from(value), profile.tablet.max_pressure).ok() != Some(raw) {
+                    *percent = None;
+                }
+            }
+        }
         Ok(Self {
-            contact: profile.contact,
+            contact,
             filters: profile
                 .radial_follow
                 .iter()
@@ -70,6 +88,9 @@ impl ReportPipeline {
             buttons: ButtonOutput::new(&profile.pen_buttons, pen_requested, Box::new(NoActions)).0,
             profile_buttons: profile.pen_buttons.clone(),
             aux_buttons: profile.aux_buttons.clone(),
+            mouse_buttons: profile.mouse_buttons.clone(),
+            mouse_scroll_up: profile.mouse_scroll_up.clone(),
+            mouse_scroll_down: profile.mouse_scroll_down.clone(),
             wheels: profile.wheels.clone(),
             controls: profile.tablet.controls,
             pen_requested,
@@ -116,6 +137,8 @@ impl ReportPipeline {
             &self.wheels,
             self.controls.wheels(),
         ));
+        rejected.extend(buttons.set_mouse(&self.mouse_buttons));
+        rejected.extend(buttons.set_mouse_scroll(&self.mouse_scroll_up, &self.mouse_scroll_down));
         self.buttons = buttons;
         rejected
     }
@@ -326,6 +349,16 @@ impl ReportPipeline {
         Ok(stats)
     }
 
+    pub fn next_binding_tick(&self, now: Instant) -> Option<std::time::Duration> {
+        self.buttons.next_tick(now)
+    }
+
+    pub fn process_binding_tick(&mut self, now: Instant) -> io::Result<()> {
+        let result = self.buttons.tick(now);
+        if result.is_err() { self.faulted = true; }
+        result
+    }
+
     /// Fires due timers of timer-driven filters (upstream's
     /// `AsyncPositionedPipelineElement`). Their emissions take the same
     /// transform, contact and output path as any plugin emission.
@@ -403,6 +436,15 @@ struct Runtime<'a, F> {
 
 impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F> {
     fn builtins(&mut self, values: &mut ReportValues) -> io::Result<()> {
+        // RadialFollowSmoothingTabletSpace.Consume filters ITabletReport only.
+        // Native decoders and managed GraphReport::Export/Decode provide pressure
+        // only for tablet reports; zero pressure still carries the interface.
+        // Legacy PenReport callers may omit button readings, so do not require
+        // pen_buttons here or fabricate empty buttons that release held actions.
+        // Puck and other positional reports must not advance its cursor/clock.
+        if values.pressure.is_none() {
+            return Ok(());
+        }
         if let Some([mut x, mut y]) = values.position {
             for filter in &mut self.pipeline.filters {
                 (x, y) = filter.filter_raw_at(x, y, self.now);
@@ -460,6 +502,7 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
         if self.timer && !self.pipeline.physical_present && kind != ReportKind::OutOfRange {
             return Ok(());
         }
+        self.pipeline.buttons.set_time(self.now);
         self.stats.reports += 1;
         // Keep transport cleanup independent of the interfaces filters see.
         // A positional loss packet must not reacquire held actions or pen contact.
@@ -519,10 +562,13 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
         let contact = self.pipeline.desired_contact;
         // Side buttons follow the report after the pointer has moved, so a
         // click lands where the pen is. A pen out of range holds none.
+        let drag_pressure = if self.pipeline.contact.drag_only {
+            self.pipeline.contact.drag_pressure(values.pressure, self.pipeline.max_pressure, self.pipeline.is_eraser)
+        } else { values.pressure };
         let wanted = self
             .pipeline
             .buttons
-            .wanted(values.pen_buttons, kind != ReportKind::OutOfRange);
+            .wanted_with_pressure(values.pen_buttons, kind != ReportKind::OutOfRange, drag_pressure, self.pipeline.contact.drag_only);
         let barrel = self.pipeline.buttons.barrel(wanted);
         if let Some(pen) = &mut self.pipeline.pen {
             let emitted = if kind == ReportKind::OutOfRange {
@@ -532,8 +578,8 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
                     Some((x, y)) => pen.sample(PenSample {
                         x,
                         y,
-                        pressure: values.pressure,
-                        tilt: values.tilt,
+                        pressure: if self.pipeline.contact.disable_pressure { None } else { values.pressure },
+                        tilt: if self.pipeline.contact.disable_tilt { None } else { values.tilt },
                         eraser: self.pipeline.is_eraser,
                         contact,
                         barrel,
@@ -541,7 +587,7 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
                     None => false,
                 }
             } else {
-                pen.contact(contact, values.pressure, barrel)?
+                pen.contact(contact, if self.pipeline.contact.disable_pressure { None } else { values.pressure }, barrel)?
             };
             self.stats.packets += u64::from(emitted);
             return self.pipeline.buttons.apply(wanted);
@@ -669,6 +715,74 @@ mod tests {
             }
         });
         emitted
+    }
+
+    #[test]
+    fn radial_follow_passes_puck_positions_without_advancing_pen_history() {
+        // Pinned tablet-space Consume tests ITabletReport. IMouseReport is a
+        // separate interface; interleaved puck positions must not alter either
+        // the pen cursor or its 50ms reset clock. Exercise the real boundary.
+        fn filter(pipeline: &mut ReportPipeline, values: &mut ReportValues, now: Instant) {
+            let mut send = |_| Ok(());
+            let mut runtime = Runtime {
+                pipeline,
+                mapper: None,
+                now,
+                send: &mut send,
+                stats: DispatchStats::default(),
+                exact_position: None,
+                shown_position: None,
+                preserve_precision: true,
+                unfiltered_raw: None,
+                timer: false,
+                physical_loss: false,
+            };
+            runtime.builtins(values).unwrap();
+        }
+        let profile = Profile {
+            radial_follow: vec![RadialFollowSettings::default()],
+            ..Profile::default()
+        };
+        let mut interleaved = ReportPipeline::new(&profile).unwrap();
+        let mut pen_only = ReportPipeline::new(&profile).unwrap();
+        let start = Instant::now() + Duration::from_millis(100);
+        for (millis, position) in [(0, [20000.0, 5000.0]), (2, [20200.0, 5000.0]), (60, [20400.0, 5000.0])] {
+            if millis != 0 {
+                for mut other in [
+                    ReportValues {
+                        position: Some([60000.0, 40000.0]),
+                        mouse_buttons: Some(Buttons::default()),
+                        mouse_scroll: Some([0.0, 1.0]),
+                        ..ReportValues::default()
+                    },
+                    ReportValues {
+                        position: Some([50000.0, 30000.0]),
+                        aux_buttons: Some(Buttons::default()),
+                        ..ReportValues::default()
+                    },
+                ] {
+                    let before = other;
+                    filter(&mut interleaved, &mut other, start + Duration::from_millis(millis - 1));
+                    assert_eq!(other, before);
+                }
+            }
+            let mut actual = ReportValues {
+                position: Some(position),
+                pressure: Some(0), // Hover is still ITabletReport.
+                pen_buttons: (millis != 2).then(Buttons::default),
+                ..ReportValues::default()
+            };
+            let mut expected = actual;
+            let now = start + Duration::from_millis(millis);
+            filter(&mut interleaved, &mut actual, now);
+            filter(&mut pen_only, &mut expected, now);
+            assert_eq!(actual, expected);
+            if millis == 2 {
+                assert_ne!(actual.position, Some(position), "hover must be filtered");
+            } else {
+                assert_eq!(actual.position, Some(position), "50ms gap resets");
+            }
+        }
     }
 
     /// Expected state comes from the unchanged AbstractQbit 0.3.0 DLL on

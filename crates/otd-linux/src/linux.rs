@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use otd_core::actions::{Action, ActionTransition, KeyboardUsage, MouseButton};
 use otd_core::endpoint_match::{Endpoint, Transport};
-use otd_core::output::buttons::{ActionSink, LocalActions};
+use otd_core::output::buttons::{ActionSink, LocalActions, ScrollAxis, ScrollPulse};
 use otd_core::output::{MousePacket, flags};
 use otd_core::session::{Read, ReportSource};
 use otd_core::tablets::{Database, DeviceIdentifier, TabletConfiguration};
@@ -449,6 +449,10 @@ impl Uinput {
         for button in crate::keymap::MOUSE_BUTTONS {
             set(UI_SET_KEYBIT, button)?;
         }
+        // Pinned EvdevVirtualMouse emits wheel amounts in high-resolution units.
+        set(UI_SET_EVBIT, EV_REL)?;
+        set(UI_SET_RELBIT, 11)?; // REL_WHEEL_HI_RES
+        set(UI_SET_RELBIT, 12)?; // REL_HWHEEL_HI_RES
         if relative {
             set(UI_SET_EVBIT, EV_REL)?;
             set(UI_SET_RELBIT, 0)?; // REL_X
@@ -530,6 +534,20 @@ impl Uinput {
 }
 
 impl Uinput {
+    pub fn send_scroll(&self, pulse: ScrollPulse) -> io::Result<()> {
+        // A fixed event frame keeps both the wheel event and its sync together.
+        let blank: libc::input_event = unsafe { std::mem::zeroed() };
+        let mut events = [blank; 2];
+        events[0].type_ = EV_REL;
+        events[0].code = match pulse.axis { ScrollAxis::Vertical => 11, ScrollAxis::Horizontal => 12 };
+        events[0].value = pulse.delta;
+        events[1].type_ = EV_SYN;
+        let bytes = unsafe {
+            std::slice::from_raw_parts(events.as_ptr().cast::<u8>(), events.len() * size_of::<libc::input_event>())
+        };
+        (&self.file).write_all(bytes)
+    }
+
     /// Presses or releases a mouse button as its own evdev frame.
     pub fn send_button(&self, button: MouseButton, pressed: bool) -> io::Result<()> {
         if button == MouseButton::Left {
@@ -626,7 +644,10 @@ pub fn action_sink(
     pointer: Option<std::rc::Rc<Uinput>>,
     keyboard: Option<VirtualKeyboard>,
 ) -> Box<dyn ActionSink> {
-    Box::new(LocalActions::new(
+    let scroll_pointer = pointer.clone();
+    let supports_mouse = pointer.is_some();
+    let supports_keys = keyboard.is_some();
+    let actions = LocalActions::new(
         move |transition: ActionTransition| match transition.action {
             Action::Mouse(button) => pointer
                 .as_ref()
@@ -637,11 +658,15 @@ pub fn action_sink(
                 .ok_or_else(|| io::Error::other("no virtual keyboard for keys"))?
                 .send_key(key, transition.pressed),
         },
-        |action| match action {
-            Action::Mouse(_) => true,
-            Action::Key(key) => crate::keymap::key_code(key).is_some(),
+        move |action| match action {
+            Action::Mouse(_) => supports_mouse,
+            Action::Key(key) => supports_keys && crate::keymap::key_code(key).is_some(),
         },
-    ))
+    );
+    match scroll_pointer {
+        Some(pointer) => Box::new(actions.with_scroll(move |pulse| pointer.send_scroll(pulse))),
+        None => Box::new(actions),
+    }
 }
 
 impl Drop for Uinput {

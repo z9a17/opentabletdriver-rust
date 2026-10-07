@@ -1,0 +1,72 @@
+== old run 1
+dispatch trial=0 reports=100000 bytes/report=144.0 ns/report=1223.8
+deadline trial=0 bytes/query=0.0 ns/query=8.4
+dispatch trial=1 reports=100000 bytes/report=144.0 ns/report=478.7
+deadline trial=1 bytes/query=0.0 ns/query=6.3
+dispatch trial=2 reports=100000 bytes/report=144.0 ns/report=471.2
+deadline trial=2 bytes/query=0.0 ns/query=6.5
+fused_pen trials=15 reports=200000 bytes/report=320.0 ns/report min=297.6 median=311.7
+deadline_with_timer trial=0 bytes/query=0.0 ns/query=106.5
+deadline_with_timer trial=1 bytes/query=0.0 ns/query=90.4
+deadline_with_timer trial=2 bytes/query=0.0 ns/query=86.5
+cold graph_create_ms=5.9 first_us=7407.6 next299_us p50=3.28 p99=51.98 max=106.2 later_us p50=1.40 p99=22.10 p99.9=41.12 max=48.1
+== new run 1
+dispatch trial=0 reports=100000 bytes/report=144.0 ns/report=1016.1
+deadline trial=0 bytes/query=0.0 ns/query=8.6
+dispatch trial=1 reports=100000 bytes/report=144.0 ns/report=305.2
+deadline trial=1 bytes/query=0.0 ns/query=6.5
+dispatch trial=2 reports=100000 bytes/report=144.0 ns/report=298.0
+deadline trial=2 bytes/query=0.0 ns/query=6.6
+fused_pen trials=15 reports=200000 bytes/report=320.0 ns/report min=215.2 median=223.5
+deadline_with_timer trial=0 bytes/query=0.0 ns/query=105.2
+deadline_with_timer trial=1 bytes/query=0.0 ns/query=89.5
+deadline_with_timer trial=2 bytes/query=0.0 ns/query=90.0
+cold graph_create_ms=20.8 first_us=751.4 next299_us p50=2.21 p99=30.47 max=31.8 later_us p50=1.14 p99=22.10 p99.9=44.75 max=47.8
+== old run 2
+dispatch trial=0 reports=100000 bytes/report=144.0 ns/report=1317.7
+deadline trial=0 bytes/query=0.0 ns/query=11.9
+dispatch trial=1 reports=100000 bytes/report=144.0 ns/report=596.7
+deadline trial=1 bytes/query=0.0 ns/query=8.4
+dispatch trial=2 reports=100000 bytes/report=144.0 ns/report=482.0
+deadline trial=2 bytes/query=0.0 ns/query=7.3
+fused_pen trials=15 reports=200000 bytes/report=320.0 ns/report min=298.2 median=305.1
+deadline_with_timer trial=0 bytes/query=0.0 ns/query=104.7
+deadline_with_timer trial=1 bytes/query=0.0 ns/query=89.4
+deadline_with_timer trial=2 bytes/query=0.0 ns/query=89.1
+cold graph_create_ms=4.8 first_us=7157.8 next299_us p50=2.68 p99=41.54 max=102.1 later_us p50=1.38 p99=20.41 p99.9=44.51 max=211.3
+== new run 2
+dispatch trial=0 reports=100000 bytes/report=144.0 ns/report=1377.2
+deadline trial=0 bytes/query=0.0 ns/query=8.9
+dispatch trial=1 reports=100000 bytes/report=144.0 ns/report=1205.8
+deadline trial=1 bytes/query=0.0 ns/query=8.8
+dispatch trial=2 reports=100000 bytes/report=144.0 ns/report=424.1
+deadline trial=2 bytes/query=0.0 ns/query=6.7
+fused_pen trials=15 reports=200000 bytes/report=320.0 ns/report min=218.0 median=223.5
+deadline_with_timer trial=0 bytes/query=0.0 ns/query=77.3
+deadline_with_timer trial=1 bytes/query=0.0 ns/query=68.9
+deadline_with_timer trial=2 bytes/query=0.0 ns/query=89.1
+cold graph_create_ms=22.4 first_us=610.6 next299_us p50=3.42 p99=44.25 max=53.8 later_us p50=0.97 p99=19.15 p99.9=40.59 max=121.6
+== old run 3
+dispatch trial=0 reports=100000 bytes/report=144.0 ns/report=1192.5
+deadline trial=0 bytes/query=0.0 ns/query=8.0
+dispatch trial=1 reports=100000 bytes/report=144.0 ns/report=467.5
+deadline trial=1 bytes/query=0.0 ns/query=6.3
+dispatch trial=2 reports=100000 bytes/report=144.0 ns/report=471.0
+deadline trial=2 bytes/query=0.0 ns/query=6.1
+fused_pen trials=15 reports=200000 bytes/report=320.0 ns/report min=302.2 median=305.7
+deadline_with_timer trial=0 bytes/query=0.0 ns/query=155.7
+deadline_with_timer trial=1 bytes/query=0.0 ns/query=114.6
+deadline_with_timer trial=2 bytes/query=0.0 ns/query=116.8
+cold graph_create_ms=4.0 first_us=7007.6 next299_us p50=2.78 p99=36.39 max=97.0 later_us p50=1.30 p99=18.63 p99.9=40.13 max=119.2
+== new run 3
+dispatch trial=0 reports=100000 bytes/report=144.0 ns/report=1085.6
+deadline trial=0 bytes/query=0.0 ns/query=8.8
+dispatch trial=1 reports=100000 bytes/report=144.0 ns/report=400.3
+deadline trial=1 bytes/query=0.0 ns/query=8.3
+dispatch trial=2 reports=100000 bytes/report=144.0 ns/report=328.6
+deadline trial=2 bytes/query=0.0 ns/query=6.8
+fused_pen trials=15 reports=200000 bytes/report=320.0 ns/report min=212.7 median=220.8
+deadline_with_timer trial=0 bytes/query=0.0 ns/query=103.5
+deadline_with_timer trial=1 bytes/query=0.0 ns/query=92.0
+deadline_with_timer trial=2 bytes/query=0.0 ns/query=91.7
+cold graph_create_ms=22.7 first_us=679.7 next299_us p50=3.56 p99=31.58 max=42.0 later_us p50=1.02 p99=21.59 p99.9=39.44 max=41.9

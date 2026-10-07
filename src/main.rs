@@ -49,9 +49,13 @@ fn usage() -> &'static str {
   opentabletdriver-rust.exe start [--config driver.toml | --otd-settings settings.json]
   opentabletdriver-rust.exe restart [--config driver.toml | --otd-settings settings.json]
   opentabletdriver-rust.exe configuration
+  opentabletdriver-rust.exe save FILE [--replace] | save-defaults | stdio
+  opentabletdriver-rust.exe load FILE | preset NAME | savepreset NAME
+  opentabletdriver-rust.exe getallsettings|getoutputmode|getareas|getsensitivity|getbindings|getmiscsettings|getfilters|gettools
+  opentabletdriver-rust.exe listbindings | listoutputmodes | listpresets | listdisplays
   opentabletdriver-rust.exe status | stop | shutdown | debug
   opentabletdriver-rust.exe profiles list|preview|import|export|select|get|set ...
-  opentabletdriver-rust.exe presets list|show|save|export ...
+  opentabletdriver-rust.exe presets list|show|save|export|apply|save-active ...
   opentabletdriver-rust.exe area convert|full|fit ...
   opentabletdriver-rust.exe diagnostics --output NEW_FILE.json [--config PROFILE.toml]
   opentabletdriver-rust.exe decode --parser NAME --hex HEX_BYTES
@@ -83,6 +87,11 @@ enum Command {
     },
     Control(control::Command),
     Configuration,
+    Save { path: Option<PathBuf>, replace: bool },
+    Stdio,
+    ActiveSection(&'static str),
+    BindingActions,
+    OutputModes,
     Restart {
         config: Option<PathBuf>,
         otd_settings: Option<PathBuf>,
@@ -140,9 +149,42 @@ fn parse_args() -> Result<Command, String> {
         "diagnostics" => Ok(Command::Diagnostics(args.collect())),
         "decode" => Ok(Command::Decode(args.collect())),
         "plugins" => Ok(Command::Plugins(args.collect())),
-        "device-strings" => Ok(Command::DeviceStrings(args.collect())),
+        "getstring" | "device-strings" => Ok(Command::DeviceStrings(args.collect())),
         "area" => Ok(Command::Area(args.collect())),
         "configuration" if args.next().is_none() => Ok(Command::Configuration),
+        "stdio" if args.next().is_none() => Ok(Command::Stdio),
+        "getallsettings" | "getoutputmode" | "getareas" | "getsensitivity" | "getbindings" | "getmiscsettings" | "getfilters" | "gettools" => {
+            if args.next().is_some() { return Err("active getters take no tablet argument; they read the daemon's active profile".into()); }
+            Ok(Command::ActiveSection(match command.as_str() {
+                "getoutputmode" => "output", "getareas" => "areas", "getsensitivity" => "sensitivity",
+                "getbindings" => "bindings", "getmiscsettings" => "misc", "getfilters" => "filters", "gettools" => "tools", _ => "all",
+            }))
+        }
+        "listbindings" if args.next().is_none() => Ok(Command::BindingActions),
+        "listoutputmodes" if args.next().is_none() => Ok(Command::OutputModes),
+        "load" => {
+            let path = PathBuf::from(args.next().ok_or("load requires FILE.toml or FILE.json")?);
+            if args.next().is_some() { return Err("load takes one file".into()); }
+            match path.extension().and_then(|extension| extension.to_str()) {
+                Some(extension) if extension.eq_ignore_ascii_case("toml") => Ok(Command::Restart { config: Some(path), otd_settings: None }),
+                Some(extension) if extension.eq_ignore_ascii_case("json") => Ok(Command::Restart { config: None, otd_settings: Some(path) }),
+                _ => Err("load requires FILE.toml or FILE.json".into()),
+            }
+        }
+        "detect" if args.next().is_none() => Ok(Command::Restart { config: None, otd_settings: None }),
+        "log" if args.next().is_none() => Ok(Command::Control(control::Command::Status)),
+        "hasupdate" if args.next().is_none() => Ok(Command::Update { check: true }),
+        "installupdate" if args.next().is_none() => Ok(Command::Update { check: false }),
+        "save-defaults" if args.next().is_none() => Ok(Command::Save { path: None, replace: true }),
+        "save" => {
+            let path = args.next().filter(|path| !path.starts_with("--")).ok_or("save requires FILE [--replace]")?;
+            let replace = match args.next().as_deref() { None => false, Some("--replace") => true, _ => return Err("save requires FILE [--replace]".into()) };
+            if args.next().is_some() { return Err("save requires FILE [--replace]".into()); }
+            Ok(Command::Save { path: Some(path.into()), replace })
+        }
+        "preset" => Ok(Command::Presets(std::iter::once("apply".to_owned()).chain(args).collect())),
+        "savepreset" => Ok(Command::Presets(std::iter::once("save-active".to_owned()).chain(args).collect())),
+        "listpresets" if args.next().is_none() => Ok(Command::Presets(vec!["list".into()])),
         "profiles" => Ok(Command::Profiles(args.collect())),
         "presets" => Ok(Command::Presets(args.collect())),
         "daemon" => {
@@ -224,7 +266,7 @@ fn parse_args() -> Result<Command, String> {
             }
             Ok(Command::Tablets { list, directory })
         }
-        "displays" => {
+        "listdisplays" | "displays" => {
             if args.next().is_some() {
                 Err(usage().into())
             } else {
@@ -712,14 +754,11 @@ fn drive(
             if let Some(companions) = &mut companions {
                 companions.reserve_primary(&selected.pen.path_text(), &selected.configuration.name)?;
             }
-            let mut plugins = plugins::PluginChain::load_with_tablet(
-                if capture_seconds.is_none() {
-                    &profile.plugins
-                } else {
-                    &[]
-                },
-                &selected.configuration,
-            )?;
+            let mut plugins = if capture_seconds.is_none() {
+                plugins::PluginChain::load_for_profile(&profile, &selected.configuration)?
+            } else {
+                plugins::PluginChain::load_with_tablet(&[], &selected.configuration)?
+            };
             plugins.validate_output_mode(profile.relative.is_some())?;
             status(&format!(
                 "{} found; opening pen input",
@@ -808,6 +847,17 @@ fn main() {
             }
             daemon::print_reply(&reply)
         }),
+        Ok(Command::Stdio) => daemon::stdio(),
+        Ok(Command::ActiveSection(section)) => profile_cli::active_section(section),
+        Ok(Command::BindingActions) => profile_cli::binding_actions(),
+        Ok(Command::OutputModes) => {
+            println!("{}", serde_json::json!({"native": ["absolute", "relative", "pen"], "managed_output_modes": "not hosted"}));
+            Ok(())
+        }
+        Ok(Command::Save { path, replace }) => {
+            let path = path.map(Ok).unwrap_or_else(|| otd_core::storage::data_directory().map(|path| path.join("driver.toml")));
+            path.and_then(|path| daemon::save_configuration(&path, replace))
+        }
         Ok(Command::Configuration) => {
             daemon::configuration().and_then(|reply| daemon::print_reply(&reply))
         }

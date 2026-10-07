@@ -13,6 +13,7 @@ use crate::tablets::{TabletConfiguration, TabletSpecifications};
 pub struct Controls {
     pub pen_buttons: u8,
     pub aux_buttons: u8,
+    pub mouse_buttons: u8,
     wheels: [Wheel; MAX_WHEELS],
     wheel_count: u8,
 }
@@ -50,6 +51,7 @@ impl Controls {
         Self {
             pen_buttons,
             aux_buttons,
+            mouse_buttons: 0,
             wheels: all,
             wheel_count: index as u8,
         }
@@ -75,7 +77,7 @@ impl Controls {
                 buttons: count(wheel.button_count),
             })
             .collect();
-        Self::new(
+        let mut controls = Self::new(
             count(specifications.pen.as_ref().and_then(|pen| pen.buttons())),
             count(
                 specifications
@@ -84,7 +86,9 @@ impl Controls {
                     .and_then(|buttons| buttons.button_count),
             ),
             &wheels,
-        )
+        );
+        controls.mouse_buttons = count(specifications.mouse_buttons.as_ref().and_then(|buttons| buttons.button_count));
+        controls
     }
 }
 

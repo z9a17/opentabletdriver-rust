@@ -10,7 +10,9 @@ One thread handles a device session. It waits on an overlapped `ReadFile` for th
 
 Upstream's daemon sets its process to the High priority class and its device reader thread to AboveNormal ([DriverDaemon.cs](https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Daemon/DriverDaemon.cs#L719-L745), [DeviceReader.cs](https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver/Devices/DeviceReader.cs#L15-L21)), an effective priority of 14. Until 0.7.0 the Rust report thread ran at normal priority, 8.
 
-The report thread now runs at time-critical priority, 15, for the whole device session. That is the highest priority available without real-time rights. The rest of the process, including the panel's window, keeps normal priority. The thread also opts out of EcoQoS, which Windows 11 can apply to background processes such as a panel minimized to the tray. The thread waits on the HID read between reports and works for microseconds per report, so running it ahead of other threads costs them almost nothing.
+By default, the report thread runs at time-critical priority, 15, for the whole device session. That is the highest priority available without real-time rights. The rest of the process, including the panel's window, keeps normal priority. The thread also opts out of EcoQoS, which Windows 11 can apply to background processes such as a panel minimized to the tray. The thread waits on the HID read between reports and works for microseconds per report, so running it ahead of other threads costs them almost nothing.
+
+Since 0.16.10, the panel's **Experimental** tab offers **MMCSS Pro Audio scheduling**, off by default. Choose **Save and apply**, then **Stop** and **Start** tablet input to use the saved choice. It registers only the report thread with Windows' Pro Audio task for that session. A failed registration logs the error and leaves the normal time-critical scheduling in place. MMCSS shares its CPU budget with other Pro Audio tasks, so its effect under osu!/OBS load still needs measurement. The setting is separate from tablet profiles, and capture mode is unchanged.
 
 The effect shows when every CPU is busy. The benchmark below measures how long a thread blocked on an event, like the reader waiting for a report, takes to run after the event is signaled, while one busy thread per logical CPU keeps the processor full. Ryzen 7 5800X3D (16 logical CPUs), Windows 11 build 26200, Ultimate Performance power plan, 500 wakeups per row:
 
@@ -19,7 +21,7 @@ The effect shows when every CPU is busy. The benchmark below measures how long a
 | Normal priority | p50 3.0 µs, p99 4.1 µs, max 7.1 µs | p50 3.2 µs, p99 4.3 µs, max 12.1 µs |
 | Above-normal priority | p50 2.5 ms, p99 14.3 ms, max 15.3 ms; 369 of 500 over 1 ms | p50 3.4 µs, p99 134 µs, max 202 µs |
 
-Results vary between runs. In an earlier prototype of the same measurement, single normal-priority wakeups behind normal-priority load took up to 7.6 ms. To reproduce, run the following; it keeps every CPU busy for about ten seconds:
+Results vary between runs. In an earlier prototype of the same measurement, single normal-priority wakeups behind normal-priority load took up to 7.6 ms. Since 0.16.10 the benchmark also runs time-critical busy threads, and a reader registered with MMCSS's Pro Audio task; those rows have not been measured yet ([real-time scheduling](REALTIME_SCHEDULING_2026-10-05.md#decisions)). To reproduce, run the following; it keeps every CPU busy for fifteen seconds or more, and behind the time-critical threads the desktop stops responding for several seconds:
 
     cargo test --release --locked benchmark_reader_wake_latency_under_load -- --ignored --nocapture --test-threads 1
 
@@ -65,7 +67,7 @@ Upstream presses the tip or eraser binding when `pressure / MaxPressure * 100 > 
 - While reports flow, the thread compares a display fingerprint (the virtual screen and the monitor count) once a second. It re-reads the monitor layout only when the fingerprint changes, and always after a second without reports. Reading the fingerprint costs 0.36 µs; the full layout read costs 2.46 µs, allocates, and enumerates monitors (`cargo test --release --locked benchmark_display_checks -- --ignored --nocapture`).
 - Any HID device arriving or leaving, such as a keyboard or headset, used to make the thread enumerate every HID device in the system before checking whether the tablet was still there; reports waited while it ran. It now opens the tablet's own device path without access rights.
 
-## RadialFollow DLL on the native port
+## Native substitution of verified RadialFollow
 
 A profile that enables the unchanged RadialFollow 0.3.0 tablet-space DLL used to host the .NET runtime in the daemon and cross into it for every report. The driver now runs that DLL's filter on the built-in port instead when the DLL's SHA-256 matches the release (conditions and opt-out in [plugins](PLUGINS_AND_UI.md#existing-opentabletdriver-net-plugins)). The bench harness (`examples/bench`) compared both paths on 5 October 2026. Setup: the development machine with osu! and a 0.16.2 daemon running, the 20,000-report osu! trace, the saved profile's settings, the 0.16.2 bridge and the user's installed DLL, and output to a discard sink:
 
@@ -78,6 +80,8 @@ A profile that enables the unchanged RadialFollow 0.3.0 tablet-space DLL used to
 | Peak private memory / working set / threads of the harness process | 5.5 MB / 9.8 MB / 4 | 46.3 MB / 67.7 MB / 8 |
 
 The live 0.16.2 daemon running the DLL used 60 MB of private memory and 86 MB of working set. The memory row and these figures come from one run each, with background load not controlled. No tablet, `SendInput` or display was involved.
+
+These are historical measurements against the 0.16.2 bridge, not measurements of the current managed service/report implementation. Native substitution does not load the unchanged DLL and supplies no new unchanged-DLL or physical latency evidence. PR80 review retains the managed chain whenever any tablet-space Radial Follow cannot be substituted without changing order or triggering duplicate-filter validation; the native tablet filter also passes puck/mouse positions through like the original DLL.
 
 ## Session summary
 

@@ -74,6 +74,7 @@ unsafe extern "C" {
     pub fn CGEventCreate(source: Ref) -> Ref;
     pub fn CGEventCreateMouseEvent(source: Ref, kind: u32, position: Point, button: u32) -> Ref;
     pub fn CGEventCreateKeyboardEvent(source: Ref, key: u16, down: bool) -> Ref;
+    pub fn CGEventCreateScrollWheelEvent2(source: Ref, units: u32, wheels: u32, wheel1: i32, wheel2: i32, wheel3: i32) -> Ref;
     pub fn CGEventGetLocation(event: Ref) -> Point;
     pub fn CGEventSetLocation(event: Ref, position: Point);
     pub fn CGEventSetType(event: Ref, kind: u32);

@@ -473,7 +473,7 @@ impl Manager {
             .map(|plugin| Row {
                 installed: installed
                     .iter()
-                    .find(|(_, local)| local.name == plugin.name && local.owner == plugin.owner)
+                    .find(|(_, local)| local.same_identity(plugin))
                     .map(|(folder, local)| (folder.clone(), local.plugin_version.clone())),
                 plugin: plugin.clone(),
                 listed: true,
@@ -482,7 +482,7 @@ impl Manager {
         for (folder, local) in installed {
             if !rows
                 .iter()
-                .any(|row| row.plugin.name == local.name && row.plugin.owner == local.owner)
+                .any(|row| row.plugin.same_identity(local))
             {
                 rows.push(Row {
                     installed: Some((folder.clone(), local.plugin_version.clone())),
@@ -493,7 +493,7 @@ impl Manager {
         }
         let selected = self
             .selected()
-            .map(|row| (row.plugin.name.clone(), row.plugin.owner.clone()));
+            .map(|row| row.plugin.clone());
         self.rows = rows;
         unsafe { SendMessageW(self.list, LVM_DELETEALLITEMS, 0, 0) };
         for (index, row) in self.rows.iter().enumerate() {
@@ -528,7 +528,7 @@ impl Manager {
             }
             if selected
                 .as_ref()
-                .is_some_and(|(name, owner)| *name == row.plugin.name && *owner == row.plugin.owner)
+                .is_some_and(|selected| selected.same_identity(&row.plugin))
             {
                 let mut item = LVITEMW {
                     stateMask: LVIS_SELECTED,

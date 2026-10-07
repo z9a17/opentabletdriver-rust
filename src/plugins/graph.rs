@@ -6,11 +6,16 @@ use otd_plugin_api::Sample;
 use std::ffi::c_void;
 use std::io;
 
-pub(super) fn create(plugins: &[Plugin]) -> Result<Option<Graph>, String> {
+/// `builtin_slot` places the host's built-in filters as a native node before
+/// that plugin, so they also see emissions from managed filters before them.
+pub(super) fn create(
+    plugins: &[Plugin],
+    builtin_slot: Option<usize>,
+) -> Result<Option<Graph>, String> {
     if !plugins.iter().any(|plugin| plugin.managed) {
         return Ok(None);
     }
-    let nodes: Vec<_> = plugins
+    let mut nodes: Vec<_> = plugins
         .iter()
         .enumerate()
         .map(|(index, plugin)| GraphNode {
@@ -26,7 +31,22 @@ pub(super) fn create(plugins: &[Plugin]) -> Result<Option<Graph>, String> {
             },
         })
         .collect();
+    if let Some(slot) = builtin_slot {
+        nodes.insert(
+            slot.min(nodes.len()),
+            GraphNode {
+                context: std::ptr::null_mut(),
+                index: builtin_node(plugins),
+                stage: 1,
+            },
+        );
+    }
     Graph::new(&nodes).map(Some)
+}
+
+/// The native node index that runs the built-in filters: one past the plugins.
+fn builtin_node(plugins: &[Plugin]) -> u32 {
+    plugins.len() as u32
 }
 
 struct Scope<'a> {
@@ -34,6 +54,8 @@ struct Scope<'a> {
     runtime: &'a mut dyn PipelineRuntime,
     failure: &'a mut Option<usize>,
     time_ns: u64,
+    /// The graph has a node for the built-in filters; nothing else runs them.
+    builtins_in_graph: bool,
     error: Option<io::Error>,
 }
 
@@ -44,6 +66,9 @@ impl Scope<'_> {
         kind: ReportKind,
         values: &mut ReportValues,
     ) -> io::Result<()> {
+        if self.builtins_in_graph && index == self.plugins.len() {
+            return self.runtime.builtins(values);
+        }
         let Some(plugin) = self.plugins.get_mut(index) else {
             return Err(io::Error::other("invalid native graph node"));
         };
@@ -92,7 +117,9 @@ impl Scope<'_> {
         let (kind, mut values) = frame.decode()?;
         let keep = match operation {
             0 => {
-                self.runtime.builtins(&mut values)?;
+                if !self.builtins_in_graph {
+                    self.runtime.builtins(&mut values)?;
+                }
                 true
             }
             1 => {
@@ -180,6 +207,7 @@ impl PluginChain {
             runtime,
             failure: &mut self.failure,
             time_ns,
+            builtins_in_graph: self.builtin_slot.is_some(),
             error: None,
         };
         let result = unsafe { graph.tick(callback, (&mut scope as *mut Scope<'_>).cast()) };
@@ -219,9 +247,11 @@ impl PluginChain {
                     ));
                 }
             }
-            // The built-in filters always run first. The fused bridge leaves
-            // them to the host, which saves a native continuation per report.
-            if graph.runs_builtins_in_host() {
+            // The built-in filters run first unless the graph has a node for
+            // them. The fused bridge leaves them to the host, which saves a
+            // native continuation per report.
+            let builtins_in_graph = self.builtin_slot.is_some();
+            if graph.runs_builtins_in_host() && !builtins_in_graph {
                 runtime.builtins(&mut values)?;
             }
             let frame = GraphReport::new(input.kind, &values, raw)?;
@@ -232,6 +262,7 @@ impl PluginChain {
                 runtime,
                 failure: &mut self.failure,
                 time_ns,
+                builtins_in_graph,
                 error: None,
             };
             let result =
@@ -253,9 +284,11 @@ impl PluginChain {
                 runtime,
                 failure: &mut self.failure,
                 time_ns,
+                builtins_in_graph: false,
                 error: None,
             };
-            scope.runtime.builtins(&mut values)?;
+            // The built-in filters run before the plugin at their slot, or first.
+            let slot = self.builtin_slot.unwrap_or(0);
             for stage in [PipelineStage::PreTransform, PipelineStage::Pixels] {
                 if stage == PipelineStage::Pixels
                     && !scope.runtime.transform(input.kind, &mut values)?
@@ -263,9 +296,15 @@ impl PluginChain {
                     return Ok(());
                 }
                 for index in 0..scope.plugins.len() {
+                    if stage == PipelineStage::PreTransform && index == slot {
+                        scope.runtime.builtins(&mut values)?;
+                    }
                     if scope.plugins[index].stage == stage {
                         scope.native(index, input.kind, &mut values)?;
                     }
+                }
+                if stage == PipelineStage::PreTransform && slot >= scope.plugins.len() {
+                    scope.runtime.builtins(&mut values)?;
                 }
             }
             scope.runtime.output(input.kind, &values, raw)

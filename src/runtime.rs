@@ -250,7 +250,7 @@ fn run(
         // These stay on this thread and survive a quiesce/failed replacement.
         // Construction/reset executes trusted plugin code (including its
         // reset/range-loss callback), but has no live input or host output sink.
-        let mut plugins = PluginChain::load_with_tablet(&profile.plugins, &selected.configuration)?;
+        let mut plugins = PluginChain::load_for_profile(&profile, &selected.configuration)?;
         plugins.validate_output_mode(profile.relative.is_some())?;
         reset_plugins(&mut plugins)?;
         if cancelled.load(Ordering::Acquire) {

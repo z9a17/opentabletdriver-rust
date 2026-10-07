@@ -52,28 +52,47 @@ pub fn version(text: &str) -> Option<[u64; 4]> {
     let mut count = 0;
     for (slot, part) in parts.iter_mut().zip(text.trim().split('.')) {
         *slot = part.parse().ok()?;
+        if *slot > i32::MAX as u64 { return None; }
         count += 1;
     }
     (count >= 2 && text.trim().split('.').count() <= 4).then_some(parts)
 }
 
+// System.Version uses -1 for unspecified build/revision. This distinction
+// matters for upper bounds: 0.6.7 is less than the baseline 0.6.7.0.
+fn clr_version(text: &str) -> Option<[i64; 4]> {
+    version(text)?;
+    let mut parts = [-1; 4];
+    for (slot, part) in parts.iter_mut().zip(text.trim().split('.')) {
+        *slot = part.parse().ok()?;
+    }
+    Some(parts)
+}
+
 impl PluginMetadata {
+    pub fn same_identity(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.owner == other.owner
+            && self.repository_url == other.repository_url
+    }
+
     pub fn version(&self) -> [u64; 4] {
         version(&self.plugin_version).unwrap_or_default()
     }
 
     /// Whether the plugin declares support for OpenTabletDriver 0.6.7.
     pub fn supports_driver(&self) -> bool {
-        let minimum = self
-            .supported_driver_version
-            .as_deref()
-            .and_then(version)
-            .unwrap_or_default();
-        let maximum = self
-            .max_supported_driver_version
-            .as_deref()
-            .and_then(version);
-        minimum <= DRIVER_VERSION && maximum.is_none_or(|maximum| maximum >= DRIVER_VERSION)
+        let Some(minimum) = self.supported_driver_version.as_deref().and_then(clr_version) else {
+            return false;
+        };
+        let baseline = DRIVER_VERSION.map(|part| part as i64);
+        // IsSupportedBy requires the same major/minor and a supported build,
+        // while intentionally ignoring the minimum version's revision.
+        if minimum[..2] != baseline[..2] || minimum[2] > baseline[2] { return false; }
+        match self.max_supported_driver_version.as_deref() {
+            None => true,
+            Some(maximum) => clr_version(maximum).is_some_and(|maximum| maximum >= baseline),
+        }
     }
 
     /// Plugin folder name: the plugin's name without path characters.
@@ -115,6 +134,26 @@ fn extract(archive: &Path, into: &Path) -> Result<(), String> {
     }
 }
 
+/// Plugin ZIPs are untrusted archives even when the catalog hash matches.
+/// The embedded extractor validates all paths and bounded sizes before writes.
+/// Environment arguments preserve arbitrary local paths without shell quoting.
+fn extract_plugin(archive: &Path, into: &Path) -> Result<(), String> {
+    let output = Command::new(system_tool("WindowsPowerShell/v1.0/powershell.exe"))
+        .creation_flags(CREATE_NO_WINDOW)
+        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
+        .arg(include_str!("../compat/ExtractPluginArchive.ps1"))
+        .env("OTD_PLUGIN_ARCHIVE", archive)
+        .env("OTD_PLUGIN_STAGE", into)
+        .output()
+        .map_err(|error| format!("cannot validate plugin ZIP: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!("cannot extract plugin ZIP {}: {}", archive.display(),
+            String::from_utf8_lossy(&output.stderr).trim()))
+    }
+}
+
 fn json_files(directory: &Path, found: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(directory).into_iter().flatten().flatten() {
         let path = entry.path();
@@ -130,7 +169,7 @@ fn json_files(directory: &Path, found: &mut Vec<PathBuf>) {
 }
 
 /// Every catalog entry that supports OpenTabletDriver 0.6.7, newest version
-/// per name and owner, sorted by name.
+/// per name, owner and repository identity, sorted by name.
 pub fn fetch() -> Result<Vec<PluginMetadata>, String> {
     let work = crate::update::temporary_work("otd-rust-catalog")?;
     let archive = work.join("catalog.tar.gz");
@@ -151,13 +190,16 @@ fn read_catalog(directory: &Path) -> Vec<PluginMetadata> {
         .filter(|entry| entry.supports_driver() && version(&entry.plugin_version).is_some())
         .collect();
     entries.sort_by(|a, b| {
-        (a.name.to_lowercase(), &a.owner, b.version()).cmp(&(
+        (a.name.to_lowercase(), &a.name, &a.owner, &a.repository_url, b.version(), clr_version(&b.plugin_version)).cmp(&(
             b.name.to_lowercase(),
+            &b.name,
             &b.owner,
+            &b.repository_url,
             a.version(),
+            clr_version(&a.plugin_version),
         ))
     });
-    entries.dedup_by(|later, first| later.name == first.name && later.owner == first.owner);
+    entries.dedup_by(|later, first| later.same_identity(first));
     entries
 }
 
@@ -306,6 +348,9 @@ fn install_archive(
     root: &Path,
     work: &Path,
 ) -> Result<PathBuf, String> {
+    if !entry.supports_driver() {
+        return Err(format!("{} does not support OpenTabletDriver 0.6.7", entry.name));
+    }
     let expected = entry
         .sha256
         .as_deref()
@@ -334,8 +379,11 @@ fn install_archive(
         .map(str::to_ascii_lowercase)
         .as_deref()
     {
-        Some("zip") | None => extract(archive, &staged)?,
+        Some("zip") | None => extract_plugin(archive, &staged)?,
         Some(other) => return Err(format!("unsupported plugin format {other}")),
+    }
+    if dlls(&staged).is_empty() {
+        return Err(format!("{} contains no DLL", archive.display()));
     }
     place(entry, &staged, root)
 }
@@ -378,7 +426,7 @@ fn install_file_into(file: &Path, root: &Path, work: &Path) -> Result<PathBuf, S
         .extension()
         .map(|extension| extension.to_string_lossy().to_ascii_lowercase());
     match extension.as_deref() {
-        Some("zip") => extract(file, &staged)?,
+        Some("zip") => extract_plugin(file, &staged)?,
         Some("dll") => {
             fs::create_dir_all(&staged).map_err(|error| error.to_string())?;
             let copied = staged.join(file.file_name().unwrap_or_default());
@@ -410,6 +458,16 @@ fn place(entry: &PluginMetadata, staged: &Path, root: &Path) -> Result<PathBuf, 
         .map_err(|error| error.to_string())?;
         let target = root.join(entry.folder());
         let previous = root.join(format!("{}.old-update", entry.folder()));
+        if target.exists() {
+            let installed: PluginMetadata = serde_json::from_slice(
+                &fs::read(target.join("metadata.json")).map_err(|error|
+                    format!("cannot establish plugin identity at {}: {error}", target.display()))?
+            ).map_err(|error| format!("invalid installed plugin identity: {error}"))?;
+            if !entry.same_identity(&installed) {
+                return Err(format!("{} is owned by a different plugin identity ({} / {}); nothing was replaced",
+                    target.display(), installed.name, installed.owner));
+            }
+        }
         if previous.exists() {
             return Err(format!("plugin backup remains at {}; close users of the old DLL or repair the backup before reinstalling", previous.display()));
         }
@@ -504,14 +562,16 @@ pub fn run(arguments: Vec<String>) -> Result<(), String> {
     if arguments.next().is_some() {
         return Err(usage.into());
     }
-    let matches = |plugin: &PluginMetadata, name: &str| plugin.name.eq_ignore_ascii_case(name);
+    let matches = |plugin: &PluginMetadata, name: &str| plugin.name.eq_ignore_ascii_case(name)
+        || format!("{}/{}", plugin.owner, plugin.name).eq_ignore_ascii_case(name)
+        || plugin.repository_url.as_deref() == Some(name);
     match (command.as_str(), name) {
         ("catalog", None) => {
             let installed = installed()?;
             for plugin in fetch()? {
                 let state = installed
                     .iter()
-                    .find(|(_, local)| local.name == plugin.name && local.owner == plugin.owner)
+                    .find(|(_, local)| local.same_identity(&plugin))
                     .map_or(String::new(), |(_, local)| {
                         format!(" [installed {}]", local.plugin_version)
                     });
@@ -537,12 +597,13 @@ pub fn run(arguments: Vec<String>) -> Result<(), String> {
             Ok(())
         }
         ("install", Some(name)) => {
-            let plugin = fetch()?
-                .into_iter()
-                .find(|plugin| matches(plugin, &name))
-                .ok_or_else(|| {
-                    format!("no catalog plugin named {name} supports OpenTabletDriver 0.6.7")
-                })?;
+            let candidates: Vec<_> = fetch()?.into_iter().filter(|plugin| matches(plugin, &name)).collect();
+            if candidates.len() > 1 {
+                return Err(format!("{name} matches multiple catalog identities; select a unique owner/name or repository URL"));
+            }
+            let plugin = candidates.into_iter().next().ok_or_else(|| {
+                format!("no catalog plugin named {name} supports OpenTabletDriver 0.6.7")
+            })?;
             let folder = install(&plugin)?;
             println!(
                 "Installed {} {} in {}",
@@ -564,9 +625,12 @@ pub fn run(arguments: Vec<String>) -> Result<(), String> {
             Ok(())
         }
         ("remove", Some(name)) => {
-            let (folder, plugin) = installed()?
-                .into_iter()
-                .find(|(_, plugin)| matches(plugin, &name))
+            let candidates: Vec<_> = installed()?.into_iter()
+                .filter(|(_, plugin)| matches(plugin, &name)).collect();
+            if candidates.len() > 1 {
+                return Err(format!("{name} matches multiple installed identities; select a unique owner/name or repository URL"));
+            }
+            let (folder, plugin) = candidates.into_iter().next()
                 .ok_or_else(|| format!("no installed plugin is named {name}"))?;
             uninstall(&folder)?;
             println!("Removed {}", plugin.name);
@@ -602,7 +666,11 @@ mod tests {
         assert!(entry("0.3.0.0", "0.6.0.0", None).supports_driver());
         assert!(!entry("0.3.0.0", "0.7.0.0", None).supports_driver());
         assert!(!entry("0.3.0.0", "0.5.0.0", Some("0.6.6.0")).supports_driver());
-        assert!(entry("0.3.0.0", "0.5.0.0", Some("0.6.7.0")).supports_driver());
+        assert!(!entry("0.3.0.0", "0.5.0.0", Some("0.6.7.0")).supports_driver());
+        assert!(entry("0.3.0.0", "0.6.7.99", None).supports_driver());
+        assert!(!entry("0.3.0.0", "0.6.0.0", Some("0.6.7")).supports_driver());
+        assert!(!entry("0.3.0.0", "bad", None).supports_driver());
+        assert!(!entry("0.3.0.0", "0.6.0.0", Some("bad")).supports_driver());
         assert_eq!(version("0.6.7"), Some([0, 6, 7, 0]));
         assert_eq!(version("x"), None);
     }
@@ -731,5 +799,91 @@ mod tests {
         let mut plugin = entry("1.0.0.0", "0.6.0.0", None);
         plugin.name = "..\\Evil/Plugin:1".into();
         assert_eq!(plugin.folder(), "_Evil_Plugin_1");
+    }
+
+    fn zip_entries(path: &Path, names: &[&str]) {
+        let script = r#"
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$zip = [IO.Compression.ZipFile]::Open($env:OTD_TEST_ZIP, [IO.Compression.ZipArchiveMode]::Create)
+try {
+    foreach ($name in (ConvertFrom-Json $env:OTD_TEST_NAMES)) {
+        $entry = $zip.CreateEntry($name)
+        if (-not $name.EndsWith('/')) {
+            $stream = $entry.Open()
+            try { $bytes = [Text.Encoding]::UTF8.GetBytes('fixture'); $stream.Write($bytes, 0, $bytes.Length) }
+            finally { $stream.Dispose() }
+        }
+    }
+} finally { $zip.Dispose() }
+"#;
+        let output = Command::new(system_tool("WindowsPowerShell/v1.0/powershell.exe"))
+            .creation_flags(CREATE_NO_WINDOW)
+            .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script])
+            .env("OTD_TEST_ZIP", path)
+            .env("OTD_TEST_NAMES", serde_json::to_string(names).unwrap())
+            .output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    #[test]
+    fn plugin_zip_validation_precedes_all_extraction() {
+        let root = crate::update::unique_directory(Path::new("E:/AgentWork/tmp"), "otd-plugin-zip-contract").unwrap();
+        let cases: &[&[&str]] = &[
+            &["Filter.dll", "../outside.dll"],
+            &["Filter.dll", "/absolute.dll"],
+            &["Filter.dll", "C:/drive.dll"],
+            &["Filter.dll", "Filter.dll:stream"],
+            &["Filter.dll", "filter.DLL"],
+            &["Filter.dll", "CON.dll"],
+            &["Filter.dll", "folder./bad.dll"],
+            &["Filter.dll", "Filter.dll/child.dll"],
+        ];
+        for (index, names) in cases.iter().enumerate() {
+            let archive = root.join(format!("invalid-{index}.zip"));
+            let stage = root.join(format!("stage-{index}"));
+            zip_entries(&archive, names);
+            assert!(extract_plugin(&archive, &stage).is_err(), "accepted {names:?}");
+            assert!(!stage.exists(), "wrote an entry before complete validation");
+        }
+        let archive = root.join("valid.zip");
+        zip_entries(&archive, &["nested/", "nested/Filter.dll"]);
+        let stage = root.join("valid");
+        extract_plugin(&archive, &stage).unwrap();
+        assert_eq!(fs::read(stage.join("nested/Filter.dll")).unwrap(), b"fixture");
+        let oversized = root.join("oversized.zip");
+        zip_entries(&oversized, &["Filter.dll"]);
+        let mut bytes = fs::read(&oversized).unwrap();
+        let central = bytes.windows(4).position(|bytes| bytes == [0x50, 0x4b, 0x01, 0x02]).unwrap();
+        bytes[central + 24..central + 28].copy_from_slice(&67_108_865u32.to_le_bytes());
+        fs::write(&oversized, bytes).unwrap();
+        let rejected = root.join("oversized-stage");
+        assert!(extract_plugin(&oversized, &rejected).is_err());
+        assert!(!rejected.exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn distinct_plugin_identities_cannot_replace_each_other() {
+        let root = crate::update::unique_directory(Path::new("E:/AgentWork/tmp"), "otd-plugin-identity-contract").unwrap();
+        let staged = root.join("source");
+        let plugins = root.join("plugins");
+        fs::create_dir_all(&staged).unwrap();
+        fs::write(staged.join("Filter.dll"), b"original").unwrap();
+        let first = entry("1.0.0.0", "0.6.0.0", None);
+        let target = place(&first, &staged, &plugins).unwrap();
+        fs::write(staged.join("Filter.dll"), b"replacement").unwrap();
+        let mut other = first.clone();
+        other.owner = "Different owner".into();
+        assert!(place(&other, &staged, &plugins).is_err());
+        assert_eq!(fs::read(target.join("Filter.dll")).unwrap(), b"original");
+        other = first.clone();
+        other.repository_url = Some("https://example.test/different-repository".into());
+        assert!(place(&other, &staged, &plugins).is_err());
+        let mut upgrade = first.clone();
+        upgrade.plugin_version = "1.1.0.0".into();
+        place(&upgrade, &staged, &plugins).unwrap();
+        assert_eq!(fs::read(target.join("Filter.dll")).unwrap(), b"replacement");
+        fs::remove_dir_all(root).unwrap();
     }
 }

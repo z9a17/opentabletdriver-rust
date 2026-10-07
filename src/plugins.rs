@@ -268,6 +268,9 @@ pub struct PluginChain {
     plugins: Vec<Plugin>,
     has_pre: bool,
     has_pixels: bool,
+    /// Runs the host's built-in filters before `plugins[slot]` instead of
+    /// before every plugin; see `Profile::builtin_filter_slot`.
+    builtin_slot: Option<usize>,
     epoch: Instant,
     failure: Option<usize>,
 }
@@ -316,6 +319,23 @@ impl PluginChain {
         configs: &[PluginConfig],
         tablet: &TabletConfiguration,
     ) -> Result<Self, String> {
+        Self::load_with_builtins(configs, tablet, None)
+    }
+
+    /// Loads the profile's filters with its built-in filters at the slot
+    /// `Profile::builtin_filter_slot` gives, as OpenTabletDriver orders them.
+    pub fn load_for_profile(
+        profile: &crate::config::Profile,
+        tablet: &TabletConfiguration,
+    ) -> Result<Self, String> {
+        Self::load_with_builtins(&profile.plugins, tablet, profile.builtin_filter_slot())
+    }
+
+    fn load_with_builtins(
+        configs: &[PluginConfig],
+        tablet: &TabletConfiguration,
+        builtin_slot: Option<usize>,
+    ) -> Result<Self, String> {
         let plugins = configs
             .iter()
             .filter(|p| p.enabled && p.kind != PluginKind::DotnetTool)
@@ -325,15 +345,70 @@ impl PluginChain {
             .iter()
             .any(|p| p.stage == PipelineStage::PreTransform);
         let has_pixels = plugins.iter().any(|p| p.stage == PipelineStage::Pixels);
-        let graph = graph::create(&plugins)?;
+        // Slot 0 is the default order: the host runs them first.
+        let builtin_slot = builtin_slot
+            .filter(|&slot| slot > 0)
+            .map(|slot| slot.min(plugins.len()));
+        let graph = graph::create(&plugins, builtin_slot)?;
         Ok(Self {
             graph,
             plugins,
             has_pre,
             has_pixels,
+            builtin_slot,
             epoch: Instant::now(),
             failure: None,
         })
+    }
+
+    /// The filters in the order they run and the settings they run with, for
+    /// the session log, as upstream logs each filter's settings at startup.
+    pub fn describe(&self, profile: &crate::config::Profile) -> String {
+        let builtins: Vec<String> = profile
+            .radial_follow
+            .iter()
+            .map(|s| {
+                format!(
+                    "built-in Radial Follow (outer {} mm, inner {} mm, smoothing {}, soft knee {}, leak {})",
+                    s.outer_radius,
+                    s.inner_radius,
+                    s.smoothing_coefficient,
+                    s.soft_knee_scale,
+                    s.smoothing_leak_coefficient
+                )
+            })
+            .collect();
+        let configs = profile
+            .plugins
+            .iter()
+            .filter(|p| p.enabled && p.kind != PluginKind::DotnetTool);
+        let slot = self.builtin_slot.unwrap_or(0);
+        let (mut before, mut after) = (Vec::new(), Vec::new());
+        for (index, (plugin, config)) in self.plugins.iter().zip(configs).enumerate() {
+            if index == slot {
+                before.extend(builtins.iter().cloned());
+            }
+            let entry = format!("{} {}", plugin.name, config.settings_json);
+            match plugin.stage {
+                PipelineStage::PreTransform => before.push(entry),
+                PipelineStage::Pixels => after.push(entry),
+            }
+        }
+        if slot >= self.plugins.len() {
+            before.extend(builtins);
+        }
+        let list = |items: Vec<String>| {
+            if items.is_empty() {
+                "none".to_owned()
+            } else {
+                items.join(" -> ")
+            }
+        };
+        format!(
+            "Filters before mapping: {}; after mapping: {}",
+            list(before),
+            list(after)
+        )
     }
 
     pub fn process_pre(
@@ -543,6 +618,7 @@ mod tests {
             ],
             has_pre: true,
             has_pixels: true,
+            builtin_slot: None,
             epoch: Instant::now(),
             failure: None,
         };
@@ -585,6 +661,86 @@ mod tests {
             .normalize_pixels(f64::from(seen_pixels.x + 10.0), f64::from(mapped.1 as f32))
             .unwrap();
         assert_eq!((sent.unwrap().dx, sent.unwrap().dy), expected);
+    }
+
+    /// The built-in Radial Follow runs at its slot among the DLL filters: a
+    /// move inside its dead zone reaches a filter before it unchanged, and a
+    /// filter after it sees the held position.
+    #[test]
+    fn built_in_radial_follow_runs_at_its_slot() {
+        unsafe extern "C" fn record(context: *mut c_void, sample: *mut Sample) -> i32 {
+            unsafe { *context.cast::<f32>() = (*sample).x };
+            0
+        }
+        unsafe extern "C" fn ignore(_: *mut c_void) {}
+        let profile = Profile {
+            radial_follow: vec![crate::radial_follow::RadialFollowSettings {
+                outer_radius: 0.7039,
+                inner_radius: 0.302,
+                smoothing_coefficient: 0.302,
+                soft_knee_scale: 0.603,
+                smoothing_leak_coefficient: 0.201,
+            }],
+            ..Profile::default()
+        };
+        let desktop = Rect {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        let mapper = Mapper::new(Crop::default(), 0, desktop, desktop).unwrap();
+        let start = Instant::now();
+        for (slot, expected) in [(None, 22_400.0), (Some(1), 22_440.0)] {
+            let mut seen = 0f32;
+            let mut chain = PluginChain {
+                graph: None,
+                plugins: vec![Plugin {
+                    api: FilterApi {
+                        header: Header::V1,
+                        name: [0; 64],
+                        create: None,
+                        process: Some(record),
+                        reset: Some(ignore),
+                        destroy: Some(ignore),
+                    },
+                    context: (&mut seen as *mut f32).cast(),
+                    name: "recorder".into(),
+                    stage: PipelineStage::PreTransform,
+                    disabled: false,
+                    managed: false,
+                    _library: None,
+                }],
+                has_pre: true,
+                has_pixels: false,
+                builtin_slot: slot,
+                epoch: start,
+                failure: None,
+            };
+            let mut pipeline = ReportPipeline::new(&profile).unwrap();
+            for (step, x) in [22_400u32, 22_440].into_iter().enumerate() {
+                let pen = PenReport {
+                    id: 0x10,
+                    x,
+                    y: 14_800,
+                    pressure: 0,
+                    in_range: true,
+                    sense: true,
+                    tip_switch: false,
+                    eraser: false,
+                    tilt: [0; 2],
+                    rotation: Some(0),
+                    hover_distance: Some(0),
+                };
+                let now = start + std::time::Duration::from_millis(100 + 2 * step as u64);
+                pipeline
+                    .process(pen, now, Some(mapper), &mut chain, |_| Ok(()))
+                    .unwrap();
+            }
+            // 40 units are 0.2 mm, inside the 0.302 mm dead zone.
+            assert!((seen - expected).abs() < 0.01, "slot {slot:?}: {seen}");
+            assert!(chain.describe(&profile).contains("Radial Follow"));
+        }
     }
 
     #[test]

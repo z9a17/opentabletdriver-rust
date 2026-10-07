@@ -133,6 +133,7 @@ class ProximityReport : TiltReport, IProximityReport
 sealed class Instance : IDisposable
 {
     readonly PluginContext context;
+    readonly HostServices? services;
     readonly IPositionedPipelineElement<IDeviceReport> filter;
     readonly int ownerThread = Environment.CurrentManagedThreadId;
     IDeviceReport? emitted;
@@ -143,8 +144,9 @@ sealed class Instance : IDisposable
     // Timers injected into [Resolved] ITimer members. The report thread fires
     // them, so timer emissions continue the graph on the thread that owns it.
     readonly List<SessionTimer> timers = new();
+    readonly bool providerTimers;
     public PipelinePosition Position { get; }
-    public bool HasTimers => timers.Count != 0;
+    public bool HasTimers => timers.Count != 0 || providerTimers;
 
     public Instance(JObject config)
     {
@@ -161,7 +163,13 @@ sealed class Instance : IDisposable
             filter = (IPositionedPipelineElement<IDeviceReport>)created;
             // PluginManager.ConstructObject injects services before
             // PluginSettingStore.ApplySettings, so Frequency finds its timer.
-            InjectTimers(type, created);
+            services = new HostServices(() => {
+                if (Environment.CurrentManagedThreadId != ownerThread)
+                    throw new InvalidOperationException("Pipeline timers must be acquired on the graph's owning thread.");
+                var timer = new SessionTimer(); timers.Add(timer); return timer;
+            });
+            services.Inject(type, created);
+            providerTimers = services.ProviderInjected;
             ApplySettings(type, created, config["settings"] as JObject ?? new JObject());
             InjectTablet(type, created, config["tablet"]?.ToObject<TabletConfiguration>()
                 ?? throw new ArgumentException("tablet configuration missing"));
@@ -178,6 +186,7 @@ sealed class Instance : IDisposable
             finally
             {
                 foreach (var timer in timers) timer.Dispose();
+                services?.Dispose();
                 context.Unload();
             }
             throw;
@@ -206,28 +215,6 @@ sealed class Instance : IDisposable
         }
     }
 
-    void InjectTimers(Type type, object value)
-    {
-        const BindingFlags members = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
-        for (Type? owner = type; owner != null; owner = owner.BaseType)
-        {
-            foreach (var property in owner.GetProperties(members))
-                if (property.GetCustomAttribute<ResolvedAttribute>() != null && property.PropertyType == typeof(OpenTabletDriver.Plugin.Timers.ITimer))
-                {
-                    var timer = new SessionTimer();
-                    timers.Add(timer);
-                    property.SetValue(value, timer);
-                }
-            foreach (var field in owner.GetFields(members))
-                if (field.GetCustomAttribute<ResolvedAttribute>() != null && field.FieldType == typeof(OpenTabletDriver.Plugin.Timers.ITimer))
-                {
-                    var timer = new SessionTimer();
-                    timers.Add(timer);
-                    field.SetValue(value, timer);
-                }
-        }
-    }
-
     /// Microseconds until this filter's next timer tick, or -1 without one.
     public long NextTickMicros(long now)
     {
@@ -252,13 +239,19 @@ sealed class Instance : IDisposable
     {
         if (Environment.CurrentManagedThreadId != ownerThread)
             throw new InvalidOperationException("Timers must fire on the graph's owning thread.");
-        if (Interlocked.Exchange(ref consuming, 1) != 0)
+        // Only the owning thread reads or writes `consuming` (OnEmit checks the
+        // thread first), so a plain check avoids a locked instruction per call.
+        if (consuming != 0)
             throw new InvalidOperationException("Reentrant timer tick of the same filter is unsupported.");
+        Volatile.Write(ref consuming, 1);
         graphContinuation = continuation;
         try
         {
-            foreach (var timer in timers)
-                timer.FireIfDue(now);
+            // A callback can acquire another timer through IServiceProvider.
+            // New timers participate on the next tick, without invalidating
+            // this iteration or recursively firing an unbounded chain.
+            int count = timers.Count;
+            for (int index = 0; index < count; index++) timers[index].FireIfDue(now);
         }
         finally
         {
@@ -270,37 +263,7 @@ sealed class Instance : IDisposable
     static void InjectTablet(Type type, object value, TabletConfiguration configuration)
     {
         var tablet = new TabletReference(configuration, configuration.DigitizerIdentifiers.Take(1));
-        // Walk each declaration so protected/private fields on base classes
-        // are visible. All dependencies are assigned before any load callback.
-        for (Type? owner = type; owner != null; owner = owner.BaseType)
-        {
-            const BindingFlags members = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
-            foreach (var property in owner.GetProperties(members))
-            {
-                bool resolved = property.GetCustomAttribute<ResolvedAttribute>() != null;
-                bool tabletRef = property.GetCustomAttribute<TabletReferenceAttribute>() != null;
-                if ((resolved || tabletRef) && property.PropertyType == typeof(TabletReference))
-                    property.SetValue(value, tablet);
-                else if (resolved && property.PropertyType == typeof(OpenTabletDriver.Plugin.Timers.ITimer))
-                    continue; // Injected before settings.
-                else if (resolved || tabletRef)
-                    throw new NotSupportedException($"Unsupported plugin dependency: {property.Name} ({property.PropertyType.Name})");
-            }
-            foreach (var field in owner.GetFields(members))
-            {
-                bool resolved = field.GetCustomAttribute<ResolvedAttribute>() != null;
-                bool tabletRef = field.GetCustomAttribute<TabletReferenceAttribute>() != null;
-                if ((resolved || tabletRef) && field.FieldType == typeof(TabletReference))
-                    field.SetValue(value, tablet);
-                else if (resolved && field.FieldType == typeof(OpenTabletDriver.Plugin.Timers.ITimer))
-                    continue; // Injected before settings.
-                else if (resolved || tabletRef)
-                    throw new NotSupportedException($"Unsupported plugin field dependency: {field.Name} ({field.FieldType.Name})");
-            }
-        }
-        foreach (var method in type.GetMethods())
-            if (method.GetCustomAttribute<OnDependencyLoadAttribute>() != null)
-                method.Invoke(value, []);
+        HostServices.Complete(type, value, tablet);
     }
 
     void OnEmit(IDeviceReport? value)
@@ -329,12 +292,32 @@ sealed class Instance : IDisposable
         });
     }
 
+    /// Compiles the plugin's Consume before the first report; see Precompiler.
+    internal void PrecompileConsume()
+    {
+        try
+        {
+            Type type = filter.GetType();
+            Type positioned = typeof(IPositionedPipelineElement<IDeviceReport>);
+            foreach (Type contract in positioned.GetInterfaces().Append(positioned))
+            {
+                if (contract.GetMethod(nameof(filter.Consume)) is not { } consume) continue;
+                InterfaceMapping map = type.GetInterfaceMap(contract);
+                int index = Array.IndexOf(map.InterfaceMethods, consume);
+                if (index >= 0) Precompiler.Prepare(map.TargetMethods[index]);
+            }
+        }
+        catch (Exception) { }
+    }
+
     public void ConsumeGraph(IDeviceReport report, Action<IDeviceReport> continuation)
     {
         if (Environment.CurrentManagedThreadId != ownerThread || Volatile.Read(ref asyncEmission) != 0)
             throw new NotSupportedException("Asynchronous plugin emissions require the P05 scheduler.");
-        if (Interlocked.Exchange(ref consuming, 1) != 0)
+        // Owner-thread state, as in TickGraph: no locked instruction per report.
+        if (consuming != 0)
             throw new InvalidOperationException("Reentrant consumption of the same filter is unsupported.");
+        Volatile.Write(ref consuming, 1);
         graphContinuation = continuation;
         try
         {
@@ -412,6 +395,7 @@ sealed class Instance : IDisposable
         finally
         {
             foreach (var timer in timers) timer.Dispose();
+            services?.Dispose();
             context.Unload();
         }
     }
@@ -475,6 +459,7 @@ sealed class SessionTimer : OpenTabletDriver.Plugin.Timers.ITimer
 sealed class ToolInstance : IDisposable
 {
     readonly PluginContext context;
+    readonly HostServices services = new();
     readonly OpenTabletDriver.Plugin.ITool tool;
 
     public ToolInstance(JObject config)
@@ -490,10 +475,9 @@ sealed class ToolInstance : IDisposable
                 throw new NotSupportedException($"'{type.FullName}' is not an OpenTabletDriver tool.");
             created = Activator.CreateInstance(type) ?? throw new InvalidOperationException("Cannot construct tool");
             tool = (OpenTabletDriver.Plugin.ITool)created;
+            services.Inject(type, created);
             Instance.ApplySettings(type, created, config["settings"] as JObject ?? new JObject());
-            foreach (var method in type.GetMethods())
-                if (method.GetCustomAttribute<OnDependencyLoadAttribute>() != null)
-                    method.Invoke(created, []);
+            HostServices.Complete(type, created, tablet: null);
             if (!tool.Initialize())
                 throw new InvalidOperationException($"{type.FullName} failed to initialize.");
         }
@@ -501,7 +485,7 @@ sealed class ToolInstance : IDisposable
         {
             try { (created as IDisposable)?.Dispose(); }
             catch (Exception error) { Console.Error.WriteLine($".NET tool cleanup failed: {error.GetBaseException().Message}"); }
-            finally { context.Unload(); }
+            finally { services.Dispose(); context.Unload(); }
             throw;
         }
     }
@@ -509,7 +493,7 @@ sealed class ToolInstance : IDisposable
     public void Dispose()
     {
         try { tool.Dispose(); }
-        finally { context.Unload(); }
+        finally { services.Dispose(); context.Unload(); }
     }
 }
 

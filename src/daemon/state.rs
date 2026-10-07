@@ -42,6 +42,25 @@ enum Phase {
 mod scheduling_tests {
     use super::*;
     #[test]
+    fn foreign_capture_commands_and_stopped_start_do_not_change_driver_lifecycle() {
+        let mut daemon = Daemon::new(Arc::new(AtomicBool::new(false)));
+        let capture = control::DebugCaptureToken { instance: "other-daemon".into(), epoch: 1, session: 1 };
+        for command in [
+            Command::DebugCaptureRead { capture: capture.clone(), after_sequence: 0, limit: 1,
+                acknowledge_through: 0, lease_ms: 1_000 },
+            Command::DebugCaptureStop { capture: capture.clone() },
+            Command::DebugCaptureRelease { capture },
+        ] {
+            assert!(matches!(daemon.handle(command), Err(ControlError { code: ErrorCode::Conflict, .. })));
+        }
+        let expected = daemon.identity();
+        let start = Command::DebugCaptureStart { expected, start_id: 1, capacity_bytes: 65_536, lease_ms: 1_000 };
+        assert!(matches!(daemon.handle(start), Err(ControlError { code: ErrorCode::Busy, .. })));
+        assert_eq!(daemon.state, DriverState::Stopped);
+        assert!(!daemon.stopping);
+        assert!(daemon.worker.is_none());
+    }
+    #[test]
     fn stale_shutdown_does_not_stop_a_replacement_daemon() {
         let mut daemon = Daemon::new(Arc::new(AtomicBool::new(false)));
         let error = daemon.handle(Command::ShutdownIf {
@@ -152,6 +171,12 @@ impl Daemon {
                 ErrorCode::Conflict,
                 "The daemon or driver generation changed. Refresh status before retrying.",
             ));
+        }
+        Ok(())
+    }
+    fn check_capture_instance(&self, capture: &control::DebugCaptureToken) -> Result<(), ControlError> {
+        if capture.instance != self.instance {
+            return Err(ControlError::new(ErrorCode::Conflict, "capture belongs to a different daemon instance"));
         }
         Ok(())
     }
@@ -648,6 +673,7 @@ impl Daemon {
 
 impl ControlHandler for Daemon {
     fn poll(&mut self) {
+        otd_core::debug::capture_poll();
         if self.cancelled.load(Ordering::Acquire)
             && !self.stopping
             && let Err(error) = self.stop_all()
@@ -724,9 +750,10 @@ impl ControlHandler for Daemon {
                     .map_err(|error| ControlError::new(ErrorCode::InvalidRequest, error))?;
                 crate::experimental::save_driver_at(&path, &settings)
                     .map_err(|error| ControlError::new(ErrorCode::InvalidRequest, error))?;
-                self.log(format!("Experimental CPU affinity saved. GUI: {}; driver: {}.",
+                self.log(format!("Experimental settings saved. GUI CPUs: {}; driver CPUs: {}; MMCSS Pro Audio: {} for the next tablet session.",
                     crate::experimental::format_cpus(&settings.ui_cpus),
-                    crate::experimental::format_cpus(&settings.driver_cpus)));
+                    crate::experimental::format_cpus(&settings.driver_cpus),
+                    if settings.mmcss { "enabled" } else { "disabled" }));
                 Ok(Reply::ExperimentalSaved)
             }
             Command::GetConfiguration { expected } => {
@@ -775,6 +802,40 @@ impl ControlHandler for Daemon {
             Command::Debug => Ok(Reply::Debug {
                 report: crate::decode_cli::debug_report(),
             }),
+            Command::DebugCaptureStart { expected, start_id, capacity_bytes, lease_ms } => {
+                self.check_identity(&expected)?;
+                if self.state != DriverState::Running || self.pending.is_some() || self.retiring.is_some() {
+                    return Err(ControlError::new(ErrorCode::Busy, "no stable running tablet session to capture"));
+                }
+                let capture = otd_core::debug::capture_start(start_id, capacity_bytes as usize, lease_ms)
+                    .map_err(ControlError::from)?;
+                Ok(Reply::DebugCaptureStarted {
+                    capture: crate::decode_cli::debug_capture_status(&self.instance, capture),
+                })
+            }
+            Command::DebugCaptureRead { capture, after_sequence, limit, acknowledge_through, lease_ms } => {
+                self.check_capture_instance(&capture)?;
+                let batch = otd_core::debug::capture_read(capture.epoch, capture.session,
+                    after_sequence, limit as usize, acknowledge_through, lease_ms)
+                    .map_err(ControlError::from)?;
+                Ok(Reply::DebugCaptureRead {
+                    batch: crate::decode_cli::debug_capture_batch(&self.instance, batch),
+                })
+            }
+            Command::DebugCaptureStop { capture } => {
+                self.check_capture_instance(&capture)?;
+                let capture = otd_core::debug::capture_stop(capture.epoch, capture.session)
+                    .map_err(ControlError::from)?;
+                Ok(Reply::DebugCaptureStopped {
+                    capture: crate::decode_cli::debug_capture_status(&self.instance, capture),
+                })
+            }
+            Command::DebugCaptureRelease { capture } => {
+                self.check_capture_instance(&capture)?;
+                otd_core::debug::capture_release(capture.epoch, capture.session)
+                    .map_err(ControlError::from)?;
+                Ok(Reply::DebugCaptureReleased)
+            }
         }
     }
 }

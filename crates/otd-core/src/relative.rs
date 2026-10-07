@@ -179,8 +179,25 @@ impl RelativeMapper {
                 "relative plugin output exceeds finite mouse range",
             ));
         }
-        self.remainder = (dx % 1.0, dy % 1.0);
+        self.remainder = (fract(dx), fract(dy));
         Ok((dx as i32, dy as i32))
+    }
+}
+
+/// `value % 1.0`, the fractional part with the sign of `value`, without the
+/// C runtime `fmod` call that `%` compiles to. Bit-identical, including the
+/// sign of a zero result.
+#[inline]
+fn fract(value: f64) -> f64 {
+    // Below 2^52 the truncating conversion and the subtraction are exact.
+    if value.abs() < 4_503_599_627_370_496.0 {
+        return (value - value as i64 as f64).copysign(value);
+    }
+    // Larger values are integers; infinity and NaN have no remainder.
+    if value.is_finite() {
+        0.0_f64.copysign(value)
+    } else {
+        f64::NAN
     }
 }
 
@@ -313,6 +330,46 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn fract_matches_the_remainder_operator_bit_for_bit() {
+        let mut values = vec![
+            0.0,
+            -0.0,
+            0.5,
+            -0.5,
+            0.49999999999999994,
+            -2.5,
+            -3.0,
+            f64::from(i32::MAX),
+            f64::from(i32::MIN),
+            4_503_599_627_370_495.5,
+            4_503_599_627_370_496.0,
+            -9_007_199_254_740_993.0,
+            f64::MIN_POSITIVE,
+            f64::MAX,
+            f64::MIN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        for _ in 0..200_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            values.push(f64::from_bits(state));
+            // Typical carries: deltas of a few hundred counts with fractions.
+            values.push(((state >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * 1_000.0);
+        }
+        for value in values {
+            let (ours, theirs) = (fract(value), value % 1.0);
+            assert!(
+                ours.to_bits() == theirs.to_bits() || (ours.is_nan() && theirs.is_nan()),
+                "{value:e}: {ours:e} != {theirs:e}"
+            );
+        }
     }
 
     #[test]
