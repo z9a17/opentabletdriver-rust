@@ -489,11 +489,20 @@ fn install_file_into_with_cancel(file: &Path, root: &Path, work: &Path, cancel: 
 
 /// Moves a staged plugin folder to `root/<plugin name>` with its metadata.
 fn place(entry: &PluginMetadata, staged: &Path, root: &Path) -> Result<PathBuf, String> {
+    place_guarded(entry,staged,root,None)
+}
+fn place_guarded(entry: &PluginMetadata, staged: &Path, root: &Path,
+    expected: Option<&Option<Vec<(PathBuf,String)>>>) -> Result<PathBuf,String> {
     if entry.folder().is_empty() || internal_folder(&entry.folder()) {
         return Err("plugin name conflicts with a reserved installation folder".into());
     }
     let _lock = crate::update::transaction::InstallLock::acquire(root, ".otd-plugins.lock")?;
     recover_locked(root)?;
+    if let Some(expected)=expected {
+        let target=root.join(entry.folder());
+        let actual=if target.exists(){Some(plugin_directory_stamp(&target)?)}else{None};
+        if &actual!=expected {return Err("Plugin target changed during staging; refresh before updating or installing".into());}
+    }
     let local = crate::update::unique_directory(root, ".otd-plugin-stage")?;
     let result = (|| {
         copy_tree(staged, &local)?;
@@ -574,6 +583,7 @@ pub(crate) fn install_directory(target: &Path, source: &Path, update: bool,
         return Err("Plugin target cannot be a filesystem link".into());
     }
     if update != target.exists() { return Err(if update { "Updated plugin is no longer installed" } else { "Plugin target already exists; use UpdatePlugin" }.into()); }
+    let expected=if update {Some(plugin_directory_stamp(&target)?)}else{None};
     if fs::symlink_metadata(source).map_err(|error| error.to_string())?.file_type().is_symlink() {
         return Err("Plugin source cannot be a filesystem link".into());
     }
@@ -604,10 +614,33 @@ pub(crate) fn install_directory(target: &Path, source: &Path, update: bool,
         copy_bounded_plugin(&source, &staged, 0, &mut files, &mut bytes, cancel)?;
         if dlls(&staged).is_empty() { return Err("Plugin source contains no DLL".into()); }
         crate::download::cancelled(cancel)?;
-        place(&entry, &staged, &root)
+        place_guarded(&entry, &staged, &root,Some(&expected))
     })();
     let _ = fs::remove_dir_all(&work);
     result
+}
+fn plugin_directory_stamp(directory:&Path)->Result<Vec<(PathBuf,String)>,String> {
+    fn walk(root:&Path,path:&Path,depth:usize,bytes:&mut u64,stamp:&mut Vec<(PathBuf,String)>)->Result<(),String> {
+        if depth>32 || stamp.len()>4096 {return Err("Installed plugin tree exceeds snapshot bounds".into());}
+        let metadata=fs::symlink_metadata(path).map_err(|error|error.to_string())?;
+        if metadata.file_type().is_symlink(){return Err("Installed plugin cannot contain filesystem links".into());}
+        let relative=path.strip_prefix(root).map_err(|error|error.to_string())?.to_owned();
+        if metadata.is_dir(){
+            stamp.push((relative,String::new()));
+            let mut entries:Vec<_>=fs::read_dir(path).map_err(|error|error.to_string())?
+                .collect::<Result<Vec<_>,_>>().map_err(|error|error.to_string())?;
+            if entries.len()+stamp.len()>4096{return Err("Installed plugin has too many entries".into());}
+            entries.sort_by_key(|entry|entry.file_name());
+            for entry in entries {walk(root,&entry.path(),depth+1,bytes,stamp)?;}
+        }else if metadata.is_file(){
+            *bytes=bytes.checked_add(metadata.len()).ok_or("Installed plugin size exhausted")?;
+            if *bytes>268435456{return Err("Installed plugin exceeds 256 MiB".into());}
+            stamp.push((relative,crate::update::sha256(path)?));
+        }else{return Err("Installed plugin contains unsupported special files".into());}
+        Ok(())
+    }
+    let mut stamp=Vec::new();let mut bytes=0;
+    walk(directory,directory,0,&mut bytes,&mut stamp)?;Ok(stamp)
 }
 fn copy_bounded_plugin(source: &Path, destination: &Path, depth: usize, files: &mut usize,
     bytes: &mut u64, cancel: Option<&std::sync::atomic::AtomicBool>) -> Result<(), String> {
