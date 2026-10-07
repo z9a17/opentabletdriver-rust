@@ -304,10 +304,6 @@ impl Debugger {
     /// Takes the newest reports; returns a new window title if the tablet
     /// changed, for the caller to set once this borrow has ended.
     fn take_updates(&mut self) -> Option<String> {
-        if let Some(result) = self.recorder.as_ref().and_then(debugger_data::Recorder::result) {
-            self.recording_status = match result { Ok(()) => "Recording saved.".into(), Err(error) => error };
-            self.recorder = None;
-        }
         while let Ok(update) = self.updates.try_recv() {
             match update {
                 Ok(report) => {
@@ -372,6 +368,15 @@ impl Debugger {
             self.title.clone_from(&title);
             title
         })
+    }
+
+    /// Every message that can observe completion uses this same terminal path.
+    /// Callers log a returned error after releasing the debugger state borrow.
+    fn finish_recording(&mut self) -> Option<Result<(), String>> {
+        let result = self.recorder.as_ref()?.result()?;
+        self.recording_status = match &result { Ok(()) => "Recording saved.".into(), Err(error) => error.clone() };
+        self.recorder = None;
+        Some(result)
     }
 
     fn rate(&self) -> f64 {
@@ -975,8 +980,11 @@ unsafe extern "system" fn window_proc(
 ) -> LRESULT {
     match message {
         WM_DEBUG_REPORT => {
-            if let Some(Some(title)) = with_debugger(window, Debugger::take_updates) {
-                unsafe { SetWindowTextW(window, wide(&title).as_ptr()) };
+            if let Some((title, result)) = with_debugger(window, |debugger| {
+                (debugger.take_updates(), debugger.finish_recording())
+            }) {
+                if let Some(title) = title { unsafe { SetWindowTextW(window, wide(&title).as_ptr()); } }
+                if let Some(Err(error)) = result { with_app(|app| app.log(Level::Error, "Debugger", error)); }
             }
             unsafe { InvalidateRect(window, ptr::null(), 0) };
             0
@@ -1107,9 +1115,7 @@ unsafe extern "system" fn window_proc(
             0
         }
         WM_TIMER if wparam == 1 => {
-            let result = with_debugger(window, |debugger| {
-                debugger.recorder.as_ref().and_then(debugger_data::Recorder::result)
-            }).flatten();
+            let result = with_debugger(window, Debugger::finish_recording).flatten();
             if let Some(result) = result {
                 if let Err(error) = result { with_app(|app| app.log(Level::Error, "Debugger", error)); }
                 unsafe { KillTimer(window, 1); DestroyWindow(window); }

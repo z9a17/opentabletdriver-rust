@@ -83,7 +83,7 @@ impl Recorder {
                     "poll_ms":33, "complete_hid_stream":false}))?;
                 let mut statistics = Statistics::default();
                 for (elapsed_us, report) in receive {
-                    statistics.observe(&report);
+                    if !statistics.observe(&report) { continue; }
                     writeln!(writer, "{}", json!({"elapsed_us":elapsed_us, "report":report}))?;
                     count.fetch_add(1, Ordering::Relaxed);
                 }
@@ -117,7 +117,13 @@ impl Recorder {
         format!("{}: {} saved, {} queue drops", if self.active() { "Recording samples" } else { "Finishing" },
             self.written.load(Ordering::Relaxed), self.dropped.load(Ordering::Relaxed))
     }
-    pub fn result(&self) -> Option<Result<(), String>> { self.completed.try_recv().ok() }
+    pub fn result(&self) -> Option<Result<(), String>> {
+        match self.completed.try_recv() {
+            Ok(result) => Some(result),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => Some(Err("Recording worker exited without a completion result.".into())),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -147,6 +153,8 @@ mod tests {
         let path = directory.join("sample.jsonl");
         let mut recorder = Recorder::start(&path).unwrap();
         recorder.push(123, report(7));
+        // A UI statistics reset may offer the same last packet again.
+        recorder.push(456, report(7));
         recorder.stop();
         recorder.completed.recv_timeout(std::time::Duration::from_secs(3)).unwrap().unwrap();
         let lines: Vec<Value> = std::fs::read_to_string(&path).unwrap().lines()
