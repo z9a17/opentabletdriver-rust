@@ -19,6 +19,8 @@ pub const MAX_PROFILE_BYTES: usize = 128 * 1024;
 pub const MAX_LOG_LINES: usize = 64;
 // Even JSON's worst-case six-byte escaping keeps a full status under 256 KiB.
 pub const MAX_LOG_LINE_BYTES: usize = 512;
+/// Serialized message budget leaves room for the control response envelope.
+pub const MAX_UPSTREAM_LOG_BYTES: usize = MAX_FRAME_BYTES - 8192;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -75,7 +77,8 @@ impl Request {
                 }
             }
             Command::WriteMessage { message } => {
-                if message.message.len() > MAX_LOG_LINE_BYTES || message.group.len() > 128
+                if message.message.as_ref().is_some_and(|value| value.len() > MAX_LOG_LINE_BYTES)
+                    || message.group.as_ref().is_some_and(|value| value.len() > 128)
                     || message.time.len() > 64 || message.stack_trace.as_ref().is_some_and(|value| value.len() > 4096)
                     || !(0..=4).contains(&message.level) {
                     return Err(ControlError::new(ErrorCode::InvalidRequest, "log message exceeds limits or has an unknown level"));
@@ -131,6 +134,7 @@ pub enum Command {
     /// The supplied OTD log is validated at the RPC boundary. The daemon owner
     /// appends it to its actual recent log; no input thread handles RPC traffic.
     WriteMessage { message: UpstreamLogMessage },
+    GetUpstreamLog,
     SetExperimental {
         expected: WorkerIdentity,
         settings: crate::experimental::Settings,
@@ -283,6 +287,7 @@ pub enum Reply {
     UpdateCancelled,
     ExperimentalSaved,
     MessageWritten,
+    UpstreamLog { instance: String, sequence: u64, messages: Vec<UpstreamLogMessage> },
     DeviceSessions { sessions: Vec<crate::device_sessions::SessionSnapshot>, selected_id: Option<String> },
     DeviceSessionSelected { id: String },
     DeviceProfile { identity: WorkerIdentity, id: String, device_generation: u64, profile_toml: String },
@@ -323,14 +328,32 @@ pub enum Reply {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase", deny_unknown_fields)]
 pub struct UpstreamLogMessage {
+    #[serde(default = "log_timestamp")]
     pub time: String,
-    pub group: String,
-    pub message: String,
+    #[serde(default)]
+    pub group: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
     #[serde(default)]
     pub stack_trace: Option<String>,
+    #[serde(default)]
     pub level: i32,
     #[serde(default)]
     pub notification: bool,
+}
+
+fn log_timestamp() -> String {
+    use windows_sys::Win32::System::SystemInformation::GetSystemTime;
+    let mut now = unsafe { std::mem::zeroed() };
+    unsafe { GetSystemTime(&mut now) };
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z", now.wYear, now.wMonth,
+        now.wDay, now.wHour, now.wMinute, now.wSecond, now.wMilliseconds)
+}
+impl UpstreamLogMessage {
+    pub(crate) fn native(message: String) -> Self {
+        Self { time: log_timestamp(), group: Some("RustDaemon".into()), message: Some(message),
+            stack_trace: None, level: 1, notification: false }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

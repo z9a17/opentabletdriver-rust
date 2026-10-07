@@ -22,7 +22,8 @@ if set(MATRIX) != MANDATORY:
 VERSION = tomllib.loads((ROOT / 'Cargo.toml').read_text())['package']['version']
 PROJECT_LICENSES = ['LICENSE', 'LICENSE.LGPL-3.0', 'NOTICE.md']
 COMPAT_FILES = ['OtdCompat.dll', 'OtdCompat.runtimeconfig.json', 'OtdCompat.deps.json',
-                'OpenTabletDriver.Plugin.dll', 'Newtonsoft.Json.dll', 'JetBrains.Annotations.dll', 'nethost.dll']
+                'OpenTabletDriver.Plugin.dll', 'OpenTabletDriver.Configurations.dll',
+                'Newtonsoft.Json.dll', 'JetBrains.Annotations.dll', 'nethost.dll']
 LINUX_SETUP = ['install.sh', '70-opentabletdriver-rust.rules', 'opentabletdriver-rust.conf', 'generate-rules.py']
 
 

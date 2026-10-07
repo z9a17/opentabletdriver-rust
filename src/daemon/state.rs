@@ -118,6 +118,8 @@ pub(super) struct Daemon {
     last_error: Option<String>,
     logs: VecDeque<String>,
     log_sequence: u64,
+    upstream_logs: VecDeque<(control::UpstreamLogMessage, usize)>,
+    upstream_log_bytes: usize,
     update_reservation: Option<String>,
     next_update: u64,
 }
@@ -150,11 +152,22 @@ impl Daemon {
             last_error: None,
             logs: VecDeque::new(),
             log_sequence: 0,
+            upstream_logs: VecDeque::new(),
+            upstream_log_bytes: 0,
             update_reservation: None,
             next_update: 0,
         }
     }
     fn log(&mut self, mut line: String) {
+        if line.len() > control::MAX_LOG_LINE_BYTES {
+            let mut end = control::MAX_LOG_LINE_BYTES;
+            while !line.is_char_boundary(end) { end -= 1; }
+            line.truncate(end);
+        }
+        let message = control::UpstreamLogMessage::native(line.clone());
+        self.append_log(line, message);
+    }
+    fn append_log(&mut self, mut line: String, message: control::UpstreamLogMessage) {
         self.log_sequence = self.log_sequence.saturating_add(1);
         if line.len() > control::MAX_LOG_LINE_BYTES {
             let mut end = control::MAX_LOG_LINE_BYTES;
@@ -167,6 +180,15 @@ impl Daemon {
             self.logs.pop_front();
         }
         self.logs.push_back(line);
+        let size = serde_json::to_vec(&message).map_or(control::MAX_UPSTREAM_LOG_BYTES,
+            |encoded| encoded.len() + 1);
+        while self.upstream_logs.len() >= control::MAX_LOG_LINES
+            || self.upstream_log_bytes.saturating_add(size) > control::MAX_UPSTREAM_LOG_BYTES {
+            let Some((_, removed)) = self.upstream_logs.pop_front() else { break; };
+            self.upstream_log_bytes = self.upstream_log_bytes.saturating_sub(removed);
+        }
+        self.upstream_log_bytes += size;
+        self.upstream_logs.push_back((message, size));
     }
     pub(super) fn scheduling_warning(&mut self, error: String) {
         self.log(format!("Experimental driver CPU affinity was not applied: {error}"));
@@ -872,6 +894,45 @@ impl Daemon {
     }
 }
 
+#[cfg(test)]
+mod upstream_log_tests {
+    use super::*;
+    #[test]
+    fn retained_messages_preserve_original_fields_and_fit_the_control_frame() {
+        let mut daemon = Daemon::new(Arc::new(AtomicBool::new(false)));
+        let original: control::UpstreamLogMessage = serde_json::from_value(serde_json::json!({
+            "Time":"2026-10-07T09:08:07.654+02:00", "Group":null,
+            "Message":"\u{0001}".repeat(control::MAX_LOG_LINE_BYTES),
+            "StackTrace":"\u{0001}".repeat(4096), "Level":4,"Notification":true
+        })).unwrap();
+        for _ in 0..control::MAX_LOG_LINES {
+            let request = control::Request::new(1, Command::WriteMessage { message: original.clone() });
+            request.validate().unwrap();
+            daemon.handle(request.command).unwrap();
+        }
+        match daemon.handle(Command::GetUpstreamLog).unwrap() {
+            Reply::UpstreamLog { sequence, messages, .. } => {
+                assert_eq!(sequence, control::MAX_LOG_LINES as u64);
+                assert!(messages.len() < control::MAX_LOG_LINES);
+                for message in messages { assert_eq!(serde_json::to_value(message).unwrap(),
+                    serde_json::to_value(&original).unwrap()); }
+            }
+            _ => panic!("wrong retained log response"),
+        }
+        let response = control::Response { version: control::PROTOCOL_VERSION, id: 2,
+            reply: daemon.handle(Command::GetUpstreamLog).unwrap() };
+        assert!(serde_json::to_vec(&response).unwrap().len() < control::MAX_FRAME_BYTES);
+    }
+    #[test]
+    fn native_messages_keep_creation_time_across_snapshots() {
+        let mut daemon = Daemon::new(Arc::new(AtomicBool::new(false)));
+        daemon.log("ready".into());
+        let first = serde_json::to_value(daemon.handle(Command::GetUpstreamLog).unwrap()).unwrap();
+        let second = serde_json::to_value(daemon.handle(Command::GetUpstreamLog).unwrap()).unwrap();
+        assert_eq!(first, second);
+    }
+}
+
 impl ControlHandler for Daemon {
     fn poll(&mut self) {
         otd_core::debug::capture_poll();
@@ -1043,9 +1104,14 @@ impl ControlHandler for Daemon {
                 Ok(Reply::DeviceOperationAccepted { receipt: self.device_lifecycle(&id, device_generation, true)? })
             }
             Command::WriteMessage { message } => {
-                self.log(format!("[{}] {}", message.group, message.message));
+                let line = format!("[{}] {}", message.group.as_deref().unwrap_or(""),
+                    message.message.as_deref().unwrap_or(""));
+                self.append_log(line, message);
                 Ok(Reply::MessageWritten)
             }
+            Command::GetUpstreamLog => Ok(Reply::UpstreamLog { instance: self.instance.clone(),
+                sequence: self.log_sequence, messages: self.upstream_logs.iter()
+                    .map(|(message, _)| message.clone()).collect() }),
             Command::SetExperimental { expected, settings } => {
                 self.check_identity(&expected)?;
                 let path = crate::experimental::path()

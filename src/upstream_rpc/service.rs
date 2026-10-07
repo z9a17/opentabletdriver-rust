@@ -45,6 +45,12 @@ impl Connection {
     fn status(&self) -> Result<ControlStatus, Error> {
         match self.call(Command::Status)? { Reply::Status { status } => Ok(status), _ => Err(Error::failed("unexpected native status")) }
     }
+    fn logs(&self) -> Result<(String, u64, Vec<UpstreamLogMessage>), Error> {
+        match self.call(Command::GetUpstreamLog)? {
+            Reply::UpstreamLog { instance, sequence, messages } => Ok((instance, sequence, messages)),
+            _ => Err(Error::failed("unexpected retained log response")),
+        }
+    }
     fn finish_update(&mut self) -> Result<bool, Error> {
         let Some(update) = &self.update else { return Ok(false); };
         // Ownership cleanup must run even after this connection/daemon's local
@@ -277,19 +283,19 @@ impl Connection {
         if self.debug.is_some() {
             if let Ok(sessions) = self.session_snapshots() { self.debug_sessions = sessions; }
         }
-        if let Ok(status) = self.status() {
-            if let Some((instance, sequence)) = &self.log_cursor {
-                if instance == &status.instance {
-                    let available_start = status.log_sequence.saturating_sub(status.logs.len() as u64);
-                    let start = sequence.saturating_sub(available_start).min(status.logs.len() as u64) as usize;
-                    // A lagging reader sees retained logs only. Retention is
-                    // bounded and timestamps below are observation timestamps.
-                    for line in &status.logs[start..] {
-                        events.push(protocol::event("Message", native_log(line)));
+        if let Ok((instance, sequence, messages)) = self.logs() {
+            if let Some((previous_instance, previous_sequence)) = &self.log_cursor {
+                if previous_instance == &instance {
+                    let available_start = sequence.saturating_sub(messages.len() as u64);
+                    let start = previous_sequence.saturating_sub(available_start).min(messages.len() as u64) as usize;
+                    // Lagging subscribers receive the bounded retained tail.
+                    // Original fields and production timestamps are preserved.
+                    for message in &messages[start..] {
+                        events.push(protocol::event("Message", json!(message)));
                     }
                 }
             }
-            self.log_cursor = Some((status.instance, status.log_sequence));
+            self.log_cursor = Some((instance, sequence));
         }
         if let Ok(tablets) = self.tablets() {
             if self.tablet_cursor.as_ref().is_some_and(|previous| previous != &tablets) {
@@ -471,10 +477,7 @@ mod tests {
     }
 }
 fn native_log(line: &str) -> Value {
-    let mut now: windows_sys::Win32::Foundation::SYSTEMTIME = unsafe { std::mem::zeroed() };
-    unsafe { windows_sys::Win32::System::SystemInformation::GetSystemTime(&mut now); }
-    json!({"Time":format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",now.wYear,now.wMonth,now.wDay,now.wHour,now.wMinute,now.wSecond,now.wMilliseconds),
-        "Group":"RustDaemon (observed)","Message":line,"StackTrace":null,"Level":1,"Notification":false})
+    json!(UpstreamLogMessage::native(line.into()))
 }
 fn text_argument<'a>(params: &'a Value, name: &str) -> Result<&'a str, Error> {
     protocol::argument(params, name)?.as_str().ok_or_else(|| Error::invalid(format!("{name} must be a string")))
@@ -507,7 +510,7 @@ impl Service for Connection {
             "SetSettings" => self.set_settings(protocol::argument(params, "settings")?),
             "GetCurrentLog" => {
                 protocol::no_arguments(params)?;
-                Ok(json!(self.status()?.logs.iter().map(|line| native_log(line)).collect::<Vec<_>>()))
+                Ok(json!(self.logs()?.2))
             }
             "WriteMessage" => {
                 let message: UpstreamLogMessage = serde_json::from_value(protocol::argument(params, "message")?.clone())
@@ -609,7 +612,7 @@ impl Service for Connection {
                 Ok(json!({"App Version":format!("OpenTabletDriver Rust v{}",env!("CARGO_PKG_VERSION")),
                     "Build Date":null,"Operating System":operating_system()?,
                     "Environment Variables":std::env::vars().collect::<std::collections::BTreeMap<_,_>>(),
-                    "HID Devices":devices,"Console Log":status.logs.iter().map(|line| native_log(line)).collect::<Vec<_>>(),
+                    "HID Devices":devices,"Console Log":self.logs()?.2,
                     "Rust Native State":{"instance":status.instance,"generation":status.generation,"state":status.state,"profile":status.profile}}))
             }
             "CheckForUpdates" => {

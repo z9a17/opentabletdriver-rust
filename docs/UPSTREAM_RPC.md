@@ -21,8 +21,9 @@ return correlated errors. Idle reads expire after 120 seconds; a header/body mus
 within five seconds after its first byte. Writes have a five-second budget.
 Cancellation drains pending overlapped IO before releasing buffers. Pipe ACLs
 grant the current user and SYSTEM and reject remote clients. Framing and event
-delivery run on compatibility workers, outside report/input threads. RPC does
-not initialize .NET. Its native calls check the actual connected server PID
+delivery run on compatibility workers, outside report/input threads. Explicit
+LoadPlugins, managed settings import and tablet debugging initialize .NET;
+ordinary native control calls do not. Native calls check the actual connected server PID
 before sending, so startup/shutdown races cannot dispatch into another daemon.
 JSON-RPC batch messages are rejected.
 
@@ -32,7 +33,7 @@ JSON-RPC batch messages are rejected.
 | GetTablets | Connected device-session snapshots, actual configurations and identifiers. |
 | GetSettings | Actual connected device profiles reconciled into the original OTD document. Representable standalone explicit-area/relative profiles receive canonical known stores. Resolved managed DLL paths require matching original identities/order. Different tools across devices, differing profiles for same-model physical tablets, native pixel-span crops/hardware-tip contact and ambiguous stores return errors. |
 | SetSettings | Preflights all detected named profiles, preserves inactive rows and generates pinned defaults for missing detected names. Applies through guarded per-device receipts, waits committed generations, and rolls back only accepted generations it still owns on failure. Newer/pending peer operations are preserved and reported as partial/uncertain failure with Resynchronize. Group atomicity is not claimed. Unsupported active stores and idle collection storage remain explicit errors. |
-| GetCurrentLog, WriteMessage | Bounded native log snapshot and native log append. |
+| GetCurrentLog, WriteMessage | Bounded typed log retention preserves original Time, Group, Message, StackTrace, Level and Notification, including nullable text fields. Native messages carry their creation timestamp. |
 | InstallPlugin, UninstallPlugin, DownloadPlugin | Existing catalog installation/removal/download transactions; removal must uniquely identify an installed name or folder. Network traffic uses `src/download.rs`. Installation does not imply live DLL reload. |
 | RequestDeviceString | Explicit VID/PID/index HID string request. |
 | GetApplicationInfo | Actual native data/settings/plugin/preset/temp paths and configured external tablet directory. Cache/backup/trash directory fields are null because Rust has no corresponding provider. LogDirectory is the data folder containing crash records; normal recent logs remain in memory. |
@@ -53,9 +54,10 @@ providers return code -32004; invalid parameters -32602; unknown methods -32601;
 operation failures -32000.
 
 Message and TabletsChanged events poll actual native snapshots every 250 ms.
-Message timestamps describe observation time, Group is `RustDaemon (observed)`
-and Level is Info: native recent strings do not preserve upstream typed metadata.
-Only retained logs are available, and a lagging client can lose older records.
+Message events preserve retained typed metadata. Native-created messages use
+UTC creation timestamps, Group `RustDaemon` and Level Info. Logs retain at most
+64 messages within the serialized control-frame budget; large stack traces can
+reduce that count. A lagging client can lose older records.
 The initial snapshot does not generate historical events. Resynchronize is sent
 as one EventArgs argument. DeviceReport consumes the independent bounded raw tap
 on a compatibility worker, polling at 50 ms with at most 64 reports/256 KiB per batch.
