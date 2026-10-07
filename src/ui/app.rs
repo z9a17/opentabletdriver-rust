@@ -2569,6 +2569,9 @@ impl App {
     pub(super) fn begin_close(&mut self) -> bool {
         if self.update_close_approved {
             self.closing = true;
+            // Updater cleanup has already completed. Recording may still
+            // defer window destruction, so the deferred WM_CLOSE must be ready.
+            self.close_ready = true;
             self.save_prefs();
             return true;
         }
