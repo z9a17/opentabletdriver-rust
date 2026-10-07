@@ -435,6 +435,10 @@ pub fn request(request: &Request, timeout: Duration) -> io::Result<Response> {
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.message))?;
     pipe::request(request, timeout)
 }
+pub(crate) fn request_owned(request: &Request, timeout: Duration, expected_process: u32) -> io::Result<Response> {
+    request.validate().map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.message))?;
+    pipe::request_owned(request, timeout, Some(expected_process))
+}
 
 /// Stable per-user discovery name; contains the caller's Windows token SID.
 pub fn endpoint_name() -> io::Result<String> {

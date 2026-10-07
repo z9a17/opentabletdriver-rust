@@ -22,7 +22,9 @@ within five seconds after its first byte. Writes have a five-second budget.
 Cancellation drains pending overlapped IO before releasing buffers. Pipe ACLs
 grant the current user and SYSTEM and reject remote clients. Framing and event
 delivery run on compatibility workers, outside report/input threads. RPC does
-not initialize .NET. JSON-RPC batch messages are rejected.
+not initialize .NET. Its native calls check the actual connected server PID
+before sending, so startup/shutdown races cannot dispatch into another daemon.
+JSON-RPC batch messages are rejected.
 
 | Methods | Current behavior |
 | --- | --- |

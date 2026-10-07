@@ -31,7 +31,7 @@ impl Connection {
     }
     fn call(&self, command: Command) -> Result<Reply, Error> {
         if self.stop.load(Ordering::Acquire) { return Err(Error::failed("daemon is shutting down")); }
-        let response = control::request(&Request::new(1, command), Duration::from_secs(5))
+        let response = control::request_owned(&Request::new(1, command), Duration::from_secs(5), std::process::id())
             .map_err(|error| Error::failed(format!("native control: {error}; query state before retrying a mutation")))?;
         match response.reply {
             Reply::Error { error } => Err(Error::failed(format!("{:?}: {}", error.code, error.message))),

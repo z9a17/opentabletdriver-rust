@@ -570,7 +570,7 @@ pub(super) fn serve(handler: &mut impl ControlHandler, stop: &AtomicBool) -> io:
     Ok(())
 }
 
-fn connect_client(sid: &str, deadline: Instant) -> io::Result<Handle> {
+fn connect_client(sid: &str, deadline: Instant, expected_process: Option<u32>) -> io::Result<Handle> {
     let name = wide(&name_for_sid(sid));
     loop {
         if Instant::now() >= deadline {
@@ -595,6 +595,10 @@ fn connect_client(sid: &str, deadline: Instant) -> io::Result<Handle> {
             let mut pid = 0;
             if unsafe { GetNamedPipeServerProcessId(pipe.0, &mut pid) } == 0 {
                 return Err(io::Error::last_os_error());
+            }
+            if expected_process.is_some_and(|expected| expected != pid) {
+                return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+                    "native endpoint is not owned by this compatibility daemon; request was not sent"));
             }
             let process =
                 Handle::new(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) })?;
@@ -635,6 +639,9 @@ fn connect_client(sid: &str, deadline: Instant) -> io::Result<Handle> {
 }
 
 pub(super) fn request(request: &Request, timeout: Duration) -> io::Result<Response> {
+    request_owned(request, timeout, None)
+}
+pub(super) fn request_owned(request: &Request, timeout: Duration, expected_process: Option<u32>) -> io::Result<Response> {
     if timeout.is_zero() || timeout > Duration::from_secs(60) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -650,7 +657,7 @@ pub(super) fn request(request: &Request, timeout: Duration) -> io::Result<Respon
             "serialized request exceeds 256 KiB",
         ));
     }
-    let pipe = connect_client(&sid, deadline)?;
+    let pipe = connect_client(&sid, deadline, expected_process)?;
     let stop = AtomicBool::new(false);
     // A client in this daemon process must not steal the control owner's wake.
     write_frame_with_wake(pipe.0, &bytes, deadline, &stop, &mut || {}, false)?;
