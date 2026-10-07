@@ -67,7 +67,7 @@ impl Pointer {
         ffi::CGEventSetIntegerValueField(event,36,CAPABILITIES);ffi::CGEventSetIntegerValueField(event,31,DEVICE_ID);ffi::CGEventSetIntegerValueField(event,33,0x802);
     }}
     fn proximity(&self)->io::Result<()>{let event=Owned(unsafe{ffi::CGEventCreate(self.source.0)});if event.0.is_null(){return Err(io::Error::other("Cannot create tablet proximity event"));}
-        unsafe{ffi::CGEventSetType(event.0,24);}self.proximity_fields(event.0);unsafe{ffi::CGEventSetTimestamp(event.0,event_timestamp()?);ffi::CGEventPost(0,event.0);}Ok(())
+        unsafe{ffi::CGEventSetType(event.0,24);}self.proximity_fields(event.0);unsafe{ffi::CGEventSetTimestamp(event.0,event_timestamp()?);ffi::post_event(event.0);}Ok(())
     }
     fn post(&mut self,kind:u32,button:u8,point:ffi::Point,delta:ffi::Point,previous:u8,buttons:u8,flags:u64)->io::Result<()>{
         // A fresh native event avoids union values leaking when switching
@@ -81,7 +81,7 @@ impl Pointer {
             ffi::CGEventSetDoubleValueField(event.0,2,pressure);ffi::CGEventSetIntegerValueField(event.0,7,1);ffi::CGEventSetIntegerValueField(event.0,18,tablet_buttons);ffi::CGEventSetIntegerValueField(event.0,24,DEVICE_ID);ffi::CGEventSetDoubleValueField(event.0,19,pressure);
             if let Some(tilt)=self.attributes.tilt{ffi::CGEventSetDoubleValueField(event.0,20,f64::from(tilt[0])/90.0);ffi::CGEventSetDoubleValueField(event.0,21,-f64::from(tilt[1])/90.0);}
         }}
-        unsafe{ffi::CGEventSetFlags(event.0,if flags==0{u32::MAX as u64}else{flags});ffi::CGEventSetTimestamp(event.0,event_timestamp()?);ffi::CGEventPost(0,event.0);}Ok(())
+        unsafe{ffi::CGEventSetFlags(event.0,if flags==0{u32::MAX as u64}else{flags});ffi::CGEventSetTimestamp(event.0,event_timestamp()?);ffi::post_event(event.0);}Ok(())
     }
 }
 #[cfg(test)]mod fixtures{

@@ -631,7 +631,7 @@ impl Mouse {
         unsafe {
             ffi::CGEventSetFlags(event.0, flags);
             ffi::CGEventSetTimestamp(event.0, event_timestamp()?);
-            ffi::CGEventPost(0, event.0);
+            ffi::post_event(event.0);
         }
         Ok(())
     }
@@ -776,7 +776,7 @@ impl SharedInput {
                 if let Some(bit)=[59,56,58,55,62,60,61,54].iter().position(|modifier|*modifier==code){if held{self.modifiers|=1<<bit;}else{self.modifiers&=!(1<<bit);}}
                 let auxiliary=match code{57=>1<<16,114=>1<<22,63=>1<<23,_=>0};if held{self.extra_flags|=auxiliary;}else{self.extra_flags&=!auxiliary;}
                 let released=old&!(crate::keymap::modifier_flags(self.modifiers)|self.extra_flags);if released!=0{self.clear|=released;self.clear_until=Some(Instant::now()+Duration::from_millis(50));}
-                let flags=self.flags();unsafe{ffi::CGEventSetIntegerValueField(event.0,8,0);ffi::CGEventSetFlags(event.0,flags);ffi::CGEventSetTimestamp(event.0,timestamp);ffi::CGEventPost(0,event.0);}
+                let flags=self.flags();unsafe{ffi::CGEventSetIntegerValueField(event.0,8,0);ffi::CGEventSetFlags(event.0,flags);ffi::CGEventSetTimestamp(event.0,timestamp);ffi::post_event(event.0);}
             },
             otd_platform::input_owner::Code::Button(button)=>{
                 let flags=self.flags();crate::pointer::button(button,held,position,flags)?;

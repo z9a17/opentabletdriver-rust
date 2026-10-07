@@ -92,8 +92,19 @@ unsafe extern "C" {
 unsafe extern "C" {}
 #[link(name = "objc")]
 unsafe extern "C" {
+    pub fn objc_autoreleasePoolPush()->*mut c_void;
+    pub fn objc_autoreleasePoolPop(pool:*mut c_void);
     pub fn objc_getClass(name:*const c_char)->Ref;
     pub fn sel_registerName(name:*const c_char)->Ref;
     #[link_name="objc_msgSend"]
     pub fn objc_msgSend_double(receiver:Ref,selector:Ref)->f64;
+}
+
+/// Pinned OSX.CGEventPost surrounds posting with an autorelease pool. Native
+/// tablet threads do not have an AppKit application loop to drain one for them.
+/// # Safety
+/// The event must be a live CoreGraphics event for the duration of this call.
+pub unsafe fn post_event(event:Ref){
+    let pool=unsafe{objc_autoreleasePoolPush()};
+    unsafe{CGEventPost(0,event);objc_autoreleasePoolPop(pool);}
 }
