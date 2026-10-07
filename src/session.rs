@@ -515,6 +515,8 @@ pub fn run(
         None
     };
     let pen = pen_device(&profile, mode)?;
+    let actions = action_sink(mode)?.map(|sink| plugins.wrap_action_sink(&profile, selected.configuration, sink))
+        .transpose().map_err(io::Error::other)?;
     let result = otd_core::session::run_gated_with_endpoints(
         &mut source,
         &mut WindowsDisplays,
@@ -527,7 +529,7 @@ pub fn run(
         plugins,
         |packet| output.as_ref().map_or(Ok(()), |output| output.send(packet)),
         pen,
-        action_sink(mode)?,
+        actions,
         status,
         || Ok(true),
     );
@@ -667,11 +669,15 @@ impl<'a> PreparedSession<'a> {
         // quiesced, so the replacement cannot replay its already-processed
         // pen/button reports.
         // https://learn.microsoft.com/windows-hardware/drivers/ddi/hidsdi/nf-hidsdi-hidd_flushqueue
-        for handle in std::iter::once(&self.source.pen.handle)
-            .chain(self.source.auxiliary.as_ref().map(|reader| &reader.handle))
+        for reader in std::iter::once(&self.source.pen)
+            .chain(self.source.auxiliary.iter())
         {
+            if let Some(interface) = &reader.winusb {
+                interface.flush_input()?;
+                continue;
+            }
             if !unsafe {
-                windows_sys::Win32::Devices::HumanInterfaceDevice::HidD_FlushQueue(handle.raw())
+                windows_sys::Win32::Devices::HumanInterfaceDevice::HidD_FlushQueue(reader.handle.raw())
             } {
                 return Err(io::Error::last_os_error());
             }
@@ -699,6 +705,8 @@ impl<'a> PreparedSession<'a> {
         let _priority = ReaderPriority::for_driver(crate::experimental::mmcss_enabled(), status);
         let mut output = SessionOutput::new()?;
         let pen = pen_device(&profile, Mode::Driver)?;
+        let actions = action_sink(Mode::Driver)?.map(|sink| plugins.wrap_action_sink(&profile, self.selected.configuration, sink))
+            .transpose().map_err(io::Error::other)?;
         let result = otd_core::session::run_gated_with_endpoints(
             &mut source,
             &mut WindowsDisplays,
@@ -711,7 +719,7 @@ impl<'a> PreparedSession<'a> {
             plugins,
             |packet| output.send(packet),
             pen,
-            action_sink(Mode::Driver)?,
+            actions,
             status,
             gate,
         );

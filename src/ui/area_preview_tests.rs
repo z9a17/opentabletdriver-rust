@@ -369,7 +369,7 @@ fn tool_mouse_and_pen_policy_editors_preserve_other_settings() {
     let metadata = FilterMetadata { type_name: tool.type_name.clone(), display_name: Some("Fixture Tool".into()),
         default_settings_json: "{}".into(), properties: vec![crate::dotnet::PropertyMetadata {
             name: "Interval".into(), property_type: "System.UInt32".into(), writable: true,
-            unit: Some("ms".into()), ..Default::default() }] };
+            unit: Some("ms".into()), ..Default::default() }], ..Default::default() };
     // Inspection is fixture data; no DLL is constructed or daemon requested.
     app.plugin_metadata.insert(tool.path.clone(), Ok(vec![metadata]));
     app.select_tab(Tab::Tools);

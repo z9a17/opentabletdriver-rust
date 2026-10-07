@@ -93,6 +93,7 @@ pub(super) struct WheelField {
 pub(super) fn action_text(action: &ButtonAction) -> String {
     match action {
         ButtonAction::None => "None".into(),
+        ButtonAction::Managed(config) => config.type_name.clone(),
         ButtonAction::Barrel(number) => format!("Pen Button {number}"),
         ButtonAction::Mouse(button) => MOUSE_CHOICES
             .iter()

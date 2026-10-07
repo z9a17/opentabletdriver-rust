@@ -13,7 +13,7 @@ use windows_sys::{core::GUID, Win32::{
         Usb::{WINUSB_INTERFACE_HANDLE, WINUSB_SETUP_PACKET, WINUSB_PIPE_INFORMATION,
             USB_INTERFACE_DESCRIPTOR, WinUsb_Initialize, WinUsb_Free, WinUsb_QueryInterfaceSettings,
             WinUsb_QueryPipe, WinUsb_ReadPipe, WinUsb_WritePipe, WinUsb_ControlTransfer,
-            WinUsb_GetOverlappedResult}},
+            WinUsb_GetOverlappedResult, WinUsb_FlushPipe}},
     Foundation::{INVALID_HANDLE_VALUE, ERROR_NO_MORE_ITEMS, ERROR_IO_PENDING,
         WAIT_OBJECT_0, WAIT_TIMEOUT, DuplicateHandle, DUPLICATE_SAME_ACCESS},
     System::{IO::{OVERLAPPED, CancelIoEx}, Threading::{WaitForMultipleObjects, WaitForSingleObject, GetCurrentProcess}},
@@ -69,6 +69,11 @@ impl Interface {
     }
 
     pub fn input_length(&self) -> u16 { self.input.map_or(0, |(_, length)| length) }
+    /// Drop cached input only after the old reader has drained its requests.
+    pub fn flush_input(&self) -> io::Result<()> {
+        let pipe = self.input.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "WinUSB interface has no input pipe"))?.0;
+        if unsafe { WinUsb_FlushPipe(self.raw, pipe) } == 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+    }
     fn output_length(&self) -> u16 { self.output.map_or(0, |(_, length)| length) }
 
     /// Callers retain operation and buffer storage until completion/cancellation.
