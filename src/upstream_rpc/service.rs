@@ -22,12 +22,14 @@ pub struct Connection {
     log_cursor: Option<(String, u64)>,
     tablet_cursor: Option<Value>,
     resync_cursor: u64,
+    update: Option<UpdateOwnership>,
 }
+struct UpdateOwnership { token: String, exit: bool }
 impl Connection {
     pub fn new(shared: Arc<Shared>, stop: Arc<AtomicBool>) -> Self {
         let resync_cursor = shared.resynchronize.load(Ordering::Acquire);
         Self { shared, stop, next_poll: Instant::now(), log_cursor: None,
-            tablet_cursor: None, resync_cursor }
+            tablet_cursor: None, resync_cursor, update:None }
     }
     fn call(&self, command: Command) -> Result<Reply, Error> {
         if self.stop.load(Ordering::Acquire) { return Err(Error::failed("daemon is shutting down")); }
@@ -40,6 +42,78 @@ impl Connection {
     }
     fn status(&self) -> Result<ControlStatus, Error> {
         match self.call(Command::Status)? { Reply::Status { status } => Ok(status), _ => Err(Error::failed("unexpected native status")) }
+    }
+    fn finish_update(&mut self) -> Result<bool, Error> {
+        let Some(update) = &self.update else { return Ok(false); };
+        // Ownership cleanup must run even after this connection/daemon's local
+        // listener cancellation was requested. PID/token guards prevent it
+        // affecting a replacement daemon or another updater.
+        let response = control::request_owned(&Request::new(1,Command::FinishUpdate {
+            token:update.token.clone(),success:update.exit }),Duration::from_secs(5),std::process::id())
+            .map_err(|error| Error::failed(format!("update ownership cleanup: {error}")))?;
+        let exit = update.exit;
+        match response.reply {
+            Reply::ShutdownAccepted if exit => {},
+            Reply::UpdateCancelled if !exit => {},
+            Reply::Error { error } => return Err(Error::failed(error.message)),
+            _ => return Err(Error::failed("unexpected update cleanup reply")),
+        }
+        self.update = None;
+        Ok(exit)
+    }
+    /// Called only after the compatibility response has finished writing.
+    pub fn after_reply(&mut self) -> bool {
+        let exit = self.update.as_ref().is_some_and(|update| update.exit);
+        if exit { let _ = self.finish_update(); }
+        exit
+    }
+    fn install_update(&mut self) -> Result<Value, Error> {
+        let release = self.shared.update.lock().map_err(|_| Error::failed("update state lock poisoned"))?
+            .take().ok_or_else(|| Error::failed("No checked update is available; call CheckForUpdates first"))?;
+        let expected = self.status()?.identity();
+        let token = match self.call(Command::BeginUpdate { expected })? {
+            Reply::UpdateAccepted { token } => token,
+            _ => return Err(Error::failed("unexpected update reservation reply")),
+        };
+        self.update = Some(UpdateOwnership { token:token.clone(),exit:false });
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let result = (|| -> Result<Value, Error> {
+            loop {
+                match self.call(Command::UpdateStatus { token:token.clone() })? {
+                    Reply::UpdateState { token:reply_token,ready,error } if reply_token == token => {
+                        if let Some(error) = error { return Err(Error::failed(error)); }
+                        if ready { break; }
+                    },
+                    _ => return Err(Error::failed("unexpected update reservation state")),
+                }
+                if Instant::now() >= deadline { return Err(Error::failed("update resource drain timed out")); }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            let executable = std::env::current_exe().map_err(|error| Error::failed(error.to_string()))?;
+            let folder = executable.parent().ok_or_else(|| Error::failed("install directory is unavailable"))?;
+            match crate::update::install(&release,folder,&|_| {}) {
+                Ok(()) => { self.update.as_mut().unwrap().exit = true; Ok(Value::Null) },
+                Err(error) => {
+                    // Download/hash failures have no transaction. A journaled
+                    // replacement failure must recover before permitting new
+                    // workers; any recovered/uncertain installed files require
+                    // this old daemon to exit instead of loading mixed versions.
+                    match crate::update::recover_for_daemon(folder) {
+                        Ok(false) => Err(Error::failed(error)),
+                        Ok(true) => { self.update.as_mut().unwrap().exit = true;
+                            Err(Error::failed(format!("{error}; interrupted update recovered; daemon will exit"))) },
+                        Err(recovery) => { self.update.as_mut().unwrap().exit = true;
+                            Err(Error::failed(format!("{error}; update recovery failed: {recovery}; daemon will exit and preserve recovery files"))) },
+                    }
+                }
+            }
+        })();
+        if !self.update.as_ref().is_some_and(|update| update.exit) {
+            if let Err(cleanup) = self.finish_update() {
+                return Err(Error::failed(format!("{}; {}",result.err().map_or_else(|| "update failed".into(),|error| error.message),cleanup.message)));
+            }
+        }
+        result
     }
     fn tablets(&self) -> Result<Value, Error> {
         self.tablet_reply(Command::ListDeviceSessions)
@@ -188,6 +262,13 @@ impl Connection {
             events.push(protocol::event("Resynchronize", json!({})));
         }
         events
+    }
+}
+impl Drop for Connection {
+    fn drop(&mut self) {
+        // A failed response write still exits after committed replacement;
+        // an abandoned uncommitted reservation is cancelled, never forgotten.
+        let _ = self.finish_update();
     }
 }
 /// Resolved Windows DLL paths are host details, not OTD store identities. Only
@@ -401,7 +482,7 @@ impl Service for Connection {
                 *self.shared.update.lock().map_err(|_| Error::failed("update state lock poisoned"))? = available.then_some(release);
                 Ok(result)
             },
-            "InstallUpdate" => { protocol::no_arguments(params)?; Err(Error::unsupported(method, "daemon/updater ownership and exit transaction must be coordinated by the Rust updater")) },
+            "InstallUpdate" => { protocol::no_arguments(params)?; self.install_update() },
             _ => Err(Error { code: -32601, message: format!("Method not found: {method}") }),
         }
     }

@@ -33,7 +33,8 @@ impl Listener {
                             continue;
                         }
                         let mut service = service::Connection::new(Arc::clone(&shared), Arc::clone(&stop));
-                        let _ = serve_connection(&pipe, &stop, &mut service);
+                        let close_after_reply = serve_connection(&pipe, &stop, &mut service).unwrap_or(false);
+                        if close_after_reply { break; }
                         // Do not FlushFileBuffers: a stalled client could block
                         // daemon cleanup. All pending IO has completed/drained.
                         pipe.disconnect();
@@ -52,7 +53,7 @@ impl Drop for Listener {
 fn write(pipe: &CompatPipe, stop: &AtomicBool, value: &serde_json::Value) -> io::Result<()> {
     pipe.write(&protocol::encode(value)?, Instant::now() + FRAME_BUDGET, stop)
 }
-fn serve_connection(pipe: &CompatPipe, stop: &AtomicBool, service: &mut service::Connection) -> io::Result<()> {
+fn serve_connection(pipe: &CompatPipe, stop: &AtomicBool, service: &mut service::Connection) -> io::Result<bool> {
     while !stop.load(Ordering::Acquire) {
         let mut failure = None;
         let body = read_message(|buffer, deadline| pipe.read(buffer, deadline, stop, &mut || {
@@ -70,10 +71,15 @@ fn serve_connection(pipe: &CompatPipe, stop: &AtomicBool, service: &mut service:
         if let Some(response) = protocol::response(&body, service) {
             pipe.write(&protocol::encode_response(&response)?, Instant::now() + FRAME_BUDGET, stop)?;
         }
+        if service.after_reply() {
+            // CloseHandle preserves normal pipe EOF semantics; explicitly
+            // disconnecting here would discard an unread final update reply.
+            return Ok(true);
+        }
         // Busy clients must receive events too, rather than depending on IO wait.
         for event in service.events() { write(pipe, stop, &event)?; }
     }
-    Ok(())
+    Ok(false)
 }
 
 /// Exact reads preserve coalesced frames and fragmented headers without an

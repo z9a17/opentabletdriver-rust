@@ -69,6 +69,11 @@ impl Request {
             ));
         }
         match &self.command {
+            Command::UpdateStatus { token } | Command::FinishUpdate { token, .. } => {
+                if token.is_empty() || token.len() > 256 || token.chars().any(char::is_control) {
+                    return Err(ControlError::new(ErrorCode::InvalidRequest, "invalid update reservation token"));
+                }
+            }
             Command::WriteMessage { message } => {
                 if message.message.len() > MAX_LOG_LINE_BYTES || message.group.len() > 128
                     || message.time.len() > 64 || message.stack_trace.as_ref().is_some_and(|value| value.len() > 4096)
@@ -112,6 +117,9 @@ pub enum Command {
     Status,
     ListDeviceSessions,
     DetectDeviceSessions,
+    BeginUpdate { expected: WorkerIdentity },
+    UpdateStatus { token: String },
+    FinishUpdate { token: String, success: bool },
     SelectDeviceSession { expected: WorkerIdentity, id: String },
     GetDeviceProfile { expected: WorkerIdentity, id: String, device_generation: u64 },
     ApplyDeviceProfile { expected: WorkerIdentity, id: String, device_generation: u64, profile_toml: String },
@@ -267,6 +275,9 @@ pub struct Response {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Reply {
+    UpdateAccepted { token: String },
+    UpdateState { token: String, ready: bool, error: Option<String> },
+    UpdateCancelled,
     ExperimentalSaved,
     MessageWritten,
     DeviceSessions { sessions: Vec<crate::device_sessions::SessionSnapshot>, selected_id: Option<String> },

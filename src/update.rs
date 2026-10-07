@@ -292,6 +292,11 @@ pub fn remove_leftovers() -> Result<(), String> {
     }
     Ok(())
 }
+/// Called only under a drained daemon update reservation after a failed install.
+/// A recovered transaction requires exiting the old process before reuse.
+pub(crate) fn recover_for_daemon(install: &Path) -> Result<bool, String> {
+    transaction::startup(install)
+}
 
 pub(crate) fn temporary_work(prefix: &str) -> Result<PathBuf, String> {
     unique_directory(&std::env::temp_dir(), prefix)

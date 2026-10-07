@@ -43,7 +43,7 @@ JSON-RPC batch messages are rejected.
 | ResetSettings | True pinned OTD defaults for one connected running tablet, with actual digitizer/button/wheel specifications and guarded apply completion. Uses upstream 1% contact thresholds, no filters, clipping, default adaptive bindings and 100 ms relative reset. Multi-device atomic reset remains unsupported. |
 | SetTabletDebug | Explicit unsupported error; latest native samples are not full-rate multi-tablet DeviceReport events. |
 | CheckForUpdates | Actual Rust release service/version comparison, returning the pinned Version-string DTO or null when current. The checked release is retained in bounded daemon state. |
-| InstallUpdate | Explicit unsupported error pending daemon exit/updater ownership integration. Existing native update commands remain available. |
+| InstallUpdate | Requires a checked update and a daemon reservation that drains all devices/tools and blocks competing starts/applies. Uses the existing checksum-verified update transaction, writes the RPC result before requesting owned shutdown, and recovers failed replacement before releasing the reservation. Successful replacement or uncertain recovery exits the old daemon. |
 
 All methods accept positional parameters. Single parameters also accept named
 parameters; aliases cover pinned interface/implementation name differences for
