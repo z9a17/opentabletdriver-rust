@@ -365,8 +365,14 @@ mod app {
             .map_err(SessionError::hardware)?;
         // Establish every output resource before initialization writes. Permission
         // failures are fatal; reconnect only retries actual hardware loss.
-        let keys = profile.pen_buttons.iter().any(|action| matches!(action, ButtonAction::Keys(_)));
-        let clicks = profile.pen_buttons.iter().any(|action| matches!(action, ButtonAction::Mouse(_)));
+        // Resource discovery covers every binding group, including Artist Mode
+        // profiles whose pointer is otherwise absent.
+        let actions = || profile.pen_buttons.iter().chain(&profile.aux_buttons).chain(&profile.mouse_buttons)
+            .chain([&profile.mouse_scroll_up, &profile.mouse_scroll_down])
+            .chain(profile.wheels.iter().flat_map(|wheel| [&wheel.clockwise, &wheel.counter_clockwise]
+                .into_iter().chain(wheel.buttons.iter())));
+        let keys = actions().any(|action| matches!(action, ButtonAction::Keys(_)));
+        let clicks = actions().any(|action| matches!(action, ButtonAction::Mouse(_) | ButtonAction::Scroll(_)));
         let keyboard = keys.then(VirtualKeyboard::create).transpose().map_err(SessionError::Fatal)?;
         let pen = if profile.output == OutputKind::Pen {
             Some(VirtualTablet::create(displays.0.virtual_screen).map_err(SessionError::Fatal)?)

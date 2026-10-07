@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use otd_core::display::{DisplayFingerprint, DisplaySnapshot};
 use otd_core::actions::{Action, ActionTransition, MouseButton};
-use otd_core::output::buttons::{ActionSink, LocalActions};
+use otd_core::output::buttons::{ActionSink, LocalActions, ScrollAxis, ScrollPulse};
 use otd_core::endpoint_match::{Endpoint, Transport};
 use otd_core::mapping::Rect;
 use otd_core::output::{MousePacket, flags};
@@ -539,6 +539,24 @@ pub struct Mouse {
 }
 
 impl Mouse {
+    pub fn send_scroll(&mut self, pulse: ScrollPulse) -> io::Result<()> {
+        // Match MacOSVirtualMouse: negate the binding pulse and use pixel units.
+        // Separate scroll events preserve the reusable mouse event objects.
+        let amount = pulse.delta.wrapping_neg();
+        let (vertical, horizontal) = match pulse.axis {
+            ScrollAxis::Vertical => (amount, 0), ScrollAxis::Horizontal => (0, amount),
+        };
+        let event = Owned(unsafe { ffi::CGEventCreateScrollWheelEvent2(ptr::null(), 0, 2, vertical, horizontal, 0) });
+        if event.0.is_null() { return Err(io::Error::other("cannot create CoreGraphics scroll event")); }
+        let flags = self.event_flags();
+        unsafe {
+            ffi::CGEventSetFlags(event.0, flags);
+            ffi::CGEventSetTimestamp(event.0, event_timestamp()?);
+            ffi::CGEventPost(0, event.0);
+        }
+        Ok(())
+    }
+
     pub fn new(geometry: Rc<Cell<Rect>>) -> io::Result<Self> {
         output_permission()?;
         // SAFETY: private CGEvent source and distinct reusable mouse event
@@ -713,6 +731,8 @@ fn event_timestamp() -> io::Result<u64> {
 /// Shares native pointer state with tip output so one hold cannot release the
 /// other's left button, and drag events see the held side buttons/modifiers.
 pub fn action_sink(mouse: Rc<RefCell<Mouse>>) -> Box<dyn ActionSink> {
+    let scroll = Rc::clone(&mouse);
     Box::new(LocalActions::new(move |transition| mouse.borrow_mut().send_action(transition),
-        |action| match action { Action::Mouse(_) => true, Action::Key(key) => crate::keymap::key_code(key).is_some() }))
+        |action| match action { Action::Mouse(_) => true, Action::Key(key) => crate::keymap::key_code(key).is_some() })
+        .with_scroll(move |pulse| scroll.borrow_mut().send_scroll(pulse)))
 }
