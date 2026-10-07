@@ -161,9 +161,11 @@ mod native_binding_handoff_tests {
         let mut profile = Profile { pen_buttons: vec!["toggle:keys:Control+Z".parse().unwrap(), "preset:Écriture.2".parse().unwrap()], ..Default::default() };
         let authored = profile.to_toml().unwrap();
         profile.binding_inhibit = Some(0);
+        profile.use_settings_collection = true;
         assert_eq!(profile.to_toml().unwrap(), authored);
         let reopened = Profile::from_toml_text(&authored, Path::new("profile.toml")).unwrap();
         assert_eq!(reopened.binding_inhibit, None);
+        assert!(!reopened.use_settings_collection);
         assert_eq!(reopened.pen_buttons, profile.pen_buttons);
         for value in ["toggle:preset:Work", "toggle:scroll:up", "toggle:toggle:keys:Z", "toggle:none", "preset:../other", "preset:CON.txt"] {
             assert!(value.parse::<ButtonAction>().is_err(), "{value}");
@@ -182,6 +184,9 @@ pub struct Profile {
     /// A binding that replaced its own profile must report released before the
     /// new slot may press. Runtime removes this from its authored profile.
     pub binding_inhibit: Option<u32>,
+    /// Cold worker origin only. Native Apply/files clear this; original model
+    /// settings may refresh on reconnect. Never part of authored TOML/equality.
+    pub use_settings_collection: bool,
     /// Original settings collection, retained without rewriting JSON values.
     pub imported_otd: Option<ImportedOtdSettings>,
     /// Unrecognized native fields are archived by their original JSON-pointer path.
@@ -235,6 +240,7 @@ impl Default for Profile {
             schema_version: PROFILE_SCHEMA_VERSION,
             settings_revision: 0,
             binding_inhibit: None,
+            use_settings_collection: false,
             imported_otd: None,
             preserved_fields: Default::default(),
             diagnostics: Vec::new(),

@@ -60,7 +60,11 @@ pub fn set_original_settings_expected(settings: serde_json::Value,
 }
 pub fn set_original_settings_expected_with_source(settings:serde_json::Value,
     expected:crate::control::WorkerIdentity,source:Option<(String,u32)>) -> Result<(),String> {
-    provider_connection().set_settings_expected(&settings,expected,source).map(|_| ()).map_err(|error| error.message)
+    set_original_settings_expected_with_source_generation(settings,expected,source,None)
+}
+pub fn set_original_settings_expected_with_source_generation(settings:serde_json::Value,
+    expected:crate::control::WorkerIdentity,source:Option<(String,u32)>,expected_source:Option<(String,u64)>) -> Result<(),String> {
+    provider_connection().set_settings_expected(&settings,expected,source,expected_source).map(|_| ()).map_err(|error| error.message)
 }
 pub fn reset_original_settings() -> Result<(), String> { set_original_settings(serde_json::Value::Null) }
 pub fn load_original_settings() -> Result<(), String> {

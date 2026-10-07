@@ -187,13 +187,16 @@ impl Connection {
             return Ok(retained.document);
         }
         let screen = crate::display::read_snapshot()?.virtual_screen;
-        let profile = if profile.imported_otd.is_none() {
+        let primary_stale = retained.authoritative && sessions.iter().any(|session|
+            session.primary && !session.connected && session.use_settings_collection);
+        let profile = if !primary_stale && profile.imported_otd.is_none() {
             let tablet = sessions.iter().find(|session| session.primary && session.profile_source.is_some())
                 .ok_or_else(|| Error::failed("native settings export needs a known primary tablet configuration"))?;
             super::settings::canonical_copy(&profile, &tablet.properties, screen)?
         } else { profile };
-        let exported = export_settings(&profile)?;
-        let exported: Value = serde_json::from_str(&exported).map_err(|error| Error::failed(error.to_string()))?;
+        let exported: Value = if primary_stale { retained.document.clone() } else {
+            serde_json::from_str(&export_settings(&profile)?).map_err(|error| Error::failed(error.to_string()))?
+        };
         let mut document = if retained.authoritative || retained.document["Profiles"].as_array().is_some_and(|rows| !rows.is_empty()) {
             retained.document
         } else { exported.clone() };
@@ -201,7 +204,8 @@ impl Connection {
         let mut active = std::collections::BTreeMap::<String,Value>::new();
         // Registry-owned profiles survive disconnect. Export them too, using
         // frozen configuration metadata without claiming an open tablet.
-        for session in sessions.iter().filter(|session| session.profile_source.is_some()) {
+        for session in sessions.iter().filter(|session| session.profile_source.is_some()
+            && (session.connected || !session.use_settings_collection)) {
             let per_device = if session.primary { profile.clone() } else {
                 let text = match self.call(Command::GetDeviceProfile { expected:expected.clone(), id:session.id.clone(),
                     device_generation:session.device_generation })? {
@@ -257,15 +261,15 @@ impl Connection {
     }
     pub(super) fn set_settings(&mut self,settings:&Value) -> Result<Value,Error> {
         let _owner = super::collection::owner()?;
-        self.set_settings_owned(settings,None,None)
+        self.set_settings_owned(settings,None,None,None)
     }
     pub(super) fn set_settings_expected(&mut self,settings:&Value,expected:control::WorkerIdentity,
-        source:Option<(String,u32)>) -> Result<Value,Error> {
+        source:Option<(String,u32)>,expected_source:Option<(String,u64)>) -> Result<Value,Error> {
         let _owner = super::collection::owner()?;
-        self.set_settings_owned(settings,Some(expected),source)
+        self.set_settings_owned(settings,Some(expected),source,expected_source)
     }
     fn set_settings_owned(&mut self,settings:&Value,expected:Option<control::WorkerIdentity>,
-        source:Option<(String,u32)>) -> Result<Value,Error> {
+        source:Option<(String,u32)>,expected_source:Option<(String,u64)>) -> Result<Value,Error> {
         let retained = super::collection::check_revision(self.settings_revision)?;
         let settings = super::collection::normalize(settings)?;
         let status = self.status()?;
@@ -278,11 +282,20 @@ impl Connection {
             return Err(Error::failed("native settings changed since GetSettings; reload before applying the collection"));
         }
         let sessions:Vec<_> = sessions.into_iter().filter(|session| session.connected).collect();
+        if let Some((id,generation)) = &expected_source {
+            if !sessions.iter().any(|session| &session.id == id && session.device_generation == *generation
+                && session.pending_generation.is_none() && session.state == crate::device_sessions::SessionState::Running) {
+                return Err(Error::failed("source settings request no longer owns its admitted physical device generation"));
+            }
+        }
         let source = if let Some((tablet,owner)) = source {
             let mut matches = sessions.iter().filter(|session| session.tablet == tablet
                 && session.state == crate::device_sessions::SessionState::Running);
             let session = matches.next().ok_or_else(|| Error::failed("source preset tablet is no longer running"))?;
             if matches.next().is_some() { return Err(Error::failed("source preset tablet name is ambiguous across active physical sessions")); }
+            if expected_source.as_ref().is_some_and(|(id,generation)| id != &session.id || *generation != session.device_generation) {
+                return Err(Error::failed("source preset name resolved to another physical device generation"));
+            }
             Some((session.id.clone(),owner))
         } else { None };
         if !sessions.iter().any(|session| session.primary && session.state == crate::device_sessions::SessionState::Running)
@@ -342,7 +355,8 @@ impl Connection {
                 plugin.kind == otd_core::plugins::PluginKind::Native) {
                 return Err(Error::unsupported("SetSettings", "native extensions/ABI plugin settings cannot be replaced through an original-format collection; edit the native profile explicitly"));
             }
-            plans.push(super::apply::Plan { id:session.id.clone(),generation:session.device_generation,before,replacement });
+            plans.push(super::apply::Plan { id:session.id.clone(),generation:session.device_generation,before,replacement,
+                before_collection:session.use_settings_collection });
         }
         if self.status()?.identity() != status.identity() { return Err(Error::failed("daemon configuration changed during settings preflight")); }
         let mut backend = DeviceApply { connection:self,instance:status.instance,source };
@@ -360,7 +374,7 @@ impl Connection {
     pub(super) fn load_settings(&mut self) -> Result<Value, Error> {
         let _owner = super::collection::owner()?;
         let (document, file) = super::collection::read_saved()?;
-        self.set_settings_owned(&document,None,None)?;
+        self.set_settings_owned(&document,None,None,None)?;
         super::collection::accept_loaded_file(file)?;
         Ok(Value::Null)
     }
@@ -416,13 +430,13 @@ impl Drop for Connection {
     }
 }
 struct DeviceApply<'a> { connection:&'a mut Connection,instance:String,source:Option<(String,u32)> }
-impl super::apply::Backend for DeviceApply<'_> {
-    fn apply(&mut self,id:&str,generation:u64,text:&str) -> Result<crate::device_sessions::SessionReceipt,Error> {
+impl DeviceApply<'_> {
+    fn apply_owned(&mut self,id:&str,generation:u64,text:&str,collection:bool,
+        binding_inhibit:Option<u32>) -> Result<crate::device_sessions::SessionReceipt,Error> {
         let status = self.connection.status()?;
         if status.instance != self.instance { return Err(Error::failed("daemon identity changed during device apply")); }
-        let command = if self.source.as_ref().is_some_and(|(source,_)| source == id) {
-            let (_,binding_inhibit) = self.source.take().unwrap();
-            Command::ApplyDeviceProfileWithInhibit { expected:status.identity(),id:id.into(),
+        let command = if collection {
+            Command::ApplyOriginalDeviceProfile { expected:status.identity(),id:id.into(),
                 device_generation:generation,profile_toml:text.into(),binding_inhibit }
         } else { Command::ApplyDeviceProfile { expected:status.identity(),id:id.into(),
             device_generation:generation,profile_toml:text.into() } };
@@ -430,6 +444,14 @@ impl super::apply::Backend for DeviceApply<'_> {
             Reply::DeviceOperationAccepted { receipt } => Ok(receipt),
             _ => Err(Error::failed("unexpected device operation receipt")),
         }
+    }
+}
+impl super::apply::Backend for DeviceApply<'_> {
+    fn apply(&mut self,id:&str,generation:u64,text:&str) -> Result<crate::device_sessions::SessionReceipt,Error> {
+        let inhibition = if self.source.as_ref().is_some_and(|(source,_)| source == id) {
+            Some(self.source.take().unwrap().1)
+        } else { None };
+        self.apply_owned(id,generation,text,true,inhibition)
     }
     fn wait(&mut self,receipt:&crate::device_sessions::SessionReceipt,_text:&str,deadline:Instant) -> Result<(),Error> {
         loop {
@@ -473,7 +495,7 @@ impl super::apply::Backend for DeviceApply<'_> {
             return Err(Error::failed("newer device generation preserved"));
         }
         if Instant::now() >= deadline { return Err(Error::failed("settings rollback deadline expired")); }
-        let restored = self.apply(&plan.id,receipt.target_generation,&plan.before)?;
+        let restored = self.apply_owned(&plan.id,receipt.target_generation,&plan.before,plan.before_collection,None)?;
         self.wait(&restored,&plan.before,deadline)
     }
 }

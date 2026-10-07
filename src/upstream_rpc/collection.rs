@@ -160,7 +160,8 @@ pub fn profile_for_tablet(tablet: &otd_core::tablets::TabletConfiguration) -> Re
     let projected = super::settings::for_detected(&document, std::slice::from_ref(tablet), screen)
         .map_err(|error| error.message)?;
     let text = serde_json::to_string(&projected).map_err(|error| error.to_string())?;
-    let profile = crate::plugins::import_otd_with_installed(&text, &source, &[tablet.name.clone()])?;
+    let mut profile = crate::plugins::import_otd_with_installed(&text, &source, &[tablet.name.clone()])?;
+    profile.use_settings_collection = true;
     profile.for_tablet(otd_core::spec::TabletSpec::from_configuration(tablet)?).map(Some)
 }
 

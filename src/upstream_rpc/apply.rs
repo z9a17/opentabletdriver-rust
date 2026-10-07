@@ -4,7 +4,7 @@ use std::time::Instant;
 use crate::device_sessions::SessionReceipt;
 use super::protocol::Error;
 
-pub struct Plan { pub id:String, pub generation:u64, pub before:String, pub replacement:String }
+pub struct Plan { pub id:String, pub generation:u64, pub before:String, pub replacement:String, pub before_collection:bool }
 pub trait Backend {
     fn apply(&mut self, id:&str, generation:u64, text:&str) -> Result<SessionReceipt,Error>;
     fn wait(&mut self, receipt:&SessionReceipt, text:&str, deadline:Instant) -> Result<(),Error>;
@@ -69,8 +69,8 @@ mod tests {
     }
     #[test]
     fn later_device_failure_restores_owned_generation_but_preserves_a_peer_edit() {
-        let plans = [Plan{id:"first".into(),generation:1,before:"old".into(),replacement:"new".into()},
-            Plan{id:"second".into(),generation:4,before:"old2".into(),replacement:"new2".into()}];
+        let plans = [Plan{id:"first".into(),generation:1,before:"old".into(),replacement:"new".into(),before_collection:false},
+            Plan{id:"second".into(),generation:4,before:"old2".into(),replacement:"new2".into(),before_collection:false}];
         for peer_change in [false,true] {
             let mut backend = Fake{states:BTreeMap::from([("first".into(),(1,"old".into()))]),peer_change,calls:Vec::new()};
             let failure = run(&plans,&mut backend,Instant::now(),Instant::now).unwrap_err();
