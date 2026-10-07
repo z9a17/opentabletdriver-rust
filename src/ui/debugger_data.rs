@@ -65,6 +65,35 @@ pub(super) struct Recorder {
     dropped: Arc<AtomicU64>,
 }
 
+/// Both modes share the debugger's completion/close path. Only the sampled
+/// mode accepts GUI updates; full capture owns its independent daemon reader.
+pub(super) enum Recording {
+    Sampled(Recorder),
+    Capture(super::debugger_capture::Recorder),
+}
+
+impl Recording {
+    pub fn start(path: &Path, full_rate: bool) -> Result<Self, String> {
+        if full_rate { super::debugger_capture::Recorder::start(path).map(Self::Capture) }
+        else { Recorder::start(path).map(Self::Sampled) }
+    }
+    pub fn push(&self, elapsed_us: u64, report: DebugReport) {
+        if let Self::Sampled(recorder) = self { recorder.push(elapsed_us, report); }
+    }
+    pub fn stop(&mut self) {
+        match self { Self::Sampled(recorder) => recorder.stop(), Self::Capture(recorder) => recorder.stop() }
+    }
+    pub fn active(&self) -> bool {
+        match self { Self::Sampled(recorder) => recorder.active(), Self::Capture(recorder) => recorder.active() }
+    }
+    pub fn status(&self) -> String {
+        match self { Self::Sampled(recorder) => recorder.status(), Self::Capture(recorder) => recorder.status() }
+    }
+    pub fn result(&self) -> Option<Result<(), String>> {
+        match self { Self::Sampled(recorder) => recorder.result(), Self::Capture(recorder) => recorder.result() }
+    }
+}
+
 impl Recorder {
     pub fn start(path: &Path) -> Result<Self, String> {
         // Never silently replace an existing capture, like profile Save As.

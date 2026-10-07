@@ -25,6 +25,7 @@ mod commands;
 mod conversion;
 mod debugger;
 mod debugger_data;
+mod debugger_capture;
 mod draw;
 mod experimental;
 mod layout;
@@ -786,6 +787,7 @@ struct App {
     daemon_log_sequence: u64,
     closing: bool,
     close_ready: bool,
+    recording_close_pending: bool,
     update_restart_pending: bool,
     update_close_approved: bool,
     updates: updates::UpdateState,
@@ -1246,7 +1248,17 @@ unsafe extern "system" fn window_proc(
         }
         WM_TIMER if wp == 0xD06 => {
             if !debugger::is_open() {
-                unsafe { KillTimer(window, 0xD06); PostMessageW(window, WM_CLOSE, 0, 0); }
+                unsafe { KillTimer(window, 0xD06); }
+                if with_app(|app| std::mem::take(&mut app.recording_close_pending)).unwrap_or(false) {
+                    if with_app(App::begin_close).unwrap_or(true) { unsafe { DestroyWindow(window); } }
+                } else { unsafe { PostMessageW(window, WM_CLOSE, 0, 0); } }
+            }
+            0
+        }
+        WM_TIMER if wp == 0xD07 => {
+            if !debugger::is_open() {
+                unsafe { KillTimer(window, 0xD07); }
+                updates::resume_restart(window);
             }
             0
         }

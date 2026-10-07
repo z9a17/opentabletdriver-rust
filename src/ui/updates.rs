@@ -391,6 +391,17 @@ fn restart(window: HWND) {
         return;
     }
     lock_for_restart(window, true);
+    debugger::close();
+    if debugger::is_open() {
+        log(Level::Info, "Finishing debugger recording before restarting...".into());
+        unsafe { SetTimer(window, 0xD07, 33, None); }
+        return;
+    }
+    resume_restart(window);
+}
+
+pub(super) fn resume_restart(window: HWND) {
+    if !RESTARTING.load(Ordering::Acquire) { return; }
     log(Level::Info, "Waiting for the driver to stop before restarting...".into());
     let target = window as isize;
     if let Err(error) = std::thread::Builder::new().name("update-restart".into()).spawn(move || {

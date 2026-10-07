@@ -37,7 +37,7 @@ fn fixture(hwnd: HWND) -> App {
         bindings_detected: false, labels: HashMap::new(), property_page: 0,
         invalid: HashSet::new(), drag: None, context_area: AreaKind::Tablet,
         running: None, daemon_client: None, control_busy: false, daemon_instance: None,
-        daemon_log_sequence: 0, closing: false, close_ready: false,
+        daemon_log_sequence: 0, closing: false, close_ready: false, recording_close_pending: false,
         update_restart_pending: false, update_close_approved: false,
         updates: updates::UpdateState::default(), driver: DriverState::Stopped,
         tablet_present: None, tablet_choices: Vec::new(), preset_choices: Vec::new(),

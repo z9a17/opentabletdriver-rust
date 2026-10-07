@@ -31,6 +31,7 @@ const CMD_RECORD: u16 = 5;
 const CMD_STATS: u16 = 6;
 const CMD_RESET_STATS: u16 = 7;
 const CMD_COPY_STATS: u16 = 8;
+const CMD_RECORD_FULL: u16 = 9;
 
 /// Upstream's debugger text sizes, in the panel's monospace face.
 struct MonoFonts {
@@ -77,7 +78,7 @@ struct Debugger {
     binary: bool,
     statistics: debugger_data::Statistics,
     show_statistics: bool,
-    recorder: Option<debugger_data::Recorder>,
+    recorder: Option<debugger_data::Recording>,
     recording_started: Instant,
     recording_status: String,
     /// The File menu entry, where the last paint put it.
@@ -135,6 +136,7 @@ pub(super) fn open() -> Result<(), String> {
     });
     refresh_theme();
     unsafe {
+        SetTimer(window, 2, 100, None);
         ShowWindow(window, SW_SHOW);
         UpdateWindow(window);
     }
@@ -583,7 +585,7 @@ impl Debugger {
             let stats_top = rows_top + rows_height + gap;
             let stats = section(canvas, rect(left.left, stats_top, left.right, bottom), "Additional Statistics", style, header);
             let inner = draw::inset(stats, s(8.0), s(6.0));
-            let status = self.recorder.as_ref().map_or_else(|| self.recording_status.clone(), debugger_data::Recorder::status);
+            let status = self.recorder.as_ref().map_or_else(|| self.recording_status.clone(), debugger_data::Recording::status);
             let mut lines = self.statistics.lines();
             if !status.is_empty() { lines.insert(0, status); }
             let room = usize::try_from((inner.bottom - inner.top) / line).unwrap_or(0);
@@ -836,7 +838,7 @@ fn open_menu(window: HWND) {
     let Some((entry, visualizer, binary, stats, recording, finishing)) = with_debugger(window, |debugger| {
         debugger.menu_open = true;
         (debugger.menu.get(), debugger.visualizer, debugger.binary, debugger.show_statistics,
-            debugger.recorder.as_ref().is_some_and(debugger_data::Recorder::active),
+            debugger.recorder.as_ref().is_some_and(debugger_data::Recording::active),
             debugger.recorder.as_ref().is_some_and(|recorder| !recorder.active()))
     }) else {
         return;
@@ -848,6 +850,8 @@ fn open_menu(window: HWND) {
         append(menu, checked(stats), CMD_STATS, "Additional Statistics");
         append(menu, MF_STRING, CMD_RESET_STATS, "Reset Statistics");
         append(menu, MF_STRING, CMD_COPY_STATS, "Copy All Statistics");
+        append(menu, if recording || finishing { MF_GRAYED } else { MF_STRING }, CMD_RECORD_FULL,
+            "Record All Raw Reports...");
         append(menu, if finishing { MF_GRAYED } else { MF_STRING }, CMD_RECORD,
             if recording { "Stop Recording" } else if finishing { "Finishing Recording..." } else { "Record Sampled Reports..." });
         let modes = CreatePopupMenu();
@@ -932,13 +936,14 @@ fn open_menu(window: HWND) {
             copy_to_clipboard(window, &lines);
         }
     }
-    if command == CMD_RECORD {
+    if command == CMD_RECORD || command == CMD_RECORD_FULL {
         if recording {
             with_debugger(window, |debugger| { if let Some(recorder) = &mut debugger.recorder { recorder.stop(); } });
         } else if !finishing {
-            match commands::file_dialog(window, true, commands::FileKind::Recording, "Record sampled reports") {
+            match commands::file_dialog(window, true, commands::FileKind::Recording,
+                if command == CMD_RECORD_FULL { "Record all raw reports" } else { "Record sampled reports" }) {
                 Ok(Some(path)) => {
-                    let result = debugger_data::Recorder::start(&path);
+                    let result = debugger_data::Recording::start(&path, command == CMD_RECORD_FULL);
                     with_debugger(window, |debugger| {
                         debugger.show_statistics = true;
                         match result {
@@ -1112,6 +1117,13 @@ unsafe extern "system" fn window_proc(
             }).unwrap_or(false);
             if finishing { unsafe { SetTimer(window, 1, 33, None); } }
             else { unsafe { DestroyWindow(window); } }
+            0
+        }
+        WM_TIMER if wparam == 2 => {
+            if let Some(Err(error)) = with_debugger(window, Debugger::finish_recording).flatten() {
+                with_app(|app| app.log(Level::Error, "Debugger", error));
+            }
+            unsafe { InvalidateRect(window, ptr::null(), 0); }
             0
         }
         WM_TIMER if wparam == 1 => {

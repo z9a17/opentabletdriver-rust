@@ -235,6 +235,7 @@ impl App {
             daemon_log_sequence: 0,
             closing: false,
             close_ready: false,
+            recording_close_pending: false,
             update_restart_pending: false,
             update_close_approved: false,
             updates: updates::UpdateState::default(),
@@ -2568,6 +2569,18 @@ impl App {
 
     /// Close waits for daemon cleanup and process exit off the window thread.
     pub(super) fn begin_close(&mut self) -> bool {
+        // Freeze/drain capture while its daemon API is still reachable. The
+        // timer resumes this method after the debugger's writer has finished.
+        if debugger::is_open() {
+            self.closing = true;
+            self.recording_close_pending = true;
+            self.drag = None;
+            debugger::close();
+            self.show_status("Finishing debugger recording before shutdown...".into(), Level::Info, false);
+            unsafe { EnableWindow(self.hwnd, 0); SetTimer(self.hwnd, 0xD06, 33, None); }
+            plugin_manager::set_restart_pending(true);
+            return false;
+        }
         if self.update_close_approved {
             self.closing = true;
             // Updater cleanup has already completed. Recording may still
@@ -2591,7 +2604,12 @@ impl App {
                 unsafe { EnableWindow(self.hwnd, 0); }
                 plugin_manager::set_restart_pending(true);
             }
-            Err(error) => self.log(Level::Error, "Daemon", error),
+            Err(error) => {
+                self.closing = false;
+                unsafe { EnableWindow(self.hwnd, 1); }
+                plugin_manager::set_restart_pending(false);
+                self.log(Level::Error, "Daemon", error);
+            }
         }
         false
     }
