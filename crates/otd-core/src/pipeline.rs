@@ -641,7 +641,7 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
                 has_position: position.is_some(),
                 pressure: if policy.disable_pressure { None } else { pressure.map(|raw| raw as f32 / self.pipeline.max_pressure.max(1) as f32) },
                 tilt: if self.pipeline.contact.disable_tilt { None } else { values.tilt },
-                eraser: values.eraser.or_else(|| values.tool.map(|tool| tool.tool == ToolType::Eraser)),
+                eraser: values.eraser,
                 reset: kind == ReportKind::OutOfRange,
             })?;
         }
