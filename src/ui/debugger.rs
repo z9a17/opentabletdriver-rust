@@ -835,11 +835,11 @@ fn format_report(report: &Value) -> Vec<String> {
 /// Opens the File menu below its entry. No debugger borrow survives the
 /// menu's message loop.
 fn open_menu(window: HWND) {
-    let Some((entry, visualizer, binary, stats, recording, finishing)) = with_debugger(window, |debugger| {
+    let Some((entry, visualizer, binary, stats, recording, finishing, original)) = with_debugger(window, |debugger| {
         debugger.menu_open = true;
         (debugger.menu.get(), debugger.visualizer, debugger.binary, debugger.show_statistics,
             debugger.recorder.as_ref().is_some_and(debugger_data::Recording::active),
-            debugger.recorder.as_ref().is_some_and(|recorder| !recorder.active()))
+            debugger.recorder.as_ref().is_some_and(|recorder| !recorder.active()), Arc::clone(&debugger.cancelled))
     }) else {
         return;
     };
@@ -939,10 +939,15 @@ fn open_menu(window: HWND) {
     if command == CMD_RECORD || command == CMD_RECORD_FULL {
         if recording {
             with_debugger(window, |debugger| { if let Some(recorder) = &mut debugger.recorder { recorder.stop(); } });
-        } else if !finishing {
+        } else if !finishing && can_start_recording(window, &original) {
             match commands::file_dialog(window, true, commands::FileKind::Recording,
                 if command == CMD_RECORD_FULL { "Record all raw reports" } else { "Record sampled reports" }) {
                 Ok(Some(path)) => {
+                    // The picker runs a nested message loop: close/restart may
+                    // destroy this debugger or reuse its HWND for a new one.
+                    // No Win32 message dispatch occurs between this check and
+                    // installing the recorder on this same UI thread.
+                    if !can_start_recording(window, &original) { return; }
                     let result = debugger_data::Recording::start(&path, command == CMD_RECORD_FULL);
                     with_debugger(window, |debugger| {
                         debugger.show_statistics = true;
@@ -957,7 +962,11 @@ fn open_menu(window: HWND) {
                         }
                     });
                 }
-                Err(error) => { with_debugger(window, |debugger| debugger.recording_status = error); }
+                Err(error) => {
+                    if can_start_recording(window, &original) {
+                        with_debugger(window, |debugger| debugger.recording_status = error);
+                    }
+                }
                 Ok(None) => {},
             }
         }
@@ -967,6 +976,21 @@ fn open_menu(window: HWND) {
     } else {
         unsafe { InvalidateRect(window, ptr::null(), 0) };
     }
+}
+
+fn recording_start_allowed(original: &Arc<AtomicBool>, current: &Arc<AtomicBool>,
+    recorder_present: bool, parent_busy: bool) -> bool
+{
+    Arc::ptr_eq(original, current) && !original.load(Ordering::Acquire)
+        && !recorder_present && !parent_busy
+}
+
+fn can_start_recording(window: HWND, original: &Arc<AtomicBool>) -> bool {
+    if unsafe { IsWindow(window) } == 0 { return false; }
+    let parent_busy = with_app(|app| app.closing || app.control_busy || app.update_restart_pending)
+        .unwrap_or(true);
+    with_debugger(window, |debugger| recording_start_allowed(original, &debugger.cancelled,
+        debugger.recorder.is_some(), parent_busy)).unwrap_or(false)
 }
 
 fn inside(area: RECT, lparam: LPARAM) -> bool {
@@ -1157,6 +1181,20 @@ unsafe extern "system" fn window_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_modal_recording_action_requires_its_original_live_debugger() {
+        let original = Arc::new(AtomicBool::new(false));
+        let same_window = Arc::clone(&original);
+        assert!(recording_start_allowed(&original, &same_window, false, false));
+        // A replacement can reuse the exact HWND while both flags read false.
+        let replacement = Arc::new(AtomicBool::new(false));
+        assert!(!recording_start_allowed(&original, &replacement, false, false));
+        assert!(!recording_start_allowed(&original, &same_window, true, false));
+        assert!(!recording_start_allowed(&original, &same_window, false, true));
+        original.store(true, Ordering::Release);
+        assert!(!recording_start_allowed(&original, &same_window, false, false));
+    }
 
     #[test]
     fn reports_read_like_upstream() {
