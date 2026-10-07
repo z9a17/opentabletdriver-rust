@@ -24,6 +24,7 @@ pub struct Snapshot {
     pub tablets: Option<Value>,
     pub configurations: Option<Value>,
     pub logs: Option<Value>,
+    pub log_sequence: u64,
     /// Monotonic event epochs; the managed client raises Resynchronize only on change.
     pub resynchronize: u64,
 }

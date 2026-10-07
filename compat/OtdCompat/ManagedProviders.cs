@@ -133,11 +133,18 @@ sealed class ManagedProviders : IDriver, IDeviceConfigurationProvider, IReportPa
                         Notify(() => devices?.Invoke(this, new DevicesChangedEventArgs(Endpoints(previous), Endpoints(current))));
                     if (previous.Value<ulong>("resynchronize") != current.Value<ulong>("resynchronize"))
                         Notify(() => sync?.Invoke(this, EventArgs.Empty));
-                    // Only an actual unchanged prefix proves these are newly
-                    // appended messages. Rolling/lost log history is not replayed.
-                    if (previous["logs"] is JArray oldLog && current["logs"] is JArray newLog
-                        && oldLog.Count <= newLog.Count && oldLog.Select((item, i) => JToken.DeepEquals(item, newLog[i])).All(value => value))
-                        foreach (var entry in newLog.Skip(oldLog.Count)) Notify(() => logs?.Invoke(this, entry.ToObject<LogMessage>()!));
+                    // The native log is bounded and rolls over. Its actual
+                    // sequence identifies the available new tail even when
+                    // every retained array has the same length. Missed entries
+                    // outside that tail cannot be reconstructed or replayed.
+                    ulong oldSequence = previous.Value<ulong>("log_sequence");
+                    ulong newSequence = current.Value<ulong>("log_sequence");
+                    if (previous["logs"] is JArray && current["logs"] is JArray newLog
+                        && previous["daemon_identity"]?["instance"]?.Value<string>() == current["daemon_identity"]?["instance"]?.Value<string>()
+                        && newSequence > oldSequence) {
+                        int appended = (int)Math.Min(newSequence - oldSequence, (ulong)newLog.Count);
+                        foreach (var entry in newLog.Skip(newLog.Count - appended)) Notify(() => logs?.Invoke(this, entry.ToObject<LogMessage>()!));
+                    }
                 }
                 previous = current;
             } catch (Exception) when (!lifetime.IsCancellationRequested) { /* unavailable snapshots retry, never fabricated */ }

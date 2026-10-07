@@ -124,7 +124,10 @@ impl NativeBackend {
             state.last_devices = Some(Instant::now());
         }
         state.snapshot.logs = match call(Command::GetUpstreamLog) {
-            Ok(Reply::UpstreamLog { messages, .. }) => Some(json!(messages)), _ => None,
+            Ok(Reply::UpstreamLog { messages, sequence, .. }) => {
+                state.snapshot.log_sequence = sequence;
+                Some(json!(messages))
+            }, _ => None,
         };
         state.snapshot.resynchronize = crate::upstream_rpc::original_resynchronize_epoch();
         state.snapshot.daemon_identity = Some(status.identity());
@@ -175,7 +178,10 @@ impl Backend for NativeBackend {
         if self.stopped.load(Ordering::Acquire) { return Err("Managed native owner is stopping".into()); }
         let result = match request.operation {
             Operation::Daemon => self.daemon(&request),
-            Operation::Detect => crate::upstream_rpc::invoke_original("DetectTablets", &json!([])),
+            Operation::Detect => crate::upstream_rpc::invoke_original("DetectTablets", &json!([])).and_then(|tablets| {
+                let tablets = tablets.as_array().ok_or("Native detection did not return a tablet collection")?;
+                Ok(json!(!tablets.is_empty()))
+            }),
             Operation::DeviceString => self.device_string(&request.payload),
             Operation::Snapshot => Err("Snapshot requests are served by the managed service cache".into()),
             Operation::OpenStream | Operation::ReadStream | Operation::WriteStream | Operation::GetFeature
