@@ -166,6 +166,19 @@ impl NativeBackend {
         let params = request.payload.get("params").cloned().unwrap_or_else(|| json!([]));
         if let Some(result) = crate::plugin_manager::invoke(method, &params, Some(&self.stopped))? { return Ok(result); }
         match method {
+            "ForceResynchronize" if request.expected_source.is_some()=>{
+                let (id,generation)=request.expected_source.as_ref().unwrap();
+                if !request.payload.get("source_session").is_some_and(crate::shared_devices::live_source){
+                    return Err("Original source reader retired before resynchronization".into());
+                }
+                let sessions=match call(Command::ListDeviceSessions)?{Reply::DeviceSessions{sessions,..}=>sessions,_=>return Err("Unexpected source session reply".into())};
+                if !sessions.iter().any(|session|session.id==*id&&session.device_generation==*generation
+                    &&session.connected&&session.pending_generation.is_none()
+                    &&session.state==crate::device_sessions::SessionState::Running){
+                    return Err("Original source generation changed before resynchronization".into());
+                }
+                crate::upstream_rpc::invoke_original(method,&params)
+            }
             "SetSettings" | "ResetSettings" => {
                 let expected = request.expected_daemon.clone().ok_or("Native daemon identity unavailable; refresh before changing settings")?;
                 let settings = if method == "ResetSettings" { Value::Null } else {
