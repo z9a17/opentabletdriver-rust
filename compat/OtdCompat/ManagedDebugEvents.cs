@@ -79,7 +79,7 @@ sealed partial class ManagedProviders
                         if (decoders.Count >= 256) throw new IOException("Managed debug endpoint parser budget exceeded.");
                         parser = new ProviderParser(parserName, sourceSession: new JObject {
                             ["id"] = session, ["device_generation"] = item["device_generation"],
-                            ["reader_generation"] = item["reader_generation"] });
+                            ["reader_generation"] = item["reader_generation"], ["auxiliary"] = item["auxiliary"] });
                         decoders.Add(key, parser);
                     }
                     string hex = item.Value<string>("raw") ?? throw new IOException("Managed debug report has no raw bytes.");

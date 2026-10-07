@@ -17,3 +17,9 @@ Public type/member/assembly identities remain pinned; helper bytes are modified.
 
 Original concrete Core readers consume host-owned tee streams; no duplicate
 physical endpoint reader is opened. See ../UpstreamCore/PROVENANCE.md.
+
+DesktopPluginManager internal hooks route direct Load/Install/Download/Update/
+Uninstall/Unload/type-removal to the authoritative native installation and leased
+registry owner. Context reads return immutable generation snapshots. RpcHost wraps
+the original header-delimited handler to defer update retirement until its exact
+success response completes WriteAsync (write and flush), keyed by RequestId.

@@ -178,12 +178,13 @@ sealed partial class ManagedProviders : IDriver, IDeviceConfigurationProvider, I
         }
     }
     static void Notify(Action callback) { try { callback(); } catch (Exception) { /* isolate third-party event handlers */ } }
-    async Task<JToken> Call(string method, params object?[] parameters)
+    internal async Task<JToken> Call(string method, params object?[] parameters)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         if (ServiceClient.SetupDepth != 0)
             throw new InvalidOperationException("Queued daemon operations cannot be awaited during plugin construction/dependency loading; the native setup transaction owns this scope.");
         JObject payload = new() { ["method"] = method, ["params"] = JArray.FromObject(parameters) };
+        if (sourceSession != null) payload["source_session"] = sourceSession.DeepClone();
         if (ServiceClient.BindingOwner is { } owner) {
             payload["source_binding_owner"] = owner;
             payload["source_tablet_name"] = ServiceClient.BindingTablet;
@@ -197,7 +198,7 @@ sealed partial class ManagedProviders : IDriver, IDeviceConfigurationProvider, I
             // completion must never let a retired scope admit a new mutation.
             ObjectDisposedException.ThrowIf(disposed, this);
             lifetime.Token.ThrowIfCancellationRequested();
-            var cancellation = method is "SetSettings" or "ResetSettings" or "ForceResynchronize"
+            var cancellation = method is "SetSettings" or "ResetSettings" or "ForceResynchronize" or "FinishUpdate"
                 ? CancellationToken.None : lifetime.Token;
             completion = ServiceClient.Request(1, scope, payload, cancellation);
         }
@@ -300,6 +301,7 @@ sealed partial class HostedEndpoint(JObject data, ulong scope, CancellationToken
     public string ProductName => Property<string>(nameof(ProductName));
     public string FriendlyName => Property<string>(nameof(FriendlyName));
     public string SerialNumber => Property<string>(nameof(SerialNumber));
+    internal bool Auxiliary => data.Value<bool>("auxiliary");
     public string DevicePath => data.Value<string>(nameof(DevicePath)) ?? throw new InvalidOperationException("Endpoint has no actual path.");
     public bool CanOpen => Property<bool>(nameof(CanOpen));
     public IDictionary<string, string> DeviceAttributes => Property<Dictionary<string, string>>(nameof(DeviceAttributes));
@@ -346,13 +348,21 @@ sealed class HostPluginManager : DesktopPluginManager
 {
     readonly HostServices services = new();
     readonly TypeInfo[] builtinTypes;
+    readonly ManagedProviders operations = new();
+    DesktopPluginContext[] contexts = [];
     static readonly ConditionalWeakTable<object, ConstructedLease> constructed = new();
     internal HostPluginManager(AppInfo info) : base(new DirectoryInfo(info.PluginDirectory), new DirectoryInfo(info.TrashDirectory), new DirectoryInfo(info.TemporaryDirectory)) {
         builtinTypes = pluginTypes.ToArray(); ResetServices();
+        HostedContexts = () => Volatile.Read(ref contexts);
+        HostedOperation = (method, args) => {
+            ServiceClient.RequireBlockingAllowed();
+            return operations.Call(method, args).GetAwaiter().GetResult().ToObject<object>()!;
+        };
+        HostedAsyncOperation = async (method, args) => (await operations.Call(method, args).ConfigureAwait(false)).ToObject<object>()!;
     }
     internal void RefreshTypes(RegistryGeneration registry) {
-        pluginTypes = new ConcurrentBag<TypeInfo>(builtinTypes.Concat(registry.Entries.Select(entry => entry.Type.GetTypeInfo())).Distinct());
-        Plugins.Clear(); Plugins.AddRange(registry.Contexts);
+        pluginTypes = new ConcurrentBag<TypeInfo>(builtinTypes.Where(type => !registry.ExcludedAssemblies.Contains(type.Assembly.Location)).Concat(registry.Entries.Select(entry => entry.Type.GetTypeInfo())).Distinct());
+        Volatile.Write(ref contexts, registry.Contexts.Cast<DesktopPluginContext>().ToArray());
     }
     public override void ResetServices() {
         // Clear the actual pinned ServiceManager dictionary; a base call would

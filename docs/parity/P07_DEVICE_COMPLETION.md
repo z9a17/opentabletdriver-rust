@@ -27,3 +27,14 @@ No tests, builds, plugin execution or hardware validation were run. Parent owns
 native backend and package compilation/dependency-lock generation. Implementation
 and runtime acceptance remain separate. Further commits supply report events,
 custom hub native forwarding, hosted RPC and typed diagnostics.
+
+Direct original DesktopPluginManager methods now enter the same native service
+queue as IDriverDaemon. Registry-only unload/type removal publishes a fresh
+leased generation without deleting installation files; exclusions persist until
+explicit LoadPlugins. Immutable original context snapshots prevent collection
+mutation during concurrent discovery. Binding callbacks carry their exact
+constructor source_session, and managed debug parsers select the actual primary
+or auxiliary endpoint for captured reader_generation. Hosted original RPC update
+retirement is admitted only after its successful matching JSON-RPC response has
+completed actual handler WriteAsync/flush; failed responses never retire.
+All changes remain source-only: no suites, CLR/plugin/hardware execution here.

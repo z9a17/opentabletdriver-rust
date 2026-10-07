@@ -1,11 +1,13 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.IO;
 using System.IO.Pipes;
 using System.Threading;
 using System.Threading.Tasks;
 using OpenTabletDriver.Plugin;
 using StreamJsonRpc;
+using StreamJsonRpc.Protocol;
 
 namespace OpenTabletDriver.Desktop.RPC
 {
@@ -13,6 +15,10 @@ namespace OpenTabletDriver.Desktop.RPC
         where T : class
     {
         public event EventHandler<bool> ConnectionStateChanged;
+        // Called only after the successful original InstallUpdate response has
+        // been written AND flushed. Admission returns a task; shutdown may not
+        // be awaited by the same response writer that it is going to retire.
+        internal Func<Task> HostedUpdateResponseFlushed;
 
         public async Task Run(T host, CancellationToken ct)
         {
@@ -38,7 +44,8 @@ namespace OpenTabletDriver.Desktop.RPC
         {
             try
             {
-                using var rpc = new JsonRpc(stream, stream, host);
+                using var handler = new FlushedResponseHandler(new HeaderDelimitedMessageHandler(stream, stream), HostedUpdateResponseFlushed);
+                using var rpc = new JsonRpc(handler, host);
                 rpc.ExceptionStrategy = ExceptionProcessing.ISerializable;
                 ConnectionStateChanged?.Invoke(this, true);
                 rpc.StartListening();
@@ -52,6 +59,41 @@ namespace OpenTabletDriver.Desktop.RPC
 
             try { ConnectionStateChanged?.Invoke(this, false); }
             finally { await stream.DisposeAsync().ConfigureAwait(false); }
+        }
+
+        private sealed class FlushedResponseHandler(IJsonRpcMessageHandler inner, Func<Task> updateFlushed)
+            : IJsonRpcMessageHandler, IDisposable
+        {
+            private readonly ConcurrentDictionary<RequestId, byte> updates = new();
+            public bool CanRead => inner.CanRead;
+            public bool CanWrite => inner.CanWrite;
+            public IJsonRpcMessageFormatter Formatter => inner.Formatter;
+            public async ValueTask<JsonRpcMessage> ReadAsync(CancellationToken cancellationToken)
+            {
+                var message = await inner.ReadAsync(cancellationToken).ConfigureAwait(false);
+                if (updateFlushed != null && message is JsonRpcRequest request && request.Method == "InstallUpdate" && !request.RequestId.IsEmpty)
+                {
+                    if (updates.Count >= 16) throw new InvalidOperationException("Too many outstanding update requests.");
+                    if (!updates.TryAdd(request.RequestId, 0)) throw new InvalidOperationException("Duplicate outstanding update request identity.");
+                }
+                return message;
+            }
+            public async ValueTask WriteAsync(JsonRpcMessage message, CancellationToken cancellationToken)
+            {
+                // IJsonRpcMessageHandler.WriteAsync's exact pinned contract is
+                // write+flush; an event raised before serialization is insufficient.
+                await inner.WriteAsync(message, cancellationToken).ConfigureAwait(false);
+                if (message is JsonRpcError packetError) updates.TryRemove(packetError.RequestId, out _);
+                if (message is JsonRpcResult result && updates.TryRemove(result.RequestId, out _))
+                {
+                    try { Observe(updateFlushed()); } catch (Exception error) { Log.Exception(error); }
+                }
+            }
+            private static async void Observe(Task completion)
+            {
+                try { await completion.ConfigureAwait(false); } catch (Exception error) { Log.Exception(error); }
+            }
+            public void Dispose() { updates.Clear(); (inner as IDisposable)?.Dispose(); }
         }
 
         private NamedPipeServerStream CreateStream()

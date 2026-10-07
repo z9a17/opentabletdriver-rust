@@ -24,19 +24,25 @@ sealed class RegistryGeneration : IDisposable
     internal readonly List<(string Path, Type Type)> Entries = [];
     internal int References = 1;
     internal ulong Number;
+    internal HashSet<string> ExcludedAssemblies = new(PathComparer);
+    internal static StringComparer PathComparer => OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
     public void Dispose() { foreach (var context in Contexts) context.Unload(); }
-    internal void Load(string root)
+    internal void Load(string root, HashSet<string> excludedContexts, HashSet<string> excludedAssemblies)
     {
         // Shipped original Desktop bindings/outputs are installed providers too;
         // users need not install a duplicate helper DLL merely to use PresetBinding.
+        ExcludedAssemblies = new(excludedAssemblies, PathComparer);
         Assembly desktop = typeof(OpenTabletDriver.Desktop.Binding.PresetBinding).Assembly;
         AddAssembly(desktop.Location, desktop);
+        foreach (var builtin in new[] { typeof(OpenTabletDriver.Configurations.ReportParserProvider).Assembly, typeof(IDriver).Assembly })
+            AddAssembly(builtin.Location, builtin);
         if (!Directory.Exists(root)) return;
         var directories = Directory.EnumerateDirectories(root).Order(StringComparer.OrdinalIgnoreCase).Take(257).ToArray();
         if (directories.Length > 256) throw new InvalidOperationException("Installed registry exceeds 256 plugin directories.");
         int files = 0;
         foreach (string directory in directories)
         {
+            if (excludedContexts.Contains(Path.GetFullPath(directory))) continue;
             PluginContext? context = null;
             foreach (string path in Directory.EnumerateFiles(directory, "*.dll").Order(StringComparer.OrdinalIgnoreCase))
             {
@@ -59,6 +65,7 @@ sealed class RegistryGeneration : IDisposable
     }
     void AddAssembly(string path, Assembly assembly) {
         Assemblies.Add(Path.GetFullPath(path), assembly);
+        if (ExcludedAssemblies.Contains(Path.GetFullPath(path))) return;
         foreach (Type type in assembly.GetExportedTypes()) {
             if (!IsPluginType(type) || !PluginEligibility.IsDiscoverable(type)) continue;
             if (Entries.Count == 20000) throw new InvalidOperationException("Installed registry exceeds 20000 plugin types.");
@@ -78,34 +85,81 @@ static class InstalledRegistry
     static readonly object Gate = new();
     static RegistryGeneration? current;
     static ulong generation;
+    static readonly object MutationGate = new();
+    static string? rootDirectory;
+    static HashSet<string> excludedContexts = new(RegistryGeneration.PathComparer);
+    static HashSet<string> excludedAssemblies = new(RegistryGeneration.PathComparer);
     static readonly Dictionary<string, Type> BuiltinParsers = new[] { typeof(OpenTabletDriver.Configurations.ReportParserProvider).Assembly, typeof(IDriver).Assembly }
         .SelectMany(assembly => assembly.GetExportedTypes()).Where(type => !type.IsAbstract && !type.IsInterface && typeof(IReportParser<IDeviceReport>).IsAssignableFrom(type))
         .ToDictionary(type => type.FullName!, type => type, StringComparer.Ordinal);
-    internal static byte[] Reload(string root)
+    internal static byte[] Reload(string root) {
+        lock (MutationGate) return Publish(root, new(RegistryGeneration.PathComparer), new(RegistryGeneration.PathComparer));
+    }
+    internal static byte[] Mutate(JObject request) {
+        lock (MutationGate) {
+            string root = rootDirectory ?? throw new InvalidOperationException("LoadPlugins must establish an installed registry before unloading types.");
+            var contexts = new HashSet<string>(excludedContexts, RegistryGeneration.PathComparer);
+            var assemblies = new HashSet<string>(excludedAssemblies, RegistryGeneration.PathComparer);
+            lock (Gate) {
+                var registry = current ?? throw new InvalidOperationException("No loaded registry.");
+                switch (request.Value<string>("operation")) {
+                    case "unload_context": {
+                        string path = Path.GetFullPath(request.Value<string>("path") ?? throw new ArgumentException("Context directory required."));
+                        if (!registry.Contexts.Any(context => RegistryGeneration.PathComparer.Equals(context.Directory.FullName, path)))
+                            throw new ArgumentException("Directory is not a currently loaded plugin context.");
+                        contexts.Add(path); break;
+                    }
+                    case "remove_assembly": {
+                        string identity = request.Value<string>("identity") ?? throw new ArgumentException("Exact assembly identity required.");
+                        string? directory = request.Value<string>("context_directory");
+                        string? context = directory == null ? null : Path.GetFullPath(directory);
+                        var matches = registry.Assemblies.Where(item => item.Value.FullName == identity
+                            && (context == null ? System.Runtime.Loader.AssemblyLoadContext.GetLoadContext(item.Value) is not OpenTabletDriver.Desktop.Reflection.DesktopPluginContext
+                                : RegistryGeneration.PathComparer.Equals(Path.GetDirectoryName(item.Key), context))).ToArray();
+                        if (matches.Length != 1) throw new ArgumentException("Assembly must identify exactly one loaded context and identity.");
+                        assemblies.Add(matches[0].Key); break;
+                    }
+                    default: throw new ArgumentException("Unknown registry mutation.");
+                }
+            }
+            return Publish(root, contexts, assemblies);
+        }
+    }
+    static byte[] Publish(string root, HashSet<string> contexts, HashSet<string> assemblies)
     {
         var next = new RegistryGeneration();
+        bool published = false;
         try
         {
+            using var setup = ServiceClient.Setup();
             if (ServiceClient.Available) HostedDesktop.Configure();
-            next.Load(root);
+            next.Load(root, contexts, assemblies);
             // Attributes/validated static choices can execute plugin code. Do
             // that outside the lifetime lock before exposing the new registry.
             var descriptions = next.Entries.Select(entry => new { assembly_path = entry.Path, metadata = EntryPoints.DescribeType(entry.Type) }).ToArray();
             var document = JObject.FromObject(new { generation = 0UL, assemblies = next.Assemblies.Count, skipped_native = next.SkippedNative, types = descriptions });
+            byte[] json;
+            RegistryGeneration? previous;
             lock (Gate)
             {
                 if (generation == ulong.MaxValue) throw new InvalidOperationException("Installed registry generation exhausted.");
                 next.Number = generation + 1; document["generation"] = next.Number;
-                byte[] json = Encoding.UTF8.GetBytes(document.ToString(Formatting.None));
+                json = Encoding.UTF8.GetBytes(document.ToString(Formatting.None));
                 if (json.Length > 1048576) throw new InvalidOperationException("Installed registry metadata exceeds 1 MiB.");
                 HostedDesktop.Manager.RefreshTypes(next);
                 generation = next.Number;
-                var previous = current; current = next;
-                if (previous != null && --previous.References == 0) previous.Dispose();
-                return json;
+                previous = current; current = next; published = true;
+                rootDirectory = root; excludedContexts = contexts; excludedAssemblies = assemblies;
+                if (previous != null && --previous.References != 0) previous = null;
             }
+            try { previous?.Dispose(); } catch (Exception error) { Log.Exception(error); }
+            _ = Task.Run(() => {
+                using var callback = ServiceClient.Report();
+                try { HostedDesktop.Manager.NotifyHostedAssembliesChanged(); } catch (Exception error) { Log.Exception(error); }
+            });
+            return json;
         }
-        catch { next.Dispose(); throw; }
+        catch { if (!published) next.Dispose(); throw; }
     }
     internal static RegistryGeneration? RetainForGraph(RegistryGeneration? selected) {
         lock (Gate) { var source = selected ?? current; if (source != null) source.References++; return source; }
@@ -125,7 +179,7 @@ static class InstalledRegistry
                 if (matches.Length > 1) throw new InvalidOperationException($"Parser '{name}' occurs in multiple installed DLLs.");
                 if (matches.Length == 1) { source.References++; return (matches[0], source); }
             }
-            if (BuiltinParsers.TryGetValue(name, out var builtin)) return (builtin, null);
+            if (BuiltinParsers.TryGetValue(name, out var builtin) && !(source?.ExcludedAssemblies.Contains(builtin.Assembly.Location) ?? false)) return (builtin, null);
             throw new KeyNotFoundException($"Parser '{name}' is not in the loaded installed registry or pinned Configurations assembly.");
         }
     }
@@ -137,7 +191,7 @@ static class InstalledRegistry
                 if (count > 1) throw new InvalidOperationException($"Parser '{name}' occurs in multiple installed DLLs.");
                 if (count == 1) return true;
             }
-            return BuiltinParsers.ContainsKey(name);
+            return BuiltinParsers.TryGetValue(name, out var builtin) && !(current?.ExcludedAssemblies.Contains(builtin.Assembly.Location) ?? false);
         }
     }
     internal static (Type Type, RegistryGeneration Generation)? AcquireType(string name) {
@@ -289,6 +343,17 @@ public static unsafe partial class EntryPoints
             registryJson.CopyTo(new Span<byte>(output, capacity)); return registryJson.Length;
         }
         catch (Exception error) { registryJson = null; lastError = error.GetBaseException().Message; return -1; }
+    }
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static int MutateHostedRegistry(byte* request, int length, byte* output, int capacity)
+    {
+        try {
+            if (length < 0 || length > 32768 || capacity < 0 || capacity > 1048576) throw new ArgumentException("Invalid registry mutation buffer.");
+            if (request != null) registryJson = InstalledRegistry.Mutate(JObject.Parse(Encoding.UTF8.GetString(new ReadOnlySpan<byte>(request, length))));
+            if (registryJson == null) throw new InvalidOperationException("No staged registry result on this thread.");
+            if (output == null || registryJson.Length > capacity) return registryJson.Length;
+            registryJson.CopyTo(new Span<byte>(output, capacity)); return registryJson.Length;
+        } catch (Exception error) { registryJson = null; lastError = error.GetBaseException().Message; return -1; }
     }
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static int HasReportParser(byte* name, int length)

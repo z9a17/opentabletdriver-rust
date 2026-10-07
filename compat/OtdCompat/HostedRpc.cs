@@ -18,7 +18,7 @@ public static unsafe partial class EntryPoints
         readonly Task serving;
         internal HostedRpc(string pipe)
         {
-            var host = new RpcHost<IDriverDaemon>(pipe);
+            var host = new RpcHost<IDriverDaemon>(pipe) { HostedUpdateResponseFlushed = () => provider.Call("FinishUpdate") };
             try {
                 // Run binds its first listening pipe before its initial await.
                 serving = host.Run(provider, cancellation.Token);

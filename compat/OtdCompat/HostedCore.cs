@@ -153,8 +153,12 @@ sealed class HostedCore : IDisposable, IServiceProvider
             return Driver.InputDevices.Single();
         }
     }
-    internal InputDevice SelectedInput() => SelectedTree().InputDevices.FirstOrDefault()
-        ?? throw new InvalidOperationException("Concrete InputDevice injection has no opened primary endpoint.");
+    internal InputDevice SelectedInput() {
+        bool auxiliary = source?.Value<bool>("auxiliary") ?? false;
+        var matches = SelectedTree().InputDevices.Where(input => input.Endpoint is HostedEndpoint endpoint && endpoint.Auxiliary == auxiliary).ToArray();
+        if (matches.Length != 1) throw new InvalidOperationException("Concrete InputDevice injection requires exactly one opened endpoint of the captured source role.");
+        return matches[0];
+    }
     public void Dispose()
     {
         lock (gate) {

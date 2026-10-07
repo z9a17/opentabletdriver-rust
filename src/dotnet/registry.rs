@@ -17,10 +17,11 @@ type PluginTypes = unsafe extern "C" fn(*mut u8,i32,i32)->i32;
 type StartRpc = unsafe extern "C" fn(*const u8,u32)->isize;
 type StopRpc = unsafe extern "C" fn(isize)->i32;
 pub(super) struct Api { has_parser: HasParser, reload: Reload, create: CreateParser, decode: DecodeParser, reset: ResetParser, destroy: DestroyParser,
-    store:Reload, types:PluginTypes, start_rpc:StartRpc, stop_rpc:StopRpc }
+    store:Reload, types:PluginTypes, start_rpc:StartRpc, stop_rpc:StopRpc,mutate:Reload }
 impl Api {
     pub(super) fn load(entry: &impl Fn(&str) -> Result<*mut c_void, String>) -> Result<Self, String> {
         Ok(unsafe { Self { has_parser: std::mem::transmute::<*mut c_void, HasParser>(entry("HasReportParser")?), reload: std::mem::transmute::<*mut c_void, Reload>(entry("ReloadRegistry")?),
+            mutate: std::mem::transmute::<*mut c_void, Reload>(entry("MutateHostedRegistry")?),
             create: std::mem::transmute::<*mut c_void, CreateParser>(entry("CreateDebugParser")?),
             decode: std::mem::transmute::<*mut c_void, DecodeParser>(entry("DecodeDebugParser")?),
             reset: std::mem::transmute::<*mut c_void, ResetParser>(entry("ResetDebugParser")?),
@@ -86,6 +87,23 @@ pub fn reload_installed_plugins(root: &Path) -> Result<ManagedRegistryInfo, Stri
     let mut bytes = vec![0; size as usize];
     let copied = unsafe { (api.reload)(std::ptr::null(), 0, bytes.as_mut_ptr(), size) };
     if copied != size { return Err(if copied < 0 { last_error() } else { "Managed registry result changed during capacity retry".into() }); }
+    publish_registry_bytes(&bytes)
+}
+/// Unload changes discovery only; running instances retain their assembly lease.
+/// Cached reads do not undo exclusions. Explicit LoadPlugins starts a fresh registry.
+pub fn mutate_installed_plugins(request: &serde_json::Value) -> Result<ManagedRegistryInfo, String> {
+    let request = serde_json::to_vec(request).map_err(|error| error.to_string())?;
+    if request.is_empty() || request.len() > 32768 { return Err("Registry mutation exceeds 32 KiB".into()); }
+    let api = api()?;
+    let size = unsafe { (api.mutate)(request.as_ptr(), request.len() as i32, std::ptr::null_mut(), 0) };
+    if size < 0 { return Err(last_error()); }
+    if size == 0 || size > 1048576 { return Err("Invalid managed registry mutation size".into()); }
+    let mut bytes = vec![0; size as usize];
+    let copied = unsafe { (api.mutate)(std::ptr::null(), 0, bytes.as_mut_ptr(), size) };
+    if copied != size { return Err(if copied < 0 { last_error() } else { "Registry mutation result changed during capacity retry".into() }); }
+    publish_registry_bytes(&bytes)
+}
+fn publish_registry_bytes(bytes: &[u8]) -> Result<ManagedRegistryInfo, String> {
     #[derive(serde::Deserialize)]
     struct TypeInfo { assembly_path: std::path::PathBuf, metadata: serde_json::Value }
     #[derive(serde::Deserialize)]
