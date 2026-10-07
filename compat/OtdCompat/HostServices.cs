@@ -5,7 +5,7 @@ using OpenTabletDriver.Plugin.Attributes;
 using OpenTabletDriver.Plugin.DependencyInjection;
 using OpenTabletDriver.Plugin.Platform.Display;
 using OpenTabletDriver.Plugin.Tablet;
-using OpenTabletDriver.Plugin.Timers;
+using ITimer = OpenTabletDriver.Plugin.Timers.ITimer;
 
 namespace OtdCompat;
 
