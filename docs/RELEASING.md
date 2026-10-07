@@ -33,7 +33,7 @@ The updater never launches or stops a driver. Close a running test build yoursel
 
 ## Prepare the source
 
-Update the root Cargo package version and root package entry in Cargo.lock, finish the platform/backend edits, and merge the reviewed PR. Package a clean checkout of the exact `origin/main` commit. The Linux/macOS CLI version comes from the root Cargo.toml at build time. The build command records source state before and after compilation and refuses changes during a build. Clean builds hash the canonical Git tree, so Windows line endings do not prevent collecting packages from native build hosts. The packager consumes the resulting `OTD-BUILD.json` and verifies the source and binary hashes, so repackaging an older same-version executable cannot stamp it with a newer commit.
+Update the root Cargo package version and root package entry in Cargo.lock, finish the platform/backend edits, and merge the reviewed PR. Package a clean Git checkout of the exact `origin/main` commit. The build scripts require Git commit/date metadata; an extracted source archive without `.git` is insufficient. The Linux/macOS CLI version comes from the root Cargo.toml at build time. The build command records source state before and after compilation and refuses changes during a build. Clean builds hash the canonical Git tree, so Windows line endings do not prevent collecting packages from native build hosts. The packager consumes the resulting `OTD-BUILD.json` and verifies the source and binary hashes, so repackaging an older same-version executable cannot stamp it with a newer commit.
 
 ## Linux
 
@@ -45,6 +45,10 @@ scripts/package-unix.sh linux-x64
 ```
 
 The original frontend and managed plugins require the .NET 8 runtime; the Gtk frontend requires native GTK3. Plain native profiles do not initialize CLR. Its udev setup is documented in [the Linux guide](../crates/otd-linux/README.md).
+
+The 0.18 Linux distribution is linked against an official Debian 11 (bullseye) sysroot with glibc 2.31 and GCC 10 CRT objects. Windows cross-builds use Rust's `rust-lld` with the GNU Linux target, that sysroot and the PIE CRT objects `Scrt1.o`, `crti.o`, `crtbeginS.o`, `crtendS.o` and `crtn.o`; the executable interpreter is `/lib64/ld-linux-x86-64.so.2`. Using the non-PIE `crtbegin.o` with a PIE Rust binary is insufficient.
+
+Inspect the final archive's ELF interpreter and version requirements before retaining the documented glibc 2.31 minimum. Include the Rust executable, daemon/GTK apphosts and `data/compat/libnethost.so`, rather than inspecting only the Rust executable. On a Linux inspection host, `readelf -l <file>` and `readelf --version-info <file>` expose those records. Artifact inspection during preparation found maximum required `GLIBC_2.30` for the Rust driver and `GLIBC_2.16` for the apphosts and nethost. Recheck the final merged-commit artifacts after rebuilding. These records establish the binary ABI floor; they do not establish native launch, GTK/.NET installation, permissions or hardware behavior.
 
 ## macOS
 
