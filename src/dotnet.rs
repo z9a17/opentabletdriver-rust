@@ -12,6 +12,9 @@ use std::sync::OnceLock;
 mod graph;
 #[path = "dotnet/endpoints.rs"]
 pub mod endpoints;
+#[path = "dotnet/registry.rs"]
+mod registry;
+pub use registry::{ManagedDebugDecoder, ManagedDebugReport, ManagedRegistryInfo, known_report_parser, registry_snapshot, reload_installed_plugins};
 pub use graph::{Graph, GraphNode, GraphReport};
 
 type GetApi = unsafe extern "C" fn() -> *const FilterApi;
@@ -40,6 +43,7 @@ struct NativePenReport {
 
 struct Bridge {
     endpoints: Option<endpoints::Api>,
+    registry: Option<registry::Api>,
     get_api: GetApi,
     get_position: GetPosition,
     inspect: Inspect,
@@ -187,6 +191,7 @@ fn load_bridge() -> Result<Bridge, String> {
     };
     let bridge = Bridge {
         endpoints: endpoints::Api::load(&entry).ok(),
+        registry: registry::Api::load(&entry).ok(),
         create_graph: unsafe {
             std::mem::transmute::<*mut c_void, graph::CreateGraph>(entry("CreateGraph").map_err(|error| format!("The installed .NET bridge lacks synchronous graph support. Replace the data/compat directory with this release's files: {error}"))?)
         },
@@ -428,6 +433,7 @@ pub fn destroy_tool(handle: *mut c_void) {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct InspectedFilter {
     pub config: crate::plugins::PluginConfig,
     pub metadata: FilterMetadata,
@@ -458,6 +464,10 @@ pub fn inspect_details(path: &Path) -> Result<Vec<InspectedFilter>, String> {
         }
         output.resize(size, 0);
     };
+    inspect_metadata_bytes(&output[..size], &path)
+}
+
+fn inspect_metadata_bytes(bytes: &[u8], path: &Path) -> Result<Vec<InspectedFilter>, String> {
     #[derive(serde::Deserialize)]
     struct Entry {
         #[serde(default)]
@@ -470,12 +480,12 @@ pub fn inspect_details(path: &Path) -> Result<Vec<InspectedFilter>, String> {
         settings: serde_json::Value,
         properties: Vec<PropertyMetadata>,
     }
-    let entries: Vec<Entry> = serde_json::from_slice(&output[..size]).map_err(|e| e.to_string())?;
+    let entries: Vec<Entry> = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
     Ok(entries
         .into_iter()
         .map(|entry| InspectedFilter {
             config: crate::plugins::PluginConfig {
-                path: path.clone(),
+                path: path.to_owned(),
                 kind: if entry.kind.as_deref() == Some("tool") {
                     crate::plugins::PluginKind::DotnetTool
                 } else {

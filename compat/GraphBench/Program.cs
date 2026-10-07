@@ -73,6 +73,7 @@ unsafe class GraphProbe
     {
         System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
         if (args.Length > 2 && args[2] == "contracts") { Contracts(args); return; }
+        if (args.Length > 2 && args[2] == "registry") { RegistryProbe.Run(args); return; }
         if (args.Length > 2 && args[2] == "endpoints") { EndpointProbe.Run(args); return; }
         if (args.Length > 2 && args[2] == "cold") { Cold(args); return; }
         using var instance = new Instance(new JObject {

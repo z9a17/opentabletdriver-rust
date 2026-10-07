@@ -48,6 +48,8 @@ sealed class PluginContext(string path, bool inspect = false) : AssemblyLoadCont
     {
         if (name.Name == typeof(ITabletReport).Assembly.GetName().Name)
             return typeof(ITabletReport).Assembly;
+        if (name.Name == typeof(OpenTabletDriver.Configurations.ReportParserProvider).Assembly.GetName().Name)
+            return typeof(OpenTabletDriver.Configurations.ReportParserProvider).Assembly;
         string? dependency = resolver.ResolveAssemblyToPath(name);
         if (dependency == null)
         {
@@ -58,6 +60,9 @@ sealed class PluginContext(string path, bool inspect = false) : AssemblyLoadCont
     }
     internal Assembly LoadPluginAssembly(string file)
     {
+        string? identity = AssemblyName.GetAssemblyName(file).FullName;
+        var loaded = Assemblies.FirstOrDefault(assembly => assembly.FullName == identity);
+        if (loaded != null) return loaded;
         if (!inspect) return LoadFromAssemblyPath(file);
         // Inspection must not map installed managed DLLs into the panel.
         // Unloading a collectible context does not immediately unmap them.
@@ -132,7 +137,7 @@ class ProximityReport : TiltReport, IProximityReport
 
 sealed class Instance : IDisposable
 {
-    readonly PluginContext context;
+    readonly PluginLoad context;
     readonly HostServices? services;
     readonly IPositionedPipelineElement<IDeviceReport> filter;
     readonly int ownerThread = Environment.CurrentManagedThreadId;
@@ -151,7 +156,7 @@ sealed class Instance : IDisposable
     public Instance(JObject config)
     {
         string path = Path.GetFullPath(config.Value<string>("assembly_path") ?? throw new ArgumentException("assembly_path missing"));
-        context = new PluginContext(path);
+        context = new PluginLoad(path);
         object? created = null;
         try
         {
@@ -458,14 +463,14 @@ sealed class SessionTimer : OpenTabletDriver.Plugin.Timers.ITimer
 // applied, dependency callbacks run, then Initialize. Tools get no tablet.
 sealed class ToolInstance : IDisposable
 {
-    readonly PluginContext context;
+    readonly PluginLoad context;
     readonly HostServices services = new();
     readonly OpenTabletDriver.Plugin.ITool tool;
 
     public ToolInstance(JObject config)
     {
         string path = Path.GetFullPath(config.Value<string>("assembly_path") ?? throw new ArgumentException("assembly_path missing"));
-        context = new PluginContext(path);
+        context = new PluginLoad(path);
         object? created = null;
         try
         {
@@ -608,6 +613,46 @@ public static unsafe partial class EntryPoints
         finally { owner.Free(); }
     }
 
+    internal static object DescribeType(Type t)
+    {
+        var properties = t.GetProperties()
+            .Where(p => p.GetCustomAttribute<PropertyAttribute>() != null).ToArray();
+        return new {
+            kind = typeof(IOutputMode).IsAssignableFrom(t) ? "output" : typeof(OpenTabletDriver.Plugin.IBinding).IsAssignableFrom(t) ? "binding" : typeof(OpenTabletDriver.Plugin.ITool).IsAssignableFrom(t) ? "tool" : typeof(IPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(t) ? "filter" : typeof(IReportParser<IDeviceReport>).IsAssignableFrom(t) ? "parser" : typeof(IDeviceReport).IsAssignableFrom(t) ? "report" : "provider",
+            supported = typeof(IOutputMode).IsAssignableFrom(t) || typeof(OpenTabletDriver.Plugin.IStateBinding).IsAssignableFrom(t) || typeof(OpenTabletDriver.Plugin.ITool).IsAssignableFrom(t) || typeof(IPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(t) || typeof(IReportParser<IDeviceReport>).IsAssignableFrom(t),
+            relative_output = typeof(RelativeOutputMode).IsAssignableFrom(t),
+            absolute_output = typeof(AbsoluteOutputMode).IsAssignableFrom(t),
+            type_name = t.FullName,
+            display_name = t.GetCustomAttribute<PluginNameAttribute>()?.Name,
+            // Omitted values preserve the plugin constructor's defaults.
+            // A null placeholder would instead coerce many value types to zero.
+            // GeneratedControls also saves a slider's DefaultValue
+            // for a property that has no value yet.
+            settings = properties.Where(p => p.GetCustomAttribute<DefaultPropertyValueAttribute>() != null
+                    || (p.GetCustomAttribute<SliderPropertyAttribute>() != null && p.PropertyType == typeof(float)))
+                .ToDictionary(p => p.Name, p => p.GetCustomAttribute<DefaultPropertyValueAttribute>() is { } defaults
+                    ? defaults.Value
+                    : p.GetCustomAttribute<SliderPropertyAttribute>()!.DefaultValue),
+            properties = properties.Select(p => new {
+                name = p.Name,
+                display_name = p.GetCustomAttribute<PropertyAttribute>()?.DisplayName,
+                unit = p.GetCustomAttribute<UnitAttribute>()?.Unit,
+                tooltip = p.GetCustomAttribute<ToolTipAttribute>()?.ToolTip,
+                property_type = (Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType).FullName,
+                writable = p.SetMethod?.IsPublic == true && p.GetIndexParameters().Length == 0,
+                default_is_attribute = p.GetCustomAttribute<DefaultPropertyValueAttribute>() != null,
+                enum_flags = (Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType).IsDefined(typeof(FlagsAttribute), false),
+                enum_underlying_type = EnumUnderlyingType(Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType),
+                enum_choices = EnumChoices(Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType),
+                valid_values = ValidValues(p),
+                slider = p.GetCustomAttribute<SliderPropertyAttribute>() is { } slider
+                    ? new { min = slider.Min, max = slider.Max, default_value = slider.DefaultValue }
+                    : null,
+                description = p.GetCustomAttribute<BooleanPropertyAttribute>()?.Description
+            }).ToArray()
+        };
+    }
+
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static int Inspect(byte* path, int length, byte* output, int capacity)
     {
@@ -620,46 +665,11 @@ public static unsafe partial class EntryPoints
                 var types = context.LoadPluginAssembly(file).GetExportedTypes()
                     .Where(t => !t.IsAbstract && (typeof(IPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(t)
                             || typeof(OpenTabletDriver.Plugin.ITool).IsAssignableFrom(t)
-                            || typeof(IOutputMode).IsAssignableFrom(t) || typeof(OpenTabletDriver.Plugin.IBinding).IsAssignableFrom(t))
+                            || typeof(IOutputMode).IsAssignableFrom(t) || typeof(OpenTabletDriver.Plugin.IBinding).IsAssignableFrom(t) || typeof(IReportParser<IDeviceReport>).IsAssignableFrom(t))
                         && PluginEligibility.IsDiscoverable(t))
                     .Select(t =>
                     {
-                        var properties = t.GetProperties()
-                            .Where(p => p.GetCustomAttribute<PropertyAttribute>() != null).ToArray();
-                        return new {
-                            kind = typeof(IOutputMode).IsAssignableFrom(t) ? "output" : typeof(OpenTabletDriver.Plugin.IBinding).IsAssignableFrom(t) ? "binding" : typeof(OpenTabletDriver.Plugin.ITool).IsAssignableFrom(t) ? "tool" : "filter",
-                            supported = !typeof(OpenTabletDriver.Plugin.IBinding).IsAssignableFrom(t) || typeof(OpenTabletDriver.Plugin.IStateBinding).IsAssignableFrom(t),
-                            relative_output = typeof(RelativeOutputMode).IsAssignableFrom(t),
-                            absolute_output = typeof(AbsoluteOutputMode).IsAssignableFrom(t),
-                            type_name = t.FullName,
-                            display_name = t.GetCustomAttribute<PluginNameAttribute>()?.Name,
-                            // Omitted values preserve the plugin constructor's defaults.
-                            // A null placeholder would instead coerce many value types to zero.
-                            // GeneratedControls also saves a slider's DefaultValue
-                            // for a property that has no value yet.
-                            settings = properties.Where(p => p.GetCustomAttribute<DefaultPropertyValueAttribute>() != null
-                                    || (p.GetCustomAttribute<SliderPropertyAttribute>() != null && p.PropertyType == typeof(float)))
-                                .ToDictionary(p => p.Name, p => p.GetCustomAttribute<DefaultPropertyValueAttribute>() is { } defaults
-                                    ? defaults.Value
-                                    : p.GetCustomAttribute<SliderPropertyAttribute>()!.DefaultValue),
-                            properties = properties.Select(p => new {
-                                name = p.Name,
-                                display_name = p.GetCustomAttribute<PropertyAttribute>()?.DisplayName,
-                                unit = p.GetCustomAttribute<UnitAttribute>()?.Unit,
-                                tooltip = p.GetCustomAttribute<ToolTipAttribute>()?.ToolTip,
-                                property_type = (Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType).FullName,
-                                writable = p.SetMethod?.IsPublic == true && p.GetIndexParameters().Length == 0,
-                                default_is_attribute = p.GetCustomAttribute<DefaultPropertyValueAttribute>() != null,
-                                enum_flags = (Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType).IsDefined(typeof(FlagsAttribute), false),
-                                enum_underlying_type = EnumUnderlyingType(Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType),
-                                enum_choices = EnumChoices(Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType),
-                                valid_values = ValidValues(p),
-                                slider = p.GetCustomAttribute<SliderPropertyAttribute>() is { } slider
-                                    ? new { min = slider.Min, max = slider.Max, default_value = slider.DefaultValue }
-                                    : null,
-                                description = p.GetCustomAttribute<BooleanPropertyAttribute>()?.Description
-                            }).ToArray()
-                        };
+                        return DescribeType(t);
                     }).ToArray();
                 byte[] bytes = Encoding.UTF8.GetBytes(Newtonsoft.Json.JsonConvert.SerializeObject(types));
                 // Rust can retry with the required size for assemblies with long help text.

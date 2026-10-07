@@ -35,3 +35,15 @@ public sealed class EndpointOutput : AbsoluteOutputMode
 }
 
 public sealed class MarkerBinding : IBinding { }
+
+// Original custom parser/report identities used by the background registry fixture.
+public sealed class StatefulReport : IDeviceReport
+{
+    public byte[] Raw { get; set; } = Array.Empty<byte>();
+    public int Tick { get; set; }
+}
+public sealed class StatefulParser : IReportParser<IDeviceReport>
+{
+    int count;
+    public IDeviceReport Parse(byte[] raw) => raw[0] == 255 ? null : new StatefulReport { Raw = raw, Tick = ++count };
+}

@@ -2,6 +2,16 @@
   "version": 1,
   "dependencies": {
     "net8.0": {
+      "OpenTabletDriver.Configurations": {
+        "type": "Direct",
+        "requested": "[0.6.7, 0.6.7]",
+        "resolved": "0.6.7",
+        "contentHash": "n1/cRPLnqRLb5PV0RzxPeFqVEuK9kmlncb44bXsRcmYfDIVsdOCkbfoA/Jv1ZUsqvJdaH+FmpIE1LCxXfr2oyw==",
+        "dependencies": {
+          "Newtonsoft.Json": "13.0.4",
+          "OpenTabletDriver.Plugin": "0.6.7"
+        }
+      },
       "OpenTabletDriver.Plugin": {
         "type": "Direct",
         "requested": "[0.6.7, )",

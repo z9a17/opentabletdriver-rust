@@ -121,7 +121,7 @@ sealed class SessionKeyboard(CommandQueue queue, JObject keys) : IVirtualKeyboar
 
 abstract class EndpointInstance : IDisposable
 {
-    readonly PluginContext context;
+    readonly PluginLoad context;
     readonly HostServices services;
     readonly int thread = Environment.CurrentManagedThreadId;
     readonly List<SessionTimer> timers = new();
@@ -133,7 +133,7 @@ abstract class EndpointInstance : IDisposable
     protected EndpointInstance(JObject config, Type contract)
     {
         string path = Path.GetFullPath(config.Value<string>("assembly_path") ?? throw new ArgumentException("assembly_path missing"));
-        context = new PluginContext(path);
+        context = new PluginLoad(path);
         Queue.Owner = config.Value<uint>("owner");
         Pointer = new SessionPointer(Queue, config.Value<bool>("relative"), config.Value<bool>("pen"));
         var keyboard = new SessionKeyboard(Queue, config["keys"] as JObject ?? new JObject());

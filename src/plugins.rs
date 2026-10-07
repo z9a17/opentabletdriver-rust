@@ -78,6 +78,72 @@ pub fn resolve_imported_bindings(profile: &mut crate::config::Profile, inspected
     Ok(count)
 }
 
+/// Resolve original filter/tool/binding stores against an actual loaded registry.
+/// Unknown enabled stores remain rejected; this never saves or starts a profile.
+pub fn resolve_imported_stores(profile: &mut crate::config::Profile, inspected: &[crate::dotnet::InspectedFilter]) -> Result<usize, String> {
+    let Some(imported) = &profile.imported_otd else { return Ok(0); };
+    let source: serde_json::Value = serde_json::from_str(&imported.settings_json).map_err(|error| error.to_string())?;
+    let selected = imported.selected_profile;
+    let mut next = profile.clone();
+    let saved_tip = next.managed_tip_binding.clone(); let saved_eraser = next.managed_eraser_binding.clone();
+    let saved_pen = next.pen_buttons.clone(); let saved_aux = next.aux_buttons.clone(); let saved_mouse = next.mouse_buttons.clone();
+    let saved_up = next.mouse_scroll_up.clone(); let saved_down = next.mouse_scroll_down.clone(); let saved_wheels = next.wheels.clone();
+    let mut count = resolve_imported_bindings(&mut next, inspected)?;
+    // Original stores seed missing slots. Existing managed slots are current
+    // user choices and retain their own settings through subsequent reloads.
+    if let Some(config) = saved_tip { next.contact.tip_enabled = config.enabled; next.managed_tip_binding = Some(config); }
+    if let Some(config) = saved_eraser { next.contact.eraser_enabled = config.enabled; next.managed_eraser_binding = Some(config); }
+    let preserve = |current: &mut otd_core::output::buttons::ButtonAction, saved: &otd_core::output::buttons::ButtonAction| { if matches!(saved, otd_core::output::buttons::ButtonAction::Managed(_)) { *current = saved.clone(); } };
+    for (current, saved) in next.pen_buttons.iter_mut().zip(&saved_pen).chain(next.aux_buttons.iter_mut().zip(&saved_aux)).chain(next.mouse_buttons.iter_mut().zip(&saved_mouse)) { preserve(current, saved); }
+    preserve(&mut next.mouse_scroll_up, &saved_up); preserve(&mut next.mouse_scroll_down, &saved_down);
+    for (current, saved) in next.wheels.iter_mut().zip(&saved_wheels) { preserve(&mut current.clockwise, &saved.clockwise); preserve(&mut current.counter_clockwise, &saved.counter_clockwise); for (current, saved) in current.buttons.iter_mut().zip(&saved.buttons) { preserve(current, saved); } }
+    let mut entries = Vec::new();
+    let mut unresolved_active_filter = false;
+    let mut native_radial = false;
+    let mut installed_radial = false;
+    let mut other_active_filter = false;
+    let mut resolved_tools = std::collections::BTreeSet::new();
+    let resolve = |store: &serde_json::Value, category: &str| -> Result<Option<PluginConfig>, String> {
+        let Some(name) = store["Path"].as_str() else { return Ok(None); };
+        let mut matches = inspected.iter().filter(|entry| entry.config.type_name == name && entry.metadata.category == category && entry.metadata.supported);
+        let Some(entry) = matches.next() else { return Ok(None); };
+        if matches.any(|other| other.config.path != entry.config.path) { return Err(format!("Unchanged {category} {name} occurs in multiple installed DLLs")); }
+        let mut config = entry.config.clone(); config.enabled = store["Enable"].as_bool().unwrap_or(true);
+        config.settings_json = crate::config::Profile::managed_store_settings(store)?; config.validate()?; Ok(Some(config))
+    };
+    for store in source["Profiles"][selected]["Filters"].as_array().into_iter().flatten() {
+        let enabled = store["Enable"].as_bool().unwrap_or(true);
+        let radial = store["Path"].as_str() == Some(otd_core::radial_follow::FILTER_PATH);
+        if let Some(config) = resolve(store, "filter")? {
+            installed_radial |= radial && enabled;
+            other_active_filter |= enabled && !radial;
+            entries.push(config); count += 1;
+        } else if radial && enabled && !next.radial_follow.is_empty() {
+            // Existing explicit native port is retained only where its startup
+            // stage preserves the original chain order. It is not a DLL claim.
+            if other_active_filter { return Err("Cannot resolve filter order: install the original Radial Follow DLL or explicitly select a native-only chain".into()); }
+            native_radial = true;
+        } else if enabled { unresolved_active_filter = true; other_active_filter = true; }
+    }
+    if native_radial && installed_radial { return Err("Cannot mix imported native and installed unchanged Radial Follow instances".into()); }
+    if installed_radial { next.radial_follow.clear(); }
+    for (index, store) in source["Tools"].as_array().into_iter().flatten().enumerate() {
+        if let Some(config) = resolve(store, "tool")? { entries.push(config); count += 1; resolved_tools.insert(format!("Tools[{index}]")); }
+    }
+    // A repeated registry load must retain current property/enabled edits. A
+    // different chain cannot be reconciled with source slot identity silently.
+    if !next.plugins.is_empty() {
+        if next.plugins.len() != entries.len() || next.plugins.iter().zip(&entries).any(|(current, original)| current.kind != original.kind || current.path != original.path || current.type_name != original.type_name) {
+            return Err("Existing DLL chain differs from the imported store order; keep it explicitly or reimport before resolving installed stores".into());
+        }
+    } else { next.plugins = entries; }
+    next.diagnostics.retain(|diagnostic| !resolved_tools.contains(&diagnostic.location)
+        && (unresolved_active_filter || diagnostic.location != format!("Profiles[{selected}].Filters"))
+        && !(installed_radial && diagnostic.location.starts_with(&format!("Profiles[{selected}].Filters."))));
+    next.validate_filter_execution()?; next.validate_actions()?;
+    *profile = next; Ok(count)
+}
+
 pub struct Library(HMODULE);
 
 pub fn wide(value: &OsStr) -> Result<Vec<u16>, String> {
