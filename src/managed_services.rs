@@ -29,6 +29,8 @@ pub struct SourceSession {
 /// None means unavailable, not a successful fabricated empty value.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Snapshot {
+    pub diagnostic_app_version: Option<String>,
+    pub diagnostic_build_date: Option<String>,
     pub version: u64,
     pub daemon_identity: Option<crate::control::WorkerIdentity>,
     #[serde(default)]
@@ -111,10 +113,10 @@ impl Host {
             source_sessions: snapshot.source_sessions,
             queue: VecDeque::new(), queued_bytes: 0 }), ready: Condvar::new() });
         let mut workers = Vec::new();
-        for io_lane in [false, true] {
+        for lane in 0..3 {
         let worker = engine.clone();
         let backend = Arc::clone(&backend);
-        let join = std::thread::Builder::new().name(if io_lane { "managed-device-io" } else { "managed-services" }.into()).spawn(move || loop {
+        let join = std::thread::Builder::new().name(["managed-services","managed-device-io","managed-output-owner"][lane].into()).spawn(move || loop {
             let work = {
                 let Ok(mut state) = worker.state.lock() else { return };
                 // A real plugin constructor can ask for shared endpoint I/O
@@ -123,8 +125,10 @@ impl Host {
                 // the constructor's occupied daemon lane.
                 let index = loop {
                     if state.stopped { return; }
-                    if let Some(index) = state.queue.iter().position(|(_, _, request)|
-                        (request.operation != Operation::Daemon && request.operation != Operation::Detect) == io_lane) { break index; }
+                    if let Some(index) = state.queue.iter().position(|(_, _, request)| {
+                        let operation_lane=match request.operation {Operation::Daemon|Operation::Detect=>0,Operation::OutputOwner=>2,_=>1};
+                        operation_lane==lane
+                    }) { break index; }
                     let Ok(next) = worker.ready.wait(state) else { return }; state = next;
                 };
                 let (id, size, request) = state.queue.remove(index).unwrap();

@@ -485,7 +485,12 @@ fn bounded(mut value: String) -> String {
     value
 }
 
-thread_local! { static DEBUG_KEY: RefCell<Option<String>> = const { RefCell::new(None) }; }
+thread_local! {
+    static DEBUG_KEY: RefCell<Option<String>> = const { RefCell::new(None) };
+    static SOURCE_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
+}
+pub(crate) fn set_source_generation(generation: u64) { SOURCE_GENERATION.with(|value| value.set(generation.max(1))); }
+pub(crate) fn source_generation() -> u64 { SOURCE_GENERATION.with(std::cell::Cell::get) }
 pub(crate) fn set_debug_key(id: &str) { DEBUG_KEY.with(|key| *key.borrow_mut() = Some(id.to_owned())); }
 pub(crate) fn debug_key() -> Option<String> { DEBUG_KEY.with(|key| key.borrow().clone()) }
 

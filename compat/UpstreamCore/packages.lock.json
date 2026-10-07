@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net8.0": {
+      "HidSharpCore": {
+        "type": "Direct",
+        "requested": "[1.3.0, 1.3.0]",
+        "resolved": "1.3.0",
+        "contentHash": "R+eunrl7X65gdYYsle6r1Cxa/OmdOBjV5HuIvw2nbSCcSsWuYFgMuQQFeB7if7P+fX3rI/zfUqpYaXwKvy9Mng=="
+      },
+      "Microsoft.Extensions.DependencyInjection": {
+        "type": "Direct",
+        "requested": "[10.0.1, 10.0.1]",
+        "resolved": "10.0.1",
+        "contentHash": "zerXV0GAR9LCSXoSIApbWn+Dq1/T+6vbXMHGduq1LoVQRHT0BXsGQEau0jeLUBUcsoF/NaUT8ADPu8b+eNcIyg==",
+        "dependencies": {
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.1"
+        }
+      },
+      "Newtonsoft.Json": {
+        "type": "Direct",
+        "requested": "[13.0.4, 13.0.4]",
+        "resolved": "13.0.4",
+        "contentHash": "pdgNNMai3zv51W5aq268sujXUyx7SNdE2bj1wZcWjAQrKMFZV260lbqYop1d2GM67JI1huLRwxo9ZqnfF/lC6A=="
+      },
+      "OpenTabletDriver.Configurations": {
+        "type": "Direct",
+        "requested": "[0.6.7, 0.6.7]",
+        "resolved": "0.6.7",
+        "contentHash": "n1/cRPLnqRLb5PV0RzxPeFqVEuK9kmlncb44bXsRcmYfDIVsdOCkbfoA/Jv1ZUsqvJdaH+FmpIE1LCxXfr2oyw==",
+        "dependencies": {
+          "Newtonsoft.Json": "13.0.4",
+          "OpenTabletDriver.Plugin": "0.6.7"
+        }
+      },
+      "OpenTabletDriver.Native": {
+        "type": "Direct",
+        "requested": "[0.6.7, 0.6.7]",
+        "resolved": "0.6.7",
+        "contentHash": "ajxIF9DG+SROD3hqe7YBppvNkLcD4JtZ7v+MtiM+nf7o9LWhyO0Cly1+7JsVEoP99JRoM+JGUISMQpVnIwyc9A=="
+      },
+      "OpenTabletDriver.Plugin": {
+        "type": "Direct",
+        "requested": "[0.6.7, 0.6.7]",
+        "resolved": "0.6.7",
+        "contentHash": "jszqDn5QZzD9P1IB63rUo2x++KAGJ11ft+gX1KJq3T37BNNz9f/CjU/gxCuivlGHoPb9pyxijM/Ka0lCrxaC8Q==",
+        "dependencies": {
+          "JetBrains.Annotations": "2025.2.4",
+          "Newtonsoft.Json": "13.0.4",
+          "System.ComponentModel.Annotations": "5.0.0"
+        }
+      },
+      "JetBrains.Annotations": {
+        "type": "Transitive",
+        "resolved": "2025.2.4",
+        "contentHash": "TwbgxAkXxY+vNEhNVx/QXjJ4vqxmepOjsgRvvImQPbHkHMMb4W+ahL3laMsxXKtNT7iMy+E1B3xkqao2hf1n3A=="
+      },
+      "Microsoft.Extensions.DependencyInjection.Abstractions": {
+        "type": "Transitive",
+        "resolved": "10.0.1",
+        "contentHash": "oIy8fQxxbUsSrrOvgBqlVgOeCtDmrcynnTG+FQufcUWBrwyPfwlUkCDB2vaiBeYPyT+20u9/HeuHeBf+H4F/8g=="
+      },
+      "System.ComponentModel.Annotations": {
+        "type": "Transitive",
+        "resolved": "5.0.0",
+        "contentHash": "dMkqfy2el8A8/I76n2Hi1oBFEbG1SfxD2l5nhwXV3XjlnOmwxJlQbYpJH4W51odnU9sARCSAgv7S3CyAFMkpYg=="
+      }
+    }
+  }
+}

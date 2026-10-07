@@ -13,17 +13,52 @@ type CreateParser = unsafe extern "C" fn(*const u8, i32) -> *mut c_void;
 type DecodeParser = unsafe extern "C" fn(*mut c_void, *const u8, u32, *mut u8, i32) -> i32;
 type ResetParser = unsafe extern "C" fn(*mut c_void) -> i32;
 type DestroyParser = unsafe extern "C" fn(*mut c_void);
-pub(super) struct Api { has_parser: HasParser, reload: Reload, create: CreateParser, decode: DecodeParser, reset: ResetParser, destroy: DestroyParser }
+type PluginTypes = unsafe extern "C" fn(*mut u8,i32,i32)->i32;
+type StartRpc = unsafe extern "C" fn(*const u8,u32)->isize;
+type StopRpc = unsafe extern "C" fn(isize)->i32;
+pub(super) struct Api { has_parser: HasParser, reload: Reload, create: CreateParser, decode: DecodeParser, reset: ResetParser, destroy: DestroyParser,
+    store:Reload, types:PluginTypes, start_rpc:StartRpc, stop_rpc:StopRpc }
 impl Api {
     pub(super) fn load(entry: &impl Fn(&str) -> Result<*mut c_void, String>) -> Result<Self, String> {
         Ok(unsafe { Self { has_parser: std::mem::transmute::<*mut c_void, HasParser>(entry("HasReportParser")?), reload: std::mem::transmute::<*mut c_void, Reload>(entry("ReloadRegistry")?),
             create: std::mem::transmute::<*mut c_void, CreateParser>(entry("CreateDebugParser")?),
             decode: std::mem::transmute::<*mut c_void, DecodeParser>(entry("DecodeDebugParser")?),
             reset: std::mem::transmute::<*mut c_void, ResetParser>(entry("ResetDebugParser")?),
-            destroy: std::mem::transmute::<*mut c_void, DestroyParser>(entry("DestroyDebugParser")?) } })
+            destroy: std::mem::transmute::<*mut c_void, DestroyParser>(entry("DestroyDebugParser")?),
+            store:std::mem::transmute::<*mut c_void,Reload>(entry("ConstructPluginStore")?),
+            types:std::mem::transmute::<*mut c_void,PluginTypes>(entry("GetPluginTypes")?),
+            start_rpc:std::mem::transmute::<*mut c_void,StartRpc>(entry("StartHostedRpc")?),
+            stop_rpc:std::mem::transmute::<*mut c_void,StopRpc>(entry("StopHostedRpc")?) } })
     }
 }
 fn api() -> Result<&'static Api, String> { bridge()?.registry.as_ref().ok_or_else(|| "The installed .NET bridge lacks registry/concrete debug parser support; replace data/compat with this release's files.".into()) }
+fn copy_result(size:i32,copy:impl FnOnce(*mut u8,i32)->i32)->Result<serde_json::Value,String> {
+    if size<0 {return Err(last_error());}
+    if size==0 || size>4194304 {return Err("Invalid original metadata result size".into());}
+    let mut bytes=vec![0;size as usize];let written=copy(bytes.as_mut_ptr(),size);
+    if written!=size {return Err(if written<0 {last_error()}else{"Original metadata changed during capacity retry".into()});}
+    serde_json::from_slice(&bytes).map_err(|error|error.to_string())
+}
+pub fn get_plugin_types()->Result<serde_json::Value,String> {
+    let api=api()?;let size=unsafe{(api.types)(std::ptr::null_mut(),0,1)};
+    copy_result(size,|out,cap|unsafe{(api.types)(out,cap,0)})
+}
+pub fn construct_plugin_store(path:&str,category:&str)->Result<serde_json::Value,String> {
+    let json=serde_json::json!({"path":path,"category":category}).to_string();
+    if json.len()>32768 {return Err("Plugin store request exceeds 32 KiB".into());}
+    let api=api()?;let size=unsafe{(api.store)(json.as_ptr(),json.len() as i32,std::ptr::null_mut(),0)};
+    copy_result(size,|out,cap|unsafe{(api.store)(std::ptr::null(),0,out,cap)})
+}
+/// The original server drains every client before its native owner retires.
+pub struct HostedRpc { token:isize }
+impl HostedRpc {
+    pub fn start(pipe:&str)->Result<Self,String> {
+        if pipe.is_empty() || pipe.len()>512 || pipe.contains('\0') {return Err("Invalid original RPC pipe name".into());}
+        let token=unsafe{(api()?.start_rpc)(pipe.as_ptr(),pipe.len() as u32)};
+        if token==0 {Err(last_error())}else{Ok(Self{token})}
+    }
+}
+impl Drop for HostedRpc {fn drop(&mut self){if let Ok(api)=api(){if unsafe{(api.stop_rpc)(self.token)}<0 {eprintln!("Original RPC shutdown: {}",last_error());}}}}
 
 #[derive(Clone, Debug)]
 pub struct ManagedRegistryInfo {

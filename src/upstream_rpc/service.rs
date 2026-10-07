@@ -618,6 +618,22 @@ impl Service for Connection {
         // baseline before any first method can append logs or mutate state.
         if METHODS.contains(&method) { self.establish_log_cursor()?; }
         match method {
+            "GetPluginTypes" => {
+                protocol::no_arguments(params)?;
+                crate::plugins::load_parser_registry()?;
+                Ok(crate::dotnet::get_plugin_types()?)
+            },
+            "ConstructPluginStore" => {
+                let (path,category)=match params {
+                    Value::Array(values) if values.len()==2=>(values[0].as_str(),values[1].as_str()),
+                    Value::Object(values) if values.len()==2=>(values.get("path").and_then(Value::as_str),values.get("category").and_then(Value::as_str)),
+                    _=>return Err(Error::invalid("expected plugin path and category")),
+                };
+                let path=path.ok_or_else(||Error::invalid("plugin path must be a string"))?;
+                let category=category.ok_or_else(||Error::invalid("plugin category must be a string"))?;
+                crate::plugins::load_parser_registry()?;
+                Ok(crate::dotnet::construct_plugin_store(path,category)?)
+            },
             "GetTablets" => { protocol::no_arguments(params)?; self.tablets() },
             "GetSettings" => { protocol::no_arguments(params)?; self.settings() },
             "SetSettings" => self.set_settings(protocol::argument(params, "settings")?),
@@ -720,7 +736,7 @@ impl Service for Connection {
                 let status = self.status()?;
                 let devices = crate::hid::enumerate_rpc_devices().map_err(|error| Error::failed(error.to_string()))?;
                 Ok(json!({"App Version":format!("OpenTabletDriver Rust v{}",env!("CARGO_PKG_VERSION")),
-                    "Build Date":null,"Operating System":operating_system()?,
+                    "Build Date":env!("OTD_BUILD_DATE"),"Operating System":operating_system()?,
                     "Environment Variables":std::env::vars().collect::<std::collections::BTreeMap<_,_>>(),
                     "HID Devices":devices,"Console Log":self.logs()?.2,
                     "Rust Native State":{"instance":status.instance,"generation":status.generation,"state":status.state,"profile":status.profile}}))

@@ -46,7 +46,7 @@ fn envelope(config: &PluginConfig, profile: &Profile, tablet: &TabletConfigurati
         .map(|(name, usage)| (name.into(), serde_json::json!(usage.usage()))).collect();
     Ok(serde_json::json!({ "assembly_path": config.path.canonicalize().map_err(|error| format!("{}: {error}", config.path.display()))?,
         "type_name": config.type_name, "settings": serde_json::from_str::<serde_json::Value>(&config.settings_json).map_err(|error| error.to_string())?,
-        "tablet": tablet, "identifiers": identifiers, "pen": profile.output == OutputKind::Pen, "relative": profile.relative.is_some(), "owner": owner, "keys": keys }))
+        "tablet": tablet, "identifiers": identifiers, "source_session":super::source_session_json(), "pen": profile.output == OutputKind::Pen, "relative": profile.relative.is_some(), "owner": owner, "keys": keys }))
 }
 struct Endpoint { context: *mut c_void }
 impl Endpoint {

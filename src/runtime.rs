@@ -284,6 +284,9 @@ fn run(
             id.clone()
         } else { device_sessions.reserve_primary(&selected)? };
         crate::device_sessions::set_debug_key(&id);
+        let source_generation = device_sessions.snapshot()?.sessions.into_iter().find(|session| session.id == id)
+            .map(|session| session.pending_generation.unwrap_or(session.device_generation)).unwrap_or(1);
+        crate::device_sessions::set_source_generation(source_generation);
         let mut reload_profile = !profile_loaded;
         if !profile_loaded {
             if prefer_saved { authored_profile.use_settings_collection = true; }

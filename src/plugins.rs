@@ -395,7 +395,8 @@ impl Plugin {
                 "type_name": config.type_name,
                 "settings": serde_json::from_str::<serde_json::Value>(&config.settings_json).map_err(|e| e.to_string())?,
                 "tablet": tablet,
-                "identifiers": identifiers
+                "identifiers": identifiers,
+                "source_session":crate::dotnet::source_session_json()
             }).to_string()
         } else {
             config.settings_json.clone()

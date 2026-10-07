@@ -15,6 +15,7 @@ mod experimental;
 mod dotnet;
 mod managed_host;
 mod managed_services;
+mod shared_devices;
 mod hid;
 mod original_driver;
 mod output;

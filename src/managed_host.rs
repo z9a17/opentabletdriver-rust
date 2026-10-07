@@ -36,6 +36,8 @@ impl Owner {
         // Malformed optional compatibility settings must not stop a native-only
         // driver. Their unavailable provider returns an explicit error later.
         let snapshot = Snapshot { version: 1, daemon_identity: Some(identity),
+            diagnostic_app_version: Some(env!("CARGO_PKG_VERSION").into()),
+            diagnostic_build_date: Some(env!("OTD_BUILD_DATE").into()),
             settings: crate::upstream_rpc::initial_original_settings().ok(),
             application_info: crate::upstream_rpc::original_application_info().ok(),
             configurations, tablets: Some(json!([])), ..Snapshot::default() };
@@ -106,7 +108,7 @@ fn call(command: Command) -> Result<Reply, String> {
 impl NativeBackend {
     fn prime_metadata(&self) -> Result<(), String> {
         let mut state = self.published.lock().map_err(|_| "Managed snapshot lock poisoned")?;
-        state.snapshot.devices = crate::hid::enumerate_service_devices().ok().map(|devices| json!(devices));
+        state.snapshot.devices = service_devices().ok().map(|devices| json!(devices));
         state.last_devices = Some(Instant::now());
         state.snapshot.settings = crate::upstream_rpc::initial_original_settings().ok();
         state.snapshot.resynchronize = crate::upstream_rpc::original_resynchronize_epoch();
@@ -139,7 +141,7 @@ impl NativeBackend {
             state.projection_pending = false;
         }
         if force_devices || state.last_devices.is_none_or(|last| last.elapsed() >= Duration::from_secs(3)) {
-            state.snapshot.devices = crate::hid::enumerate_service_devices().ok().map(|devices| json!(devices));
+            state.snapshot.devices = service_devices().ok().map(|devices| json!(devices));
             state.last_devices = Some(Instant::now());
         }
         state.snapshot.logs = match call(Command::GetUpstreamLog) {
@@ -174,14 +176,13 @@ impl NativeBackend {
                     request.expected_source.clone())?;
                 Ok(Value::Null)
             }
-            "SetTabletDebug" => Err("Managed IDriverDaemon.DeviceReport subscriptions are not supplied yet; use the native/full-rate RPC recording endpoint".into()),
-            "InstallUpdate" => Err("Managed update installation requires a persistent update owner; use the native panel update workflow".into()),
             _ => crate::upstream_rpc::invoke_original(method, &params),
         }
     }
     fn device_string(&self, payload: &Value) -> Result<Value, String> {
         let path = payload["path"].as_str().ok_or("Device string request needs endpoint path")?;
         let index = payload["index"].as_u64().and_then(|index| u8::try_from(index).ok()).ok_or("Device string index must be 0..255")?;
+        if let Some(result)=crate::shared_devices::device_string(path,index) { return result.map(|value|json!(value)); }
         let devices = crate::hid::enumerate_service_devices().map_err(|error| error.to_string())?;
         let device = devices.iter().find(|device| device["DevicePath"].as_str().is_some_and(|candidate| candidate.eq_ignore_ascii_case(path)))
             .ok_or("Device endpoint is no longer present")?;
@@ -205,14 +206,34 @@ impl Backend for NativeBackend {
             Operation::DeviceString => self.device_string(&request.payload),
             Operation::Snapshot => Err("Snapshot requests are served by the managed service cache".into()),
             Operation::OpenStream | Operation::ReadStream | Operation::WriteStream | Operation::GetFeature
-                | Operation::SetFeature | Operation::CloseStream => Err("Plugin-owned endpoint streams and feature/write access are not supplied by this native owner; native session readers retain endpoint ownership".into()),
+                | Operation::SetFeature | Operation::CloseStream | Operation::DeviceReports | Operation::OutputOwner =>
+                    return crate::shared_devices::execute(request.operation,request.scope,&request.payload),
         };
         // Successful admission was never reported as application. Publish the
         // actual result state before the ticket becomes a completed response.
-        if result.is_ok() {
+        if result.is_ok() && matches!(request.operation, Operation::Daemon | Operation::Detect) {
             self.refresh(true, matches!(request.operation, Operation::Detect), true)
                 .map_err(|error| format!("Managed operation completed, but state refresh failed: {error}; query state before retrying"))?;
         }
         result
     }
+}
+pub fn publish_owned_devices() {
+    if let Some(backend)=CURRENT.get_or_init(||Mutex::new(Weak::new())).lock().ok().and_then(|value|value.upgrade()) {
+        if let Ok(devices)=service_devices() { if let Ok(mut state)=backend.published.lock() {
+            state.snapshot.devices=Some(json!(devices));
+            state.snapshot.version=state.snapshot.version.saturating_add(1);
+            if let Some(publisher)=&state.publisher {let _=publisher.publish(state.snapshot.clone());}
+        } }
+    }
+}
+fn service_devices()->Result<Vec<Value>,String> {
+    let mut devices=crate::hid::enumerate_service_devices().map_err(|error|error.to_string())?;
+    for owned in crate::shared_devices::owned_metadata() {
+        if let Some(device)=devices.iter_mut().find(|device|device["DevicePath"].as_str().zip(owned["DevicePath"].as_str())
+            .is_some_and(|(a,b)|a.eq_ignore_ascii_case(b))) {
+            if let Some(object)=device.as_object_mut() { object.extend(owned.as_object().unwrap().clone()); object.insert("CanOpen".into(),json!(true)); }
+        }
+    }
+    Ok(devices)
 }

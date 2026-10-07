@@ -13,13 +13,13 @@ use otd_core::spec::TabletSpec;
 
 #[repr(C)]
 struct ParsedSourceReport { report: GraphReport, token: ManagedReportToken }
-type CreateForGraph = unsafe extern "C" fn(*mut c_void, *const u8, i32) -> *mut c_void;
+type CreateForGraph = unsafe extern "C" fn(*mut c_void, *const u8, u32) -> *mut c_void;
 type Parse = unsafe extern "C" fn(*mut c_void, *const u8, u32, *mut ParsedSourceReport) -> i32;
 type Dispatch = unsafe extern "C" fn(*mut c_void, u64, u64, *const GraphReport, Callback, *mut c_void, i32) -> i32;
 pub(super) struct Api { create: CreateForGraph, parse: Parse, dispatch: Dispatch }
 impl Api {
     pub(super) fn load(entry: &impl Fn(&str) -> Result<*mut c_void, String>) -> Result<Self, String> {
-        Ok(unsafe { Self { create: std::mem::transmute::<*mut c_void, CreateForGraph>(entry("CreateGraphParser")?), parse: std::mem::transmute::<*mut c_void, Parse>(entry("ParseSourceReport")?),
+        Ok(unsafe { Self { create: std::mem::transmute::<*mut c_void, CreateForGraph>(entry("CreateHostedGraphParser")?), parse: std::mem::transmute::<*mut c_void, Parse>(entry("ParseSourceReport")?),
             dispatch: std::mem::transmute::<*mut c_void, Dispatch>(entry("DispatchParsedGraph")?) } })
     }
 }
@@ -34,14 +34,16 @@ pub struct ManagedReportParser {
 impl ManagedReportParser {
     pub fn for_graph(name: &str, spec: TabletSpec, graph: &Graph) -> Result<Self, String> {
         if name.is_empty() || name.len() > 4096 { return Err("Managed parser name length must be 1..4096".into()); }
-        let context = unsafe { (api()?.create)(graph.context_handle(), name.as_ptr(), name.len() as i32) };
+        let json=serde_json::json!({"parser":name,"source_session":super::source_session_json()}).to_string();
+        let context = unsafe { (api()?.create)(graph.context_handle(), json.as_ptr(), json.len() as u32) };
         if context.is_null() { return Err(last_error()); }
         Ok(Self { context, spec, reset_failure: None, _owner_thread: PhantomData })
     }
     pub fn new(name: &str, spec: TabletSpec) -> Result<Self, String> {
         if name.is_empty() || name.len() > 4096 { return Err("Managed parser name length must be 1..4096".into()); }
-        api()?;
-        let context = super::registry::create_parser(name)?;
+        let json=serde_json::json!({"parser":name,"source_session":super::source_session_json()}).to_string();
+        let context=unsafe{(api()?.create)(std::ptr::null_mut(),json.as_ptr(),json.len() as u32)};
+        if context.is_null(){return Err(last_error());}
         Ok(Self { context, spec, reset_failure: None, _owner_thread: PhantomData })
     }
 }

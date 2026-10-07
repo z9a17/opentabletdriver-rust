@@ -2,65 +2,20 @@
   "version": 1,
   "dependencies": {
     "net8.0": {
+      "Eto.Forms": {
+        "type": "Direct",
+        "requested": "[2.5.10, )",
+        "resolved": "2.5.10",
+        "contentHash": "eIHTPwktPT67qw1sv65Lnb75+0Llzwf6Z6O3r48Ls3v6nhjhDJIqniETgicaUNfexQYyoyDg5QuX9sYQusoiUg==",
+        "dependencies": {
+          "System.ComponentModel.Annotations": "4.7.0"
+        }
+      },
       "JetBrains.Annotations": {
         "type": "Direct",
-        "requested": "[2025.2.4, 2025.2.4]",
+        "requested": "[2025.2.4, )",
         "resolved": "2025.2.4",
         "contentHash": "TwbgxAkXxY+vNEhNVx/QXjJ4vqxmepOjsgRvvImQPbHkHMMb4W+ahL3laMsxXKtNT7iMy+E1B3xkqao2hf1n3A=="
-      },
-      "Octokit": {
-        "type": "Direct",
-        "requested": "[14.0.0, 14.0.0]",
-        "resolved": "14.0.0",
-        "contentHash": "jGOuTH1l+TCpJH+fwYOp7USzHDuGfN1jKbLz3J2COwyn+wL08eynvpnM6rY2qkzIEXum3PN2p2QkP3BW/p9Qcw=="
-      },
-      "OpenTabletDriver.Configurations": {
-        "type": "Direct",
-        "requested": "[0.6.7, 0.6.7]",
-        "resolved": "0.6.7",
-        "contentHash": "n1/cRPLnqRLb5PV0RzxPeFqVEuK9kmlncb44bXsRcmYfDIVsdOCkbfoA/Jv1ZUsqvJdaH+FmpIE1LCxXfr2oyw==",
-        "dependencies": {
-          "Newtonsoft.Json": "13.0.4",
-          "OpenTabletDriver.Plugin": "0.6.7"
-        }
-      },
-      "OpenTabletDriver.Native": {
-        "type": "Direct",
-        "requested": "[0.6.7, 0.6.7]",
-        "resolved": "0.6.7",
-        "contentHash": "ajxIF9DG+SROD3hqe7YBppvNkLcD4JtZ7v+MtiM+nf7o9LWhyO0Cly1+7JsVEoP99JRoM+JGUISMQpVnIwyc9A=="
-      },
-      "SharpZipLib": {
-        "type": "Direct",
-        "requested": "[1.4.2, 1.4.2]",
-        "resolved": "1.4.2",
-        "contentHash": "yjj+3zgz8zgXpiiC3ZdF/iyTBbz2fFvMxZFEBPUcwZjIvXOf37Ylm+K58hqMfIBt5JgU/Z2uoUS67JmTLe973A=="
-      },
-      "StreamJsonRpc": {
-        "type": "Direct",
-        "requested": "[2.22.23, 2.22.23]",
-        "resolved": "2.22.23",
-        "contentHash": "Ahq6uUFPnU9alny5h4agyX74th3PRq3NQCRNaDOqWcx20WT06mH/wENSk5IbHDc8BmfreQVEIBx5IXLBbsLFIA==",
-        "dependencies": {
-          "MessagePack": "2.5.192",
-          "Microsoft.VisualStudio.Threading.Only": "17.13.61",
-          "Microsoft.VisualStudio.Validation": "17.8.8",
-          "Nerdbank.Streams": "2.12.87",
-          "Newtonsoft.Json": "13.0.3",
-          "System.IO.Pipelines": "8.0.0"
-        }
-      },
-      "System.CommandLine": {
-        "type": "Direct",
-        "requested": "[2.0.1, 2.0.1]",
-        "resolved": "2.0.1",
-        "contentHash": "GLc43eDFq8KbpxIb7UhTwV0vC5CzB0NspJvfFbfhoW4O057xCJXuO18KLpVn9x3JykQn2mRske6+I6JXHwqmDg=="
-      },
-      "WaylandNET": {
-        "type": "Direct",
-        "requested": "[0.2.0, 0.2.0]",
-        "resolved": "0.2.0",
-        "contentHash": "AOrAtt9bK21t1wXTWWWK6pWTmxZXbrfZWd1MSrZt1EobGUxrIduIbceOrnSgmkULrgsLBwcwmxnDCApNQroQfA=="
       },
       "HidSharpCore": {
         "type": "Transitive",
@@ -127,6 +82,25 @@
         "resolved": "13.0.4",
         "contentHash": "pdgNNMai3zv51W5aq268sujXUyx7SNdE2bj1wZcWjAQrKMFZV260lbqYop1d2GM67JI1huLRwxo9ZqnfF/lC6A=="
       },
+      "Octokit": {
+        "type": "Transitive",
+        "resolved": "14.0.0",
+        "contentHash": "jGOuTH1l+TCpJH+fwYOp7USzHDuGfN1jKbLz3J2COwyn+wL08eynvpnM6rY2qkzIEXum3PN2p2QkP3BW/p9Qcw=="
+      },
+      "OpenTabletDriver.Configurations": {
+        "type": "Transitive",
+        "resolved": "0.6.7",
+        "contentHash": "n1/cRPLnqRLb5PV0RzxPeFqVEuK9kmlncb44bXsRcmYfDIVsdOCkbfoA/Jv1ZUsqvJdaH+FmpIE1LCxXfr2oyw==",
+        "dependencies": {
+          "Newtonsoft.Json": "13.0.4",
+          "OpenTabletDriver.Plugin": "0.6.7"
+        }
+      },
+      "OpenTabletDriver.Native": {
+        "type": "Transitive",
+        "resolved": "0.6.7",
+        "contentHash": "ajxIF9DG+SROD3hqe7YBppvNkLcD4JtZ7v+MtiM+nf7o9LWhyO0Cly1+7JsVEoP99JRoM+JGUISMQpVnIwyc9A=="
+      },
       "OpenTabletDriver.Plugin": {
         "type": "Transitive",
         "resolved": "0.6.7",
@@ -136,6 +110,29 @@
           "Newtonsoft.Json": "13.0.4",
           "System.ComponentModel.Annotations": "5.0.0"
         }
+      },
+      "SharpZipLib": {
+        "type": "Transitive",
+        "resolved": "1.4.2",
+        "contentHash": "yjj+3zgz8zgXpiiC3ZdF/iyTBbz2fFvMxZFEBPUcwZjIvXOf37Ylm+K58hqMfIBt5JgU/Z2uoUS67JmTLe973A=="
+      },
+      "StreamJsonRpc": {
+        "type": "Transitive",
+        "resolved": "2.22.23",
+        "contentHash": "Ahq6uUFPnU9alny5h4agyX74th3PRq3NQCRNaDOqWcx20WT06mH/wENSk5IbHDc8BmfreQVEIBx5IXLBbsLFIA==",
+        "dependencies": {
+          "MessagePack": "2.5.192",
+          "Microsoft.VisualStudio.Threading.Only": "17.13.61",
+          "Microsoft.VisualStudio.Validation": "17.8.8",
+          "Nerdbank.Streams": "2.12.87",
+          "Newtonsoft.Json": "13.0.3",
+          "System.IO.Pipelines": "8.0.0"
+        }
+      },
+      "System.CommandLine": {
+        "type": "Transitive",
+        "resolved": "2.0.1",
+        "contentHash": "GLc43eDFq8KbpxIb7UhTwV0vC5CzB0NspJvfFbfhoW4O057xCJXuO18KLpVn9x3JykQn2mRske6+I6JXHwqmDg=="
       },
       "System.ComponentModel.Annotations": {
         "type": "Transitive",
@@ -147,6 +144,11 @@
         "resolved": "8.0.0",
         "contentHash": "FHNOatmUq0sqJOkTx+UF/9YK1f180cnW5FVqnQMvYUN0elp6wFzbtPSiqbo1/ru8ICp43JM1i7kKkk6GsNGHlA=="
       },
+      "WaylandNET": {
+        "type": "Transitive",
+        "resolved": "0.2.0",
+        "contentHash": "AOrAtt9bK21t1wXTWWWK6pWTmxZXbrfZWd1MSrZt1EobGUxrIduIbceOrnSgmkULrgsLBwcwmxnDCApNQroQfA=="
+      },
       "opentabletdriver": {
         "type": "Project",
         "dependencies": {
@@ -156,6 +158,20 @@
           "OpenTabletDriver.Configurations": "[0.6.7, 0.6.7]",
           "OpenTabletDriver.Native": "[0.6.7, 0.6.7]",
           "OpenTabletDriver.Plugin": "[0.6.7, 0.6.7]"
+        }
+      },
+      "opentabletdriver.desktop": {
+        "type": "Project",
+        "dependencies": {
+          "JetBrains.Annotations": "[2025.2.4, 2025.2.4]",
+          "Octokit": "[14.0.0, 14.0.0]",
+          "OpenTabletDriver": "[0.6.7, )",
+          "OpenTabletDriver.Configurations": "[0.6.7, 0.6.7]",
+          "OpenTabletDriver.Native": "[0.6.7, 0.6.7]",
+          "SharpZipLib": "[1.4.2, 1.4.2]",
+          "StreamJsonRpc": "[2.22.23, 2.22.23]",
+          "System.CommandLine": "[2.0.1, 2.0.1]",
+          "WaylandNET": "[0.2.0, 0.2.0]"
         }
       }
     }

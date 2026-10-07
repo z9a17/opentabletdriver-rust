@@ -23,7 +23,7 @@ impl Client {
         let request=protocol::encode(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
             .map_err(|error|error.to_string())?;
         let deadline=Instant::now()+Duration::from_secs(120);
-        let result=(|| {
+        let result:Result<Result<Value,String>,String>=(|| {
             self.pipe.write(&request,deadline,&self.stop).map_err(|error|error.to_string())?;
             loop {
                 let mut header=Vec::new();
