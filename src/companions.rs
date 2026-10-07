@@ -313,7 +313,7 @@ fn companion_profile(
 
 /// OpenTabletDriver's profile for a tablet, from its settings file.
 fn import_otd(tablet: &str) -> Result<Option<Profile>, String> {
-    Profile::load_otd_tablet(tablet)
+    crate::plugins::load_original_tablet_profile(tablet)
 }
 
 /// Starts a companion session that wakes discovery when it ends.

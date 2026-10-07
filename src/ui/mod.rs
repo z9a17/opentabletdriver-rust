@@ -1464,7 +1464,7 @@ pub fn run() -> Result<(), String> {
             ),
         }
     } else {
-        match crate::load_profile(None, None) {
+        match crate::load_runtime_profile(None, None) {
             Ok(profile) => {
                 let message = if profile.source.starts_with("OpenTabletDriver") {
                     "Imported the active OpenTabletDriver mapping. Save writes it as a separate Rust profile."

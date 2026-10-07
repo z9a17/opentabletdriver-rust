@@ -314,7 +314,7 @@ impl Daemon {
     fn prepare(text: Option<String>) -> Result<(Profile, String), ControlError> {
         let profile = match text {
             Some(text) => Profile::from_toml_text(&text, Path::new("daemon-request.toml")),
-            None => crate::load_profile(None, None),
+            None => crate::load_runtime_profile(None, None),
         }
         .and_then(|profile| {
             profile.validate_runtime_tablet()?;

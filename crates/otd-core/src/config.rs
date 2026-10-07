@@ -949,7 +949,7 @@ pub fn activation_raw_for(percent: f64, max_pressure: u16) -> Result<u16, String
 
 /// OpenTabletDriver's settings file in its default app data directory, as
 /// upstream `AppInfo` places it on each platform.
-fn otd_settings_path() -> Option<PathBuf> {
+pub fn otd_settings_path() -> Option<PathBuf> {
     let directory = if cfg!(target_os = "windows") {
         PathBuf::from(env::var_os("LOCALAPPDATA")?)
     } else if cfg!(target_os = "macos") {

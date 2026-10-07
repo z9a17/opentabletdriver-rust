@@ -229,7 +229,12 @@ public static unsafe partial class EntryPoints
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static nint CreateDebugParser(byte* name, int length)
     {
-        try { if (name == null || length < 1 || length > 4096) throw new ArgumentException("Invalid parser name."); return GCHandle.ToIntPtr(GCHandle.Alloc(new ParserSession(Encoding.UTF8.GetString(new ReadOnlySpan<byte>(name, length)))))); }
+        try
+        {
+            if (name == null || length < 1 || length > 4096) throw new ArgumentException("Invalid parser name.");
+            var parser = new ParserSession(Encoding.UTF8.GetString(new ReadOnlySpan<byte>(name, length)));
+            return GCHandle.ToIntPtr(GCHandle.Alloc(parser));
+        }
         catch (Exception error) { lastError = error.GetBaseException().Message; return 0; }
     }
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]

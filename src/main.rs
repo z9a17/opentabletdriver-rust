@@ -660,12 +660,29 @@ fn show_settings(config: Option<PathBuf>, otd_settings: Option<PathBuf>) -> Resu
     Ok(())
 }
 
+/// Runtime/import boundary; settings-only inspection keeps the pure loader.
+fn load_runtime_profile(config: Option<&PathBuf>, otd_settings: Option<&PathBuf>) -> Result<Profile, String> {
+    if let Some(path) = otd_settings {
+        let text = std::fs::read_to_string(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        return plugins::import_otd_with_installed(&text, path, &hid::connected_tablets()?);
+    }
+    if config.is_none() && std::env::var_os("OTD_RUST_PORTABLE_DIR").is_none() {
+        let native = otd_core::storage::data_directory()?.join("driver.toml");
+        if !native.try_exists().map_err(|error| format!("cannot inspect {}: {error}", native.display()))?
+            && let Some(original) = config::otd_settings_path()
+            && original.try_exists().map_err(|error| format!("cannot inspect {}: {error}", original.display()))? {
+            return plugins::load_original_profile(&hid::connected_tablets()?);
+        }
+    }
+    load_profile(config, otd_settings)
+}
+
 fn run(
     config: Option<PathBuf>,
     otd_settings: Option<PathBuf>,
     capture_seconds: Option<u64>,
 ) -> Result<(), String> {
-    let profile = load_profile(config.as_ref(), otd_settings.as_ref())?;
+    let profile = load_runtime_profile(config.as_ref(), otd_settings.as_ref())?;
     if capture_seconds.is_none() && let Err(error) = experimental::apply_saved(false) {
         eprintln!("Experimental driver CPU affinity was not applied: {error}");
     }
@@ -877,7 +894,7 @@ fn main() {
             otd_settings,
         }) => {
             let replacement = if config.is_some() || otd_settings.is_some() {
-                load_profile(config.as_ref(), otd_settings.as_ref())
+                load_runtime_profile(config.as_ref(), otd_settings.as_ref())
                     .and_then(|profile| profile.to_toml())
                     .map(Some)
             } else {
@@ -890,7 +907,7 @@ fn main() {
         Ok(Command::Start {
             config,
             otd_settings,
-        }) => load_profile(config.as_ref(), otd_settings.as_ref()).and_then(|profile| {
+        }) => load_runtime_profile(config.as_ref(), otd_settings.as_ref()).and_then(|profile| {
             profile.validate_runtime_tablet()?;
             daemon::call(control::Command::Start {
                 profile_toml: Some(profile.to_toml()?),

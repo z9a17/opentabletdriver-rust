@@ -17,6 +17,72 @@ pub use otd_core::plugins::{PipelineStage, PluginConfig, PluginKind};
 #[path = "plugins/graph.rs"]
 mod graph;
 
+/// Explicit original-settings import. Pure native profiles do not load CLR;
+/// unresolved managed stores use one retained installed-registry snapshot.
+pub fn import_otd_with_installed(text: &str, source: &Path, connected: &[String]) -> Result<crate::config::Profile, String> {
+    let document = crate::config::OtdSettingsDocument::from_json(text, source)?;
+    let profiles = document.profiles();
+    let selected = connected.iter().find_map(|name| profiles.iter().find(|profile| &profile.tablet == name))
+        .or_else(|| profiles.iter().find(|profile| profile.tablet == "Wacom PTH-660"))
+        .or_else(|| profiles.iter().find(|profile| profile.runtime_tablet_supported))
+        .ok_or("OpenTabletDriver settings have no profile for a tablet this driver supports")?.index;
+    import_otd_selected_with_installed(text, source, selected)
+}
+fn import_otd_selected_with_installed(text: &str, source: &Path, selected: usize) -> Result<crate::config::Profile, String> {
+    let pure = crate::config::Profile::from_otd_profile_text(text, source, selected, Default::default());
+    if pure.as_ref().is_ok_and(|profile| !profile.diagnostics.iter().any(|item| item.kind == "unsupported_active")) {
+        return pure;
+    }
+    let original: serde_json::Value = serde_json::from_str(text).map_err(|error| error.to_string())?;
+    let output = &original["Profiles"][selected]["OutputMode"];
+    if pure.is_err() && (!output["Enable"].as_bool().unwrap_or(false)
+        || matches!(output["Path"].as_str(), Some("OpenTabletDriver.Desktop.Output.AbsoluteMode"
+            | "OpenTabletDriver.Desktop.Output.RelativeMode" | crate::config::WINDOWS_INK_ABSOLUTE_MODE
+            | crate::config::WINDOWS_PEN_POINTER_MODE | crate::config::LINUX_ARTIST_MODE))) {
+        return pure;
+    }
+    let registry = match crate::dotnet::registry_snapshot() {
+        Some(snapshot) => snapshot,
+        None => {
+            let directory = crate::plugin_catalog::plugins_directory()?;
+            std::fs::create_dir_all(&directory).map_err(|error| format!("cannot prepare plugin registry: {error}"))?;
+            std::sync::Arc::new(crate::dotnet::reload_installed_plugins(&directory)?)
+        }
+    };
+    let mut profile = match pure {
+        Ok(profile) => profile,
+        Err(original_error) => {
+            let name = output["Path"].as_str();
+            let mut matches = registry.plugins.iter().filter(|entry| entry.metadata.category == "output"
+                && entry.metadata.supported && Some(entry.config.type_name.as_str()) == name);
+            let Some(entry) = matches.next() else { return Err(original_error); };
+            if matches.any(|other| other.config.path != entry.config.path) {
+                return Err("managed output class exists in multiple installed DLLs; select one explicitly".into());
+            }
+            crate::config::Profile::from_managed_output_store(text, source, selected, Default::default(),
+                entry.config.clone(), entry.metadata.relative_output)?
+        }
+    };
+    resolve_imported_stores(&mut profile, &registry.plugins)?;
+    Ok(profile)
+}
+pub fn load_original_profile(connected: &[String]) -> Result<crate::config::Profile, String> {
+    let path = crate::config::otd_settings_path().ok_or("OpenTabletDriver settings path is unavailable")?;
+    let text = std::fs::read_to_string(&path).map_err(|error| format!("cannot read OpenTabletDriver settings {}: {error}", path.display()))?;
+    import_otd_with_installed(&text, &path, connected)
+}
+pub fn load_original_tablet_profile(tablet: &str) -> Result<Option<crate::config::Profile>, String> {
+    let Some(path) = crate::config::otd_settings_path() else { return Ok(None); };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
+    };
+    let document = crate::config::OtdSettingsDocument::from_json(&text, &path)?;
+    let Some(selected) = document.profiles().into_iter().find(|profile| profile.tablet == tablet) else { return Ok(None); };
+    import_otd_selected_with_installed(&text, &path, selected.index).map(Some)
+}
+
 /// Verify an unchanged output class without constructing it, then import its
 /// original property store and geometry. Runtime construction verifies again.
 pub fn import_managed_output(text: &str, source: &Path, selected: usize, mut config: PluginConfig) -> Result<crate::config::Profile, String> {
