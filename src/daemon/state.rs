@@ -115,6 +115,7 @@ pub(super) struct Daemon {
     generation: u64,
     profile: Option<String>,
     configuration: Option<String>,
+    reconnect_profile: Option<Profile>,
     last_error: Option<String>,
     logs: VecDeque<String>,
     log_sequence: u64,
@@ -149,6 +150,7 @@ impl Daemon {
             generation: 0,
             profile: None,
             configuration: None,
+            reconnect_profile: None,
             last_error: None,
             logs: VecDeque::new(),
             log_sequence: 0,
@@ -443,6 +445,7 @@ impl Daemon {
             phase: Phase::Preparing,
             error: None,
         });
+        self.reconnect_profile = None;
         self.log(
             if initial {
                 "Start accepted; preparing worker resources."
@@ -469,6 +472,7 @@ impl Daemon {
         self.log(error);
     }
     fn stop_all(&mut self) -> Result<(), String> {
+        self.reconnect_profile = None;
         self.stopping = true;
         self.state = DriverState::Stopping;
         let mut errors = Vec::new();
@@ -566,6 +570,16 @@ impl Daemon {
                 match result { Ok(()) => self.log("Preset binding replacement accepted; waiting for guarded cleanup/activation.".into()),
                     Err(error) => self.log(format!("Preset binding was not applied: {error}")) }
             }
+            Notice::PreparedProfile(profile) if phase.is_none() => {
+                match profile.to_toml() {
+                    Ok(text) if text.len() <= control::MAX_PROFILE_BYTES && serde_json::to_vec(&text)
+                        .is_ok_and(|encoded| encoded.len() <= control::MAX_FRAME_BYTES - 1024) => {
+                            self.reconnect_profile = Some(*profile);
+                        }
+                    Ok(_) => self.fail_stop("reconnected profile exceeds control frame limits".into()),
+                    Err(error) => self.fail_stop(error),
+                }
+            }
             Notice::PreparedProfile(_) => {}
             Notice::Prepared => {
                 // A disconnect can race the queued quiesce. Do not enqueue a
@@ -582,6 +596,28 @@ impl Daemon {
                 ) {
                     self.send_active(Directive::Activate);
                 }
+            }
+            Notice::ActivationReady if phase.is_none() && self.reconnect_profile.is_some() => {
+                let profile = self.reconnect_profile.take().unwrap();
+                let text = match profile.to_toml() {
+                    Ok(text) => text,
+                    Err(error) => { self.fail_stop(error); return; }
+                };
+                let generation = if self.configuration.as_ref() != Some(&text) {
+                    match self.next_generation() {
+                        Ok(generation) => generation,
+                        Err(error) => { self.fail_stop(error.message); return; }
+                    }
+                } else { self.generation };
+                if !self.send_active(Directive::Run) { return; }
+                if let Some(devices) = &self.devices {
+                    if let Err(error) = devices.handle().primary_commit(profile.clone()) {
+                        self.fail_stop(error); return;
+                    }
+                }
+                self.generation = generation;
+                self.profile = Some(profile.source.clone());
+                self.configuration = Some(text);
             }
             Notice::ActivationReady => {
                 if !matches!(
