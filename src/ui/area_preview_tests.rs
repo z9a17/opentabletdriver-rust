@@ -22,7 +22,7 @@ fn fixture(hwnd: HWND) -> App {
             filter_list: null, add_dotnet: null, add_native: null, remove_filter: null,
             filter_defaults: null, property_prev: null, property_next: null, filter_enable: null,
             tip_binding: null, tip_slider: null, tip_field: null,
-            eraser_binding: null, eraser_slider: null, eraser_field: null,
+            eraser_binding: null, eraser_slider: null, eraser_field: null, pen_policy: [null; 3],
             log: null, copy_log: null, clear_log: null, save: null, apply: null,
         },
         tab: Tab::Output, items: Vec::new(), experimental: None, display_view: None, tablet_view: None,
@@ -37,7 +37,7 @@ fn fixture(hwnd: HWND) -> App {
         bindings_detected: false, labels: HashMap::new(), property_page: 0,
         invalid: HashSet::new(), drag: None, context_area: AreaKind::Tablet,
         running: None, daemon_client: None, control_busy: false, daemon_instance: None,
-        daemon_log_sequence: 0, closing: false, close_ready: false,
+        daemon_log_sequence: 0, closing: false, close_ready: false, recording_close_pending: false,
         update_restart_pending: false, update_close_approved: false,
         updates: updates::UpdateState::default(), driver: DriverState::Stopped,
         tablet_present: None, tablet_choices: Vec::new(), preset_choices: Vec::new(),
@@ -272,18 +272,23 @@ fn binding_pages_follow_the_detected_tablet_and_edit_the_profile() {
     let targets: Vec<BindingTarget> = app.binding_rows.iter().map(|row| row.target).collect();
     let mut expected = vec![BindingTarget::Pen(0), BindingTarget::Pen(1)];
     expected.extend((0..8).map(BindingTarget::Aux));
+    expected.extend([BindingTarget::MouseScrollUp, BindingTarget::MouseScrollDown]);
     expected.extend([BindingTarget::Clockwise(0), BindingTarget::CounterClockwise(0), BindingTarget::WheelButton(0, 0)]);
     assert_eq!(targets, expected, "two side buttons, eight express keys and the ring");
     assert_eq!(app.wheel_fields.len(), 2);
 
     for (tab, shown_rows) in [(Tab::Pen, 2), (Tab::Aux, 11)] {
         app.select_tab(tab);
+        let on_page = |target| match tab {
+            Tab::Pen => matches!(target, BindingTarget::Pen(_)),
+            Tab::Aux => matches!(target, BindingTarget::Aux(_) | BindingTarget::Clockwise(_)
+                | BindingTarget::CounterClockwise(_) | BindingTarget::WheelButton(_, _)),
+            _ => false,
+        };
         let rows: Vec<HWND> = app.binding_rows.iter()
-            .filter(|row| matches!(row.target, BindingTarget::Pen(_)) == (tab == Tab::Pen))
-            .flat_map(|row| [row.hwnd, row.label]).collect();
+            .filter(|row| on_page(row.target)).flat_map(|row| [row.hwnd, row.label]).collect();
         let others: Vec<HWND> = app.binding_rows.iter()
-            .filter(|row| matches!(row.target, BindingTarget::Pen(_)) != (tab == Tab::Pen))
-            .map(|row| row.hwnd).collect();
+            .filter(|row| !on_page(row.target)).map(|row| row.hwnd).collect();
         let mut controls = rows.clone();
         if tab == Tab::Aux {
             controls.extend(app.wheel_fields.iter().map(|field| field.hwnd));
@@ -334,10 +339,117 @@ fn binding_pages_follow_the_detected_tablet_and_edit_the_profile() {
     assert_eq!(targets, [
         BindingTarget::Pen(0), BindingTarget::Pen(1), BindingTarget::Pen(2),
         BindingTarget::Aux(0), BindingTarget::Aux(1), BindingTarget::Aux(2),
+        BindingTarget::MouseScrollUp, BindingTarget::MouseScrollDown,
         BindingTarget::Clockwise(0), BindingTarget::CounterClockwise(0),
     ]);
     assert!(!app.bindings_detected);
     render_page(&app, "bindings-Aux-absent");
+    drop(app);
+    LOOK.with(|slot| slot.borrow_mut().take());
+    unsafe { DestroyWindow(window); }
+}
+
+#[test]
+fn tool_mouse_and_pen_policy_editors_preserve_other_settings() {
+    use bindings::BindingTarget;
+    use otd_core::output::buttons::ButtonAction;
+    let window = unsafe { CreateWindowExW(0, wide("STATIC").as_ptr(), wide("Desktop editors").as_ptr(),
+        WS_POPUP, 0, 0, 760, 640, ptr::null_mut(), ptr::null_mut(), GetModuleHandleW(ptr::null()), ptr::null()) };
+    assert!(!window.is_null());
+    let mut app = fixture(window);
+    app.c.tabs.clear();
+    app.create_controls().unwrap();
+    let tool = PluginConfig { path: "fixture-tool.dll".into(), kind: PluginKind::DotnetTool,
+        type_name: "Fixture.Tool".into(), enabled: false,
+        settings_json: r#"{"Interval":25,"Unknown":{"preserve":true}}"#.into() };
+    app.editor.profile.plugins = vec![
+        PluginConfig { kind: PluginKind::Dotnet, type_name: "Fixture.Filter".into(),
+            settings_json: "{}".into(), ..tool.clone() }, tool.clone()];
+    let metadata = FilterMetadata { type_name: tool.type_name.clone(), display_name: Some("Fixture Tool".into()),
+        default_settings_json: "{}".into(), properties: vec![crate::dotnet::PropertyMetadata {
+            name: "Interval".into(), property_type: "System.UInt32".into(), writable: true,
+            unit: Some("ms".into()), ..Default::default() }] };
+    // Inspection is fixture data; no DLL is constructed or daemon requested.
+    app.plugin_metadata.insert(tool.path.clone(), Ok(vec![metadata]));
+    app.select_tab(Tab::Tools);
+    assert_eq!(app.selected_target(), Some(FilterRef::Plugin(1)));
+    assert_eq!(with_look(|look| look.filters.len()), Some(1));
+    let field = app.properties.iter().position(|row| row.label == "Interval").unwrap();
+    app.edit_property(field, "-1");
+    assert!(app.invalid.contains(&(app.properties[field].hwnd as isize)));
+    app.select_tab(Tab::Output);
+    assert_eq!(app.tab, Tab::Tools, "invalid tool edits retain their editor");
+    app.edit_property(field, "40");
+    let settings: serde_json::Value = serde_json::from_str(&app.editor.profile.plugins[1].settings_json).unwrap();
+    assert_eq!(settings["Interval"], 40);
+    assert_eq!(settings["Unknown"]["preserve"], true);
+    assert!(!app.editor.profile.plugins[1].enabled, "editing a disabled tool cannot run it");
+    assert_eq!(app.editor.profile.plugins[0].settings_json, "{}");
+
+    app.editor.profile.mouse_buttons = vec![ButtonAction::None; 5];
+    app.sync_bindings();
+    app.select_tab(Tab::Mouse);
+    app.set_binding_action(BindingTarget::Mouse(3), "keys:Control+Z".parse().unwrap());
+    assert!(matches!(app.editor.profile.mouse_buttons[3], ButtonAction::Keys(_)));
+    let mouse: Vec<_> = app.binding_rows.iter().filter(|row| matches!(row.target, BindingTarget::Mouse(_)))
+        .map(|row| row.hwnd).collect();
+    assert_eq!(placed(&app, &mouse).len(), 5);
+    app.set_binding_action(BindingTarget::MouseScrollUp, "scroll:up".parse().unwrap());
+    app.set_binding_action(BindingTarget::MouseScrollDown, "keys:PageDown".parse().unwrap());
+    let scrolls: Vec<_> = app.binding_rows.iter().filter(|row| matches!(row.target,
+        BindingTarget::MouseScrollUp | BindingTarget::MouseScrollDown)).map(|row| row.hwnd).collect();
+    assert_eq!(placed(&app, &scrolls).len(), 2);
+    assert_eq!(text(scrolls[0]), "Scroll Up");
+    let roundtrip = Profile::from_toml_text(&app.editor.profile.to_toml().unwrap(), Path::new("desktop.toml")).unwrap();
+    assert_eq!(roundtrip.mouse_scroll_up, app.editor.profile.mouse_scroll_up);
+    assert_eq!(roundtrip.mouse_scroll_down, app.editor.profile.mouse_scroll_down);
+    assert_eq!(roundtrip.mouse_buttons, app.editor.profile.mouse_buttons);
+    app.set_binding_action(BindingTarget::MouseScrollDown, ButtonAction::None);
+    assert_eq!(text(scrolls[1]), "None");
+    app.select_tab(Tab::Pen);
+    for index in 0..3 {
+        unsafe { SendMessageW(app.c.pen_policy[index], BM_SETCHECK, BST_CHECKED as usize, 0); }
+        app.pen_policy_toggled(index);
+    }
+    assert!(app.editor.profile.contact.drag_only && app.editor.profile.contact.disable_pressure
+        && app.editor.profile.contact.disable_tilt);
+
+    // New tabs wrap instead of pushing essential navigation beyond small windows.
+    for (name, palette) in [("dark", Palette::dark()), ("light", Palette::light()), ("contrast", Palette::high_contrast())] {
+        update_look(|look| look.style.palette = palette);
+        for dpi in [96, 144, 192] {
+            app.set_dpi(dpi);
+            unsafe { SetWindowPos(window, ptr::null_mut(), 0, 0, scale(760, dpi), scale(640, dpi), SWP_NOZORDER | SWP_NOACTIVATE); }
+            for tab in [Tab::Tools, Tab::Mouse, Tab::Pen] {
+                app.select_tab(tab);
+                app.layout();
+                let client = client_rect(window);
+                for bounds in placed(&app, &app.c.tabs) {
+                    assert!(bounds.left >= 0 && bounds.right <= client.right);
+                }
+                render_page(&app, &format!("desktop-{tab:?}-{name}-{dpi}"));
+                if tab == Tab::Mouse {
+                    app.editor.profile.mouse_buttons.resize(32, ButtonAction::None);
+                    app.sync_bindings();
+                    let mut seen = HashSet::new();
+                    for page in 0..32 {
+                        app.property_page = page;
+                        app.layout();
+                        let current = app.property_page;
+                        for row in &app.binding_rows {
+                            if let BindingTarget::Mouse(index) = row.target {
+                                if !placed(&app, &[row.hwnd]).is_empty() { seen.insert(index); }
+                            } else if matches!(row.target, BindingTarget::MouseScrollUp | BindingTarget::MouseScrollDown) {
+                                assert_eq!(placed(&app, &[row.hwnd]).len(), 1);
+                            }
+                        }
+                        if current < page { break; }
+                    }
+                    assert_eq!(seen.len(), 32, "every mouse button is reachable at {dpi} DPI");
+                }
+            }
+        }
+    }
     drop(app);
     LOOK.with(|slot| slot.borrow_mut().take());
     unsafe { DestroyWindow(window); }

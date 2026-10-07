@@ -1,6 +1,6 @@
 # Parity work items
 
-This is the canonical implementation backlog for the [full parity plan](../FULL_PARITY_PLAN.md). All 65 tasks start **open and unclaimed**; consult the linked [GitHub workstream issues](GITHUB_TRACKING.md) for current ownership and progress. Existing code is a starting point, not completion evidence for these broader tasks.
+This is the canonical implementation backlog for the [full parity plan](../FULL_PARITY_PLAN.md). The original 65 tasks started **open and unclaimed**; consult the linked [GitHub workstream issues](GITHUB_TRACKING.md) for current ownership and progress. Existing code is a starting point, not completion evidence for these broader tasks. The [2026-10-07 audit](PARITY_AUDIT_2026-10-07.md) reconciles current implementations with remaining gaps; source additions and unmerged PRs do not close acceptance criteria.
 
 Dependencies are hard prerequisites for merging the described behavior; investigation and fixture collection may start earlier. `None` denotes a task ready to claim. Source groups refer to [CAPABILITY_MATRIX.md](CAPABILITY_MATRIX.md). Every task also inherits the [definition of done](AGENT_HANDOFF.md) and [validation rules](VALIDATION.md). File names under `Start` exist unless explicitly described as new. F02 moved the portable modules into `crates/otd-core`; `src/` keeps the Windows adapters, plugin loading and UI.
 

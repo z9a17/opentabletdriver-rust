@@ -73,6 +73,7 @@ pub(super) enum FileKind {
     Dll,
     /// A plugin archive or DLL for the plugin folder.
     Package,
+    Recording,
 }
 
 pub(super) fn file_dialog(
@@ -86,6 +87,7 @@ pub(super) fn file_dialog(
         FileKind::Profile => ("Rust profile (*.toml)\0*.toml\0All files\0*.*\0\0", "toml"),
         FileKind::Dll => ("Plugin DLL (*.dll)\0*.dll\0\0", "dll"),
         FileKind::Package => ("Plugin (*.zip;*.dll)\0*.zip;*.dll\0\0", "zip"),
+        FileKind::Recording => ("Sampled reports (*.jsonl)\0*.jsonl\0\0", "jsonl"),
     };
     let (filter, extension) = (wide(filter), wide(extension));
     let title = wide(title);
@@ -627,6 +629,9 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
                     app.choose_tablet(name);
                 }
             });
+        }
+        id if (ID_PEN_POLICY..ID_PEN_POLICY + 3).contains(&id) => {
+            with_app(|app| app.pen_policy_toggled(usize::from(id - ID_PEN_POLICY)));
         }
         CMD_DEBUGGER => {
             if let Err(error) = debugger::open() {

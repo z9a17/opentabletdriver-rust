@@ -475,7 +475,7 @@ pub fn run(
     if matches!(mode, Mode::Driver) {
         eprintln!("{}", plugins.describe(&profile));
     }
-    let _debug = DebugDevice::set(selected);
+    let _debug = DebugDevice::set(selected, &source);
     let _priority = if matches!(mode, Mode::Driver) {
         ReaderPriority::for_driver(crate::experimental::mmcss_enabled(), status)
     } else {
@@ -546,12 +546,18 @@ struct DebugDevice {
     _registration: otd_core::debug::Registration,
 }
 impl DebugDevice {
-    fn set(selected: &SelectedDevice<'_>) -> Self {
+    fn set(selected: &SelectedDevice<'_>, source: &HidSource<'_>) -> Self {
         Self {
-            _registration: otd_core::debug::Registration::new(otd_core::debug::Device {
-                name: selected.configuration.name.clone(),
-                parser: selected.identifier.parser().to_owned(),
-            }),
+            _registration: otd_core::debug::Registration::with_reports(
+                otd_core::debug::Device {
+                    name: selected.configuration.name.clone(),
+                    parser: selected.identifier.parser().to_owned(),
+                },
+                source.auxiliary.as_ref().map_or(source.pen.buffer.len(),
+                    |auxiliary| source.pen.buffer.len().max(auxiliary.buffer.len())),
+                source.auxiliary.as_ref().and(selected.auxiliary.as_ref())
+                    .map(|(_, identifier)| identifier.parser().to_owned()),
+            ),
         }
     }
 }
@@ -652,7 +658,7 @@ impl<'a> PreparedSession<'a> {
             .for_tablet(self.selected.spec)
             .map_err(io::Error::other)?;
         let mut decoder = self.selected.decoder()?;
-        let _debug = DebugDevice::set(self.selected);
+        let _debug = DebugDevice::set(self.selected, &self.source);
         let mut source = self.source;
         let mut auxiliary = source.auxiliary_decoder(self.selected);
         announce_auxiliary(&source, self.selected, status);

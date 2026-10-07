@@ -100,19 +100,10 @@ pub(super) fn import_diagnostics(
             // Buttons and wheels are imported one by one, with their own diagnostics.
             if matches!(
                 name.as_str(),
-                "TipButton" | "EraserButton" | "PenButtons" | "AuxButtons" | "WheelBindings"
+                "TipButton" | "EraserButton" | "PenButtons" | "AuxButtons" | "MouseButtons" | "MouseScrollUp" | "MouseScrollDown" | "WheelBindings"
+                    | "DisablePressure" | "DisableTilt" | "EnableDragBindings"
             ) {
                 continue;
-            }
-            if matches!(
-                name.as_str(),
-                "DisablePressure" | "DisableTilt" | "EnableDragBindings"
-            ) && value.as_bool() == Some(true)
-            {
-                diagnostics.push(ProfileDiagnostic::unsupported(
-                    format!("Profiles[{selected}].Bindings.{name}"),
-                    "This enabled binding option is preserved but is not implemented.".into(),
-                ));
             }
             find_active_stores(
                 value,
@@ -201,6 +192,9 @@ pub(super) fn extract_unknown_fields(document: &mut toml::Value) -> BTreeMap<Str
             "bindings",
             "pen_buttons",
             "aux_buttons",
+            "mouse_buttons",
+            "mouse_scroll_up",
+            "mouse_scroll_down",
             "wheels",
             "output",
             "radial_follow",
@@ -242,6 +236,11 @@ pub(super) fn extract_unknown_fields(document: &mut toml::Value) -> BTreeMap<Str
                 "eraser_enabled",
                 "tip_threshold_raw",
                 "eraser_threshold_raw",
+                "tip_threshold_percent",
+                "eraser_threshold_percent",
+                "drag_only",
+                "disable_pressure",
+                "disable_tilt",
             ][..],
         ),
         (
@@ -789,6 +788,8 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
         old_enabled,
         current_threshold,
         old_threshold,
+        current_percent,
+        old_percent,
         action,
     ) in [
         (
@@ -798,6 +799,8 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
             baseline.contact.tip_enabled,
             profile.contact.tip_threshold_raw,
             baseline.contact.tip_threshold_raw,
+            profile.contact.tip_threshold_percent,
+            baseline.contact.tip_threshold_percent,
             "Tip",
         ),
         (
@@ -807,6 +810,8 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
             baseline.contact.eraser_enabled,
             profile.contact.eraser_threshold_raw,
             baseline.contact.eraser_threshold_raw,
+            profile.contact.eraser_threshold_percent,
+            baseline.contact.eraser_threshold_percent,
             "Eraser",
         ),
     ] {
@@ -842,18 +847,38 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
             }
             set_field(store, "Enable", json!(current_enabled))?;
         }
-        if current_threshold != old_threshold {
+        if current_threshold != old_threshold || current_percent != old_percent {
             let raw = current_threshold.ok_or(
                 "hardware tip-switch contact cannot be represented as an OTD pressure threshold",
             )?;
             let max_pressure = profile.tablet.max_pressure;
-            let percent = (f64::from(raw) - 0.5) * 100.0 / f64::from(max_pressure);
+            let percent = current_percent.filter(|percent| super::activation_raw_for(f64::from(*percent), max_pressure).ok() == Some(raw)).map(f64::from).unwrap_or_else(|| (f64::from(raw) - 0.5) * 100.0 / f64::from(max_pressure));
             if super::activation_raw_for(percent, max_pressure).ok() != Some(raw) {
                 return Err(format!(
                     "raw threshold {raw} has no supported OTD percent representation"
                 ));
             }
             set_field(&mut selected["Bindings"], threshold, json!(percent))?;
+        }
+    }
+    for (name, current, old) in [
+        ("EnableDragBindings", profile.contact.drag_only, baseline.contact.drag_only),
+        ("DisablePressure", profile.contact.disable_pressure, baseline.contact.disable_pressure),
+        ("DisableTilt", profile.contact.disable_tilt, baseline.contact.disable_tilt),
+    ] {
+        if current != old { set_field(&mut selected["Bindings"], name, json!(current))?; }
+    }
+    if profile.mouse_buttons != baseline.mouse_buttons {
+        ensure_object(&mut selected["Bindings"])?;
+        export_button_list(&mut selected["Bindings"]["MouseButtons"], "mouse button", &profile.mouse_buttons, &baseline.mouse_buttons, false)?;
+    }
+    for (name, current, old) in [
+        ("MouseScrollUp", &profile.mouse_scroll_up, &baseline.mouse_scroll_up),
+        ("MouseScrollDown", &profile.mouse_scroll_down, &baseline.mouse_scroll_down),
+    ] {
+        if current != old {
+            ensure_object(&mut selected["Bindings"])?;
+            write_pen_button(&mut selected["Bindings"][name], current, false)?;
         }
     }
     export_pen_buttons(selected, profile, &baseline)?;
@@ -1140,8 +1165,22 @@ fn pen_binding_property(path: &str) -> Option<&'static str> {
         super::MOUSE_BINDING => Some("Button"),
         super::KEY_BINDING => Some("Key"),
         super::MULTI_KEY_BINDING => Some("Keys"),
+        super::MOUSE_SCROLL_BINDING => Some("Direction"),
         _ => None,
     }
+}
+
+fn unknown_binding_properties(store: &Value, path: &str) -> bool {
+    let allowed: &[&str] = match path {
+        super::ADAPTIVE_BINDING => &["Binding"], super::MOUSE_BINDING => &["Button"],
+        super::KEY_BINDING => &["Key"], super::MULTI_KEY_BINDING => &["Keys"],
+        super::MOUSE_SCROLL_BINDING => &["Direction", "Amount", "Interval"],
+        _ => return true,
+    };
+    store["Settings"].as_array().is_some_and(|settings| settings.iter().any(|setting| {
+        setting["Property"].as_str().is_none_or(|property| !allowed.contains(&property))
+            || setting.as_object().is_none_or(|fields| fields.keys().any(|key| key != "Property" && key != "Value"))
+    }))
 }
 
 fn write_pen_button(
@@ -1159,7 +1198,26 @@ fn write_pen_button(
             .ok_or("replacing an unsupported source binding would lose its original settings")?;
         super::pen_button_action(Some(&parsed), source_pen)?;
     }
+    if let ButtonAction::Scroll(scroll) = action {
+        scroll.validate()?;
+        ensure_object(store)?;
+        if store["Path"].as_str() != Some(super::MOUSE_SCROLL_BINDING) {
+            if let Some(path) = store["Path"].as_str() {
+                if unknown_binding_properties(store, path) {
+                    return Err("changing binding type would discard unknown source properties; keep the existing type or edit a new button".into());
+                }
+            }
+            set_field(store, "Settings", json!([]))?;
+            set_field(store, "Path", json!(super::MOUSE_SCROLL_BINDING))?;
+        }
+        set_field(store, "Enable", json!(true))?;
+        set_store_property(store, "Direction", json!(match scroll.axis { crate::output::buttons::ScrollAxis::Vertical => "Vertical", crate::output::buttons::ScrollAxis::Horizontal => "Horizontal" }))?;
+        set_store_property(store, "Amount", json!(scroll.amount))?;
+        set_store_property(store, "Interval", json!(scroll.interval_ms))?;
+        return Ok(());
+    }
     let (path, property, value) = match action {
+        ButtonAction::Scroll(_) => unreachable!("scroll handled above"),
         ButtonAction::None => {
             if !store.is_null() {
                 set_field(store, "Enable", json!(false))?;
@@ -1197,18 +1255,8 @@ fn write_pen_button(
         ),
     };
     if !store.is_null() && store["Path"].as_str() != Some(path) {
-        let old_property = store["Path"]
-            .as_str()
-            .and_then(pen_binding_property)
-            .ok_or("unsupported source binding")?;
-        if store["Settings"].as_array().is_some_and(|settings| {
-            settings.iter().any(|setting| {
-                setting["Property"].as_str() != Some(old_property)
-                    || setting.as_object().is_none_or(|fields| {
-                        fields.keys().any(|key| key != "Property" && key != "Value")
-                    })
-            })
-        }) {
+        let old_path = store["Path"].as_str().ok_or("unsupported source binding")?;
+        if unknown_binding_properties(store, old_path) {
             return Err("changing binding type would discard unknown source properties; keep the existing type or edit a new button".into());
         }
         set_field(store, "Settings", json!([]))?;

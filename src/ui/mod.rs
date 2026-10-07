@@ -24,6 +24,8 @@ mod client;
 mod commands;
 mod conversion;
 mod debugger;
+mod debugger_data;
+mod debugger_capture;
 mod draw;
 mod experimental;
 mod layout;
@@ -163,6 +165,7 @@ const ID_TIP_FIELD: u16 = 502;
 const ID_ERASER_BINDING: u16 = 510;
 const ID_ERASER_SLIDER: u16 = 511;
 const ID_ERASER_FIELD: u16 = 512;
+const ID_PEN_POLICY: u16 = 520;
 const ID_LOG: u16 = 600;
 // Area context menu.
 const AREA_ALIGN: u16 = 800;
@@ -381,16 +384,20 @@ impl Drop for FontSet {
 enum Tab {
     Output,
     Filters,
+    Tools,
     Pen,
+    Mouse,
     Aux,
     Experimental,
     Console,
 }
 
-const TABS: [(Tab, &str); 6] = [
+const TABS: [(Tab, &str); 8] = [
     (Tab::Output, "Output"),
     (Tab::Filters, "Filters"),
+    (Tab::Tools, "Tools"),
     (Tab::Pen, "Pen Settings"),
+    (Tab::Mouse, "Mouse Settings"),
     (Tab::Aux, "Auxiliary Settings"),
     (Tab::Experimental, "Experimental"),
     (Tab::Console, "Console"),
@@ -674,6 +681,7 @@ struct Controls {
     tip_slider: HWND,
     tip_field: HWND,
     eraser_binding: HWND,
+    pen_policy: [HWND; 3],
     eraser_slider: HWND,
     eraser_field: HWND,
     log: HWND,
@@ -779,6 +787,7 @@ struct App {
     daemon_log_sequence: u64,
     closing: bool,
     close_ready: bool,
+    recording_close_pending: bool,
     update_restart_pending: bool,
     update_close_approved: bool,
     updates: updates::UpdateState,
@@ -1237,10 +1246,29 @@ unsafe extern "system" fn window_proc(
             }
             default()
         }
+        WM_TIMER if wp == 0xD06 => {
+            if !debugger::is_open() {
+                unsafe { KillTimer(window, 0xD06); }
+                if with_app(|app| std::mem::take(&mut app.recording_close_pending)).unwrap_or(false) {
+                    if with_app(App::begin_close).unwrap_or(true) { unsafe { DestroyWindow(window); } }
+                } else { unsafe { PostMessageW(window, WM_CLOSE, 0, 0); } }
+            }
+            0
+        }
+        WM_TIMER if wp == 0xD07 => {
+            if !debugger::is_open() {
+                unsafe { KillTimer(window, 0xD07); }
+                updates::resume_restart(window);
+            }
+            0
+        }
         WM_CLOSE => {
             if with_app(|app| app.closing).unwrap_or(false) {
                 if with_app(|app| app.close_ready).unwrap_or(false) {
-                    unsafe { DestroyWindow(window) };
+                    if debugger::is_open() {
+                        debugger::close();
+                        unsafe { SetTimer(window, 0xD06, 33, None); }
+                    } else { unsafe { DestroyWindow(window); } }
                 }
                 return 0;
             }
@@ -1260,7 +1288,10 @@ unsafe extern "system" fn window_proc(
                 return 0;
             }
             if with_app(App::begin_close).unwrap_or(true) {
-                unsafe { DestroyWindow(window) };
+                if debugger::is_open() {
+                    debugger::close();
+                    unsafe { SetTimer(window, 0xD06, 33, None); }
+                } else { unsafe { DestroyWindow(window); } }
             }
             0
         }

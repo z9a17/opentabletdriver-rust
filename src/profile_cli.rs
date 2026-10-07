@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use otd_core::config::{
-    ImportOptions, MAX_PEN_BUTTONS, NativeProfileCollection, OtdSettingsDocument, Profile,
+    ImportOptions, OutputKind, MAX_PEN_BUTTONS, NativeProfileCollection, OtdSettingsDocument, Profile,
 };
 use otd_core::output::buttons::{ButtonAction, WheelBinding};
 use otd_core::reports::MAX_WHEELS;
@@ -23,21 +23,37 @@ pub fn usage() -> &'static str {
       [--relative-rotation DEGREES] [--reset-time MS] [--pen-button NUMBER=ACTION]
       [--aux-button NUMBER=ACTION] [--wheel-clockwise WHEEL=ACTION]
       [--wheel-counter-clockwise WHEEL=ACTION] [--wheel-threshold WHEEL=DEGREES]
+      [--mouse-button NUMBER=ACTION] [--mouse-scroll-up ACTION] [--mouse-scroll-down ACTION]
+      [--output-mode absolute|relative|pen]
+      [--monitor all|INDEX] [--display-area W,H,X,Y] [--tablet-area W,H,X,Y[,ROTATION]]
+      [--clipping BOOL] [--limiting BOOL] [--tip-enabled BOOL] [--eraser-enabled BOOL]
+      [--tip-threshold PERCENT] [--eraser-threshold PERCENT] [--drag-only BOOL]
+      [--disable-pressure BOOL] [--disable-tilt BOOL] [--plugin-enabled NUMBER=BOOL]
+      [--radial-follow enable|disable|reset]
   profiles paths
 
+Areas use centered coordinates: display pixels and tablet millimeters. Simple
+profiles require both areas together; --monitor requires a simple absolute profile.
+Plugin indexes start at 1 and include tools. Disabling native Radial Follow
+retains one configured entry; ambiguous multiple native entries are rejected.
 Output files must not already exist. The source file is never overwritten.
 Importing a tablet profile does not establish runtime support for that tablet.
 The legacy flag explicitly activates disabled Radial Follow stores during OTD import.
 Recovery reads the sibling .bak into a new file; it never replaces the source.
 Get prints JSON for one section: all, output, areas, sensitivity, bindings,
-filters or misc (default all). A collection defaults to its selected profile and
+filters, tools or misc (default all). A collection defaults to its selected profile and
 a single Rust profile to index 0; OTD JSON requires --profile.
 Set writes a new profile with the next settings revision; it neither contacts
 the daemon nor applies the result. Relative options require relative output.
 Pen button and express key numbers start at 1 (maximum 64). Repeat
 --pen-button or --aux-button for distinct buttons. Actions: none, barrel:1..3,
 mouse:left|right|middle|backward|forward, or keys:Control+Shift+Z. Quote key
-chords when required by your shell. Wheel numbers start at 1 (maximum 8); each
+chords when required by your shell. Scroll actions: scroll:up|down|left|right or
+scroll:vertical|horizontal:AMOUNT[:INTERVAL_MS]. Amount is the upstream signed
+amount, emitted with its sign inverted; interval defaults to 300 ms. Scroll
+presses once then repeats while held; release cancels repetition. Mouse scroll
+up/down use the report Y sign as an edge-triggered binding, as upstream does.
+Wheel numbers start at 1 (maximum 8); each
 rotation threshold step presses and releases the wheel's action once, and
 --wheel-threshold sets both directions in degrees (default: one wheel step).
 OTD_RUST_PORTABLE_DIR selects an explicit absolute portable settings directory."
@@ -46,11 +62,12 @@ OTD_RUST_PORTABLE_DIR selects an explicit absolute portable settings directory."
 /// Profile keys shown by `profiles get --section`, grouped like the upstream
 /// console getters (`getareas`, `getsensitivity`, `getbindings`, `getfilters`,
 /// `getmiscsettings`). `output` and `all` are handled separately.
-const SECTIONS: [(&str, &[&str]); 5] = [
+const SECTIONS: [(&str, &[&str]); 6] = [
     ("areas", &["monitor", "rotation", "crop", "absolute"]),
     ("sensitivity", &["relative"]),
-    ("bindings", &["bindings", "pen_buttons", "aux_buttons", "wheels"]),
-    ("filters", &["radial_follow", "plugins"]),
+    ("tools", &["plugins"]),
+    ("bindings", &["bindings", "pen_buttons", "aux_buttons", "mouse_buttons", "mouse_scroll_up", "mouse_scroll_down", "wheels"]),
+    ("filters", &["radial_follow", "disabled_radial_follow", "plugins"]),
     (
         "misc",
         &["device_path", "schema_version", "settings_revision"],
@@ -72,11 +89,40 @@ struct Options {
     wheel_clockwise: Vec<(usize, ButtonAction)>,
     wheel_counter_clockwise: Vec<(usize, ButtonAction)>,
     wheel_thresholds: Vec<(usize, f32)>,
+    mouse_buttons: Vec<(usize, ButtonAction)>,
+    mouse_scroll_up: Option<ButtonAction>,
+    mouse_scroll_down: Option<ButtonAction>,
+    mode: Option<String>,
+    monitor: Option<Option<usize>>,
+    display_area: Option<otd_core::mapping::OtdArea>,
+    tablet_area: Option<otd_core::mapping::OtdArea>,
+    clipping: Option<bool>,
+    limiting: Option<bool>,
+    tip_enabled: Option<bool>,
+    eraser_enabled: Option<bool>,
+    tip_threshold: Option<f64>,
+    eraser_threshold: Option<f64>,
+    drag_only: Option<bool>,
+    disable_pressure: Option<bool>,
+    disable_tilt: Option<bool>,
+    plugin_states: Vec<(usize, bool)>,
+    radial_state: Option<String>,
 }
 
 impl Options {
+    fn sets_controls(&self) -> bool {
+        self.mode.is_some() || self.monitor.is_some() || self.display_area.is_some()
+            || self.tablet_area.is_some() || self.clipping.is_some() || self.limiting.is_some()
+            || self.tip_enabled.is_some() || self.eraser_enabled.is_some()
+            || self.tip_threshold.is_some() || self.eraser_threshold.is_some()
+            || self.drag_only.is_some() || self.disable_pressure.is_some() || self.disable_tilt.is_some()
+            || !self.plugin_states.is_empty() || self.radial_state.is_some()
+    }
     fn sets_bindings(&self) -> bool {
-        !(self.pen_buttons.is_empty()
+        !(self.mouse_scroll_up.is_none()
+            && self.mouse_scroll_down.is_none()
+            && self.mouse_buttons.is_empty()
+            && self.pen_buttons.is_empty()
             && self.aux_buttons.is_empty()
             && self.wheel_clockwise.is_empty()
             && self.wheel_counter_clockwise.is_empty()
@@ -234,6 +280,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             let Input::Native(mut profile) = input else {
                 return Err("set requires a single Rust profile TOML file. Extract a profile with profiles import first.".into());
             };
+            apply_controls(&mut profile, &options)?;
             if options.sets_relative() {
                 let mut relative = profile
                     .relative
@@ -247,11 +294,14 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 if let Some(ms) = options.reset_time_ms {
                     relative.reset_delay = Duration::from_millis(ms);
                 }
-                profile.relative = Some(relative.validate()?);
+                profile.relative = Some(relative.validate_for(profile.tablet)?);
             }
+            if let Some(action) = &options.mouse_scroll_up { profile.mouse_scroll_up = action.clone(); }
+            if let Some(action) = &options.mouse_scroll_down { profile.mouse_scroll_down = action.clone(); }
             for (list, edits) in [
                 (&mut profile.pen_buttons, &options.pen_buttons),
                 (&mut profile.aux_buttons, &options.aux_buttons),
+                (&mut profile.mouse_buttons, &options.mouse_buttons),
             ] {
                 for (index, action) in edits {
                     if list.len() <= *index {
@@ -289,10 +339,93 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 .output
                 .as_deref()
                 .ok_or("set requires --output FILE")?;
-            write_output(output, &profile.to_toml_at(output)?)
+            let text = profile.to_toml_at(output)?;
+            Profile::from_toml_text(&text, output)?;
+            write_output(output, &text)
         }
         _ => unreachable!("command was validated"),
     }
+}
+
+
+fn parse_bool(text: &str, flag: &str) -> Result<bool, String> {
+    match text { "true" => Ok(true), "false" => Ok(false), _ => Err(format!("{flag} requires true or false")) }
+}
+
+fn parse_area(text: &str, flag: &str) -> Result<otd_core::mapping::OtdArea, String> {
+    let fields = text.split(',').collect::<Vec<_>>();
+    if fields.len() != 4 && !(flag == "--tablet-area" && fields.len() == 5) {
+        return Err(format!("{flag} requires W,H,X,Y{}", if flag == "--tablet-area" { "[,ROTATION]" } else { "" }));
+    }
+    let area = otd_core::mapping::OtdArea {
+        width: finite(fields[0], flag)?, height: finite(fields[1], flag)?,
+        x: finite(fields[2], flag)?, y: finite(fields[3], flag)?,
+        rotation: if fields.len() == 5 { finite(fields[4], flag)? } else { 0.0 },
+    };
+    if area.width <= 0.0 || area.height <= 0.0 { return Err(format!("{flag} requires positive dimensions")); }
+    Ok(area)
+}
+
+fn apply_controls(profile: &mut Profile, options: &Options) -> Result<(), String> {
+    if let Some(mode) = options.mode.as_deref() {
+        match mode {
+            "relative" => {
+                profile.output = OutputKind::Mouse;
+                profile.relative = Some(profile.relative.unwrap_or(otd_core::relative::RelativeSettings {
+                    sensitivity: (10.0, 10.0), rotation: 0.0, reset_delay: Duration::from_millis(100),
+                }));
+                profile.otd_mapping = None;
+                profile.monitor = None;
+                profile.crop = otd_core::mapping::Crop::full(profile.tablet);
+                profile.rotation = 0;
+            }
+            "absolute" | "pen" => { profile.relative = None; profile.output = if mode == "pen" { OutputKind::Pen } else { OutputKind::Mouse }; }
+            _ => unreachable!("mode validated"),
+        }
+    }
+    if options.display_area.is_some() || options.tablet_area.is_some() || options.clipping.is_some() || options.limiting.is_some() {
+        if profile.relative.is_some() { return Err("absolute area options require absolute output".into()); }
+        let mut mapping = match profile.otd_mapping {
+            Some(mapping) => mapping,
+            None => otd_core::mapping::OtdMapping {
+                display: options.display_area.ok_or("a simple profile needs --display-area and --tablet-area together")?,
+                tablet: options.tablet_area.ok_or("a simple profile needs --display-area and --tablet-area together")?,
+                clipping: true, limiting: false,
+            },
+        };
+        if let Some(area) = options.display_area { mapping.display = area; }
+        if let Some(area) = options.tablet_area { mapping.tablet = area; }
+        if let Some(value) = options.clipping { mapping.clipping = value; }
+        if let Some(value) = options.limiting { mapping.limiting = value; }
+        profile.otd_mapping = Some(mapping);
+        profile.monitor = None;
+        profile.crop = otd_core::mapping::Crop::default();
+        profile.rotation = 0;
+    }
+    if let Some(monitor) = options.monitor {
+        if profile.relative.is_some() || profile.otd_mapping.is_some() { return Err("--monitor requires a simple absolute profile without explicit areas".into()); }
+        profile.monitor = monitor;
+    }
+    if let Some(value) = options.tip_enabled { profile.contact.tip_enabled = value; }
+    if let Some(value) = options.eraser_enabled { profile.contact.eraser_enabled = value; }
+    if let Some(value) = options.tip_threshold { profile.contact.tip_threshold_percent = Some(value as f32); profile.contact.tip_threshold_raw = Some(otd_core::config::activation_raw_for(value, profile.tablet.max_pressure)?); }
+    if let Some(value) = options.eraser_threshold { profile.contact.eraser_threshold_percent = Some(value as f32); profile.contact.eraser_threshold_raw = Some(otd_core::config::activation_raw_for(value, profile.tablet.max_pressure)?); }
+    if let Some(value) = options.drag_only { profile.contact.drag_only = value; }
+    if let Some(value) = options.disable_pressure { profile.contact.disable_pressure = value; }
+    if let Some(value) = options.disable_tilt { profile.contact.disable_tilt = value; }
+    for (index, enabled) in &options.plugin_states {
+        profile.plugins.get_mut(*index).ok_or_else(|| format!("plugin {} does not exist", index + 1))?.enabled = *enabled;
+    }
+    if let Some(state) = options.radial_state.as_deref() {
+        if profile.radial_follow.len() > 1 { return Err("native Radial Follow control requires at most one entry; edit multiple entries explicitly".into()); }
+        match state {
+            "enable" => if profile.radial_follow.is_empty() { profile.radial_follow.push(profile.disabled_radial_follow.take().unwrap_or_default()); },
+            "disable" => if let Some(settings) = profile.radial_follow.pop() { profile.disabled_radial_follow = Some(settings); },
+            "reset" => if let Some(settings) = profile.radial_follow.first_mut() { *settings = Default::default(); } else { profile.disabled_radial_follow = Some(Default::default()); },
+            _ => unreachable!("radial state validated"),
+        }
+    }
+    profile.validate_filter_execution()
 }
 
 fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> {
@@ -337,7 +470,7 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> 
                     && !SECTIONS.iter().any(|(name, _)| *name == section)
                 {
                     return Err(format!(
-                        "unknown section {section:?}; use all, output, areas, sensitivity, bindings, filters or misc"
+                        "unknown section {section:?}; use all, output, areas, sensitivity, bindings, filters, tools or misc"
                     ));
                 }
                 options.section = Some(section);
@@ -365,6 +498,61 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> 
                         .parse()
                         .map_err(|_| "--reset-time requires nonnegative whole milliseconds")?,
                 );
+            }
+            "--output-mode" => {
+                if options.mode.is_some() { return Err("--output-mode was specified more than once".into()); }
+                let value = option_value(&mut args, &flag)?;
+                if !matches!(value.as_str(), "absolute" | "relative" | "pen") { return Err("--output-mode requires absolute, relative or pen".into()); }
+                options.mode = Some(value);
+            }
+            "--monitor" => {
+                if options.monitor.is_some() { return Err("--monitor was specified more than once".into()); }
+                let value = option_value(&mut args, &flag)?;
+                options.monitor = Some(if value == "all" { None } else { Some(value.parse().map_err(|_| "--monitor requires all or a zero-based display index")?) });
+            }
+            "--display-area" | "--tablet-area" => {
+                let area = parse_area(&option_value(&mut args, &flag)?, &flag)?;
+                let target = if flag == "--display-area" { &mut options.display_area } else { &mut options.tablet_area };
+                if target.replace(area).is_some() { return Err(format!("{flag} was specified more than once")); }
+            }
+            "--clipping" | "--limiting" | "--tip-enabled" | "--eraser-enabled" | "--drag-only" | "--disable-pressure" | "--disable-tilt" => {
+                let value = parse_bool(&option_value(&mut args, &flag)?, &flag)?;
+                let target = match flag.as_str() {
+                    "--clipping" => &mut options.clipping, "--limiting" => &mut options.limiting,
+                    "--tip-enabled" => &mut options.tip_enabled, "--eraser-enabled" => &mut options.eraser_enabled,
+                    "--drag-only" => &mut options.drag_only, "--disable-pressure" => &mut options.disable_pressure,
+                    _ => &mut options.disable_tilt,
+                };
+                if target.replace(value).is_some() { return Err(format!("{flag} was specified more than once")); }
+            }
+            "--tip-threshold" | "--eraser-threshold" => {
+                let value = finite(&option_value(&mut args, &flag)?, &flag)?;
+                if !(0.0..=100.0).contains(&value) { return Err(format!("{flag} requires a percentage from 0 to 100")); }
+                let target = if flag == "--tip-threshold" { &mut options.tip_threshold } else { &mut options.eraser_threshold };
+                if target.replace(value).is_some() { return Err(format!("{flag} was specified more than once")); }
+            }
+            "--plugin-enabled" => {
+                let value = option_value(&mut args, &flag)?;
+                let (index, enabled) = numbered(&value, &flag, 32)?;
+                if options.plugin_states.iter().any(|(old, _)| *old == index) { return Err("plugin index was specified more than once".into()); }
+                options.plugin_states.push((index, parse_bool(enabled, &flag)?));
+            }
+            "--radial-follow" => {
+                if options.radial_state.is_some() { return Err("--radial-follow was specified more than once".into()); }
+                let value = option_value(&mut args, &flag)?;
+                if !matches!(value.as_str(), "enable" | "disable" | "reset") { return Err("--radial-follow requires enable, disable or reset".into()); }
+                options.radial_state = Some(value);
+            }
+            "--mouse-scroll-up" | "--mouse-scroll-down" => {
+                let action = option_value(&mut args, &flag)?.parse::<ButtonAction>()?;
+                let target = if flag == "--mouse-scroll-up" { &mut options.mouse_scroll_up } else { &mut options.mouse_scroll_down };
+                if target.replace(action).is_some() { return Err(format!("{flag} was specified more than once")); }
+            }
+            "--mouse-button" => {
+                let value = option_value(&mut args, &flag)?;
+                let (index, action) = numbered(&value, &flag, MAX_PEN_BUTTONS)?;
+                if options.mouse_buttons.iter().any(|(old, _)| *old == index) { return Err("mouse button was specified more than once".into()); }
+                options.mouse_buttons.push((index, action.parse()?));
             }
             "--pen-button" => {
                 let value = option_value(&mut args, &flag)?;
@@ -459,6 +647,9 @@ fn finite(text: &str, flag: &str) -> Result<f64, String> {
 }
 
 fn validate_options(command: &str, options: &Options) -> Result<(), String> {
+    if options.sets_controls() && command != "set" {
+        return Err("control setting options apply only to profiles set".into());
+    }
     if options.section.is_some() && command != "get" {
         return Err(format!(
             "--section applies only to profiles get\n{}",
@@ -503,7 +694,7 @@ fn validate_options(command: &str, options: &Options) -> Result<(), String> {
                 && options.output.is_some()
                 && options.name.is_none()
                 && !options.legacy
-                && (options.sets_relative() || options.sets_bindings())
+                && (options.sets_relative() || options.sets_bindings() || options.sets_controls())
         }
         _ => false,
     };
@@ -584,6 +775,15 @@ fn list(input: &Input) -> Result<Value, String> {
     })
 }
 
+pub fn active_section(section: &str) -> Result<(), String> {
+    print_json(&profile_section(&crate::daemon::active_profile()?, section)?)
+}
+
+pub fn binding_actions() -> Result<(), String> {
+    print_json(&json!({"native": ["none", "barrel:1", "barrel:2", "barrel:3", "mouse:left", "mouse:right", "mouse:middle", "mouse:backward", "mouse:forward", "keys:KEY[+KEY...]", "scroll:up", "scroll:down", "scroll:left", "scroll:right", "scroll:vertical|horizontal:AMOUNT[:INTERVAL_MS]"],
+        "managed_bindings": "not hosted", "preset_bindings": "not hosted"}))
+}
+
 fn output_mode(profile: &Profile) -> &'static str {
     if profile.relative.is_some() {
         "relative"
@@ -625,6 +825,9 @@ fn profile_section(profile: &Profile, section: &str) -> Result<Value, String> {
         "aux_buttons".into(),
         json!(profile.aux_buttons.iter().map(ToString::to_string).collect::<Vec<_>>()),
     );
+    settings.insert("mouse_buttons".into(), json!(profile.mouse_buttons.iter().map(ToString::to_string).collect::<Vec<_>>()));
+    settings.insert("mouse_scroll_up".into(), json!(profile.mouse_scroll_up.to_string()));
+    settings.insert("mouse_scroll_down".into(), json!(profile.mouse_scroll_down.to_string()));
     // Every wheel with every field; an absent threshold is one wheel step.
     settings.insert(
         "wheels".into(),
@@ -654,6 +857,10 @@ fn profile_section(profile: &Profile, section: &str) -> Result<Value, String> {
             json!(profile.preserved_fields.len()),
         );
         return Ok(Value::Object(settings));
+    }
+    if section == "tools" {
+        settings.insert("plugins".into(), serde_json::to_value(profile.plugins.iter()
+            .filter(|plugin| plugin.kind == otd_core::plugins::PluginKind::DotnetTool).collect::<Vec<_>>()).map_err(|error| error.to_string())?);
     }
     let (_, keys) = SECTIONS
         .iter()
@@ -866,4 +1073,54 @@ mod tests {
         let get = options(&["--aux-button", "1=none"]).unwrap();
         assert!(validate_options("get", &get).is_err());
     }
+    #[test]
+    fn controls_edit_areas_output_and_policies_with_loader_validation() {
+        let edits = options(&["--output", "new.toml", "--display-area", "1920,1080,960,540",
+            "--tablet-area", "100,60,50,30,15", "--clipping", "false", "--limiting", "true",
+            "--drag-only", "true", "--tip-threshold", "100", "--disable-tilt", "true"]).unwrap();
+        validate_options("set", &edits).unwrap();
+        assert!(validate_options("get", &edits).is_err());
+        let mut profile = Profile::default();
+        apply_controls(&mut profile, &edits).unwrap();
+        assert!(profile.contact.drag_only && profile.contact.disable_tilt);
+        assert_eq!(profile.contact.tip_threshold_raw, Some(profile.tablet.max_pressure));
+        let mapping = profile.otd_mapping.unwrap();
+        assert!(!mapping.clipping && mapping.limiting);
+        assert_eq!(mapping.tablet.rotation, 15.0);
+        let text = profile.to_toml().unwrap();
+        Profile::from_toml_text(&text, Path::new("new.toml")).unwrap();
+        assert!(apply_controls(&mut profile, &options(&["--monitor", "1"]).unwrap()).is_err());
+        apply_controls(&mut profile, &options(&["--output-mode", "relative"]).unwrap()).unwrap();
+        assert!(profile.relative.is_some() && profile.otd_mapping.is_none());
+        assert!(apply_controls(&mut profile, &options(&["--tablet-area", "100,60,50,30"]).unwrap()).is_err());
+    }
+
+    #[test]
+    fn controls_reject_invalid_or_duplicate_values() {
+        for args in [vec!["--clipping", "yes"], vec!["--tip-threshold", "-1"],
+            vec!["--eraser-threshold", "101"], vec!["--tablet-area", "0,10,0,0"],
+            vec!["--display-area", "10,10,nan,0"], vec!["--output-mode", "unknown"],
+            vec!["--drag-only", "true", "--drag-only", "false"],
+            vec!["--plugin-enabled", "1=true", "--plugin-enabled", "1=false"],
+            vec!["--mouse-button", "65=none"]] {
+            assert!(options(&args).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn radial_disable_enable_retains_values_and_reset_preserves_disabled_state() {
+        let mut profile = Profile::default();
+        let settings = otd_core::radial_follow::RadialFollowSettings { outer_radius: 23.0, ..Default::default() };
+        profile.radial_follow.push(settings);
+        apply_controls(&mut profile, &options(&["--radial-follow", "disable"]).unwrap()).unwrap();
+        assert!(profile.radial_follow.is_empty());
+        assert_eq!(profile.disabled_radial_follow.unwrap().outer_radius, 23.0);
+        apply_controls(&mut profile, &options(&["--radial-follow", "enable"]).unwrap()).unwrap();
+        assert_eq!(profile.radial_follow[0].outer_radius, 23.0);
+        apply_controls(&mut profile, &options(&["--radial-follow", "disable"]).unwrap()).unwrap();
+        apply_controls(&mut profile, &options(&["--radial-follow", "reset"]).unwrap()).unwrap();
+        assert!(profile.radial_follow.is_empty());
+        assert_eq!(profile.disabled_radial_follow.unwrap().outer_radius, 1.0);
+    }
+
 }

@@ -15,12 +15,43 @@
 use std::fmt;
 use std::io;
 use std::str::FromStr;
+use std::time::{Duration, Instant};
 
 use crate::actions::{
     Action, ActionOwner, ActionState, ActionTransition, KeyboardUsage, MouseButton,
 };
 use crate::keys;
 use crate::reports::Buttons;
+
+/// The axes accepted by upstream IMouseScrollHandler.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScrollAxis { Vertical, Horizontal }
+
+/// One native MouseScrollBinding. Amount and interval use the upstream
+/// properties: Scroll() sends -Amount, once on press and at every interval.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScrollAction {
+    pub axis: ScrollAxis,
+    pub amount: i32,
+    pub interval_ms: u32,
+}
+
+impl ScrollAction {
+    pub fn validate(self) -> Result<Self, String> {
+        if self.amount == 0 || self.interval_ms == 0 || self.interval_ms > i32::MAX as u32 {
+            return Err("scroll amount must be nonzero and interval 1..2147483647 milliseconds".into());
+        }
+        Ok(self)
+    }
+    pub fn pulse(self) -> ScrollPulse {
+        ScrollPulse { axis: self.axis, delta: self.amount.wrapping_neg() }
+    }
+}
+
+/// A pointer scroll call, in the upstream pointer's units. Windows treats 120
+/// units as a wheel detent. Platform adapters perform their own unit conversion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScrollPulse { pub axis: ScrollAxis, pub delta: i32 }
 
 /// What one pen button does.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,6 +68,7 @@ pub enum ButtonAction {
     /// One key or a chord, held while the pen button is. Modifiers go down
     /// first and come up last.
     Keys(Vec<KeyboardUsage>),
+    Scroll(ScrollAction),
 }
 
 /// OpenTabletDriver's defaults: barrel buttons 1, 2 and 3.
@@ -143,6 +175,23 @@ impl FromStr for ButtonAction {
                 )
             }),
             "keys" | "key" => keys::parse_chord(value).map(Self::Keys),
+            "scroll" => {
+                let (axis, amount, interval_ms) = match value {
+                    "up" => (ScrollAxis::Vertical, -120, 300),
+                    "down" => (ScrollAxis::Vertical, 120, 300),
+                    "left" => (ScrollAxis::Horizontal, 120, 300),
+                    "right" => (ScrollAxis::Horizontal, -120, 300),
+                    _ => {
+                        let fields = value.split(':').collect::<Vec<_>>();
+                        if fields.len() != 2 && fields.len() != 3 { return Err("scroll requires up/down/left/right or vertical|horizontal:AMOUNT[:INTERVAL_MS]".into()); }
+                        let axis = match fields[0] { "vertical" => ScrollAxis::Vertical, "horizontal" => ScrollAxis::Horizontal, _ => return Err("scroll axis must be vertical or horizontal".into()) };
+                        let amount = fields[1].parse::<i32>().map_err(|_| "scroll amount must be a signed 32-bit integer")?;
+                        let interval_ms = if fields.len() == 3 { fields[2].parse::<u32>().map_err(|_| "scroll interval must be a positive millisecond integer")? } else { 300 };
+                        (axis, amount, interval_ms)
+                    }
+                };
+                ScrollAction { axis, amount, interval_ms }.validate().map(Self::Scroll)
+            }
             other => Err(format!("unknown button action kind {other:?}")),
         }
     }
@@ -155,6 +204,7 @@ impl fmt::Display for ButtonAction {
             Self::Barrel(number) => write!(f, "barrel:{number}"),
             Self::Mouse(button) => write!(f, "mouse:{}", mouse_name(*button)),
             Self::Keys(keys) => write!(f, "keys:{}", keys::chord_text(keys)),
+            Self::Scroll(action) => write!(f, "scroll:{}:{}:{}", match action.axis { ScrollAxis::Vertical => "vertical", ScrollAxis::Horizontal => "horizontal" }, action.amount, action.interval_ms),
         }
     }
 }
@@ -164,6 +214,11 @@ impl fmt::Display for ButtonAction {
 pub trait ActionSink {
     /// Whether the platform can inject this action.
     fn supports(&self, action: Action) -> bool;
+    fn supports_scroll(&self) -> bool { false }
+    /// Emit a pulse; it has no held OS state and bypasses key/button ownership.
+    fn scroll(&mut self, _pulse: ScrollPulse) -> io::Result<()> {
+        Err(io::Error::new(io::ErrorKind::Unsupported, "pointer scroll output is unavailable"))
+    }
     /// Records that `binding` (a pen button index) wants `action` held or not.
     /// Nothing is sent until `flush`.
     fn hold(&mut self, binding: u32, action: Action, held: bool) -> io::Result<()>;
@@ -179,15 +234,21 @@ pub trait ActionSink {
 pub struct LocalActions<F> {
     state: Box<ActionState>,
     send: F,
-    supports: fn(Action) -> bool,
+    supports: Box<dyn Fn(Action) -> bool>,
+    scroll: Option<Box<dyn FnMut(ScrollPulse) -> io::Result<()>>>,
 }
 
 impl<F: FnMut(ActionTransition) -> io::Result<()>> LocalActions<F> {
-    pub fn new(send: F, supports: fn(Action) -> bool) -> Self {
+    pub fn with_scroll(mut self, scroll: impl FnMut(ScrollPulse) -> io::Result<()> + 'static) -> Self {
+        self.scroll = Some(Box::new(scroll));
+        self
+    }
+    pub fn new(send: F, supports: impl Fn(Action) -> bool + 'static) -> Self {
         Self {
             state: Box::default(),
             send,
-            supports,
+            supports: Box::new(supports),
+            scroll: None,
         }
     }
 }
@@ -195,6 +256,14 @@ impl<F: FnMut(ActionTransition) -> io::Result<()>> LocalActions<F> {
 impl<F: FnMut(ActionTransition) -> io::Result<()>> ActionSink for LocalActions<F> {
     fn supports(&self, action: Action) -> bool {
         (self.supports)(action)
+    }
+
+    fn supports_scroll(&self) -> bool { self.scroll.is_some() }
+    fn scroll(&mut self, pulse: ScrollPulse) -> io::Result<()> {
+        match &mut self.scroll {
+            Some(scroll) => scroll(pulse),
+            None => Err(io::Error::new(io::ErrorKind::Unsupported, "pointer scroll output is unavailable")),
+        }
     }
 
     fn hold(&mut self, binding: u32, action: Action, held: bool) -> io::Result<()> {
@@ -226,6 +295,8 @@ struct Slot {
     actions: Box<[Action]>,
     /// The pen's barrel button number (bit 0 is button 1), for pen output.
     barrel: u8,
+    scroll: Option<ScrollAction>,
+    next_scroll: Option<Instant>,
 }
 
 /// The binding owner IDs of each group in the shared action state. Two
@@ -247,8 +318,8 @@ struct Group {
 /// One wheel's rotation: upstream's `WheelBindings` with a
 /// `DeltaThresholdBindingState` per direction.
 struct Rotation {
-    clockwise: Box<[Action]>,
-    counter_clockwise: Box<[Action]>,
+    clockwise: Slot,
+    counter_clockwise: Slot,
     clockwise_threshold: f64,
     counter_clockwise_threshold: f64,
     steps: u32,
@@ -279,6 +350,9 @@ impl Rotation {
 pub struct ButtonOutput {
     pen: Group,
     aux: Group,
+    mouse: Group,
+    mouse_scroll: Group,
+    now: Instant,
     wheel_buttons: Vec<Group>,
     rotations: Vec<Rotation>,
     sink: Box<dyn ActionSink>,
@@ -295,9 +369,16 @@ fn resolve(
     sink: &dyn ActionSink,
     what: &dyn Fn() -> String,
     rejected: &mut Vec<String>,
+    scroll: &mut Option<ScrollAction>,
 ) -> Box<[Action]> {
     let actions: Vec<Action> = match binding {
         ButtonAction::None => Vec::new(),
+        ButtonAction::Scroll(action) => {
+            if let Err(error) = action.validate() { rejected.push(format!("{} ({binding}): {error}", what())); }
+            else if sink.supports_scroll() { *scroll = Some(*action); }
+            else { rejected.push(format!("{} ({binding}): pointer scroll output is unavailable", what())); }
+            Vec::new()
+        }
         ButtonAction::Barrel(number @ 1..=MAX_BARREL) if pen => {
             *barrel = 1 << (number - 1);
             Vec::new()
@@ -335,8 +416,9 @@ fn group(
         .enumerate()
         .map(|(index, binding)| {
             let mut barrel = 0;
-            let actions = resolve(binding, pen, &mut barrel, sink, &|| name(index), rejected);
-            Slot { actions, barrel }
+            let mut scroll = None;
+            let actions = resolve(binding, pen, &mut barrel, sink, &|| name(index), rejected, &mut scroll);
+            Slot { actions, barrel, scroll, next_scroll: None }
         })
         .collect();
     Group {
@@ -347,6 +429,27 @@ fn group(
 }
 
 impl Group {
+    fn next_tick(&self, now: Instant) -> Option<Duration> {
+        self.slots.iter().filter_map(|slot| slot.next_scroll)
+            .map(|deadline| deadline.saturating_duration_since(now)).min()
+    }
+    fn tick(&mut self, sink: &mut dyn ActionSink, now: Instant) -> io::Result<()> {
+        for slot in &mut self.slots {
+            if slot.next_scroll.is_some_and(|deadline| deadline <= now) {
+                let scroll = slot.scroll.expect("a scroll deadline belongs to a scroll action");
+                // One pulse, then schedule from now: missed intervals never
+                // flood the pointer or starve the input/stop poll.
+                slot.next_scroll = None;
+                sink.scroll(scroll.pulse())?;
+                slot.next_scroll = now.checked_add(Duration::from_millis(u64::from(scroll.interval_ms)));
+            }
+        }
+        Ok(())
+    }
+    fn clear_timers(&mut self) {
+        for slot in &mut self.slots { slot.next_scroll = None; }
+    }
+
     fn wanted(&self, buttons: Buttons) -> u64 {
         let mut wanted = 0;
         for index in 0..self.slots.len().min(buttons.len()) {
@@ -358,7 +461,7 @@ impl Group {
     }
 
     /// Records the holds that reach `wanted`; the caller flushes.
-    fn hold(&mut self, sink: &mut dyn ActionSink, wanted: u64) -> io::Result<()> {
+    fn hold(&mut self, sink: &mut dyn ActionSink, wanted: u64, now: Instant) -> io::Result<()> {
         let changed = wanted ^ self.held;
         for index in 0..self.slots.len() {
             let bit = 1u64 << index;
@@ -368,6 +471,13 @@ impl Group {
             let down = wanted & bit != 0;
             for action in self.slots[index].actions.iter() {
                 sink.hold(self.owners + index as u32, *action, down)?;
+            }
+            if let Some(scroll) = self.slots[index].scroll {
+                if down {
+                    sink.flush()?;
+                    sink.scroll(scroll.pulse())?;
+                    self.slots[index].next_scroll = now.checked_add(Duration::from_millis(u64::from(scroll.interval_ms)));
+                } else { self.slots[index].next_scroll = None; }
             }
             self.held = (self.held & !bit) | (wanted & bit);
         }
@@ -397,6 +507,9 @@ impl ButtonOutput {
             Self {
                 pen,
                 aux: Group::default(),
+                mouse: Group::default(),
+                mouse_scroll: Group::default(),
+                now: Instant::now(),
                 wheel_buttons: Vec::new(),
                 rotations: Vec::new(),
                 sink,
@@ -439,19 +552,15 @@ impl ButtonOutput {
             ));
             let mut ignored = 0;
             let mut actions = |action, direction| {
-                resolve(
-                    action,
-                    false,
-                    &mut ignored,
-                    sink,
-                    &|| format!("wheel {} {direction}", wheel + 1),
-                    &mut rejected,
-                )
+                let mut scroll = None;
+                let actions = resolve(action, false, &mut ignored, sink,
+                    &|| format!("wheel {} {direction}", wheel + 1), &mut rejected, &mut scroll);
+                Slot { actions, barrel: 0, scroll, next_scroll: None }
             };
             let clockwise = actions(&binding.clockwise, "clockwise");
             let counter_clockwise = actions(&binding.counter_clockwise, "counter-clockwise");
             let degrees_per_step = spec.degrees_per_step().unwrap_or(0.0);
-            if degrees_per_step == 0.0 && !(clockwise.is_empty() && counter_clockwise.is_empty()) {
+            if degrees_per_step == 0.0 && !(clockwise.actions.is_empty() && counter_clockwise.actions.is_empty() && clockwise.scroll.is_none() && counter_clockwise.scroll.is_none()) {
                 rejected.push(format!(
                     "wheel {}: the tablet configuration has no step count, so its rotation does nothing",
                     wheel + 1
@@ -477,6 +586,43 @@ impl ButtonOutput {
 
     /// The pen buttons wanted down after a report. A report without a button
     /// reading leaves them as they are; a pen out of range holds none.
+    pub fn wanted_with_pressure(&self, buttons: Option<Buttons>, present: bool, pressure: Option<u32>, drag_only: bool) -> u64 {
+        let wanted = self.wanted(buttons, present);
+        if drag_only && !pressure.is_some_and(|pressure| pressure > 0) {
+            // BindingState retains a press when pressure drops: only gate rising edges.
+            wanted & self.pen.held
+        } else { wanted }
+    }
+
+    pub fn set_time(&mut self, now: Instant) { self.now = now; }
+
+    pub fn set_mouse_scroll(&mut self, up: &ButtonAction, down: &ButtonAction) -> Vec<String> {
+        let mut rejected = Vec::new();
+        self.mouse_scroll = group(&[down.clone(), up.clone()], false,
+            WHEEL_ROTATION_OWNERS + 2 * crate::reports::MAX_WHEELS as u32 + 64,
+            self.sink.as_ref(), &|index| if index == 0 { "mouse scroll down".into() } else { "mouse scroll up".into() }, &mut rejected);
+        rejected
+    }
+
+    pub fn next_tick(&self, now: Instant) -> Option<Duration> {
+        [&self.pen, &self.aux, &self.mouse, &self.mouse_scroll].into_iter()
+            .chain(self.wheel_buttons.iter()).filter_map(|group| group.next_tick(now)).min()
+    }
+
+    pub fn tick(&mut self, now: Instant) -> io::Result<()> {
+        self.now = now;
+        for group in [&mut self.pen, &mut self.aux, &mut self.mouse, &mut self.mouse_scroll].into_iter().chain(self.wheel_buttons.iter_mut()) {
+            group.tick(self.sink.as_mut(), now)?;
+        }
+        Ok(())
+    }
+
+    pub fn set_mouse(&mut self, bindings: &[ButtonAction]) -> Vec<String> {
+        let mut rejected = Vec::new();
+        self.mouse = group(bindings, false, WHEEL_ROTATION_OWNERS + 2 * crate::reports::MAX_WHEELS as u32, self.sink.as_ref(), &|index| format!("mouse button {}", index + 1), &mut rejected);
+        rejected
+    }
+
     pub fn wanted(&self, buttons: Option<Buttons>, present: bool) -> u64 {
         if !present {
             return 0;
@@ -510,7 +656,7 @@ impl ButtonOutput {
             return Ok(());
         }
         self.unsettled = true;
-        self.pen.hold(self.sink.as_mut(), wanted)?;
+        self.pen.hold(self.sink.as_mut(), wanted, self.now)?;
         self.flush()
     }
 
@@ -522,12 +668,31 @@ impl ButtonOutput {
         use crate::reports::AnalogKind;
 
         let mut changed = self.unsettled;
+        if let Some(buttons) = values.mouse_buttons {
+            let wanted = self.mouse.wanted(buttons);
+            if wanted != self.mouse.held {
+                self.unsettled = true;
+                changed = true;
+                self.mouse.hold(self.sink.as_mut(), wanted, self.now)?;
+            }
+        }
+        // BindingHandler evaluates Scroll.Y on IMouseReport only; an absent
+        // mouse report preserves state. Repeated signs do not press again.
+        if values.mouse_buttons.is_some() {
+            let y = values.mouse_scroll.map_or(0.0, |scroll| scroll[1]);
+            let wanted = u64::from(y < 0.0) | (u64::from(y > 0.0) << 1);
+            if wanted != self.mouse_scroll.held {
+                self.unsettled = true;
+                changed = true;
+                self.mouse_scroll.hold(self.sink.as_mut(), wanted, self.now)?;
+            }
+        }
         if let Some(buttons) = values.aux_buttons {
             let wanted = self.aux.wanted(buttons);
             if wanted != self.aux.held {
                 self.unsettled = true;
                 changed = true;
-                self.aux.hold(self.sink.as_mut(), wanted)?;
+                self.aux.hold(self.sink.as_mut(), wanted, self.now)?;
             }
         }
         if let Some(wheels) = &values.wheel_buttons {
@@ -536,7 +701,7 @@ impl ButtonOutput {
                 if wanted != group.held {
                     self.unsettled = true;
                     changed = true;
-                    group.hold(self.sink.as_mut(), wanted)?;
+                    group.hold(self.sink.as_mut(), wanted, self.now)?;
                 }
             }
         }
@@ -621,11 +786,12 @@ impl ButtonOutput {
     /// released in the wanted state, so later reconciliation lets it go.
     fn tap(&mut self, wheel: usize, clockwise: bool, owner: u32) -> io::Result<()> {
         let rotation = &self.rotations[wheel];
-        let actions = if clockwise {
-            &rotation.clockwise
-        } else {
-            &rotation.counter_clockwise
-        };
+        let slot = if clockwise { &rotation.clockwise } else { &rotation.counter_clockwise };
+        if let Some(scroll) = slot.scroll {
+            self.sink.flush()?;
+            self.sink.scroll(scroll.pulse())?;
+        }
+        let actions = &slot.actions;
         if actions.is_empty() {
             return Ok(());
         }
@@ -654,9 +820,9 @@ impl ButtonOutput {
             return Ok(false);
         }
         self.unsettled = true;
-        self.aux.hold(self.sink.as_mut(), 0)?;
+        self.aux.hold(self.sink.as_mut(), 0, self.now)?;
         for group in &mut self.wheel_buttons {
-            group.hold(self.sink.as_mut(), 0)?;
+            group.hold(self.sink.as_mut(), 0, self.now)?;
         }
         let sent = self.sink.flush()?;
         self.unsettled = false;
@@ -669,13 +835,16 @@ impl ButtonOutput {
         for rotation in &mut self.rotations {
             rotation.reset();
         }
-        let held = self.pen.held != 0
+        for group in [&mut self.pen, &mut self.aux, &mut self.mouse, &mut self.mouse_scroll].into_iter().chain(self.wheel_buttons.iter_mut()) { group.clear_timers(); }
+        let held = self.mouse_scroll.held != 0 || self.mouse.held != 0 || self.pen.held != 0
             || self.aux.held != 0
             || self.wheel_buttons.iter().any(|group| group.held != 0);
         if !held && !self.unsettled {
             return Ok(false);
         }
         self.pen.held = 0;
+        self.mouse.held = 0;
+        self.mouse_scroll.held = 0;
         self.aux.held = 0;
         for group in &mut self.wheel_buttons {
             group.held = 0;
@@ -1215,4 +1384,153 @@ mod tests {
         assert_eq!(wheel_threshold(None, 5.0), 5.0);
         assert_eq!(wheel_threshold(Some(30.0), 5.0), 30.0);
     }
+    #[test]
+    fn drag_only_gates_rising_edge_but_retains_hold_when_pressure_drops() {
+        let (mut out, log, _) = output(&[ButtonAction::Mouse(MouseButton::Right)], false);
+        for (bits, pressure, expected) in [(1, Some(0), 0), (1, Some(1), 1), (1, Some(0), 1), (1, None, 1), (0, Some(0), 0)] {
+            let wanted = out.wanted_with_pressure(buttons(bits), true, pressure, true);
+            assert_eq!(wanted, expected);
+            out.apply(wanted).unwrap();
+        }
+        assert_eq!(&*log.borrow(), &[(right(), true), (right(), false)]);
+    }
+
+    #[test]
+    fn mouse_group_owns_shared_actions_independently_and_cleanup_releases_them() {
+        let (mut out, log, _) = output(&[ButtonAction::Mouse(MouseButton::Right)], false);
+        assert!(out.set_mouse(&[ButtonAction::Mouse(MouseButton::Right)]).is_empty());
+        out.apply(1).unwrap();
+        let mut values = crate::reports::ReportValues::default();
+        values.mouse_buttons = buttons(1);
+        out.apply_auxiliary(&values).unwrap();
+        out.apply(0).unwrap();
+        assert_eq!(&*log.borrow(), &[(right(), true)]);
+        assert!(!out.release_auxiliary().unwrap());
+        assert!(out.release_all().unwrap());
+        assert_eq!(&*log.borrow(), &[(right(), true), (right(), false)]);
+    }
+
+    #[test]
+    fn mouse_and_drag_dispatch_allocate_nothing_after_setup() {
+        let action: ButtonAction = "keys:Control+Z".parse().unwrap();
+        let sink = Box::new(LocalActions::new(|_| Ok(()), |_| true));
+        let (mut out, rejected) = ButtonOutput::new(&[action.clone()], false, sink);
+        assert!(rejected.is_empty());
+        assert!(out.set_mouse(&[action]).is_empty());
+        crate::test_alloc::assert_no_allocations(|| {
+            for bits in [1, 0, 1, 0] {
+                let wanted = out.wanted_with_pressure(buttons(bits), true, Some(1), true);
+                out.apply(wanted).unwrap();
+                out.apply_auxiliary(&crate::reports::ReportValues { mouse_buttons: buttons(bits), ..Default::default() }).unwrap();
+            }
+            out.release_all().unwrap();
+        });
+    }
+
+    #[test]
+    fn scroll_actions_parse_signed_amounts_intervals_and_round_trip() {
+        for text in ["scroll:up", "scroll:down", "scroll:left", "scroll:right", "scroll:vertical:-45:25", "scroll:horizontal:240"] {
+            let action = text.parse::<ButtonAction>().unwrap();
+            assert_eq!(action.to_string().parse::<ButtonAction>().unwrap(), action);
+        }
+        for text in ["scroll:vertical:0", "scroll:vertical:1:0", "scroll:vertical:1:2147483648", "scroll:vertical:2147483648", "scroll:diagonal:1"] {
+            assert!(text.parse::<ButtonAction>().is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn scroll_direction_edges_repeat_without_catching_up_and_release_cancels() {
+        let pulses = Rc::new(RefCell::new(Vec::new()));
+        let log = Rc::clone(&pulses);
+        let sink = Box::new(LocalActions::new(|_| Ok(()), |_| true).with_scroll(move |pulse| { log.borrow_mut().push(pulse); Ok(()) }));
+        let (mut out, _) = ButtonOutput::new(&[], false, sink);
+        out.set_mouse_scroll(&"scroll:vertical:-120:10".parse().unwrap(), &"scroll:vertical:120:10".parse().unwrap());
+        let start = Instant::now();
+        out.set_time(start);
+        let mut report = crate::reports::ReportValues { mouse_buttons: buttons(0), mouse_scroll: Some([0.0, 1.0]), ..Default::default() };
+        out.apply_auxiliary(&report).unwrap();
+        out.apply_auxiliary(&report).unwrap();
+        assert_eq!(pulses.borrow().len(), 1, "same sign does not press again");
+        assert_eq!(out.next_tick(start + Duration::from_millis(5)), Some(Duration::from_millis(5)));
+        out.tick(start + Duration::from_millis(35)).unwrap();
+        assert_eq!(pulses.borrow().len(), 2, "three missed periods produce one pulse");
+        assert_eq!(out.next_tick(start + Duration::from_millis(35)), Some(Duration::from_millis(10)));
+        assert!(!out.release_auxiliary().unwrap(), "mouse scroll belongs to the mouse stream");
+        report.mouse_scroll = Some([0.0, -1.0]);
+        out.set_time(start + Duration::from_millis(36));
+        out.apply_auxiliary(&report).unwrap();
+        assert_eq!(pulses.borrow()[2].delta, -120);
+        report.mouse_scroll = Some([0.0, 0.0]);
+        out.apply_auxiliary(&report).unwrap();
+        assert_eq!(out.next_tick(start), None);
+        out.tick(start + Duration::from_secs(2)).unwrap();
+        assert_eq!(pulses.borrow().len(), 3);
+    }
+
+    #[test]
+    fn failed_scroll_repeat_cancels_deadline_and_cleanup_stops_remaining_holds() {
+        let fail = Rc::new(RefCell::new(false));
+        let flag = Rc::clone(&fail);
+        let sink = Box::new(LocalActions::new(|_| Ok(()), |_| true).with_scroll(move |_| {
+            if *flag.borrow() { Err(io::Error::other("scroll rejected")) } else { Ok(()) }
+        }));
+        let (mut out, _) = ButtonOutput::new(&["scroll:vertical:120:5".parse().unwrap()], false, sink);
+        let start = Instant::now();
+        out.set_time(start);
+        out.apply(1).unwrap();
+        *fail.borrow_mut() = true;
+        assert!(out.tick(start + Duration::from_millis(5)).is_err());
+        assert_eq!(out.next_tick(start), None);
+        out.release_all().unwrap();
+        assert_eq!(out.wanted(None, true), 0);
+    }
+
+    #[test]
+    fn native_scroll_dispatch_and_timer_tick_allocate_nothing_after_setup() {
+        let count = Rc::new(std::cell::Cell::new(0));
+        let counted = Rc::clone(&count);
+        let sink = Box::new(LocalActions::new(|_| Ok(()), |_| true).with_scroll(move |_| { counted.set(counted.get() + 1); Ok(()) }));
+        let (mut out, _) = ButtonOutput::new(&["scroll:vertical:-120:1".parse().unwrap()], false, sink);
+        let start = Instant::now();
+        crate::test_alloc::assert_no_allocations(|| {
+            out.set_time(start);
+            out.apply(1).unwrap();
+            out.tick(start + Duration::from_millis(1)).unwrap();
+            out.apply(0).unwrap();
+            out.release_all().unwrap();
+        });
+        assert_eq!(count.get(), 2);
+        assert_eq!(out.next_tick(start), None);
+    }
+
+    #[test]
+    fn scroll_rotation_taps_do_not_start_repeating_timers() {
+        let pulses = Rc::new(RefCell::new(Vec::new()));
+        let log = pulses.clone();
+        let sink = Box::new(LocalActions::new(|_| Ok(()), |_| true)
+            .with_scroll(move |pulse| { log.borrow_mut().push(pulse); Ok(()) }));
+        let (mut out, _) = ButtonOutput::new(&[], false, sink);
+        let wheel = WheelBinding {
+            clockwise: "scroll:horizontal:-240:1".parse().unwrap(),
+            counter_clockwise: "scroll:vertical:120:1".parse().unwrap(),
+            ..Default::default()
+        };
+        assert!(out.set_auxiliary(&[], &[wheel], crate::spec::TabletSpec::PTH_660.controls.wheels()).is_empty());
+        let steps = |delta| ReportValues {
+            relative_analog: Some(RelativeAnalogReport { kind: AnalogKind::Wheel, deltas: RelativeAnalog::from_slice(&[delta]).unwrap() }),
+            ..Default::default()
+        };
+        out.apply_auxiliary(&steps(2)).unwrap();
+        out.apply_auxiliary(&steps(-1)).unwrap();
+        assert_eq!(*pulses.borrow(), [
+            ScrollPulse { axis: ScrollAxis::Horizontal, delta: 240 },
+            ScrollPulse { axis: ScrollAxis::Horizontal, delta: 240 },
+            ScrollPulse { axis: ScrollAxis::Vertical, delta: -120 },
+        ]);
+        let now = Instant::now();
+        assert_eq!(out.next_tick(now), None);
+        out.tick(now + Duration::from_secs(1)).unwrap();
+        assert_eq!(pulses.borrow().len(), 3);
+    }
+
 }

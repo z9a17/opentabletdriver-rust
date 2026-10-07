@@ -27,6 +27,16 @@ pub struct ContactPolicy {
     pub eraser_enabled: bool,
     pub tip_threshold_raw: Option<u16>,
     pub eraser_threshold_raw: Option<u16>,
+    /// Preserve upstream single-precision percentages for the drag pressure
+    /// remap. Raw-only native profiles derive a representable percentage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tip_threshold_percent: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eraser_threshold_percent: Option<f32>,
+    /// Gate initial pen-button activation on pressure > 0, as BindingState does.
+    pub drag_only: bool,
+    pub disable_pressure: bool,
+    pub disable_tilt: bool,
 }
 
 impl Default for ContactPolicy {
@@ -36,7 +46,48 @@ impl Default for ContactPolicy {
             eraser_enabled: true,
             tip_threshold_raw: None,
             eraser_threshold_raw: None,
+            tip_threshold_percent: None,
+            eraser_threshold_percent: None,
+            drag_only: false,
+            disable_pressure: false,
+            disable_tilt: false,
         }
+    }
+}
+
+impl ContactPolicy {
+    pub fn validate_percentages(self) -> Result<(), String> {
+        for percent in [self.tip_threshold_percent, self.eraser_threshold_percent].into_iter().flatten() {
+            if !percent.is_finite() || !(0.0..=100.0).contains(&percent) {
+                return Err("contact threshold percentages must be finite values from 0 to 100".into());
+            }
+        }
+        Ok(())
+    }
+
+    /// BindingHandler invokes ThresholdBindingState before side buttons. Its
+    /// remapped uint pressure, not raw pressure or contact enabled, gates drag.
+    /// Native raw-only thresholds use the same midpoint representation as OTD
+    /// export; a hardware-tip-switch profile retains its raw pressure gate.
+    pub fn drag_pressure(self, pressure: Option<u32>, max_pressure: u32, eraser: bool) -> Option<u32> {
+        let pressure = pressure?;
+        let (percent, raw) = if eraser {
+            (self.eraser_threshold_percent, self.eraser_threshold_raw)
+        } else { (self.tip_threshold_percent, self.tip_threshold_raw) };
+        let threshold = match percent {
+            Some(percent) => percent,
+            None => match raw {
+                Some(0) | None => return Some(pressure),
+                Some(raw) if u32::from(raw) == max_pressure => 100.0,
+                Some(raw) => (f32::from(raw) - 0.5) * 100.0 / max_pressure as f32,
+            },
+        };
+        if max_pressure == 0 || !threshold.is_finite() { return Some(0); }
+        let value = pressure as f32 / max_pressure as f32 * 100.0;
+        let maxed = threshold == 100.0 && value == 100.0;
+        Some(if maxed { max_pressure } else if value > threshold {
+            (max_pressure as f32 * ((value - threshold) / (100.0 - threshold))) as u32
+        } else { 0 })
     }
 }
 
@@ -77,6 +128,7 @@ pub(crate) const ADAPTIVE_BINDING: &str = "OpenTabletDriver.Desktop.Binding.Adap
 const MOUSE_BINDING: &str = "OpenTabletDriver.Desktop.Binding.MouseBinding";
 const KEY_BINDING: &str = "OpenTabletDriver.Desktop.Binding.KeyBinding";
 const MULTI_KEY_BINDING: &str = "OpenTabletDriver.Desktop.Binding.MultiKeyBinding";
+const MOUSE_SCROLL_BINDING: &str = "OpenTabletDriver.Desktop.Binding.MouseScrollBinding";
 /// Most pen buttons a profile can bind; a report's button set holds 64.
 pub const MAX_PEN_BUTTONS: usize = 64;
 
@@ -102,6 +154,10 @@ pub struct Profile {
     /// What each express key does, by button index. Upstream's default
     /// binds none.
     pub aux_buttons: Vec<ButtonAction>,
+    /// Tablet mouse/puck buttons, independent of pen and auxiliary input.
+    pub mouse_buttons: Vec<ButtonAction>,
+    pub mouse_scroll_up: ButtonAction,
+    pub mouse_scroll_down: ButtonAction,
     /// What each wheel, ring or dial does, by wheel index.
     pub wheels: Vec<WheelBinding>,
     /// Absolute output only; relative output always moves the mouse.
@@ -140,6 +196,9 @@ impl Default for Profile {
             contact: ContactPolicy::default(),
             pen_buttons: default_pen_buttons(),
             aux_buttons: Vec::new(),
+            mouse_buttons: Vec::new(),
+            mouse_scroll_up: ButtonAction::None,
+            mouse_scroll_down: ButtonAction::None,
             wheels: Vec::new(),
             output: OutputKind::Mouse,
             radial_follow: Vec::new(),
@@ -187,6 +246,12 @@ struct RawProfile {
     /// Express key actions as text, absent when none is bound.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     aux_buttons: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    mouse_buttons: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mouse_scroll_up: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mouse_scroll_down: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     wheels: Vec<RawWheel>,
     #[serde(default, skip_serializing_if = "OutputKind::is_mouse")]
@@ -399,6 +464,18 @@ struct OtdBindings {
     aux_buttons: serde_json::Value,
     #[serde(default)]
     wheel_bindings: serde_json::Value,
+    #[serde(default)]
+    mouse_buttons: serde_json::Value,
+    #[serde(default)]
+    mouse_scroll_up: serde_json::Value,
+    #[serde(default)]
+    mouse_scroll_down: serde_json::Value,
+    #[serde(default)]
+    enable_drag_bindings: bool,
+    #[serde(default)]
+    disable_pressure: bool,
+    #[serde(default)]
+    disable_tilt: bool,
 }
 
 fn default_activation_percent() -> f64 {
@@ -415,6 +492,12 @@ impl Default for OtdBindings {
             pen_buttons: serde_json::Value::Null,
             aux_buttons: serde_json::Value::Null,
             wheel_bindings: serde_json::Value::Null,
+            mouse_buttons: serde_json::Value::Null,
+            mouse_scroll_up: serde_json::Value::Null,
+            mouse_scroll_down: serde_json::Value::Null,
+            enable_drag_bindings: false,
+            disable_pressure: false,
+            disable_tilt: false,
         }
     }
 }
@@ -533,6 +616,35 @@ fn pen_button_action(store: Option<&OtdStore>, pen: bool) -> Result<ButtonAction
             None => Ok(ButtonAction::None),
             Some(names) => keys::parse_chord(names).map(ButtonAction::Keys),
         },
+        MOUSE_SCROLL_BINDING => {
+            use crate::output::buttons::{ScrollAction, ScrollAxis};
+            let integer = |name: &str, constructor: i32, default: i32| -> Result<i32, String> {
+                match store.settings.iter().rev().find(|setting| setting.property == name).map(|setting| &setting.value) {
+                    None => Ok(constructor),
+                    Some(serde_json::Value::Null) => Ok(default),
+                    Some(value) => value.as_i64().and_then(|value| i32::try_from(value).ok())
+                        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+                        .ok_or_else(|| format!("scroll {name} must be a signed 32-bit integer")),
+                }
+            };
+            // Direction's upstream string setter uses Enum.TryParse, which
+            // also accepts numeric strings. Scroll() treats any nonzero enum
+            // value as horizontal; an invalid name keeps the initial vertical.
+            let direction = store.settings.iter().rev().find(|setting| setting.property == "Direction").map(|setting| &setting.value);
+            let horizontal = match direction {
+                Some(serde_json::Value::String(value)) => value.trim() == "Horizontal"
+                    || value.trim().parse::<i32>().is_ok_and(|value| value != 0),
+                Some(value) => value.as_i64().and_then(|value| i32::try_from(value).ok()).is_some_and(|value| value != 0),
+                None => false,
+            };
+            let axis = if horizontal { ScrollAxis::Horizontal } else { ScrollAxis::Vertical };
+            let amount = integer("Amount", 120, 120)?;
+            let amount = if amount == 0 { 1 } else { amount };
+            // ApplySettings visits saved entries only: an absent Interval
+            // keeps _interval=1; an explicit null selects the attribute's 300.
+            let interval_ms = integer("Interval", 1, 300)?.max(1) as u32;
+            Ok(ButtonAction::Scroll(ScrollAction { axis, amount, interval_ms }))
+        }
         path => Err(format!("unsupported pen button binding: {path}")),
     }
 }
@@ -1053,6 +1165,9 @@ impl Profile {
             "express key",
             &mut diagnostics,
         );
+        let mouse_buttons = import_buttons(&selected.bindings.mouse_buttons, false, "Bindings.MouseButtons", "mouse button", &mut diagnostics);
+        let mouse_scroll_up = import_store(&selected.bindings.mouse_scroll_up, false, "Bindings.MouseScrollUp".into(), "mouse scroll up", &mut diagnostics);
+        let mouse_scroll_down = import_store(&selected.bindings.mouse_scroll_down, false, "Bindings.MouseScrollDown".into(), "mouse scroll down", &mut diagnostics);
         let wheels = import_wheels(&selected.bindings.wheel_bindings, pen, &mut diagnostics);
         let mut radial_follow = Vec::new();
         let mut auto_enabled_radial_follow = 0;
@@ -1108,6 +1223,11 @@ impl Profile {
                 ContactPolicy {
                     tip_enabled,
                     eraser_enabled,
+                    drag_only: selected.bindings.enable_drag_bindings,
+                    disable_pressure: selected.bindings.disable_pressure,
+                    disable_tilt: selected.bindings.disable_tilt,
+                    tip_threshold_percent: Some(0.0),
+                    eraser_threshold_percent: Some(0.0),
                     tip_threshold_raw: Some(1),
                     eraser_threshold_raw: Some(1),
                 }
@@ -1115,6 +1235,11 @@ impl Profile {
                 ContactPolicy {
                     tip_enabled,
                     eraser_enabled,
+                    drag_only: selected.bindings.enable_drag_bindings,
+                    disable_pressure: selected.bindings.disable_pressure,
+                    disable_tilt: selected.bindings.disable_tilt,
+                    tip_threshold_percent: Some(selected.bindings.tip_activation_threshold as f32),
+                    eraser_threshold_percent: Some(selected.bindings.eraser_activation_threshold as f32),
                     tip_threshold_raw: Some(activation_raw_for(
                         selected.bindings.tip_activation_threshold,
                         tablet.max_pressure,
@@ -1127,6 +1252,9 @@ impl Profile {
             },
             pen_buttons,
             aux_buttons,
+            mouse_buttons,
+            mouse_scroll_up,
+            mouse_scroll_down,
             wheels,
             output: if pen {
                 OutputKind::Pen
@@ -1250,6 +1378,9 @@ impl Profile {
             Some(texts) => parse_actions(texts, "pen_buttons")?,
         };
         let aux_buttons = parse_actions(&raw.aux_buttons, "aux_buttons")?;
+        let mouse_buttons = parse_actions(&raw.mouse_buttons, "mouse_buttons")?;
+        let mouse_scroll_up = raw.mouse_scroll_up.as_deref().unwrap_or("none").parse::<ButtonAction>()?;
+        let mouse_scroll_down = raw.mouse_scroll_down.as_deref().unwrap_or("none").parse::<ButtonAction>()?;
         if raw.wheels.len() > crate::reports::MAX_WHEELS {
             return Err(format!(
                 "at most {} wheels are supported",
@@ -1271,6 +1402,9 @@ impl Profile {
             contact: raw.bindings,
             pen_buttons,
             aux_buttons,
+            mouse_buttons,
+            mouse_scroll_up,
+            mouse_scroll_down,
             wheels,
             output: raw.output,
             radial_follow: raw.radial_follow,
@@ -1290,6 +1424,7 @@ impl Profile {
             target_tablet,
             ..Self::default()
         };
+        profile.contact.validate_percentages()?;
         if profile.crop.width == 0 || profile.crop.height == 0
             || profile.crop.x.checked_add(profile.crop.width).is_none()
             || profile.crop.y.checked_add(profile.crop.height).is_none()
@@ -1304,6 +1439,16 @@ impl Profile {
         }
         profile.validate_filter_execution()?;
         Ok(profile)
+    }
+
+    pub fn validate_actions(&self) -> Result<(), String> {
+        let actions = self.pen_buttons.iter().chain(&self.aux_buttons).chain(&self.mouse_buttons)
+            .chain([&self.mouse_scroll_up, &self.mouse_scroll_down])
+            .chain(self.wheels.iter().flat_map(|wheel| [&wheel.clockwise, &wheel.counter_clockwise].into_iter().chain(&wheel.buttons)));
+        for action in actions {
+            if let ButtonAction::Scroll(scroll) = action { scroll.validate()?; }
+        }
+        Ok(())
     }
 
     /// Reject double execution after migrating a native filter to a managed DLL.
@@ -1381,6 +1526,7 @@ impl Profile {
     /// This profile for the tablet the runtime selected. Raw pressure
     /// thresholds must fit the tablet's pressure range.
     pub fn for_tablet(&self, spec: TabletSpec) -> Result<Self, String> {
+        self.contact.validate_percentages()?;
         for threshold in [
             self.contact.tip_threshold_raw,
             self.contact.eraser_threshold_raw,
@@ -1422,6 +1568,8 @@ impl Profile {
     }
 
     pub fn to_toml(&self) -> Result<String, String> {
+        self.contact.validate_percentages()?;
+        self.validate_actions()?;
         self.validate_filter_execution()?;
         if self.relative.is_some() && self.output == OutputKind::Pen {
             return Err("pen output is absolute; choose mouse output for relative mode".into());
@@ -1453,6 +1601,9 @@ impl Profile {
             pen_buttons: (self.pen_buttons != default_pen_buttons())
                 .then(|| self.pen_buttons.iter().map(ToString::to_string).collect()),
             aux_buttons: self.aux_buttons.iter().map(ToString::to_string).collect(),
+            mouse_buttons: self.mouse_buttons.iter().map(ToString::to_string).collect(),
+            mouse_scroll_up: (self.mouse_scroll_up != ButtonAction::None).then(|| self.mouse_scroll_up.to_string()),
+            mouse_scroll_down: (self.mouse_scroll_down != ButtonAction::None).then(|| self.mouse_scroll_down.to_string()),
             wheels: {
                 // Trailing wheels that do nothing need no entry.
                 let used = self
@@ -2494,4 +2645,115 @@ mod tests {
         profile.aux_buttons.truncate(1);
         assert!(profile.to_otd_json().is_err());
     }
+    #[test]
+    fn mouse_and_binding_policies_round_trip_native_and_otd_without_losing_unknown_stores() {
+        let mut profile = import_bindings(serde_json::json!({
+            "EnableDragBindings": true, "DisablePressure": true, "DisableTilt": true,
+            "MouseButtons": [store(MOUSE_BINDING, "Button", "Right".into()), null],
+        }));
+        assert!(profile.contact.drag_only && profile.contact.disable_pressure && profile.contact.disable_tilt);
+        assert_eq!(profile.mouse_buttons[0].to_string(), "mouse:right");
+        let text = profile.to_toml().unwrap();
+        let reloaded = Profile::from_toml_text(&text, Path::new("copy.toml")).unwrap();
+        assert!(reloaded.contact.drag_only && reloaded.contact.disable_pressure && reloaded.contact.disable_tilt);
+        assert_eq!(reloaded.mouse_buttons, profile.mouse_buttons);
+        profile.contact.drag_only = false;
+        profile.mouse_buttons[1] = "keys:Control+Z".parse().unwrap();
+        let exported = profile.to_otd_json().unwrap();
+        let imported = Profile::from_otd_text(&exported, Path::new("export.json")).unwrap();
+        assert!(!imported.contact.drag_only);
+        assert!(imported.contact.disable_pressure && imported.contact.disable_tilt);
+        assert_eq!(imported.mouse_buttons, profile.mouse_buttons);
+    }
+
+    #[test]
+    fn drag_pressure_uses_upstream_threshold_remap_at_equality_zero_and_maximum() {
+        let mut policy = ContactPolicy { tip_threshold_percent: Some(50.0), ..Default::default() };
+        assert_eq!(policy.drag_pressure(Some(50), 100, false), Some(0));
+        assert_eq!(policy.drag_pressure(Some(51), 100, false), Some(2));
+        assert_eq!(policy.drag_pressure(Some(100), 100, false), Some(100));
+        policy.tip_threshold_percent = Some(100.0);
+        assert_eq!(policy.drag_pressure(Some(99), 100, false), Some(0));
+        assert_eq!(policy.drag_pressure(Some(100), 100, false), Some(100));
+        policy.tip_threshold_percent = Some(0.0);
+        assert_eq!(policy.drag_pressure(Some(0), 100, false), Some(0));
+        assert_eq!(policy.drag_pressure(Some(1), 100, false), Some(1));
+        assert_eq!(policy.drag_pressure(None, 100, false), None);
+        policy.tip_threshold_percent = None;
+        policy.tip_threshold_raw = Some(51);
+        assert_eq!(policy.drag_pressure(Some(50), 100, false), Some(0));
+        assert!(policy.drag_pressure(Some(51), 100, false).unwrap() > 0);
+    }
+
+    #[test]
+    fn ordinary_native_profiles_reject_invalid_threshold_percentages() {
+        for field in ["tip_threshold_percent", "eraser_threshold_percent"] {
+            for value in ["nan", "inf", "-inf", "-1", "101"] {
+                let text = format!("[bindings]\n{field} = {value}\n");
+                assert!(Profile::from_toml_text(&text, Path::new("unnamed.toml")).is_err(), "{text}");
+            }
+        }
+        let mut profile = Profile::default();
+        profile.contact.tip_threshold_percent = Some(f32::NAN);
+        assert!(profile.to_toml().is_err());
+        assert!(crate::pipeline::ReportPipeline::new(&profile).is_err());
+    }
+
+    #[test]
+    fn mouse_scroll_actions_round_trip_with_upstream_amount_and_interval() {
+        let binding = serde_json::json!({ "Path": MOUSE_SCROLL_BINDING, "Enable": true, "Settings": [
+            {"Property":"Direction", "Value":"Horizontal"}, {"Property":"Amount", "Value":-240}, {"Property":"Interval", "Value":25},
+            {"Property":"Retain", "Value":"custom"}
+        ] });
+        let mut profile = import_bindings(serde_json::json!({"MouseScrollUp": binding}));
+        assert_eq!(profile.mouse_scroll_up.to_string(), "scroll:horizontal:-240:25");
+        assert_eq!(profile.mouse_scroll_down, ButtonAction::None);
+        assert!(!profile.diagnostics.iter().any(|diagnostic| diagnostic.location.contains("MouseScroll")));
+        let text = profile.to_toml().unwrap();
+        let copy = Profile::from_toml_text(&text, Path::new("scroll.toml")).unwrap();
+        assert_eq!(copy.mouse_scroll_up, profile.mouse_scroll_up);
+        profile.mouse_scroll_up = "scroll:vertical:-120:300".parse().unwrap();
+        profile.mouse_scroll_down = "scroll:down".parse().unwrap();
+        let exported: serde_json::Value = serde_json::from_str(&profile.to_otd_json().unwrap()).unwrap();
+        let settings = exported["Profiles"][0]["Bindings"]["MouseScrollUp"]["Settings"].as_array().unwrap();
+        assert!(settings.iter().any(|property| property["Property"] == "Retain" && property["Value"] == "custom"));
+        let imported = Profile::from_otd_text(&exported.to_string(), Path::new("export.json")).unwrap();
+        assert_eq!(imported.mouse_scroll_up, profile.mouse_scroll_up);
+        assert_eq!(imported.mouse_scroll_down, profile.mouse_scroll_down);
+        profile.mouse_scroll_up = "keys:Escape".parse().unwrap();
+        assert!(profile.to_otd_json().unwrap_err().contains("unknown source properties"));
+    }
+
+    #[test]
+    fn invalid_native_scroll_settings_are_rejected_without_a_named_tablet() {
+        for text in ["mouse_scroll_up = \"scroll:vertical:0\"", "mouse_scroll_down = \"scroll:vertical:120:0\"", "pen_buttons = [\"scroll:horizontal:1:2147483648\"]"] {
+            assert!(Profile::from_toml_text(text, Path::new("unnamed.toml")).is_err());
+        }
+        let mut profile = Profile::default();
+        profile.mouse_scroll_up = ButtonAction::Scroll(crate::output::buttons::ScrollAction { axis: crate::output::buttons::ScrollAxis::Vertical, amount: 0, interval_ms: 1 });
+        assert!(profile.to_toml().is_err());
+        assert!(crate::pipeline::ReportPipeline::new(&profile).is_err());
+    }
+
+    #[test]
+    fn imported_scroll_defaults_and_upstream_setter_normalization_are_retained() {
+        let sparse = import_bindings(serde_json::json!({"MouseScrollDown": {
+            "Path": MOUSE_SCROLL_BINDING, "Enable": true, "Settings": []
+        }}));
+        assert_eq!(sparse.mouse_scroll_down.to_string(), "scroll:vertical:120:1");
+        for (direction, amount, interval, expected) in [
+            (serde_json::Value::Null, serde_json::Value::Null, serde_json::Value::Null, "scroll:vertical:120:300"),
+            (serde_json::json!("invalid"), serde_json::json!(0), serde_json::json!(-20), "scroll:vertical:1:1"),
+            (serde_json::json!("1"), serde_json::json!("-120"), serde_json::json!("25"), "scroll:horizontal:-120:25"),
+            (serde_json::json!(2), serde_json::json!(120), serde_json::json!(1), "scroll:horizontal:120:1"),
+        ] {
+            let profile = import_bindings(serde_json::json!({"MouseScrollDown": {
+                "Path": MOUSE_SCROLL_BINDING, "Enable": true, "Settings": [
+                    {"Property":"Direction", "Value":direction}, {"Property":"Amount", "Value":amount}, {"Property":"Interval", "Value":interval},
+                ]
+            }}));
+            assert_eq!(profile.mouse_scroll_down.to_string(), expected);
+        }
+    }
+
 }

@@ -6,7 +6,7 @@
 //! no tablet detected they show the profile's saved bindings.
 use super::*;
 use otd_core::actions::MouseButton;
-use otd_core::output::buttons::{ButtonAction, WheelBinding};
+use otd_core::output::buttons::{ButtonAction, ScrollAxis, WheelBinding};
 
 pub(super) const ID_BINDING: u16 = 7000;
 pub(super) const MAX_BINDING_ROWS: u16 = 256;
@@ -17,6 +17,11 @@ const CHOICE_NONE: u16 = 1;
 const CHOICE_BARREL: u16 = 10;
 const CHOICE_MOUSE: u16 = 20;
 const CHOICE_KEYS: u16 = 30;
+const CHOICE_SCROLL: u16 = 40;
+const SCROLL_CHOICES: [(&str, &str); 4] = [
+    ("scroll:up", "Scroll Up"), ("scroll:down", "Scroll Down"),
+    ("scroll:left", "Scroll Left"), ("scroll:right", "Scroll Right"),
+];
 const MOUSE_CHOICES: [(MouseButton, &str); 5] = [
     (MouseButton::Left, "Left Click"),
     (MouseButton::Right, "Right Click"),
@@ -29,6 +34,9 @@ const MOUSE_CHOICES: [(MouseButton, &str); 5] = [
 pub(super) enum BindingTarget {
     Pen(usize),
     Aux(usize),
+    Mouse(usize),
+    MouseScrollUp,
+    MouseScrollDown,
     Clockwise(usize),
     CounterClockwise(usize),
     WheelButton(usize, usize),
@@ -40,6 +48,12 @@ impl BindingTarget {
         match self {
             Self::Pen(index) => format!("Pen Binding {}", index + 1),
             Self::Aux(index) => format!("Express Key {}", index + 1),
+            Self::Mouse(0) => "Primary Binding".into(),
+            Self::Mouse(1) => "Alternate Binding".into(),
+            Self::Mouse(2) => "Middle Binding".into(),
+            Self::Mouse(index) => format!("Mouse Binding {}", index + 1),
+            Self::MouseScrollUp => "Scroll Up".into(),
+            Self::MouseScrollDown => "Scroll Down".into(),
             Self::Clockwise(_) => "Clockwise".into(),
             Self::CounterClockwise(_) => "Counter-Clockwise".into(),
             Self::WheelButton(_, index) => format!("Wheel Button {}", index + 1),
@@ -51,6 +65,9 @@ impl BindingTarget {
         match self {
             Self::Pen(index) => format!("pen button {}", index + 1),
             Self::Aux(index) => format!("express key {}", index + 1),
+            Self::Mouse(index) => format!("mouse button {}", index + 1),
+            Self::MouseScrollUp => "mouse scroll up".into(),
+            Self::MouseScrollDown => "mouse scroll down".into(),
             Self::Clockwise(wheel) => format!("wheel {} clockwise rotation", wheel + 1),
             Self::CounterClockwise(wheel) => {
                 format!("wheel {} counter-clockwise rotation", wheel + 1)
@@ -83,6 +100,12 @@ pub(super) fn action_text(action: &ButtonAction) -> String {
             .map_or("Mouse", |(_, label)| label)
             .into(),
         ButtonAction::Keys(keys) => otd_core::keys::chord_text(keys),
+        ButtonAction::Scroll(scroll) => {
+            SCROLL_CHOICES.iter().find(|(value, _)| value.parse::<ButtonAction>().ok().as_ref() == Some(action))
+                .map_or_else(|| format!("{} scroll: {} units, {} ms",
+                    match scroll.axis { ScrollAxis::Vertical => "Vertical", ScrollAxis::Horizontal => "Horizontal" },
+                    scroll.amount, scroll.interval_ms), |(_, label)| (*label).into())
+        },
     }
 }
 
@@ -118,6 +141,9 @@ impl App {
         };
         let mut rows: Vec<BindingTarget> = (0..pen).map(BindingTarget::Pen).collect();
         rows.extend((0..aux).map(BindingTarget::Aux));
+        let mouse = detected.map_or(profile.mouse_buttons.len(), |c| usize::from(c.mouse_buttons));
+        rows.extend((0..mouse).map(BindingTarget::Mouse));
+        rows.extend([BindingTarget::MouseScrollUp, BindingTarget::MouseScrollDown]);
         let mut fields = Vec::new();
         for (wheel, buttons) in wheels.iter().enumerate() {
             rows.push(BindingTarget::Clockwise(wheel));
@@ -141,6 +167,9 @@ impl App {
         match target {
             BindingTarget::Pen(index) => profile.pen_buttons.get(index).cloned(),
             BindingTarget::Aux(index) => profile.aux_buttons.get(index).cloned(),
+            BindingTarget::Mouse(index) => profile.mouse_buttons.get(index).cloned(),
+            BindingTarget::MouseScrollUp => Some(profile.mouse_scroll_up.clone()),
+            BindingTarget::MouseScrollDown => Some(profile.mouse_scroll_down.clone()),
             BindingTarget::Clockwise(index) => wheel(index).map(|wheel| wheel.clockwise.clone()),
             BindingTarget::CounterClockwise(index) => {
                 wheel(index).map(|wheel| wheel.counter_clockwise.clone())
@@ -173,6 +202,9 @@ impl App {
         match target {
             BindingTarget::Pen(index) => put(&mut self.editor.profile.pen_buttons, index, action),
             BindingTarget::Aux(index) => put(&mut self.editor.profile.aux_buttons, index, action),
+            BindingTarget::Mouse(index) => put(&mut self.editor.profile.mouse_buttons, index, action),
+            BindingTarget::MouseScrollUp => self.editor.profile.mouse_scroll_up = action,
+            BindingTarget::MouseScrollDown => self.editor.profile.mouse_scroll_down = action,
             BindingTarget::Clockwise(index) => self.wheel_mut(index).clockwise = action,
             BindingTarget::CounterClockwise(index) => {
                 self.wheel_mut(index).counter_clockwise = action;
@@ -284,7 +316,7 @@ impl App {
                     }
                 }
             }
-            if self.tab == Tab::Pen || self.tab == Tab::Aux {
+            if matches!(self.tab, Tab::Pen | Tab::Aux | Tab::Mouse) {
                 self.layout();
             }
         }
@@ -404,7 +436,7 @@ impl App {
         let gap = s(8);
         let width = area.right - area.left;
         // The same columns for every group, so rows line up between groups.
-        let columns = ((width + gap) / (label_width.max(s(130)) + s(200) + gap)).max(1);
+        let columns = self.binding_grid_columns(targets, area, measure) as i32;
         let cell = (width - gap * (columns - 1)) / columns;
         let height = s(38);
         let mut bottom = area.top;
@@ -488,6 +520,61 @@ impl App {
             Tone::Muted,
             DT_LEFT | DT_WORDBREAK | DT_NOPREFIX,
         ));
+    }
+
+    /// Mouse tools have buttons and a separate scroll direction binding pair.
+    pub(super) fn layout_mouse(&mut self, content: RECT, items: &mut Vec<Item>,
+        shown: &mut Vec<(HWND, RECT)>, measure: &dyn Fn(HFONT, &str) -> (i32, i32), dc: HDC) {
+        let s = |value: i32| scale(value, self.dpi);
+        let targets: Vec<_> = self.binding_rows.iter().map(|row| row.target)
+            .filter(|target| matches!(target, BindingTarget::Mouse(_))).collect();
+        let note = "Use these bindings for a tablet mouse tool. Configure tablet rings and dials in Auxiliary Settings.";
+        let note_height = canvas::wrapped_height(dc, self.style().fonts.ui, note, content.right - content.left - s(24));
+        let columns = self.binding_grid_columns(&[BindingTarget::MouseScrollUp, BindingTarget::MouseScrollDown], draw::inset(content, s(12), 0), measure);
+        let scroll_height = s(48) + (2usize.div_ceil(columns) as i32) * s(46) + note_height;
+        let scroll_top = content.bottom - scroll_height;
+        let body = self.group("Mouse Buttons", rect(content.left, content.top, content.right, scroll_top - s(12)), items);
+        let mut inner = draw::inset(body, s(12), s(12));
+        if targets.is_empty() {
+            let text = self.no_rows_text("mouse buttons");
+            let height = canvas::wrapped_height(dc, self.style().fonts.ui, &text, inner.right - inner.left);
+            items.push(Item::Label(rect(inner.left, inner.top, inner.right, inner.top + height),
+                text, Tone::Muted, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX));
+        } else {
+            let columns = self.binding_grid_columns(&targets, inner, measure);
+            // Reserve the navigation row even when one page currently fits,
+            // keeping the page size stable when the number of buttons changes.
+            let rows = ((inner.bottom - inner.top - s(36) + s(8)) / s(46)).max(1) as usize;
+            let page_size = columns * rows;
+            let pages = targets.len().div_ceil(page_size).max(1);
+            self.property_page = self.property_page.min(pages - 1);
+            if pages > 1 {
+                for (hwnd, left, enabled) in [
+                    (self.c.property_prev, inner.left, self.property_page > 0),
+                    (self.c.property_next, inner.left + s(84), self.property_page + 1 < pages),
+                ] {
+                    unsafe { EnableWindow(hwnd, enabled.into()); }
+                    shown.push((hwnd, rect(left, inner.top, left + s(78), inner.top + s(28))));
+                }
+                items.push(Item::Label(rect(inner.left + s(170), inner.top, inner.right, inner.top + s(28)),
+                    format!("{} / {pages}", self.property_page + 1), Tone::Muted, draw::TEXT_LEFT));
+                inner.top += s(36);
+            }
+            let start = self.property_page * page_size;
+            self.layout_binding_grid(&targets[start..(start + page_size).min(targets.len())], inner, items, shown, measure);
+        }
+        let body = self.group("Mouse Scrollwheel", rect(content.left, scroll_top, content.right, content.bottom), items);
+        let inner = draw::inset(body, s(12), s(12));
+        let bottom = self.layout_binding_grid(&[BindingTarget::MouseScrollUp, BindingTarget::MouseScrollDown], inner, items, shown, measure);
+        items.push(Item::Label(rect(inner.left, bottom + s(8), inner.right, inner.bottom),
+            note.into(), Tone::Muted, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX));
+    }
+
+    fn binding_grid_columns(&self, targets: &[BindingTarget], area: RECT,
+        measure: &dyn Fn(HFONT, &str) -> (i32, i32)) -> usize {
+        let s = |value: i32| scale(value, self.dpi);
+        let label = targets.iter().map(|target| measure(self.style().fonts.ui, &target.label()).0).max().unwrap_or(0);
+        ((area.right - area.left + s(8)) / (label.max(s(130)) + s(200) + s(8))).max(1) as usize
     }
 
     /// The Auxiliary Settings page: express keys, then one group per wheel.
@@ -627,6 +714,11 @@ pub(super) fn choose(window: HWND, control: HWND) {
             label,
         );
     }
+    for (index, (value, label)) in SCROLL_CHOICES.iter().enumerate() {
+        let action = value.parse::<ButtonAction>().expect("valid built-in scroll action");
+        commands::append(menu, MFT_RADIOCHECK | commands::checked(current == action),
+            CHOICE_SCROLL + index as u16, label);
+    }
     let keys = matches!(current, ButtonAction::Keys(_));
     commands::append(
         menu,
@@ -645,6 +737,9 @@ pub(super) fn choose(window: HWND, control: HWND) {
         }
         choice if (CHOICE_MOUSE..CHOICE_MOUSE + MOUSE_CHOICES.len() as u16).contains(&choice) => {
             Some(ButtonAction::Mouse(MOUSE_CHOICES[(choice - CHOICE_MOUSE) as usize].0))
+        }
+        choice if (CHOICE_SCROLL..CHOICE_SCROLL + SCROLL_CHOICES.len() as u16).contains(&choice) => {
+            SCROLL_CHOICES[(choice - CHOICE_SCROLL) as usize].0.parse::<ButtonAction>().ok()
         }
         CHOICE_KEYS => match shortcut::show(window, &target.describe()) {
             Ok(keys) => keys.map(ButtonAction::Keys),
