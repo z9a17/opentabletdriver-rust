@@ -256,7 +256,10 @@ def make_package(args):
         elif platform == 'linux-x64':
             (stage / 'setup').mkdir()
             for name in LINUX_SETUP:
-                shutil.copy2(ROOT / 'packaging/linux' / name, stage / 'setup' / name)
+                # Git on Windows may check text out with CRLF. Linux shebangs,
+                # shell commands and setup configuration must retain Unix lines.
+                source = (ROOT / 'packaging/linux' / name).read_bytes()
+                (stage / 'setup' / name).write_bytes(source.replace(b'\r\n', b'\n'))
             (data_directory / 'LINUX.md').write_bytes(platform_guide('otd-linux'))
             (stage / 'setup/install.sh').chmod(0o755)
         else:
@@ -383,6 +386,10 @@ def verify(directory, require_clean):
             for name, expected_hash in metadata['compat'].items():
                 if digest(files[prefix + 'data/compat/' + name]) != expected_hash:
                     raise ValueError(f'compatibility bridge provenance mismatch: {name}')
+        if platform == 'linux-x64':
+            for name in LINUX_SETUP:
+                if b'\r\n' in files[prefix + 'setup/' + name]:
+                    raise ValueError(f'Linux setup file has Windows line endings: {name}')
         print(f'{platform}: archive, architecture, version, source and SHA256 verified')
         assets.extend([archive, sidecar])
     return assets
