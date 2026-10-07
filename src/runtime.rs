@@ -353,14 +353,17 @@ fn run(
             }
             let running = Cell::new(false);
             let quiesced = Cell::new(false);
+            let opened_epoch = Cell::new(None);
             // Tools run while this worker owns the output, like the tablet.
             let tools = std::cell::RefCell::new(None);
-            let result = source.run(&profile, &mut plugins, &log, || {
+            let result = source.run(&profile, &mut plugins, &log, |identifiers| {
                 notify(Notice::ActivationReady).map_err(io::Error::other)?;
                 match receive(&commands, cancelled)? {
                     Directive::Run if !cancelled.load(Ordering::Acquire) => {
+                        let epoch = device_sessions.activated_with_identifiers(&id, &selected, identifiers);
+                        if epoch == 0 { return Err(io::Error::other("Cannot register this activation's actual opened endpoints.")); }
+                        opened_epoch.set(Some(epoch));
                         running.set(true);
-                        device_sessions.activated(&id, &selected);
                         notify(Notice::Running).map_err(io::Error::other)?;
                         // Pinned DriverDaemon owns one Settings.Tools collection,
                         // separate from tablet profiles. Peer workers run their
@@ -381,6 +384,9 @@ fn run(
                     _ => Err(io::Error::other("unexpected activation gate command")),
                 }
             });
+            if let Some(epoch) = opened_epoch.get() {
+                device_sessions.clear_opened_identifiers(&id, epoch);
+            }
             drop(tools.take());
             // source has drained its read and core output cleanup has completed.
             if let Err(error) = &result

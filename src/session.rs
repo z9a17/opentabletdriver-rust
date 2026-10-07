@@ -736,7 +736,7 @@ impl<'a> PreparedSession<'a> {
         profile: &Profile,
         plugins: &mut PluginChain,
         status: &impl Fn(&str),
-        gate: impl FnOnce() -> io::Result<bool>,
+        gate: impl FnOnce(&[DeviceIdentifier]) -> io::Result<bool>,
     ) -> io::Result<()> {
         let profile = profile
             .for_tablet(self.selected.spec)
@@ -765,6 +765,7 @@ impl<'a> PreparedSession<'a> {
         let pen = pen_device(&profile, Mode::Driver)?;
         let actions = action_sink(Mode::Driver)?.map(|sink| plugins.wrap_action_sink(&profile, &self.selected.configuration, sink))
             .transpose().map_err(io::Error::other)?;
+        let identifiers = source.identifiers(self.selected);
         let result = otd_core::session::run_gated_with_endpoints(
             &mut source,
             &mut WindowsDisplays,
@@ -779,7 +780,7 @@ impl<'a> PreparedSession<'a> {
             pen,
             actions,
             status,
-            gate,
+            || gate(&identifiers),
         );
         output
             .finish()
