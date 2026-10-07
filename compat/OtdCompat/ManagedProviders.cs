@@ -127,11 +127,10 @@ sealed partial class ManagedProviders : IDriver, IDeviceConfigurationProvider, I
         add { lock (gate) { ObjectDisposedException.ThrowIf(disposed, this); resynchronize += value; StartMonitor(); } }
         remove { lock (gate) resynchronize -= value; }
     }
-    // A debug stream requires a source lease, not a sampled snapshot. Until
-    // native delivery is connected, reject subscriptions and enable requests.
+    EventHandler<DebugReportData>? deviceReport;
     public event EventHandler<DebugReportData> DeviceReport {
-        add => throw new NotSupportedException("Managed daemon debug event delivery is not connected to a full-rate source lease.");
-        remove { }
+        add { lock (gate) { ObjectDisposedException.ThrowIf(disposed, this); deviceReport += value; } }
+        remove { lock (gate) deviceReport -= value; }
     }
     void StartMonitor() {
         if (monitor != null) return;
@@ -218,9 +217,7 @@ sealed partial class ManagedProviders : IDriver, IDeviceConfigurationProvider, I
     public Task<Settings> GetSettings() => Cached<Settings>("settings");
     public async Task ResetSettings() => await Call("ResetSettings").ConfigureAwait(false);
     public Task<AppInfo> GetApplicationInfo() { try { return Task.FromResult(HostedDesktop.Application); } catch (Exception error) { return Task.FromException<AppInfo>(error); } }
-    public Task SetTabletDebug(bool enabled) => enabled
-        ? Task.FromException(new NotSupportedException("Managed daemon debug event source lease is unavailable."))
-        : Call("SetTabletDebug", false);
+    public Task SetTabletDebug(bool enabled) => ConfigureDebug(enabled);
     public async Task<string> RequestDeviceString(int vendor, int product, int index) => (await Call("RequestDeviceString", vendor, product, index).ConfigureAwait(false)).Value<string>()!;
     public Task<IEnumerable<LogMessage>> GetCurrentLog() => Cached<IEnumerable<LogMessage>>("logs");
     public Task<DiagnosticInfo> GetDiagnosticInfo()
@@ -239,7 +236,9 @@ sealed partial class ManagedProviders : IDriver, IDeviceConfigurationProvider, I
     {
         lock (gate) {
             if (disposed) return; disposed = true; lifetime.Cancel();
-            tabletsChanged = null; devicesChanged = null; message = null; resynchronize = null;
+            tabletsChanged = null; devicesChanged = null; message = null; resynchronize = null; deviceReport = null;
+            CancelDebug();
+            _ = StopDisposedDebug();
             List<Exception>? failures = null;
             foreach (var parser in parsers) {
                 try { parser.Dispose(); } catch (Exception error) { (failures ??= []).Add(error); }
