@@ -528,6 +528,7 @@ fn write_frame_with_wake(pipe: HANDLE, frame: &[u8], deadline: Instant,
 
 pub(super) fn serve(handler: &mut impl ControlHandler, stop: &AtomicBool) -> io::Result<()> {
     let pipe = create_server(&current_sid()?)?;
+    handler.ready()?;
     while !stop.load(Ordering::Acquire) {
         handler.poll();
         if let Err(error) = connect_server(pipe.0, stop, &mut || handler.poll()) {

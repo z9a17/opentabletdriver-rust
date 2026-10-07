@@ -704,9 +704,7 @@ fn run(
     capture_seconds: Option<u64>,
 ) -> Result<(), String> {
     let profile = load_runtime_profile(config.as_ref(), otd_settings.as_ref())?;
-    if capture_seconds.is_none() && let Err(error) = experimental::apply_saved(false) {
-        eprintln!("Experimental driver CPU affinity was not applied: {error}");
-    }
+    if capture_seconds.is_none(){return daemon::serve_profile(profile);}
     let stop_event = Event::create(true).map_err(|e| format!("stop event failed: {e}"))?;
     let stop_handle = stop_event.raw() as usize;
     ctrlc::set_handler(move || {

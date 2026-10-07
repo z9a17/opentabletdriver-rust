@@ -230,11 +230,13 @@ unsafe extern "C" fn request(op: u32, scope: u64, input: *const u8, len: u32, ou
         let identity=if let Some(supplied)=supplied {
             if !crate::shared_devices::live_source(supplied){return -6;}
             let Some(id)=supplied["id"].as_str().filter(|id|!id.is_empty()) else{return -3};
-            let Some(generation)=supplied["device_generation"].as_u64().filter(|generation|*generation>0) else{return -3};
-            Some((id,generation))
+            // live_source fences the exact retained reader epoch. Its immutable
+            // constructor generation can precede commit or survive rollback;
+            // capture the currently published logical generation below.
+            Some(id)
         }else{None};
         let mut matches = state.source_sessions.iter().filter(|source| name.is_none_or(|name|source.tablet == name)
-            && identity.is_none_or(|(id,generation)|source.id==id && source.device_generation==generation)
+            && identity.is_none_or(|id|source.id==id)
             && source.connected && source.state == crate::device_sessions::SessionState::Running
             && source.pending_generation.is_none());
         let Some(source) = matches.next() else { return -6 };

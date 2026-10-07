@@ -18,6 +18,7 @@ fn raw_key(code:u32,pressed:bool)->io::Result<()> {
     if unsafe{SendInput(1,&input,size_of::<INPUT>() as i32)}!=1{return Err(io::Error::other("Original key transition was not accepted by SendInput"));}Ok(())
 }
 fn canonical_key(code:u32)->Option<Action>{
+    if let Some(usage)=crate::action_output::usage_for_virtual_key(code){return Some(Action::Key(usage));}
     let scan=unsafe{MapVirtualKeyW(code,MAPVK_VK_TO_VSC_EX)};
     if scan==0{return None;}
     crate::action_output::usage_for_scan_code((scan&0xff) as u16,scan&0xff00==0xe000).map(Action::Key)

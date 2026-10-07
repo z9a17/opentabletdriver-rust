@@ -16,6 +16,16 @@ pub fn serve() -> Result<(), String> {
     serve_with_rpc(None)
 }
 pub fn serve_with_rpc(upstream_pipe: Option<&str>) -> Result<(), String> {
+    serve_owned(upstream_pipe,None)
+}
+/// Foreground input has the same services, preset actions and cleanup owner as
+/// the panel daemon. Capture stays a separate read-only path.
+pub fn serve_profile(profile:crate::config::Profile)->Result<(),String>{
+    println!("Reading tablet input. Press Ctrl+C to stop.");
+    profile.print_summary();
+    serve_owned(None,Some(profile))
+}
+fn serve_owned(upstream_pipe:Option<&str>,profile:Option<crate::config::Profile>)->Result<(),String>{
     println!(
         "Daemon control endpoint: {}",
         control::endpoint_name().map_err(|error| error.to_string())?
@@ -35,14 +45,17 @@ pub fn serve_with_rpc(upstream_pipe: Option<&str>) -> Result<(), String> {
     };
     if let Some(name) = upstream_pipe { println!("Upstream compatibility endpoint: {name}"); }
     let mut daemon = Daemon::new(Arc::clone(&cancelled));
+    if let Some(profile)=profile {daemon.foreground(profile);}
     let managed_services = crate::managed_host::Owner::start(daemon.identity(), Arc::clone(&cancelled))
         .map_err(|error| format!("managed service owner: {error}"))?;
     if let Err(error) = crate::experimental::apply_saved(false) {
         daemon.scheduling_warning(error);
     }
     let result = control::serve(&mut daemon, &cancelled).map_err(|error| error.to_string());
-    drop(managed_services);
     let cleanup = daemon.cleanup();
+    // Reader/graph disposal needs the independent managed I/O and input lanes.
+    // Retain them until native workers have returned their cleanup receipts.
+    drop(managed_services);
     drop(console);
     drop(rpc);
     match (result, cleanup) {

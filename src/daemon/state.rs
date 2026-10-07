@@ -125,6 +125,7 @@ pub(super) struct Daemon {
     tool_drain: Option<crate::tool_host::Completion>,
     tool_resume: Option<crate::tool_host::Completion>,
     next_update: u64,
+    foreground_profile: Option<Profile>,
 }
 
 impl Daemon {
@@ -162,6 +163,7 @@ impl Daemon {
             tool_drain: None,
             tool_resume: None,
             next_update: 0,
+            foreground_profile: None,
         }
     }
     fn log(&mut self, mut line: String) {
@@ -198,6 +200,9 @@ impl Daemon {
     }
     pub(super) fn scheduling_warning(&mut self, error: String) {
         self.log(format!("Experimental driver CPU affinity was not applied: {error}"));
+    }
+    pub(super) fn foreground(&mut self, profile: Profile) {
+        self.foreground_profile=Some(profile);
     }
     pub(crate) fn device_sessions(&self) -> Option<crate::device_sessions::Handle> {
         self.devices.as_ref().map(crate::companions::Supervisor::handle)
@@ -394,6 +399,9 @@ impl Daemon {
         text: String,
         initial: bool,
     ) -> Result<Reply, ControlError> {
+        self.begin_with_saved(profile,text,initial,true)
+    }
+    fn begin_with_saved(&mut self,profile:Profile,text:String,initial:bool,prefer_saved:bool)->Result<Reply,ControlError>{
         if self.cancelled.load(Ordering::Acquire)
             || self.stopping
             || self.pending.is_some()
@@ -422,7 +430,7 @@ impl Daemon {
                 .map_err(|error| ControlError::new(ErrorCode::StartFailed, error))?);
         }
         let device_handle = self.devices.as_ref().unwrap().handle();
-        let worker = match Worker::spawn(profile.clone(), device_handle, initial && !device_start) {
+        let worker = match Worker::spawn(profile.clone(), device_handle, prefer_saved && initial && !device_start) {
             Ok(worker) => worker,
             Err(error) => {
                 if initial && !device_start {
@@ -1032,6 +1040,15 @@ mod upstream_log_tests {
 }
 
 impl ControlHandler for Daemon {
+    fn ready(&mut self)->std::io::Result<()>{
+        if let Some(profile)=self.foreground_profile.take(){
+            crate::plugins::validate_runtime_profile(&profile).map_err(std::io::Error::other)?;
+            profile.validate_filter_execution().map_err(std::io::Error::other)?;
+            let text=profile.to_toml().map_err(std::io::Error::other)?;
+            self.begin_with_saved(profile,text,true,false).map_err(|error|std::io::Error::other(error.message))?;
+        }
+        Ok(())
+    }
     fn poll(&mut self) {
         otd_core::debug::capture_poll();
         if self.cancelled.load(Ordering::Acquire)

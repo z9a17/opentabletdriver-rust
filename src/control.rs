@@ -451,6 +451,8 @@ pub enum ErrorCode {
 /// Poll worker notifications without blocking. `handle` must also stay bounded:
 /// schedule long-running work, then expose its state through `Status`.
 pub trait ControlHandler {
+    /// Called once after this process owns the endpoint, before dispatch.
+    fn ready(&mut self) -> io::Result<()> { Ok(()) }
     fn poll(&mut self) {}
     fn handle(&mut self, command: Command) -> Result<Reply, ControlError>;
 }
