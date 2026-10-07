@@ -3,7 +3,9 @@ mod area_cli;
 mod companions;
 mod control;
 mod daemon;
+mod device_sessions;
 mod decode_cli;
+mod device_cli;
 mod diagnostics;
 mod display;
 mod download;
@@ -22,6 +24,8 @@ mod runtime;
 mod session;
 mod ui;
 mod update;
+mod winusb;
+mod upstream_rpc;
 
 // The portable core, at the crate paths the Windows modules use.
 use otd_core::tablets::{self, Database, Origin, ParserSupport, Role, Severity};
@@ -45,7 +49,7 @@ fn usage() -> &'static str {
   opentabletdriver-rust.exe ui [--tray]     Open the same control panel (--tray: in the tray)
   opentabletdriver-rust.exe                 Start the visible cursor daemon
   opentabletdriver-rust.exe run [--config driver.toml | --otd-settings settings.json]
-  opentabletdriver-rust.exe daemon [--background]
+  opentabletdriver-rust.exe daemon [--background] [--upstream-rpc] [--upstream-pipe NAME]
   opentabletdriver-rust.exe start [--config driver.toml | --otd-settings settings.json]
   opentabletdriver-rust.exe restart [--config driver.toml | --otd-settings settings.json]
   opentabletdriver-rust.exe configuration
@@ -55,6 +59,7 @@ fn usage() -> &'static str {
   opentabletdriver-rust.exe listbindings | listoutputmodes | listpresets | listdisplays
   opentabletdriver-rust.exe status | stop | shutdown | debug
   opentabletdriver-rust.exe profiles list|preview|import|export|select|get|set ...
+  opentabletdriver-rust.exe devices list|select|profile|apply|start|stop|save|persist ...
   opentabletdriver-rust.exe presets list|show|save|export|apply|save-active ...
   opentabletdriver-rust.exe area convert|full|fit ...
   opentabletdriver-rust.exe diagnostics --output NEW_FILE.json [--config PROFILE.toml]
@@ -78,12 +83,14 @@ Capture does not inject cursor input. Plugin inspection/checks load trusted exec
 
 enum Command {
     Decode(Vec<String>),
+    Devices(Vec<String>),
     Diagnostics(Vec<String>),
     Area(Vec<String>),
     Profiles(Vec<String>),
     Presets(Vec<String>),
     Daemon {
         background: bool,
+        upstream_pipe: Option<String>,
     },
     Control(control::Command),
     Configuration,
@@ -146,6 +153,7 @@ fn parse_args() -> Result<Command, String> {
         };
     };
     match command.as_str() {
+        "devices" => Ok(Command::Devices(args.collect())),
         "diagnostics" => Ok(Command::Diagnostics(args.collect())),
         "decode" => Ok(Command::Decode(args.collect())),
         "plugins" => Ok(Command::Plugins(args.collect())),
@@ -188,15 +196,17 @@ fn parse_args() -> Result<Command, String> {
         "profiles" => Ok(Command::Profiles(args.collect())),
         "presets" => Ok(Command::Presets(args.collect())),
         "daemon" => {
-            let background = match args.next().as_deref() {
-                None => false,
-                Some("--background") => true,
-                _ => return Err(usage().into()),
-            };
-            if args.next().is_some() {
-                return Err(usage().into());
+            let (mut background, mut upstream, mut pipe) = (false, false, None);
+            while let Some(argument) = args.next() {
+                match argument.as_str() {
+                    "--background" if !background => background = true,
+                    "--upstream-rpc" if !upstream => upstream = true,
+                    "--upstream-pipe" if pipe.is_none() => pipe = Some(args.next().ok_or("--upstream-pipe requires NAME")?),
+                    _ => return Err(usage().into()),
+                }
             }
-            Ok(Command::Daemon { background })
+            if pipe.is_some() && !upstream { return Err("--upstream-pipe requires --upstream-rpc".into()); }
+            Ok(Command::Daemon { background, upstream_pipe: upstream.then(|| pipe.unwrap_or_else(|| upstream_rpc::DEFAULT_PIPE.to_owned())) })
         }
         "status" | "stop" | "shutdown" | "debug" => {
             if args.next().is_some() {
@@ -650,12 +660,29 @@ fn show_settings(config: Option<PathBuf>, otd_settings: Option<PathBuf>) -> Resu
     Ok(())
 }
 
+/// Runtime/import boundary; settings-only inspection keeps the pure loader.
+fn load_runtime_profile(config: Option<&PathBuf>, otd_settings: Option<&PathBuf>) -> Result<Profile, String> {
+    if let Some(path) = otd_settings {
+        let text = std::fs::read_to_string(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        return plugins::import_otd_with_installed(&text, path, &hid::connected_tablets_for_import()?);
+    }
+    if config.is_none() && std::env::var_os("OTD_RUST_PORTABLE_DIR").is_none() {
+        let native = otd_core::storage::data_directory()?.join("driver.toml");
+        if !native.try_exists().map_err(|error| format!("cannot inspect {}: {error}", native.display()))?
+            && let Some(original) = config::otd_settings_path()
+            && original.try_exists().map_err(|error| format!("cannot inspect {}: {error}", original.display()))? {
+            return plugins::load_original_profile(&hid::connected_tablets_for_import()?);
+        }
+    }
+    load_profile(config, otd_settings)
+}
+
 fn run(
     config: Option<PathBuf>,
     otd_settings: Option<PathBuf>,
     capture_seconds: Option<u64>,
 ) -> Result<(), String> {
-    let profile = load_profile(config.as_ref(), otd_settings.as_ref())?;
+    let profile = load_runtime_profile(config.as_ref(), otd_settings.as_ref())?;
     if capture_seconds.is_none() && let Err(error) = experimental::apply_saved(false) {
         eprintln!("Experimental driver CPU affinity was not applied: {error}");
     }
@@ -676,7 +703,8 @@ fn drive(
 ) -> Result<(), String> {
     let configured_tablets = check_tablet_configurations()?;
     let database = configured_tablets.as_ref();
-    profile.validate_runtime_tablet_in(database)?;
+    plugins::prepare_parser_registry(&profile, database)?;
+    profile.validate_runtime_tablet_in_with_parser_support(database, &dotnet::installed_report_parser)?;
     profile.validate_filter_execution()?;
     let tablet_name = profile.tablet_name()?;
     if tablet_name.is_some() && profile.relative.is_none() {
@@ -712,6 +740,7 @@ fn drive(
     let _tools = capture_seconds
         .is_none()
         .then(|| plugins::Tools::start(&profile.plugins, |line| eprintln!("{line}")));
+    if capture_seconds.is_none() { plugins::prepare_connected_parsers(database)?; }
     let mut companions = None::<companions::Companions>;
     let outcome = (|| {
         let mut waiting = false;
@@ -727,7 +756,7 @@ fn drive(
             }
             let devices = hid::enumerate_with_database(database)
                 .map_err(|e| format!("HID discovery failed: {e}"))?;
-            let Some(selected) = hid::select_device(
+            let Some(selected) = hid::select_device_for_start(
                 &devices,
                 database,
                 profile.device_path.as_deref(),
@@ -754,11 +783,9 @@ fn drive(
             if let Some(companions) = &mut companions {
                 companions.reserve_primary(&selected.pen.path_text(), &selected.configuration.name)?;
             }
-            let mut plugins = if capture_seconds.is_none() {
-                plugins::PluginChain::load_for_profile(&profile, &selected.configuration)?
-            } else {
-                plugins::PluginChain::load_with_tablet(&[], &selected.configuration)?
-            };
+            // Bind real opened identifiers in session::run before constructing
+            // third-party endpoints. Capture mode keeps this empty chain.
+            let mut plugins = plugins::PluginChain::load_with_tablet(&[], &selected.configuration)?;
             plugins.validate_output_mode(profile.relative.is_some())?;
             status(&format!(
                 "{} found; opening pen input",
@@ -815,7 +842,7 @@ fn main() {
     // The daemon and the panel have no console; their panics and fatal
     // errors go to crash.log, where the panel reads the daemon's back.
     let role = match &command {
-        Ok(Command::Daemon { background: false }) => "daemon",
+        Ok(Command::Daemon { background: false, .. }) => "daemon",
         Ok(Command::Ui) => "panel",
         Ok(Command::Run { .. } | Command::Capture { .. }) => "driver",
         _ => "cli",
@@ -827,17 +854,18 @@ fn main() {
     }
     let result = match command {
         Ok(Command::Decode(args)) => decode_cli::run(args),
+        Ok(Command::Devices(args)) => device_cli::run(args),
         Ok(Command::Plugins(args)) => plugin_catalog::run(args),
         Ok(Command::DeviceStrings(args)) => device_strings(args),
         Ok(Command::Diagnostics(args)) => diagnostics::run(args),
         Ok(Command::Area(args)) => area_cli::run(args),
         Ok(Command::Profiles(args)) => profile_cli::run(args),
         Ok(Command::Presets(args)) => preset_cli::run(args),
-        Ok(Command::Daemon { background }) => {
+        Ok(Command::Daemon { background, upstream_pipe }) => {
             if background {
-                daemon::background()
+                daemon::background_with_rpc(upstream_pipe.as_deref())
             } else {
-                daemon::serve()
+                daemon::serve_with_rpc(upstream_pipe.as_deref())
             }
         }
         Ok(Command::Control(command)) => daemon::call(command).and_then(|mut reply| {
@@ -866,7 +894,7 @@ fn main() {
             otd_settings,
         }) => {
             let replacement = if config.is_some() || otd_settings.is_some() {
-                load_profile(config.as_ref(), otd_settings.as_ref())
+                load_runtime_profile(config.as_ref(), otd_settings.as_ref())
                     .and_then(|profile| profile.to_toml())
                     .map(Some)
             } else {
@@ -879,8 +907,8 @@ fn main() {
         Ok(Command::Start {
             config,
             otd_settings,
-        }) => load_profile(config.as_ref(), otd_settings.as_ref()).and_then(|profile| {
-            profile.validate_runtime_tablet()?;
+        }) => load_runtime_profile(config.as_ref(), otd_settings.as_ref()).and_then(|profile| {
+            plugins::validate_runtime_profile(&profile)?;
             daemon::call(control::Command::Start {
                 profile_toml: Some(profile.to_toml()?),
             })

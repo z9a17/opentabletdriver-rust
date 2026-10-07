@@ -18,6 +18,7 @@ const CHOICE_BARREL: u16 = 10;
 const CHOICE_MOUSE: u16 = 20;
 const CHOICE_KEYS: u16 = 30;
 const CHOICE_SCROLL: u16 = 40;
+const CHOICE_MANAGED: u16 = 50;
 const SCROLL_CHOICES: [(&str, &str); 4] = [
     ("scroll:up", "Scroll Up"), ("scroll:down", "Scroll Down"),
     ("scroll:left", "Scroll Left"), ("scroll:right", "Scroll Right"),
@@ -93,6 +94,7 @@ pub(super) struct WheelField {
 pub(super) fn action_text(action: &ButtonAction) -> String {
     match action {
         ButtonAction::None => "None".into(),
+        ButtonAction::Managed(config) => format!("Managed: {}", model::plugin_name(config)),
         ButtonAction::Barrel(number) => format!("Pen Button {number}"),
         ButtonAction::Mouse(button) => MOUSE_CHOICES
             .iter()
@@ -730,7 +732,9 @@ pub(super) fn choose(window: HWND, control: HWND) {
             "Key or Shortcut…".to_owned()
         },
     );
+    commands::append(menu, 0, CHOICE_MANAGED, "Managed binding...");
     let action = match commands::popup(window, menu, control) {
+        CHOICE_MANAGED => { managed_settings::choose(window, control, managed_settings::Target::Binding(target)); None },
         CHOICE_NONE => Some(ButtonAction::None),
         choice if (CHOICE_BARREL + 1..=CHOICE_BARREL + 3).contains(&choice) => {
             Some(ButtonAction::Barrel((choice - CHOICE_BARREL) as u8))

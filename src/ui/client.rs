@@ -29,6 +29,9 @@ pub(super) enum ClientCommand {
         expected: WorkerIdentity,
         profile: Box<Profile>,
     },
+    SelectDevice { expected: WorkerIdentity, id: String, device_generation: u64, running: bool },
+    ApplyDevice { expected: WorkerIdentity, id: String, device_generation: u64, profile: Box<Profile> },
+    DeviceLifecycle { expected: WorkerIdentity, id: String, device_generation: u64, start: bool },
 }
 
 pub(super) enum ClientEvent {
@@ -36,6 +39,8 @@ pub(super) enum ClientEvent {
     Snapshot {
         status: ControlStatus,
         profile: Option<Box<Profile>>,
+        sessions: crate::device_sessions::SessionList,
+        editing_device: Option<String>,
     },
     Offline(Option<String>),
     ActionFinished(Result<(), String>),
@@ -122,6 +127,7 @@ fn execute(
     command: ClientCommand,
     cancelled: &AtomicBool,
     observed_active: &mut bool,
+    editing_device: &mut Option<String>,
 ) -> Result<(), String> {
     if cancelled.load(Ordering::Acquire) {
         return Err("Panel detached before sending command.".into());
@@ -143,6 +149,23 @@ fn execute(
     if matches!(&command, ClientCommand::AutoStart(_)) && *observed_active {
         return Ok(());
     }
+    if let ClientCommand::SelectDevice { expected, id, device_generation, running } = &command {
+        // Validate the profile/generation before changing debugger selection.
+        match call(Command::GetDeviceProfile { expected: expected.clone(), id: id.clone(),
+            device_generation: *device_generation }).map_err(|error| error.to_string())? {
+            Reply::DeviceProfile { .. } => {},
+            _ => return Err("Unexpected device profile response.".into()),
+        }
+        if *running {
+            match call(Command::SelectDeviceSession { expected: expected.clone(), id: id.clone() })
+                .map_err(|error| error.to_string())? {
+                Reply::DeviceSessionSelected { .. } => {},
+                _ => return Err("Unexpected device selection response.".into()),
+            }
+        }
+        *editing_device = Some(id.clone());
+        return Ok(());
+    }
     let wire = match command {
         ClientCommand::Start(profile) | ClientCommand::AutoStart(profile) => {
             let text = profile_text(&profile)?;
@@ -162,6 +185,14 @@ fn execute(
             expected,
             profile_toml: profile_text(&profile)?,
         },
+        ClientCommand::ApplyDevice { expected, id, device_generation, profile } => Command::ApplyDeviceProfile {
+            expected, id, device_generation, profile_toml: profile_text(&profile)?,
+        },
+        ClientCommand::DeviceLifecycle { expected, id, device_generation, start } => {
+            if start { Command::StartDevice { expected, id, device_generation } }
+            else { Command::StopDevice { expected, id, device_generation } }
+        },
+        ClientCommand::SelectDevice { .. } => return Err("Device selection was not handled.".into()),
     };
     if cancelled.load(Ordering::Acquire) {
         return Err("Panel detached before sending command.".into());
@@ -354,6 +385,8 @@ fn run(
     window: isize,
 ) {
     let mut configured: Option<WorkerIdentity> = None;
+    let mut configured_device: Option<(String, String, u64)> = None;
+    let mut editing_device: Option<String> = None;
     let mut previous_error: Option<String> = None;
     let mut was_online = true;
     // Retain across disconnections and daemon replacement: a queued launch
@@ -367,13 +400,38 @@ fn run(
         return;
     }
     while !stop.load(Ordering::Acquire) {
-        let snapshot = (|| -> io::Result<(ControlStatus, Option<Box<Profile>>)> {
+        let snapshot = (|| -> io::Result<(ControlStatus, Option<Box<Profile>>, crate::device_sessions::SessionList)> {
             let Reply::Status { status } = call(Command::Status)? else {
                 return Err(io::Error::other("Unexpected daemon status response"));
             };
             observed_active |= active(status.state);
             let identity = status.identity();
-            let profile = if active(status.state) && configured.as_ref() != Some(&identity) {
+            let sessions = match call(Command::ListDeviceSessions)? {
+                Reply::DeviceSessions { sessions, selected_id } => crate::device_sessions::SessionList { sessions, selected_id },
+                _ => return Err(io::Error::other("Unexpected device sessions response")),
+            };
+            if editing_device.as_ref().is_some_and(|id| !sessions.sessions.iter().any(|session| &session.id == id)) {
+                editing_device = None;
+                configured_device = None;
+            }
+            if editing_device.is_none() {
+                editing_device = sessions.sessions.iter().find(|session| session.primary).map(|session| session.id.clone());
+            }
+            let selected = sessions.sessions.iter().find(|session| Some(&session.id) == editing_device.as_ref());
+            let profile = if let Some(device) = selected {
+                let key = (status.instance.clone(), device.id.clone(), device.device_generation);
+                if device.pending_generation.is_none() && device.device_generation > 0 && configured_device.as_ref() != Some(&key) {
+                    match call(Command::GetDeviceProfile { expected: identity.clone(), id: device.id.clone(),
+                        device_generation: device.device_generation })? {
+                        Reply::DeviceProfile { identity: returned, id, device_generation, profile_toml }
+                            if returned == identity && id == device.id && device_generation == device.device_generation => {
+                            Some(Box::new(Profile::from_toml_text(&profile_toml, Path::new("daemon-device.toml"))
+                                .map_err(io::Error::other)?))
+                        },
+                        _ => return Err(io::Error::other("Device configuration changed while reading; editor was kept")),
+                    }
+                } else { None }
+            } else if active(status.state) && configured.as_ref() != Some(&identity) {
                 match call(Command::GetConfiguration {
                     expected: identity.clone(),
                 })? {
@@ -393,10 +451,10 @@ fn run(
             } else {
                 None
             };
-            Ok((status, profile))
+            Ok((status, profile, sessions))
         })();
         match snapshot {
-            Ok((status, profile)) => {
+            Ok((status, profile, sessions)) => {
                 if watched
                     .as_ref()
                     .is_none_or(|watched| watched.instance != status.instance)
@@ -405,15 +463,18 @@ fn run(
                 }
                 let identity = status.identity();
                 let loaded = profile.is_some();
+                let device_key = sessions.sessions.iter().find(|session| Some(&session.id) == editing_device.as_ref())
+                    .map(|device| (status.instance.clone(), device.id.clone(), device.device_generation));
                 if publish(
                     &events,
-                    ClientEvent::Snapshot { status, profile },
+                    ClientEvent::Snapshot { status, profile, sessions, editing_device: editing_device.clone() },
                     window,
                     &stop,
                     false,
                 ) {
                     if loaded {
                         configured = Some(identity);
+                        configured_device = device_key;
                     }
                     was_online = true;
                     previous_error = None;
@@ -452,6 +513,8 @@ fn run(
                     was_online = false;
                     previous_error = message;
                     configured = None;
+                    configured_device = None;
+                    editing_device = None;
                 }
             }
         }
@@ -461,7 +524,7 @@ fn run(
                 let event = if closing {
                     ClientEvent::CloseFinished(shutdown_for_close(&stop, watched.as_ref()))
                 } else {
-                    ClientEvent::ActionFinished(execute(command, &stop, &mut observed_active))
+                    ClientEvent::ActionFinished(execute(command, &stop, &mut observed_active, &mut editing_device))
                 };
                 if !publish(
                     &events,

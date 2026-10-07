@@ -57,7 +57,7 @@ pub struct GraphReport {
     tilt_y: f32,
     scroll_x: f32,
     scroll_y: f32,
-    pressure: u32,
+    pub(crate) pressure: u32,
     eraser: u32,
     near: u32,
     distance: u32,
@@ -89,6 +89,12 @@ fn capacity(error: ReportError) -> io::Error {
 }
 
 impl GraphReport {
+    /// Operation 6 has a tagged service projection, rather than report shape.
+    pub fn managed_command(&self) -> io::Result<otd_core::plugins::ManagedCommand> {
+        if self.version != 2 || self.size != std::mem::size_of::<Self>() as u32 || self.kind > 4 { return Err(invalid("invalid managed service command")); }
+        Ok(otd_core::plugins::ManagedCommand { kind: self.kind, owner: self.reserved, x: self.x, y: self.y,
+            value: self.pressure, flags: self.flags, tilt: [self.tilt_x, self.tilt_y] })
+    }
     pub fn new(kind: ReportKind, values: &ReportValues, raw: &[u8]) -> io::Result<Self> {
         if raw.len() > usize::from(u16::MAX) {
             return Err(invalid("native graph packet exceeds transport capacity"));
@@ -366,6 +372,7 @@ pub struct Graph {
     timer_capability: bool,
 }
 impl Graph {
+    pub(super) fn context_handle(&self) -> *mut c_void { self.context }
     pub fn new(nodes: &[GraphNode]) -> Result<Self, String> {
         if nodes.len() > 32 {
             return Err("The synchronous graph supports at most 32 filters".into());
@@ -386,6 +393,11 @@ impl Graph {
         })
     }
 
+    pub fn attach_output(&mut self, output: &super::endpoints::OutputSession) -> Result<(), String> {
+        output.attach(self.context)?;
+        self.timer_capability = true;
+        Ok(())
+    }
     /// Time until the next filter timer tick, or `None` without timers.
     pub fn next_tick(&self) -> Option<std::time::Duration> {
         if !self.timer_capability {

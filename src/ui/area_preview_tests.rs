@@ -2,7 +2,7 @@
 //! hidden owner and synthetic device results. No app startup or daemon client.
 use super::*;
 
-fn fixture(hwnd: HWND) -> App {
+pub(super) fn fixture(hwnd: HWND) -> App {
     let null = ptr::null_mut();
     let fonts = FontSet::new(96);
     LOOK.with(|slot| *slot.borrow_mut() = Some(Look {
@@ -28,12 +28,13 @@ fn fixture(hwnd: HWND) -> App {
         tab: Tab::Output, items: Vec::new(), experimental: None, display_view: None, tablet_view: None,
         displays: fallback_displays(), editor: Editor::new(Profile::default()),
         profile_path: PathBuf::new(), profile_snapshot: None, profile_revision_floor: 0,
-        recovered_backup: false, dirty: false, selected_filter: 0, properties: Vec::new(),
+        recovered_backup: false, dirty: false, runtime_dirty_origin: None, selected_filter: 0, properties: Vec::new(),
         plugin_metadata: HashMap::new(), metadata_pending: HashMap::new(), metadata_versions: HashMap::new(),
-        metadata_generation: 0, metadata_refresh_deferred: false, edit_revision: 0,
+        metadata_generation: 0, metadata_refresh_deferred: false, edit_revision: 0, managed_token: managed_settings::new_token(),
         background_tx, background_rx, device_scan: background::DeviceScan::default(),
         device_strings_pending: false, import_pending: false, diagnostics_pending: false,
         connected_tablets: Vec::new(), binding_rows: Vec::new(), wheel_fields: Vec::new(),
+        device_sessions: Vec::new(), selected_device: None, device_choices: Vec::new(),
         bindings_detected: false, labels: HashMap::new(), property_page: 0,
         invalid: HashSet::new(), drag: None, context_area: AreaKind::Tablet,
         running: None, daemon_client: None, control_busy: false, daemon_instance: None,
@@ -368,7 +369,7 @@ fn tool_mouse_and_pen_policy_editors_preserve_other_settings() {
     let metadata = FilterMetadata { type_name: tool.type_name.clone(), display_name: Some("Fixture Tool".into()),
         default_settings_json: "{}".into(), properties: vec![crate::dotnet::PropertyMetadata {
             name: "Interval".into(), property_type: "System.UInt32".into(), writable: true,
-            unit: Some("ms".into()), ..Default::default() }] };
+            unit: Some("ms".into()), ..Default::default() }], ..Default::default() };
     // Inspection is fixture data; no DLL is constructed or daemon requested.
     app.plugin_metadata.insert(tool.path.clone(), Ok(vec![metadata]));
     app.select_tab(Tab::Tools);
@@ -539,6 +540,39 @@ fn experimental_tab_keeps_scheduling_edits_separate_and_reloads_saved_choices() 
     }
     app.select_tab(Tab::Output);
     assert!(placed(&app, &[page]).is_empty());
+    drop(app);
+    LOOK.with(|slot| slot.borrow_mut().take());
+    unsafe { DestroyWindow(window); }
+}
+
+#[test]
+fn runtime_origin_defaults_edits_and_owned_persisted_echo_do_not_erase_user_edits() {
+    let window = unsafe { CreateWindowExW(0, wide("STATIC").as_ptr(), wide("Runtime origin fixture").as_ptr(),
+        WS_POPUP, 0, 0, 820, 600, ptr::null_mut(), ptr::null_mut(), GetModuleHandleW(ptr::null()), ptr::null()) };
+    assert!(!window.is_null());
+    let mut app = fixture(window);
+    let (handle, _requests) = crate::device_sessions::Handle::channel(crate::hid::Event::create(true).unwrap());
+    let candidate = crate::device_sessions::tests::candidate("ui-origin-fixture", "ui-origin-parent");
+    handle.discover(&crate::device_sessions::tests::selected(&candidate)).unwrap();
+    let mut device = handle.snapshot().unwrap().sessions.remove(0);
+    device.device_generation = 1;
+    app.adopt_runtime_profile(Profile::default(), "owned-instance", Some(&device));
+    assert!(!app.dirty, "unsaved initial defaults must not block device switching");
+    device.device_generation = 2;
+    device.has_unsaved_runtime_edits = true;
+    app.adopt_runtime_profile(Profile::default(), "owned-instance", Some(&device));
+    assert!(app.dirty);
+    assert!(app.can_adopt_runtime_profile("owned-instance", Some(&device)));
+    assert!(!app.can_adopt_runtime_profile("replacement-instance", Some(&device)));
+    device.profile_saved = true;
+    device.has_unsaved_runtime_edits = false;
+    app.adopt_runtime_profile(Profile::default(), "owned-instance", Some(&device));
+    assert!(!app.dirty, "owned persisted echo clears only runtime-origin dirty state");
+    device.has_unsaved_runtime_edits = true;
+    device.profile_saved = false;
+    app.adopt_runtime_profile(Profile::default(), "owned-instance", Some(&device));
+    app.mark_dirty();
+    assert!(!app.can_adopt_runtime_profile("owned-instance", Some(&device)), "a later user edit stays protected");
     drop(app);
     LOOK.with(|slot| slot.borrow_mut().take());
     unsafe { DestroyWindow(window); }

@@ -1385,6 +1385,7 @@ Minimum: 0, Maximum: 2"
             display_name: None,
             properties: Vec::new(),
             default_settings_json: r#"{"Radius":2,"Nullable":null}"#.into(),
+            ..Default::default()
         };
         assert!(editor.reset_filter(target, Some(&metadata)).is_err());
         assert_eq!(editor.profile.plugins[0].settings_json, original);
@@ -1428,6 +1429,7 @@ Minimum: 0, Maximum: 2"
                     ..Default::default()
                 },
             ],
+            ..Default::default()
         };
         let settings = r#"{"InnerRadius":5,"OuterRadius":10,"CustomFlag":true}"#;
         let fields = plugin_editor_fields(settings, Some(&metadata)).unwrap();

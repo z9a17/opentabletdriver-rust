@@ -18,6 +18,9 @@ use crate::plugins::PluginChain;
 use crate::session::{self, Mode};
 use otd_core::tablets::Database;
 
+mod supervisor;
+pub use supervisor::Supervisor;
+
 /// One active generation. The primary path is reserved before this is created.
 pub struct Companions {
     stop: Arc<AtomicBool>,
@@ -301,7 +304,7 @@ fn companion_profile(
         Some(_) => Err("saved profile belongs to another tablet".into()),
         None => Ok(Profile {
             target_tablet: Some(tablet.to_owned()),
-            tablet: otd_core::config::runtime_tablet(tablet)?,
+            tablet: otd_core::config::spec_for_tablet(tablet)?,
             source: format!("full-area defaults for {tablet}"),
             ..Profile::default()
         }),
@@ -310,7 +313,7 @@ fn companion_profile(
 
 /// OpenTabletDriver's profile for a tablet, from its settings file.
 fn import_otd(tablet: &str) -> Result<Option<Profile>, String> {
-    Profile::load_otd_tablet(tablet)
+    crate::plugins::load_original_tablet_profile(tablet)
 }
 
 /// Starts a companion session that wakes discovery when it ends.
@@ -347,14 +350,14 @@ fn run_companion(
 ) -> std::io::Result<()> {
     let notification = Notification::register()?;
     let devices = hid::enumerate_with_database(database)?;
-    let selected = hid::select_device(&devices, database, Some(path), Some(name))
+    let selected = hid::select_device_for_start(&devices, database, Some(path), Some(name))
         .map_err(std::io::Error::other)?
         .ok_or_else(|| std::io::Error::other("the tablet is no longer connected"))?;
     // A companion's own OpenTabletDriver profile has not been through this.
     let mut profile = profile.clone();
     crate::plugin_catalog::use_native_ports(&mut profile, |_| {});
     let profile = &profile;
-    let mut plugins = PluginChain::load_for_profile(profile, &selected.configuration)
+    let mut plugins = PluginChain::load_with_tablet(&[], &selected.configuration)
         .map_err(std::io::Error::other)?;
     plugins
         .validate_output_mode(profile.relative.is_some())

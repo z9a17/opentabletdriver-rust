@@ -254,6 +254,12 @@ pub struct RelativeAnalogReport {
     pub deltas: RelativeAnalog,
 }
 
+/// Host-owned managed parser identity, checked by the managed source registry.
+/// It is never derived from plugin-modifiable report bytes or OS pointers.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ManagedReportToken { pub parser: u64, pub sequence: u64 }
+
 /// The values that report consumers/plugins may observe and modify. Independent
 /// fields allow reports implementing several upstream interfaces simultaneously.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -278,6 +284,8 @@ pub struct ReportValues {
     pub relative_analog: Option<RelativeAnalogReport>,
     pub wheel_buttons: Option<WheelButtons>,
     pub touches: Option<Touches>,
+    /// Set only by an actual managed source parser; native decoders leave None.
+    pub managed_report: Option<ManagedReportToken>,
 }
 
 /// Allocated by the session owner, not derived from plugin-mutable raw bytes.

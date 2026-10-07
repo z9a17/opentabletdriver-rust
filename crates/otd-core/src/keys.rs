@@ -268,3 +268,6 @@ mod tests {
         assert!(parse_chord("A+B+C+D+E+F+G+H+I").is_err());
     }
 }
+
+/// All pinned names, including aliases, for exact managed service lookup.
+pub fn names() -> impl Iterator<Item = (&'static str, KeyboardUsage)> { KEYS.iter().filter_map(|(name, usage)| KeyboardUsage::new(*usage).map(|usage| (*name, usage))) }

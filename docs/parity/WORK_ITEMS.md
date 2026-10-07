@@ -1,6 +1,6 @@
 # Parity work items
 
-This is the canonical implementation backlog for the [full parity plan](../FULL_PARITY_PLAN.md). The original 65 tasks started **open and unclaimed**; consult the linked [GitHub workstream issues](GITHUB_TRACKING.md) for current ownership and progress. Existing code is a starting point, not completion evidence for these broader tasks. The [2026-10-07 audit](PARITY_AUDIT_2026-10-07.md) reconciles current implementations with remaining gaps; source additions and unmerged PRs do not close acceptance criteria.
+This is the canonical implementation backlog for the [full parity plan](../FULL_PARITY_PLAN.md). The original 65 tasks started **open and unclaimed**; consult the [current source audit](PARITY_AUDIT_2026-10-07.md) and archived [GitHub workstream history](GITHUB_TRACKING.md) for current scope and progress. Existing code is a starting point, not completion evidence for these broader tasks. The [2026-10-07 audit](PARITY_AUDIT_2026-10-07.md) reconciles current implementations with remaining gaps; source additions and unmerged PRs do not close acceptance criteria.
 
 Dependencies are hard prerequisites for merging the described behavior; investigation and fixture collection may start earlier. `None` denotes a task ready to claim. Source groups refer to [CAPABILITY_MATRIX.md](CAPABILITY_MATRIX.md). Every task also inherits the [definition of done](AGENT_HANDOFF.md) and [validation rules](VALIDATION.md). File names under `Start` exist unless explicitly described as new. F02 moved the portable modules into `crates/otd-core`; `src/` keeps the Windows adapters, plugin loading and UI.
 
@@ -153,7 +153,7 @@ Implement WinUSB where used by upstream, supported Bluetooth report variants and
 
 Sources: UP-BINDING, UP-SETTINGS, UP-DAEMON. New binding state belongs in the core; OS injection belongs in platform output adapters.
 
-Status: pen side buttons (pen part of B02) are implemented on top of B01, see [pen buttons](../PEN_BUTTONS.md); they have replay tests and no hardware evidence yet. Auxiliary and tablet mouse buttons, the panel editor and B03/B04 remain open.
+Status: pen, auxiliary, tablet mouse, wheel and scroll action/editor source is delivered, alongside managed binding endpoints and shared ownership. See [pen buttons](../PEN_BUTTONS.md), [Windows workflows](../WINDOWS_COMPATIBILITY_0.17.0.md) and the current audit. Current regression/hardware evidence and full B04 toggle/preset semantics remain open; the original acceptance criteria below are unchanged.
 
 <a id="b01"></a>
 ### B01 - Implement shared key/button ownership and cleanup

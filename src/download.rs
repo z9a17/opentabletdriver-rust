@@ -15,7 +15,9 @@
 use std::fs;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 use std::ptr::null;
 use windows_sys::Win32::Foundation::{GetLastError, GlobalFree};
 use windows_sys::Win32::Networking::WinHttp::{
@@ -62,10 +64,75 @@ pub(crate) fn to_file(
     token: Option<&str>,
     output: &Path,
 ) -> Result<(), String> {
+    to_file_with_cancel(url, accept, token, output, None)
+}
+
+pub(crate) fn cancelled(cancel: Option<&AtomicBool>) -> Result<(), String> {
+    if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
+        Err("operation cancelled because the daemon is shutting down".into())
+    } else { Ok(()) }
+}
+
+/// Only background-owned helpers use this. Drain both pipes concurrently with
+/// bounded retained output, and reap the exact owned child before returning.
+/// Cancellation never kills another process or interrupts a replacement journal.
+pub(crate) fn run(command: &mut Command, cancel: Option<&AtomicBool>) -> Result<Output, String> {
+    use std::io::Read;
+    cancelled(cancel)?;
+    let mut child = command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
+        .map_err(|error| format!("cannot run download/install helper: {error}"))?;
+    let stdout = child.stdout.take().ok_or("helper stdout unavailable")?;
+    let stderr = child.stderr.take().ok_or("helper stderr unavailable")?;
+    let drain = |mut pipe: Box<dyn Read + Send>| -> Result<Vec<u8>, String> {
+        let mut output = Vec::new();
+        let mut buffer = [0; 8192];
+        let mut exceeded = false;
+        loop {
+            let length = pipe.read(&mut buffer).map_err(|error| error.to_string())?;
+            if length == 0 { break; }
+            let keep = length.min((64 * 1024usize).saturating_sub(output.len()));
+            output.extend_from_slice(&buffer[..keep]);
+            exceeded |= keep != length;
+        }
+        if exceeded { Err("helper output exceeds 64 KiB".into()) } else { Ok(output) }
+    };
+    std::thread::scope(|scope| {
+        let stdout = scope.spawn(|| drain(Box::new(stdout)));
+        let stderr = scope.spawn(|| drain(Box::new(stderr)));
+        let deadline = Instant::now() + Duration::from_secs(180);
+        let status = loop {
+            let failure = cancelled(cancel).err().or_else(||
+                (Instant::now() >= deadline).then(|| "download/install helper timed out".to_owned()));
+            if let Some(error) = failure {
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err(error);
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => break Ok(status),
+                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                Err(error) => {
+                    let _ = child.kill(); let _ = child.wait();
+                    break Err(error.to_string());
+                }
+            }
+        };
+        let stdout = stdout.join().map_err(|_| "helper stdout reader panicked".to_owned());
+        let stderr = stderr.join().map_err(|_| "helper stderr reader panicked".to_owned());
+        Ok(Output { status: status?, stdout: stdout??, stderr: stderr?? })
+    })
+}
+
+pub(crate) fn to_file_with_cancel(
+    url: &str, accept: Option<&str>, token: Option<&str>, output: &Path,
+    cancel: Option<&AtomicBool>,
+) -> Result<(), String> {
+    cancelled(cancel)?;
     let origin = host(url).ok_or_else(|| format!("{url} is not an HTTPS address"))?;
     let token = token.map(TokenFile::new).transpose()?;
     let mut current = url.to_owned();
     for _ in 0..=MAX_REDIRECTS {
+        cancelled(cancel)?;
         let here = host(&current)
             .ok_or_else(|| format!("{url} redirects to {current}, which is not HTTPS"))?;
         let proxy = system_proxy(&current, &here);
@@ -92,13 +159,13 @@ pub(crate) fn to_file(
                 .arg("--header")
                 .arg(format!("@{}", token.0.display()));
         }
-        let result = command
+        command
             .arg("--output")
             .arg(output)
             .args(["--write-out", "%{http_code} %{redirect_url}"])
-            .arg(&current)
-            .output()
-            .map_err(|error| format!("cannot run curl.exe: {error}"))?;
+            .arg(&current);
+        let result = run(&mut command, cancel)
+            .map_err(|error| format!("download from {here} failed: {error} ({url})"))?;
         if !result.status.success() {
             let reason = String::from_utf8_lossy(&result.stderr)
                 .split_whitespace()
@@ -132,9 +199,16 @@ pub(crate) fn to_memory(
     accept: Option<&str>,
     token: Option<&str>,
 ) -> Result<Vec<u8>, String> {
+    to_memory_with_cancel(url, accept, token, None)
+}
+
+pub(crate) fn to_memory_with_cancel(
+    url: &str, accept: Option<&str>, token: Option<&str>, cancel: Option<&AtomicBool>,
+) -> Result<Vec<u8>, String> {
+    cancelled(cancel)?;
     let work = crate::update::temporary_work("otd-download")?;
     let body = work.join("body");
-    let result = to_file(url, accept, token, &body)
+    let result = to_file_with_cancel(url, accept, token, &body, cancel)
         .and_then(|()| fs::read(&body).map_err(|error| format!("{url}: {error}")));
     let _ = fs::remove_dir_all(&work);
     result
@@ -309,6 +383,18 @@ fn wildcard(pattern: &str, text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pre_cancelled_operations_do_not_spawn_or_create_downloads() {
+        let stop = AtomicBool::new(true);
+        let missing = Path::new("does-not-exist/cancelled-download");
+        assert!(to_file_with_cancel("not an address", None, None, missing, Some(&stop))
+            .unwrap_err().contains("cancelled"));
+        assert!(run(&mut Command::new("nonexistent-otd-helper"), Some(&stop))
+            .unwrap_err().contains("cancelled"));
+        assert!(to_memory_with_cancel("not an address", None, None, Some(&stop))
+            .unwrap_err().contains("cancelled"));
+    }
 
     #[test]
     fn hosts_come_only_from_https_urls() {

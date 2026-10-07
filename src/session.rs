@@ -14,14 +14,15 @@ use windows_sys::Win32::Storage::FileSystem::ReadFile;
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Threading::{
     CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, INFINITE, SetWaitableTimer,
-    TIMER_ALL_ACCESS, WaitForMultipleObjects, WaitForSingleObject,
+    TIMER_ALL_ACCESS, WaitForMultipleObjects, WaitForSingleObject, ResetEvent,
 };
 
 /// Waits shorter than this use a high-resolution waitable timer: filter timer
 /// ticks need sub-millisecond deadlines, which millisecond waits truncate.
 const PRECISE_WAIT: Duration = Duration::from_millis(50);
 
-use otd_core::decoders::{PenDecoder, TabletDecoder};
+use otd_core::decoders::PenDecoder;
+use crate::dotnet::RuntimeDecoder;
 pub use otd_core::session::Mode;
 use otd_core::session::{Read, ReportSource};
 use otd_core::tablets::DeviceIdentifier;
@@ -66,6 +67,8 @@ fn initialization_writes(identifier: &DeviceIdentifier) -> bool {
 /// cancels a pending read and waits for it, so the buffer is never freed
 /// while the read can still write to it.
 struct Reader {
+    // Rust drops fields in declaration order; WinUSB must be freed first.
+    winusb: Option<crate::winusb::Interface>,
     handle: OwnedHandle,
     event: Event,
     buffer: Box<[u8]>,
@@ -85,11 +88,20 @@ impl Reader {
             candidate.open_read()?
         };
         let event = Event::create(true)?;
+        let winusb = if candidate.endpoint.transport == otd_core::endpoint_match::Transport::WinUsb {
+            let interface = crate::winusb::Interface::open(&handle)?;
+            if interface.input_length() != candidate.input_length || interface.input_length() == 0 {
+                return Err(io::Error::new(io::ErrorKind::InvalidData,
+                    "WinUSB input pipe changed since device discovery"));
+            }
+            Some(interface)
+        } else { None };
         Ok(Self {
             operation: OVERLAPPED {
                 hEvent: event.raw(),
                 ..Default::default()
             },
+            winusb,
             handle,
             event,
             // ReadFile needs room for the collection's whole input report.
@@ -110,6 +122,12 @@ impl Reader {
             hEvent: self.event.raw(),
             ..Default::default()
         };
+        if let Some(winusb) = &self.winusb {
+            if unsafe { ResetEvent(self.event.raw()) } == 0 { return Err(io::Error::last_os_error()); }
+            let immediate = unsafe { winusb.read(&mut self.buffer, &self.operation) }?;
+            self.pending = !immediate;
+            return Ok(immediate);
+        }
         let started = unsafe {
             ReadFile(
                 self.handle.raw(),
@@ -134,10 +152,12 @@ impl Reader {
     fn finish(&mut self) -> io::Result<Option<usize>> {
         self.pending = false;
         let mut transferred = 0u32;
-        if unsafe { GetOverlappedResult(self.handle.raw(), &self.operation, &mut transferred, 0) }
-            == 0
-        {
-            let error = io::Error::last_os_error();
+        let completion = if let Some(winusb) = &self.winusb {
+            winusb.completed(&self.operation, false).map(|length| { transferred = length; })
+        } else if unsafe { GetOverlappedResult(self.handle.raw(), &self.operation, &mut transferred, 0) } == 0 {
+            Err(io::Error::last_os_error())
+        } else { Ok(()) };
+        if let Err(error) = completion {
             if error.raw_os_error() == Some(ERROR_OPERATION_ABORTED as i32) {
                 return Ok(None);
             }
@@ -156,11 +176,22 @@ impl Reader {
         if !self.pending {
             return;
         }
+        if let Some(winusb) = &self.winusb {
+            winusb.cancel(&self.operation);
+            self.pending = false;
+            return;
+        }
         unsafe { CancelIoEx(self.handle.raw(), &self.operation) };
         let mut ignored = 0;
         // Cancellation is only a request; wait before reusing the buffer.
         unsafe { GetOverlappedResult(self.handle.raw(), &self.operation, &mut ignored, 1) };
         self.pending = false;
+    }
+
+    fn initialize(&self, candidate: &Candidate, identifier: &DeviceIdentifier,
+        configuration: &otd_core::tablets::TabletConfiguration, stop: &Event) -> io::Result<()> {
+        if let Some(winusb) = &self.winusb { winusb.initialize(candidate, identifier, configuration, stop) }
+        else { hid::initialize(candidate, &self.handle, identifier, configuration, stop) }
     }
 }
 
@@ -183,6 +214,16 @@ struct HidSource<'a> {
     /// Created on the first short wait; sessions without timer-driven
     /// filters never wait less than a second and never create it.
     timer: Option<OwnedHandle>,
+}
+
+fn opened_identifiers(primary: &DeviceIdentifier, auxiliary: Option<&DeviceIdentifier>,
+    auxiliary_opened: bool) -> Vec<DeviceIdentifier> {
+    let mut identifiers = Vec::with_capacity(1 + usize::from(auxiliary_opened));
+    identifiers.push(primary.clone());
+    if let Some(auxiliary) = auxiliary.filter(|_| auxiliary_opened) {
+        identifiers.push(auxiliary.clone());
+    }
+    identifiers
 }
 
 impl<'a> HidSource<'a> {
@@ -215,6 +256,11 @@ impl<'a> HidSource<'a> {
         })
     }
 
+    fn identifiers(&self, selected: &SelectedDevice<'_>) -> Vec<DeviceIdentifier> {
+        opened_identifiers(&selected.identifier,
+            selected.auxiliary.as_ref().map(|(_, identifier)| identifier), self.auxiliary.is_some())
+    }
+
     /// Initializes the pen endpoint, then the auxiliary one. A failure on the
     /// auxiliary endpoint closes it and leaves the pen running.
     fn initialize(
@@ -222,17 +268,15 @@ impl<'a> HidSource<'a> {
         selected: &SelectedDevice<'_>,
         status: &impl Fn(&str),
     ) -> io::Result<()> {
-        hid::initialize(
+        self.pen.initialize(
             selected.pen,
-            &self.pen.handle,
             &selected.identifier,
             &selected.configuration,
             self.stop,
         )?;
         if let (Some(reader), Some((endpoint, identifier))) = (&self.auxiliary, &selected.auxiliary)
-            && let Err(error) = hid::initialize(
+            && let Err(error) = reader.initialize(
                 endpoint,
-                &reader.handle,
                 identifier,
                 &selected.configuration,
                 self.stop,
@@ -251,20 +295,31 @@ impl<'a> HidSource<'a> {
         Ok(())
     }
 
-    /// The auxiliary endpoint's decoder, or `None` (closing the endpoint)
-    /// when there is none or its parser cannot be decoded.
-    fn auxiliary_decoder(&mut self, selected: &SelectedDevice<'_>) -> Option<TabletDecoder> {
-        let (_, identifier) = selected.auxiliary.as_ref()?;
-        self.auxiliary.as_ref()?;
-        let decoder = TabletDecoder::for_parser(identifier.parser(), selected.spec);
-        if decoder.is_none() {
-            eprintln!(
-                "Auxiliary collection uses {}, which this driver cannot decode; express keys and wheels do nothing",
-                identifier.parser()
-            );
-            self.auxiliary = None;
+    fn prepare_parsers(&self, selected: &SelectedDevice<'_>) -> io::Result<()> {
+        let missing = std::iter::once(&selected.identifier)
+            .chain(selected.auxiliary.as_ref().filter(|_| self.auxiliary.is_some()).map(|(_, identifier)| identifier))
+            .any(|identifier| !hid::parser_supported(identifier.parser()));
+        if missing { crate::plugins::load_parser_registry().map_err(io::Error::other)?; }
+        Ok(())
+    }
+
+    fn needs_original_parser(&self, selected: &SelectedDevice<'_>) -> bool {
+        use otd_core::tablets::{parser_support, ParserSupport};
+        parser_support(selected.identifier.parser()) == ParserSupport::Missing
+            || (self.auxiliary.is_some() && selected.auxiliary.as_ref().is_some_and(|(_, identifier)|
+                parser_support(identifier.parser()) == ParserSupport::Missing))
+    }
+
+    /// An independently owned parser for an actually opened auxiliary endpoint.
+    /// Construction failures abort startup instead of silently dropping input.
+    fn auxiliary_decoder(&mut self, selected: &SelectedDevice<'_>, plugins: Option<&PluginChain>) -> io::Result<Option<RuntimeDecoder>> {
+        let Some((_, identifier)) = selected.auxiliary.as_ref() else { return Ok(None); };
+        if self.auxiliary.is_none() { return Ok(None); }
+        if !hid::parser_supported(identifier.parser()) && plugins.is_none() {
+            crate::plugins::load_parser_registry().map_err(io::Error::other)?;
         }
-        decoder
+        match plugins { Some(plugins) => plugins.source_decoder(identifier.parser(), selected.spec),
+            None => RuntimeDecoder::for_parser(identifier.parser(), selected.spec) }.map(Some).map_err(io::Error::other)
     }
 
     /// Arms the high-resolution timer to signal after `wait`.
@@ -456,7 +511,6 @@ pub fn run(
     plugins: &mut PluginChain,
     status: &impl Fn(&str),
 ) -> io::Result<()> {
-    plugins.reset();
     let mut source = HidSource::open(
         selected,
         notification,
@@ -469,8 +523,23 @@ pub fn run(
     let profile = profile
         .for_tablet(selected.spec)
         .map_err(io::Error::other)?;
-    let mut decoder = selected.decoder()?;
-    let mut auxiliary = source.auxiliary_decoder(selected);
+    source.prepare_parsers(selected)?;
+    if matches!(mode, Mode::Driver) {
+        plugins.bind_identifiers(&profile, &selected.configuration, &source.identifiers(selected))
+            .map_err(io::Error::other)?;
+    }
+    if matches!(mode, Mode::Driver) && source.needs_original_parser(selected) {
+        plugins.prepare_managed_decoder().map_err(io::Error::other)?;
+    }
+    let mut decoder = if matches!(mode, Mode::Driver) { plugins.source_decoder(selected.identifier.parser(), selected.spec).map_err(io::Error::other)? } else { selected.decoder()? };
+    let mut auxiliary = source.auxiliary_decoder(selected, matches!(mode, Mode::Driver).then_some(&*plugins))?;
+    if matches!(mode, Mode::Driver) && (decoder.is_managed() || auxiliary.as_ref().is_some_and(RuntimeDecoder::is_managed)) {
+        plugins.prepare_managed_decoder().map_err(io::Error::other)?;
+    }
+    plugins.reset();
+    if let Some(name) = plugins.take_failure() {
+        return Err(io::Error::other(format!("Plugin failed during reset notification: {name}")));
+    }
     announce_auxiliary(&source, selected, status);
     if matches!(mode, Mode::Driver) {
         eprintln!("{}", plugins.describe(&profile));
@@ -487,6 +556,8 @@ pub fn run(
         None
     };
     let pen = pen_device(&profile, mode)?;
+    let actions = action_sink(mode)?.map(|sink| plugins.wrap_action_sink(&profile, &selected.configuration, sink))
+        .transpose().map_err(io::Error::other)?;
     let result = otd_core::session::run_gated_with_endpoints(
         &mut source,
         &mut WindowsDisplays,
@@ -499,7 +570,7 @@ pub fn run(
         plugins,
         |packet| output.as_ref().map_or(Ok(()), |output| output.send(packet)),
         pen,
-        action_sink(mode)?,
+        actions,
         status,
         || Ok(true),
     );
@@ -548,7 +619,7 @@ struct DebugDevice {
 impl DebugDevice {
     fn set(selected: &SelectedDevice<'_>, source: &HidSource<'_>) -> Self {
         Self {
-            _registration: otd_core::debug::Registration::with_reports(
+            _registration: otd_core::debug::Registration::with_selection_key(
                 otd_core::debug::Device {
                     name: selected.configuration.name.clone(),
                     parser: selected.identifier.parser().to_owned(),
@@ -557,6 +628,7 @@ impl DebugDevice {
                     |auxiliary| source.pen.buffer.len().max(auxiliary.buffer.len())),
                 source.auxiliary.as_ref().and(selected.auxiliary.as_ref())
                     .map(|(_, identifier)| identifier.parser().to_owned()),
+                crate::device_sessions::debug_key(),
             ),
         }
     }
@@ -591,14 +663,16 @@ impl<'a> PreparedSession<'a> {
                 ));
             }
         }
-        for (reports, length) in [
+        for (reports, length, output) in [
             (
                 &selected.identifier.feature_init_report,
                 selected.pen.endpoint.feature_length,
+                false,
             ),
             (
                 &selected.identifier.output_init_report,
                 selected.pen.endpoint.output_length,
+                true,
             ),
         ] {
             for report in reports
@@ -606,17 +680,23 @@ impl<'a> PreparedSession<'a> {
                 .flatten()
                 .filter(|report| !report.0.is_empty())
             {
-                if length == 0 || length > u16::MAX as u32 || report.0.len() > length as usize {
+                let invalid = if selected.pen.endpoint.transport == otd_core::endpoint_match::Transport::WinUsb {
+                    report.0.len() > u16::MAX as usize || (output && length == 0)
+                } else { length == 0 || length > u16::MAX as u32 || report.0.len() > length as usize };
+                if invalid {
                     return Err(io::Error::other(
                         "initialization report exceeds endpoint report length",
                     ));
                 }
             }
         }
-        Ok(Self {
-            source: HidSource::open(selected, notification, interrupt, true)?,
-            selected,
-        })
+        let source = HidSource::open(selected, notification, interrupt, true)?;
+        source.prepare_parsers(selected)?;
+        Ok(Self { source, selected })
+    }
+
+    pub fn identifiers(&self) -> Vec<DeviceIdentifier> {
+        self.source.identifiers(self.selected)
     }
 
     pub fn activate(&mut self) -> io::Result<()> {
@@ -633,11 +713,15 @@ impl<'a> PreparedSession<'a> {
         // quiesced, so the replacement cannot replay its already-processed
         // pen/button reports.
         // https://learn.microsoft.com/windows-hardware/drivers/ddi/hidsdi/nf-hidsdi-hidd_flushqueue
-        for handle in std::iter::once(&self.source.pen.handle)
-            .chain(self.source.auxiliary.as_ref().map(|reader| &reader.handle))
+        for reader in std::iter::once(&self.source.pen)
+            .chain(self.source.auxiliary.iter())
         {
+            if let Some(interface) = &reader.winusb {
+                interface.flush_input()?;
+                continue;
+            }
             if !unsafe {
-                windows_sys::Win32::Devices::HumanInterfaceDevice::HidD_FlushQueue(handle.raw())
+                windows_sys::Win32::Devices::HumanInterfaceDevice::HidD_FlushQueue(reader.handle.raw())
             } {
                 return Err(io::Error::last_os_error());
             }
@@ -652,19 +736,36 @@ impl<'a> PreparedSession<'a> {
         profile: &Profile,
         plugins: &mut PluginChain,
         status: &impl Fn(&str),
-        gate: impl FnOnce() -> io::Result<bool>,
+        gate: impl FnOnce(&[DeviceIdentifier]) -> io::Result<bool>,
     ) -> io::Result<()> {
         let profile = profile
             .for_tablet(self.selected.spec)
             .map_err(io::Error::other)?;
-        let mut decoder = self.selected.decoder()?;
-        let _debug = DebugDevice::set(self.selected, &self.source);
         let mut source = self.source;
-        let mut auxiliary = source.auxiliary_decoder(self.selected);
+        source.prepare_parsers(self.selected)?;
+        if plugins.bind_identifiers(&profile, &self.selected.configuration, &source.identifiers(self.selected))
+            .map_err(io::Error::other)? {
+            plugins.reset();
+            if let Some(name) = plugins.take_failure() {
+                return Err(io::Error::other(format!("Plugin failed during endpoint reset notification: {name}")));
+            }
+        }
+        if source.needs_original_parser(self.selected) {
+            plugins.prepare_managed_decoder().map_err(io::Error::other)?;
+        }
+        let mut decoder = plugins.source_decoder(self.selected.identifier.parser(), self.selected.spec).map_err(io::Error::other)?;
+        let mut auxiliary = source.auxiliary_decoder(self.selected, Some(&*plugins))?;
+        if decoder.is_managed() || auxiliary.as_ref().is_some_and(RuntimeDecoder::is_managed) {
+            plugins.prepare_managed_decoder().map_err(io::Error::other)?;
+        }
+        let _debug = DebugDevice::set(self.selected, &source);
         announce_auxiliary(&source, self.selected, status);
         let _priority = ReaderPriority::for_driver(crate::experimental::mmcss_enabled(), status);
         let mut output = SessionOutput::new()?;
         let pen = pen_device(&profile, Mode::Driver)?;
+        let actions = action_sink(Mode::Driver)?.map(|sink| plugins.wrap_action_sink(&profile, &self.selected.configuration, sink))
+            .transpose().map_err(io::Error::other)?;
+        let identifiers = source.identifiers(self.selected);
         let result = otd_core::session::run_gated_with_endpoints(
             &mut source,
             &mut WindowsDisplays,
@@ -677,9 +778,9 @@ impl<'a> PreparedSession<'a> {
             plugins,
             |packet| output.send(packet),
             pen,
-            action_sink(Mode::Driver)?,
+            actions,
             status,
-            gate,
+            || gate(&identifiers),
         );
         output
             .finish()
@@ -705,4 +806,17 @@ pub fn companion_wake(
 ) -> io::Result<bool> {
     let millis = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX - 1);
     Ok(wait(&[stop_event.raw(), notification.event()], millis)? == Some(1))
+}
+
+#[cfg(test)]
+mod identifier_metadata_tests {
+    use super::*;
+    #[test]
+    fn discovered_but_unopened_auxiliary_is_not_a_live_identifier() {
+        let primary = DeviceIdentifier { product_id: Some(2), report_parser: Some("Matched.Digitizer".into()), ..Default::default() };
+        let auxiliary = DeviceIdentifier { product_id: Some(3), report_parser: Some("Matched.Auxiliary".into()), ..Default::default() };
+        assert_eq!(opened_identifiers(&primary, Some(&auxiliary), true), [primary.clone(), auxiliary.clone()]);
+        assert_eq!(opened_identifiers(&primary, Some(&auxiliary), false), [primary.clone()]);
+        assert_eq!(opened_identifiers(&primary, None, false), [primary]);
+    }
 }

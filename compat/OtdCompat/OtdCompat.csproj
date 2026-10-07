@@ -13,5 +13,6 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="OpenTabletDriver.Plugin" Version="0.6.7" />
+    <PackageReference Include="OpenTabletDriver.Configurations" Version="[0.6.7]" />
   </ItemGroup>
 </Project>

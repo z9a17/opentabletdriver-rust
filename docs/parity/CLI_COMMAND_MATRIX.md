@@ -44,7 +44,7 @@ Upstream setters change one tablet profile in the running daemon. `profiles set`
 
 | Upstream | Rust | Status | Notes |
 | --- | --- | --- | --- |
-| `setoutputmode TABLET PATH` | `profiles set FILE --output NEW --output-mode absolute|relative|pen` | Partial | Offline native modes. Relative defaults match pinned source; arbitrary managed output modes remain P06. |
+| `setoutputmode TABLET PATH` | `profiles set FILE --output NEW --output-mode absolute|relative|pen` | Partial | Offline native modes. Relative defaults match pinned source; managed output classes are selected through the panel/import path; this offline setter retains the three native choices. |
 | `enabletabletfilters TABLET FILTERS...` | `profiles set FILE --output NEW --plugin-enabled NUMBER=true / --radial-follow enable` | Partial | Existing one-based entries preserve order; native filter restores retained values. Adding stores by type path remains open. |
 | `disabletabletfilters TABLET FILTERS...` | `profiles set FILE --output NEW --plugin-enabled NUMBER=false / --radial-follow disable` | Partial | Disables existing entries offline. One native filter retains values; multiple native entries are rejected. |
 | `resettabletfilters TABLET FILTERS...` | `profiles set FILE --output NEW --radial-follow reset` | Partial | Native defaults reset preserves enabled/disabled state. Arbitrary DLL defaults and upstream remove/append ordering remain open. |
@@ -54,9 +54,9 @@ Upstream setters change one tablet profile in the running daemon. `profiles set`
 | `maptodisplayindex TABLET INDEX` | `profiles set FILE --output NEW --monitor INDEX|all` | Partial | Offline zero-based simple absolute display selection; explicit area geometry remains separate. |
 | `settabletarea TABLET W H X Y [ROTATION]` | `profiles set FILE --output NEW --tablet-area W,H,X,Y[,ROTATION]` | Covered | Offline centered millimeters/degrees; preserves existing display area. Simple profiles require both areas. |
 | `setsensitivity TABLET X Y [ROTATION]` | `profiles set FILE --output NEW --sensitivity X,Y [--relative-rotation DEG]` | Covered | Offline, relative profiles only; values pass the same validation as a loaded profile. No tablet argument; the file is one profile. |
-| `settipbinding TABLET NAME THRESHOLD` | `profiles set FILE --output NEW --tip-enabled BOOL --tip-threshold PERCENT` | Partial | Native contact and exact percentage. Arbitrary/toggle/preset/managed bindings remain B04/P06. |
+| `settipbinding TABLET NAME THRESHOLD` | `profiles set FILE --output NEW --tip-enabled BOOL --tip-threshold PERCENT` | Partial | Native contact and exact percentage. Managed classes have panel/import selectors; this setter does not assign arbitrary types. Complete toggle/preset bindings remain B04. |
 | `setpenbinding TABLET NAME INDEX` | `profiles set FILE --output NEW --pen-button NUMBER=ACTION` | Partial | Offline, absolute or relative profiles; button numbers start at 1. Mouse, barrel, key/chord, repeating scroll and none actions; unsupported bindings remain open under B02/B04. [Editing and export](../PEN_BUTTONS.md#offline-command-line-editing). |
-| `setauxbinding TABLET NAME INDEX` | `profiles set FILE --output NEW --aux-button NUMBER=ACTION` | Partial | One-based native mouse/barrel/key/chord/scroll/none express-key actions. Managed bindings remain B04/P06. |
+| `setauxbinding TABLET NAME INDEX` | `profiles set FILE --output NEW --aux-button NUMBER=ACTION` | Partial | One-based native mouse/barrel/key/chord/scroll/none express-key actions. Managed classes use the panel/import selectors; this offline setter retains native actions. |
 | `setresettime TABLET MS` | `profiles set FILE --output NEW --reset-time MS` | Covered | Offline, relative profiles only. Whole milliseconds, as upstream. |
 | `setenableclipping TABLET BOOL` | `profiles set FILE --output NEW --clipping BOOL` | Covered | Offline explicit absolute mappings; simple profiles require both areas. |
 | `setenablearealimiting TABLET BOOL` | `profiles set FILE --output NEW --limiting BOOL` | Covered | Offline explicit absolute mappings; relative edits rejected. |

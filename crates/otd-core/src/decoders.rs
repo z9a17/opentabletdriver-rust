@@ -303,10 +303,12 @@ fn intuos_v2<'a>(
 }
 
 /// Why a packet did not become a pen report.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DecodeError {
     Pen(ParseError),
     Report(ReportError),
+    /// A trusted managed parser failed; preserve its exact setup/parse error.
+    Managed(String),
 }
 
 /// One decoded pen and the parser's payload, borrowed from the same input.

@@ -464,11 +464,11 @@ pub fn run_gated_with_endpoints(
                 } else {
                     let now = source.now();
                     let filtered = if filter_tick.is_some_and(|wait| wait.is_zero()) {
-                        pipeline.process_tick(now, layout.mapper, filters, output).map(|_| ())
+                        pipeline.process_tick(now, layout.mapper, filters, &mut output).map(|_| ())
                     } else { Ok(()) };
                     filtered.and_then(|()| {
                         if binding_tick.is_some_and(|wait| wait.is_zero()) {
-                            pipeline.process_binding_tick(now)
+                            pipeline.process_binding_tick_with_output(now, layout.mapper, &mut output)
                         } else { Ok(()) }
                     })
                 };

@@ -13,6 +13,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Own resources until all driver output cleanup finishes.
 pub fn serve() -> Result<(), String> {
+    serve_with_rpc(None)
+}
+pub fn serve_with_rpc(upstream_pipe: Option<&str>) -> Result<(), String> {
     println!(
         "Daemon control endpoint: {}",
         control::endpoint_name().map_err(|error| error.to_string())?
@@ -24,12 +27,16 @@ pub fn serve() -> Result<(), String> {
         control::wake();
     })
     .map_err(|error| error.to_string())?;
+    let rpc = upstream_pipe.map(crate::upstream_rpc::Listener::start).transpose()
+        .map_err(|error| format!("upstream RPC endpoint: {error}"))?;
+    if let Some(name) = upstream_pipe { println!("Upstream compatibility endpoint: {name}"); }
     let mut daemon = Daemon::new(Arc::clone(&cancelled));
     if let Err(error) = crate::experimental::apply_saved(false) {
         daemon.scheduling_warning(error);
     }
     let result = control::serve(&mut daemon, &cancelled).map_err(|error| error.to_string());
     let cleanup = daemon.cleanup();
+    drop(rpc);
     match (result, cleanup) {
         (Err(error), Err(cleanup)) => Err(format!("{error}; cleanup also failed: {cleanup}")),
         (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
@@ -177,13 +184,19 @@ fn stdio_with(
 
 /// Invoked only by an explicit CLI command. No console window is created.
 pub fn background() -> Result<(), String> {
-    let status = ensure_running(&AtomicBool::new(false))?;
+    background_with_rpc(None)
+}
+pub fn background_with_rpc(upstream_pipe: Option<&str>) -> Result<(), String> {
+    let status = ensure_running_with_rpc(&AtomicBool::new(false), upstream_pipe)?;
     print_reply(&Reply::Status { status })
 }
 
 /// Ensure GUI and daemon run as separate processes. Reuse an existing service
 /// without replacing its worker or profile; tablet input is a separate request.
 pub fn ensure_running(cancelled: &AtomicBool) -> Result<ControlStatus, String> {
+    ensure_running_with_rpc(cancelled, None)
+}
+fn ensure_running_with_rpc(cancelled: &AtomicBool, upstream_pipe: Option<&str>) -> Result<ControlStatus, String> {
     let get_status = || -> Result<ControlStatus, std::io::Error> {
         let response = control::request(
             &Request::new(1, Command::Status),
@@ -196,7 +209,8 @@ pub fn ensure_running(cancelled: &AtomicBool) -> Result<ControlStatus, String> {
         }
     };
     match get_status() {
-        Ok(status) => return Ok(status),
+        Ok(status) if upstream_pipe.is_none() => return Ok(status),
+        Ok(_) => return Err("A Rust daemon is already running; compatibility options cannot be changed on an existing daemon. Start a new idle daemon with the explicit options after shutting this one down.".into()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
             return Err(format!(
@@ -218,8 +232,10 @@ pub fn ensure_running(cancelled: &AtomicBool) -> Result<ControlStatus, String> {
     let executable = std::env::current_exe()
         .map_err(|error| error.to_string())?
         .with_file_name("opentabletdriver-rust.exe");
-    let mut child = ProcessCommand::new(executable)
-        .arg("daemon")
+    let mut launch = ProcessCommand::new(executable);
+    launch.arg("daemon");
+    if let Some(name) = upstream_pipe { launch.args(["--upstream-rpc", "--upstream-pipe", name]); }
+    let mut child = launch
         .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -234,12 +250,18 @@ pub fn ensure_running(cancelled: &AtomicBool) -> Result<ControlStatus, String> {
             );
         }
         if let Ok(status) = get_status() {
-            return Ok(status);
+            let owns_endpoints = upstream_pipe.is_none_or(|name| {
+                let owner = crate::control::pipe::CompatPipe::server_process_id;
+                let native = control::endpoint_name().ok().and_then(|endpoint| owner(&endpoint).ok());
+                let compat = owner(&format!(r"\\.\pipe\{name}")).ok();
+                native == Some(child.id()) && compat == Some(child.id())
+            });
+            if owns_endpoints { return Ok(status); }
         }
         if let Some(code) = child.try_wait().map_err(|error| error.to_string())? {
             // Another client may have won the launch race and owns the endpoint.
-            if let Ok(status) = get_status() {
-                return Ok(status);
+            if upstream_pipe.is_none() {
+                if let Ok(status) = get_status() { return Ok(status); }
             }
             return Err(format!(
                 "daemon exited with {code}; run 'daemon' from a terminal to see its error"

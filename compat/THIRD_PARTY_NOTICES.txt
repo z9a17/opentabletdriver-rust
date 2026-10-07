@@ -1,4 +1,5 @@
 OpenTabletDriver.Plugin 0.6.7
+OpenTabletDriver.Configurations 0.6.7
 Authors: InfinityGhost, X9VoiD and OpenTabletDriver contributors
 License: LGPL-3.0-or-later (see data/licenses/LICENSE.LGPL-3.0 in the release)
 Corresponding source:

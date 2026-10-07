@@ -12,5 +12,6 @@
     <!-- Compile the actual bridge implementation into this offline harness. -->
     <Compile Include="../OtdCompat/*.cs" Link="Bridge/%(Filename)%(Extension)" />
     <PackageReference Include="OpenTabletDriver.Plugin" Version="0.6.7" />
+    <PackageReference Include="OpenTabletDriver.Configurations" Version="[0.6.7]" />
   </ItemGroup>
 </Project>

@@ -69,6 +69,27 @@ impl ContactPolicy {
     /// remapped uint pressure, not raw pressure or contact enabled, gates drag.
     /// Native raw-only thresholds use the same midpoint representation as OTD
     /// export; a hardware-tip-switch profile retains its raw pressure gate.
+    /// Exact ThresholdBindingState activation plus the uint pressure visible
+    /// to downstream unchanged bindings/output. Activation can be true even
+    /// when truncating a small remapped pressure to zero.
+    pub fn threshold_report(self, pressure: u32, max_pressure: u32, eraser: bool) -> (bool, u32) {
+        let (percent, raw) = if eraser { (self.eraser_threshold_percent, self.eraser_threshold_raw) }
+            else { (self.tip_threshold_percent, self.tip_threshold_raw) };
+        if max_pressure == 0 { return (false, 0); }
+        let threshold = percent.unwrap_or_else(|| match raw {
+            Some(raw) if u32::from(raw) == max_pressure => 100.0,
+            Some(raw) if raw != 0 => (f32::from(raw) - 0.5) * 100.0 / max_pressure as f32,
+            _ => 0.0,
+        });
+        let value = pressure as f32 / max_pressure as f32 * 100.0;
+        let maxed = threshold == 100.0 && value == 100.0;
+        let active = value > threshold || maxed;
+        let remapped = if maxed { max_pressure } else if active {
+            (max_pressure as f32 * ((value - threshold) / (100.0 - threshold))) as u32
+        } else { 0 };
+        (active, remapped)
+    }
+
     pub fn drag_pressure(self, pressure: Option<u32>, max_pressure: u32, eraser: bool) -> Option<u32> {
         let pressure = pressure?;
         let (percent, raw) = if eraser {
@@ -162,6 +183,10 @@ pub struct Profile {
     pub wheels: Vec<WheelBinding>,
     /// Absolute output only; relative output always moves the mouse.
     pub output: OutputKind,
+    /// Unchanged managed IOutputMode; native output selects its real pointer backend.
+    pub managed_output: Option<PluginConfig>,
+    pub managed_tip_binding: Option<PluginConfig>,
+    pub managed_eraser_binding: Option<PluginConfig>,
     pub radial_follow: Vec<RadialFollowSettings>,
     /// Native filter values retained while disabled; never executed.
     pub disabled_radial_follow: Option<RadialFollowSettings>,
@@ -201,6 +226,9 @@ impl Default for Profile {
             mouse_scroll_down: ButtonAction::None,
             wheels: Vec::new(),
             output: OutputKind::Mouse,
+            managed_output: None,
+            managed_tip_binding: None,
+            managed_eraser_binding: None,
             radial_follow: Vec::new(),
             disabled_radial_follow: None,
             plugins: Vec::new(),
@@ -256,6 +284,12 @@ struct RawProfile {
     wheels: Vec<RawWheel>,
     #[serde(default, skip_serializing_if = "OutputKind::is_mouse")]
     output: OutputKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    managed_output: Option<PluginConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    managed_tip_binding: Option<PluginConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    managed_eraser_binding: Option<PluginConfig>,
     #[serde(default)]
     radial_follow: Vec<RadialFollowSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -818,7 +852,7 @@ pub fn spec_for_tablet(name: &str) -> Result<TabletSpec, String> {
     spec_for_tablet_in(name, configured_tablets()?.as_ref())
 }
 
-fn spec_for_tablet_in(name: &str, database: &crate::tablets::Database) -> Result<TabletSpec, String> {
+pub fn spec_for_tablet_in(name: &str, database: &crate::tablets::Database) -> Result<TabletSpec, String> {
     let configuration = database.entries().iter()
         .filter_map(crate::tablets::Entry::usable)
         .find(|configuration| configuration.name == name)
@@ -862,6 +896,12 @@ pub fn tablets_from_directory(directory: Option<&Path>) -> Result<(std::borrow::
 }
 
 pub fn runtime_tablet_in(name: &str, database: &crate::tablets::Database) -> Result<TabletSpec, String> {
+    runtime_tablet_in_with_parser_support(name, database, &|_| false)
+}
+
+/// Platform setup can accept an actually loaded managed parser without making
+/// the portable core initialize a runtime or change native parser selection.
+pub fn runtime_tablet_in_with_parser_support(name: &str, database: &crate::tablets::Database, additional: &impl Fn(&str) -> bool) -> Result<TabletSpec, String> {
     use crate::tablets::{Entry, ParserSupport, parser_support};
     let configuration = database
         .entries()
@@ -872,7 +912,7 @@ pub fn runtime_tablet_in(name: &str, database: &crate::tablets::Database) -> Res
     if let Some(identifier) = configuration
         .digitizer_identifiers
         .iter()
-        .find(|identifier| parser_support(identifier.parser()) == ParserSupport::Missing)
+        .find(|identifier| parser_support(identifier.parser()) == ParserSupport::Missing && !additional(identifier.parser()))
     {
         return Err(format!(
             "{name} uses {}, which this driver cannot decode",
@@ -915,7 +955,7 @@ pub fn activation_raw_for(percent: f64, max_pressure: u16) -> Result<u16, String
 
 /// OpenTabletDriver's settings file in its default app data directory, as
 /// upstream `AppInfo` places it on each platform.
-fn otd_settings_path() -> Option<PathBuf> {
+pub fn otd_settings_path() -> Option<PathBuf> {
     let directory = if cfg!(target_os = "windows") {
         PathBuf::from(env::var_os("LOCALAPPDATA")?)
     } else if cfg!(target_os = "macos") {
@@ -1046,6 +1086,43 @@ impl Profile {
             .map_err(|e| format!("invalid OpenTabletDriver settings {}: {e}", path.display()))?;
         let database = configured_tablets()?;
         Self::from_otd_settings(&settings, text, path, selected_index, options, &database)
+    }
+
+    /// Import geometry using the verified mode's declared base contract, while
+    /// preserving its original store/DLL for actual unchanged execution.
+    /// The platform caller must verify output classification from inspection;
+    /// the managed constructor verifies IOutputMode again before execution.
+    pub fn from_managed_output_store(text: &str, path: &Path, selected: usize, options: ImportOptions,
+        mut config: PluginConfig, relative: bool) -> Result<Self, String> {
+        config.validate()?;
+        if config.kind != crate::plugins::PluginKind::Dotnet { return Err("managed output requires kind = dotnet".into()); }
+        let mut document: serde_json::Value = serde_json::from_str(text).map_err(|error| error.to_string())?;
+        let store = document.get_mut("Profiles").and_then(serde_json::Value::as_array_mut).and_then(|profiles| profiles.get_mut(selected))
+            .and_then(|profile| profile.get_mut("OutputMode")).ok_or("selected source output store is missing")?;
+        if store["Path"].as_str() != Some(config.type_name.as_str()) { return Err("verified managed output type differs from the source store".into()); }
+        config.enabled = store["Enable"].as_bool().unwrap_or(false);
+        config.settings_json = Self::managed_store_settings(store)?;
+        store["Path"] = serde_json::json!(if relative { "OpenTabletDriver.Desktop.Output.RelativeMode" } else { "OpenTabletDriver.Desktop.Output.AbsoluteMode" });
+        let mut profile = Self::from_otd_profile_text(&document.to_string(), path, selected, options)?;
+        profile.managed_output = Some(config);
+        if let Some(imported) = &mut profile.imported_otd { imported.settings_json = text.to_owned(); }
+        profile.diagnostics.retain(|diagnostic| diagnostic.location != format!("Profiles[{selected}].OutputMode.Settings"));
+        Ok(profile)
+    }
+    /// Missing keys remain absent and explicit null remains null. Duplicate
+    /// source entries retain last-value semantics while the archive keeps all.
+    pub fn managed_store_settings(store: &serde_json::Value) -> Result<String, String> {
+        if store["Enable"].as_bool() == Some(true) && store.get("Settings").is_none_or(serde_json::Value::is_null) {
+            return Err("Enabled original managed store has null/missing Settings; upstream ApplySettings cannot iterate it".into());
+        }
+        let mut result = serde_json::Map::new();
+        if let Some(settings) = store.get("Settings").filter(|settings| !settings.is_null()) {
+            for setting in settings.as_array().ok_or("managed store Settings must be an array")? {
+                let property = setting["Property"].as_str().ok_or("managed setting Property must be a string")?;
+                if let Some(value) = setting.get("Value") { result.insert(property.to_owned(), value.clone()); }
+            }
+        }
+        Ok(serde_json::Value::Object(result).to_string())
     }
 
     fn from_otd_settings(
@@ -1283,7 +1360,7 @@ impl Profile {
             return Err("This file is a profile collection. Load it with NativeProfileCollection and select a profile before editing or running it.".into());
         }
         let preserved_fields = schema::extract_unknown_fields(&mut document);
-        let raw: RawProfile = document
+        let mut raw: RawProfile = document
             .try_into()
             .map_err(|e| format!("invalid profile {}: {e}", path.display()))?;
         if raw.schema_version > PROFILE_SCHEMA_VERSION {
@@ -1349,6 +1426,11 @@ impl Profile {
                 return Err("Radial Follow settings must be finite".into());
             }
         }
+        if let Some(mode) = &mut raw.managed_output {
+            mode.validate()?;
+            if mode.kind != crate::plugins::PluginKind::Dotnet { return Err("managed_output requires kind = dotnet".into()); }
+            if mode.path.is_relative() { mode.path = std::path::absolute(base.join(&mode.path)).map_err(|e| e.to_string())?; }
+        }
         let mut plugins = raw.plugins;
         if plugins.len() > 32 {
             return Err("at most 32 plugins are supported per profile".into());
@@ -1407,6 +1489,9 @@ impl Profile {
             mouse_scroll_down,
             wheels,
             output: raw.output,
+            managed_output: raw.managed_output,
+            managed_tip_binding: raw.managed_tip_binding,
+            managed_eraser_binding: raw.managed_eraser_binding,
             radial_follow: raw.radial_follow,
             disabled_radial_follow: raw.disabled_radial_follow,
             plugins,
@@ -1424,6 +1509,9 @@ impl Profile {
             target_tablet,
             ..Self::default()
         };
+        for config in profile.plugin_configs_mut() {
+            if config.path.is_relative() { config.path = std::path::absolute(base.join(&config.path)).map_err(|error| error.to_string())?; }
+        }
         profile.contact.validate_percentages()?;
         if profile.crop.width == 0 || profile.crop.height == 0
             || profile.crop.x.checked_add(profile.crop.width).is_none()
@@ -1441,18 +1529,39 @@ impl Profile {
         Ok(profile)
     }
 
+    /// Saved managed entries share path handling with filter/tool entries.
+    pub fn plugin_configs(&self) -> impl Iterator<Item = &PluginConfig> {
+        self.plugins.iter().chain(self.managed_output.iter()).chain(self.managed_tip_binding.iter()).chain(self.managed_eraser_binding.iter()).chain(
+            self.pen_buttons.iter().chain(self.aux_buttons.iter()).chain(self.mouse_buttons.iter())
+                .chain([&self.mouse_scroll_up, &self.mouse_scroll_down])
+                .chain(self.wheels.iter().flat_map(|wheel| [&wheel.clockwise, &wheel.counter_clockwise].into_iter().chain(wheel.buttons.iter())))
+                .filter_map(|action| if let ButtonAction::Managed(config) = action { Some(config) } else { None }))
+    }
+
+    /// Mutable counterpart for relocating all saved plugin paths.
+    pub fn plugin_configs_mut(&mut self) -> impl Iterator<Item = &mut PluginConfig> {
+        self.plugins.iter_mut().chain(self.managed_output.iter_mut()).chain(self.managed_tip_binding.iter_mut()).chain(self.managed_eraser_binding.iter_mut()).chain(
+            self.pen_buttons.iter_mut().chain(self.aux_buttons.iter_mut()).chain(self.mouse_buttons.iter_mut())
+                .chain([&mut self.mouse_scroll_up, &mut self.mouse_scroll_down])
+                .chain(self.wheels.iter_mut().flat_map(|wheel| [&mut wheel.clockwise, &mut wheel.counter_clockwise].into_iter().chain(wheel.buttons.iter_mut())))
+                .filter_map(|action| if let ButtonAction::Managed(config) = action { Some(config) } else { None }))
+    }
+
     pub fn validate_actions(&self) -> Result<(), String> {
+        for config in [&self.managed_tip_binding, &self.managed_eraser_binding].into_iter().flatten() { config.validate()?; if config.kind != crate::plugins::PluginKind::Dotnet { return Err("managed contact binding requires kind = dotnet".into()); } }
         let actions = self.pen_buttons.iter().chain(&self.aux_buttons).chain(&self.mouse_buttons)
             .chain([&self.mouse_scroll_up, &self.mouse_scroll_down])
             .chain(self.wheels.iter().flat_map(|wheel| [&wheel.clockwise, &wheel.counter_clockwise].into_iter().chain(&wheel.buttons)));
         for action in actions {
             if let ButtonAction::Scroll(scroll) = action { scroll.validate()?; }
+            if let ButtonAction::Managed(config) = action { config.validate()?; if config.kind != crate::plugins::PluginKind::Dotnet { return Err("managed binding requires kind = dotnet".into()); } }
         }
         Ok(())
     }
 
     /// Reject double execution after migrating a native filter to a managed DLL.
     pub fn validate_filter_execution(&self) -> Result<(), String> {
+        if let Some(mode) = &self.managed_output { mode.validate()?; if mode.kind != crate::plugins::PluginKind::Dotnet { return Err("managed_output requires kind = dotnet".into()); } }
         if !self.radial_follow.is_empty()
             && self.plugins.iter().any(|plugin| {
                 plugin.enabled
@@ -1566,6 +1675,11 @@ impl Profile {
         Ok(())
     }
 
+    pub fn validate_runtime_tablet_in_with_parser_support(&self, database: &crate::tablets::Database, additional: &impl Fn(&str) -> bool) -> Result<(), String> {
+        if let Some(name) = self.tablet_name()? { runtime_tablet_in_with_parser_support(&name, database, additional)?; }
+        Ok(())
+    }
+
     /// This profile for the tablet the runtime selected. Raw pressure
     /// thresholds must fit the tablet's pressure range.
     pub fn for_tablet(&self, spec: TabletSpec) -> Result<Self, String> {
@@ -1657,6 +1771,9 @@ impl Profile {
                 self.wheels[..used].iter().map(RawWheel::from_binding).collect()
             },
             output: self.output,
+            managed_output: self.managed_output.clone(),
+            managed_tip_binding: self.managed_tip_binding.clone(),
+            managed_eraser_binding: self.managed_eraser_binding.clone(),
             radial_follow: self.radial_follow.clone(),
             disabled_radial_follow: self.disabled_radial_follow,
             plugins: self.plugins.clone(),
@@ -1687,7 +1804,7 @@ impl Profile {
             None => directory.to_owned(),
         };
         let mut saved = self.clone();
-        for plugin in &mut saved.plugins {
+        for plugin in saved.plugin_configs_mut() {
             if !plugin.path.is_absolute() {
                 continue;
             }
@@ -1819,6 +1936,59 @@ impl Profile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn managed_parser_validation_requires_an_explicit_verified_factory() {
+        let mut configuration = crate::tablets::Database::builtin().entries().iter()
+            .filter_map(crate::tablets::Entry::usable).find(|value| value.name == "Wacom PTH-660").unwrap().clone();
+        configuration.name = "Managed parser fixture".into();
+        configuration.digitizer_identifiers[0].report_parser = Some("Fixture.CustomParser".into());
+        let database = crate::tablets::Database::with_overrides(&[("fixture.json".into(), serde_json::to_string(&configuration).unwrap())]);
+        assert!(runtime_tablet_in("Managed parser fixture", &database).is_err());
+        assert!(runtime_tablet_in_with_parser_support("Managed parser fixture", &database, &|name| name == "Fixture.OtherParser").is_err());
+        assert_eq!(runtime_tablet_in_with_parser_support("Managed parser fixture", &database, &|name| name == "Fixture.CustomParser").unwrap(),
+            TabletSpec::from_configuration(&configuration).unwrap());
+        let calls = std::cell::Cell::new(0);
+        assert!(runtime_tablet_in_with_parser_support("Wacom PTH-660", &database, &|_| { calls.set(calls.get() + 1); false }).is_ok());
+        assert_eq!(calls.get(), 0, "native validation must not call managed discovery");
+    }
+
+    #[test]
+    fn original_managed_store_missing_enable_stays_disabled_and_null_settings_stays_truthful() {
+        let missing = serde_json::json!({ "Path": "Fixture.Binding", "Settings": null });
+        assert!(!missing["Enable"].as_bool().unwrap_or(false));
+        assert_eq!(Profile::managed_store_settings(&missing).unwrap(), "{}");
+        let enabled_null = serde_json::json!({ "Enable": true, "Settings": null });
+        assert!(Profile::managed_store_settings(&enabled_null).is_err());
+        assert!(Profile::managed_store_settings(&serde_json::json!({ "Enable": true })).is_err());
+        assert_eq!(Profile::managed_store_settings(&serde_json::json!({ "Enable": true, "Settings": [] })).unwrap(), "{}");
+    }
+
+    #[test]
+    fn unchanged_contact_threshold_mutates_pressure_before_binding() {
+        let mut policy = ContactPolicy { tip_threshold_percent: Some(50.0), eraser_threshold_percent: Some(25.0), ..Default::default() };
+        assert_eq!(policy.threshold_report(500, 1000, false), (false, 0));
+        assert_eq!(policy.threshold_report(750, 1000, false), (true, 500));
+        assert_eq!(policy.threshold_report(750, 1000, true), (true, 666));
+        policy.tip_threshold_percent = Some(100.0);
+        assert_eq!(policy.threshold_report(999, 1000, false), (false, 0));
+        assert_eq!(policy.threshold_report(1000, 1000, false), (true, 1000));
+        assert_eq!(policy.threshold_report(1, 0, false), (false, 0));
+        policy.tip_threshold_percent = Some(50.0001);
+        assert_eq!(policy.threshold_report(501, 1000, false), (true, 1));
+    }
+
+    #[test]
+    fn managed_output_and_binding_payloads_round_trip_without_loading_dlls() {
+        let config = PluginConfig { path: std::path::absolute("MissingOriginal.dll").unwrap(), kind: crate::plugins::PluginKind::Dotnet,
+            enabled: true, type_name: "Original.Output".into(), settings_json: r#"{"ExplicitNull":null,"UnknownFutureProperty":17}"#.into() };
+        let profile = Profile { managed_output: Some(config.clone()), pen_buttons: vec![ButtonAction::Managed(config.clone())], ..Default::default() };
+        let saved = profile.to_toml().unwrap();
+        let restored = Profile::from_toml_text(&saved, Path::new("roundtrip.toml")).unwrap();
+        assert_eq!(restored.managed_output, Some(config));
+        assert_eq!(restored.pen_buttons, profile.pen_buttons);
+        assert!(restored.plugins.is_empty(), "output and binding stores must not become filter entries");
+    }
 
     #[test]
     fn built_in_radial_follow_takes_the_place_of_its_dll_entry() {

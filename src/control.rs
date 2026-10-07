@@ -6,7 +6,8 @@
 //! IDs correlate replies; they are not deduplication tokens. After a connection
 //! failure a command may already have taken effect: query status before retrying.
 
-mod pipe;
+pub(crate) mod pipe;
+mod log_time;
 
 use serde::{Deserialize, Serialize};
 use std::io;
@@ -19,6 +20,8 @@ pub const MAX_PROFILE_BYTES: usize = 128 * 1024;
 pub const MAX_LOG_LINES: usize = 64;
 // Even JSON's worst-case six-byte escaping keeps a full status under 256 KiB.
 pub const MAX_LOG_LINE_BYTES: usize = 512;
+/// Serialized message budget leaves room for the control response envelope.
+pub const MAX_UPSTREAM_LOG_BYTES: usize = MAX_FRAME_BYTES - 8192;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -59,6 +62,7 @@ impl Request {
             Command::StartIf { profile_toml, .. } | Command::Restart { profile_toml, .. } => {
                 Some(profile_toml)
             }
+            Command::ApplyDeviceProfile { profile_toml, .. } | Command::SaveDeviceProfile { profile_toml, .. } => Some(profile_toml),
             _ => None,
         };
         if profile.is_some_and(|profile| profile.len() > MAX_PROFILE_BYTES) {
@@ -68,6 +72,32 @@ impl Request {
             ));
         }
         match &self.command {
+            Command::UpdateStatus { token } | Command::FinishUpdate { token, .. } => {
+                if token.is_empty() || token.len() > 256 || token.chars().any(char::is_control) {
+                    return Err(ControlError::new(ErrorCode::InvalidRequest, "invalid update reservation token"));
+                }
+            }
+            Command::WriteMessage { message } => {
+                if !log_time::valid(&message.time) {
+                    return Err(ControlError::new(ErrorCode::InvalidRequest, "log Time must be a valid ISO or Microsoft JSON DateTime"));
+                }
+                if message.message.as_ref().is_some_and(|value| value.len() > MAX_LOG_LINE_BYTES)
+                    || message.group.as_ref().is_some_and(|value| value.len() > 128)
+                    || message.time.len() > 64 || message.stack_trace.as_ref().is_some_and(|value| value.len() > 4096)
+                    || !(0..=4).contains(&message.level) {
+                    return Err(ControlError::new(ErrorCode::InvalidRequest, "log message exceeds limits or has an unknown level"));
+                }
+            }
+            Command::SelectDeviceSession { id, .. }
+            | Command::GetDeviceProfile { id, .. }
+            | Command::ApplyDeviceProfile { id, .. }
+            | Command::SaveDeviceProfile { id, .. }
+            | Command::StopDevice { id, .. }
+            | Command::StartDevice { id, .. } => {
+                if id.is_empty() || id.len() > 128 || id.chars().any(char::is_control) {
+                    return Err(ControlError::new(ErrorCode::InvalidRequest, "invalid device session ID"));
+                }
+            }
             Command::DebugCaptureStart { start_id, capacity_bytes, lease_ms, .. } => {
                 if *start_id == 0 {
                     return Err(ControlError::new(ErrorCode::InvalidRequest, "start ID must be nonzero"));
@@ -93,6 +123,22 @@ impl Request {
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
     Status,
+    ListDeviceSessions,
+    DetectDeviceSessions,
+    BeginUpdate { expected: WorkerIdentity },
+    UpdateStatus { token: String },
+    FinishUpdate { token: String, success: bool },
+    SelectDeviceSession { expected: WorkerIdentity, id: String },
+    GetDeviceProfile { expected: WorkerIdentity, id: String, device_generation: u64 },
+    ApplyDeviceProfile { expected: WorkerIdentity, id: String, device_generation: u64, profile_toml: String },
+    SaveDeviceProfile { expected: WorkerIdentity, id: String, device_generation: u64,
+        expected_revision: Option<u64>, expected_digest: Option<String>, profile_toml: String },
+    StopDevice { expected: WorkerIdentity, id: String, device_generation: u64 },
+    StartDevice { expected: WorkerIdentity, id: String, device_generation: u64 },
+    /// The supplied OTD log is validated at the RPC boundary. The daemon owner
+    /// appends it to its actual recent log; no input thread handles RPC traffic.
+    WriteMessage { message: UpstreamLogMessage },
+    GetUpstreamLog,
     SetExperimental {
         expected: WorkerIdentity,
         settings: crate::experimental::Settings,
@@ -240,7 +286,17 @@ pub struct Response {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Reply {
+    UpdateAccepted { token: String },
+    UpdateState { token: String, ready: bool, error: Option<String> },
+    UpdateCancelled,
     ExperimentalSaved,
+    MessageWritten,
+    UpstreamLog { instance: String, sequence: u64, messages: Vec<UpstreamLogMessage> },
+    DeviceSessions { sessions: Vec<crate::device_sessions::SessionSnapshot>, selected_id: Option<String> },
+    DeviceSessionSelected { id: String },
+    DeviceProfile { identity: WorkerIdentity, id: String, device_generation: u64, profile_toml: String },
+    DeviceOperationAccepted { receipt: crate::device_sessions::SessionReceipt },
+    DeviceProfileSaved { saved: crate::device_sessions::SavedDeviceProfile },
     Status {
         status: ControlStatus,
     },
@@ -271,6 +327,37 @@ pub enum Reply {
     Error {
         error: ControlError,
     },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase", deny_unknown_fields)]
+pub struct UpstreamLogMessage {
+    #[serde(default = "log_timestamp")]
+    pub time: String,
+    #[serde(default)]
+    pub group: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub stack_trace: Option<String>,
+    #[serde(default)]
+    pub level: i32,
+    #[serde(default)]
+    pub notification: bool,
+}
+
+fn log_timestamp() -> String {
+    use windows_sys::Win32::System::SystemInformation::GetSystemTime;
+    let mut now = unsafe { std::mem::zeroed() };
+    unsafe { GetSystemTime(&mut now) };
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z", now.wYear, now.wMonth,
+        now.wDay, now.wHour, now.wMinute, now.wSecond, now.wMilliseconds)
+}
+impl UpstreamLogMessage {
+    pub(crate) fn native(message: String) -> Self {
+        Self { time: log_timestamp(), group: Some("RustDaemon".into()), message: Some(message),
+            stack_trace: None, level: 1, notification: false }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -389,6 +476,10 @@ pub fn request(request: &Request, timeout: Duration) -> io::Result<Response> {
         .validate()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.message))?;
     pipe::request(request, timeout)
+}
+pub(crate) fn request_owned(request: &Request, timeout: Duration, expected_process: u32) -> io::Result<Response> {
+    request.validate().map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.message))?;
+    pipe::request_owned(request, timeout, Some(expected_process))
 }
 
 /// Stable per-user discovery name; contains the caller's Windows token SID.

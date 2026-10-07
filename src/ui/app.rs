@@ -205,6 +205,7 @@ impl App {
             profile_revision_floor: 0,
             recovered_backup: false,
             dirty: false,
+            runtime_dirty_origin: None,
             selected_filter: 0,
             properties: Vec::new(),
             plugin_metadata: HashMap::new(),
@@ -213,6 +214,7 @@ impl App {
             metadata_generation: 0,
             metadata_refresh_deferred: false,
             edit_revision: 0,
+            managed_token: managed_settings::new_token(),
             background_tx,
             background_rx,
             device_scan: background::DeviceScan::default(),
@@ -220,6 +222,9 @@ impl App {
             import_pending: false,
             diagnostics_pending: false,
             connected_tablets: Vec::new(),
+            device_sessions: Vec::new(),
+            selected_device: None,
+            device_choices: Vec::new(),
             binding_rows: Vec::new(),
             wheel_fields: Vec::new(),
             bindings_detected: false,
@@ -599,7 +604,8 @@ impl App {
             OutputMode::Absolute => "Absolute Mode",
             OutputMode::Relative => "Relative Mode",
         };
-        set_text(self.c.mode, label);
+        let managed = self.editor.profile.managed_output.as_ref().map(|config| format!("Managed: {}", model::plugin_name(config)));
+        set_text(self.c.mode, managed.as_deref().unwrap_or(label));
     }
 
     pub(super) fn sync_areas(&mut self, skip: Option<HWND>) {
@@ -664,11 +670,9 @@ impl App {
             let name = if eraser { "Eraser" } else { "Tip" };
             set_text(
                 binding,
-                if self.editor.binding_enabled(eraser) {
-                    name
-                } else {
-                    "None"
-                },
+                &if let Some(config) = if eraser { &self.editor.profile.managed_eraser_binding } else { &self.editor.profile.managed_tip_binding } {
+                    format!("Managed: {}", model::plugin_name(config))
+                } else if self.editor.binding_enabled(eraser) { name.into() } else { "None".into() },
             );
             let percent = self.editor.threshold_percent(eraser);
             if Some(slider) != skip {
@@ -1617,7 +1621,8 @@ impl App {
 
     pub(super) fn set_output_mode(&mut self, mode: OutputMode, pen: bool) {
         let pen = pen && mode == OutputMode::Absolute;
-        if self.editor.mode() != mode || self.editor.pen() != pen {
+        let managed = self.editor.profile.managed_output.take().is_some();
+        if managed || self.editor.mode() != mode || self.editor.pen() != pen {
             self.editor.set_mode(mode, &self.displays);
             self.editor.set_pen(pen, &self.displays);
             self.mark_dirty();
@@ -1640,7 +1645,8 @@ impl App {
     }
 
     pub(super) fn set_binding(&mut self, eraser: bool, enabled: bool) {
-        if self.editor.binding_enabled(eraser) != enabled {
+        let managed = if eraser { self.editor.profile.managed_eraser_binding.take().is_some() } else { self.editor.profile.managed_tip_binding.take().is_some() };
+        if managed || self.editor.binding_enabled(eraser) != enabled {
             self.editor.set_binding_enabled(eraser, enabled);
             self.mark_dirty();
             self.sync_pen(None);
@@ -1947,6 +1953,7 @@ impl App {
         experimental::refresh_theme();
         shortcut::refresh_theme();
         accent::refresh_theme();
+        managed_settings::refresh_theme();
         let mut scrolling = vec![self.c.filter_list, self.c.log];
         if !self.tooltip.is_null() {
             scrolling.push(self.tooltip);
@@ -2069,6 +2076,7 @@ impl App {
             self.recovered_backup = false;
         }
         self.dirty = dirty;
+        self.runtime_dirty_origin = None;
         self.selected_filter = 0;
         self.property_page = 0;
         self.drag = None;
@@ -2131,6 +2139,51 @@ impl App {
         self.update_title();
     }
 
+    fn owns_runtime_draft(&self, instance: &str, device: Option<&crate::device_sessions::SessionSnapshot>) -> bool {
+        self.runtime_dirty_origin.as_ref().zip(device).is_some_and(|((origin_instance, id, generation, revision), device)| {
+            origin_instance == instance && id == &device.id && device.device_generation >= *generation
+                && device.pending_generation.is_none() && self.edit_revision == *revision
+        })
+    }
+    fn can_adopt_runtime_profile(&self, instance: &str, device: Option<&crate::device_sessions::SessionSnapshot>) -> bool {
+        self.invalid.is_empty() && (!self.dirty || self.owns_runtime_draft(instance, device))
+    }
+    fn refresh_runtime_saved_origin(&mut self, instance: &str, device: &crate::device_sessions::SessionSnapshot) {
+        if !device.profile_saved || device.has_unsaved_runtime_edits
+            || !self.owns_runtime_draft(instance, Some(device))
+            || self.runtime_dirty_origin.as_ref().is_none_or(|(_, _, generation, _)| *generation != device.device_generation) {
+            return;
+        }
+        // Persistence can change without a device-generation/profile reply.
+        // Verify the exact disk bytes before clearing this runtime-only draft.
+        match crate::device_sessions::observed_profile_snapshot(device) {
+            Ok(snapshot) => {
+                self.profile_snapshot = Some(snapshot);
+                self.profile_revision_floor = device.persisted_revision.unwrap_or(0);
+                self.dirty = false;
+                self.runtime_dirty_origin = None;
+                self.update_title();
+                self.update_save_tip();
+            }
+            Err(error) => self.log(Level::Warning, "Settings", error),
+        }
+    }
+    fn adopt_runtime_profile(&mut self, profile: Profile, instance: &str,
+        device: Option<&crate::device_sessions::SessionSnapshot>) {
+        self.load_active_profile(profile);
+        if let Some(device) = device.filter(|device| device.has_unsaved_runtime_edits && !device.profile_saved) {
+            self.mark_dirty();
+            self.runtime_dirty_origin = Some((instance.to_owned(), device.id.clone(), device.device_generation, self.edit_revision));
+        } else {
+            // Callers only adopt a clean editor or an unchanged owned runtime
+            // draft. Actual user edits never reach this branch.
+            self.dirty = false;
+            self.runtime_dirty_origin = None;
+            self.update_title();
+        }
+        self.update_save_tip();
+    }
+
     /// The profile exactly as Save and Start will use it.
     pub(super) fn checked_profile(&self) -> Result<Profile, String> {
         if !self.invalid.is_empty() {
@@ -2142,7 +2195,7 @@ impl App {
     /// Persistence must also work for disconnected displays or other tablets.
     /// Check runtime requirements before stopping an existing worker.
     fn validate_start(&self, profile: &Profile) -> Result<(), String> {
-        profile.validate_runtime_tablet()?;
+        crate::plugins::validate_runtime_profile(profile)?;
         profile.validate_filter_execution()?;
         if profile.relative.is_none() {
             displays_for_driver(self.process_dpi)?.mapper(profile)?;
@@ -2203,32 +2256,21 @@ impl App {
     }
 
     pub(super) fn import_otd(&mut self) {
-        let exists = std::env::var_os("LOCALAPPDATA")
-            .map(|dir| {
-                PathBuf::from(dir)
-                    .join("OpenTabletDriver")
-                    .join("settings.json")
-            })
-            .is_some_and(|path| path.exists());
-        if !exists {
-            self.log(
-                Level::Warning,
-                "Settings",
-                "No OpenTabletDriver settings.json was found.",
-            );
-            return;
-        }
         if self.import_pending {
             return;
         }
         let generation = self.metadata_generation;
         let edit_revision = self.edit_revision;
+        let selected_tablet = self.selected_device.as_ref().map(|device| device.tablet.clone());
         self.import_pending =
             self.background("settings-import", move || BackgroundResult::Import {
                 generation,
                 edit_revision,
-                result: crate::hid::connected_tablets()
-                    .and_then(|names| Profile::load_connected(None, &names))
+                result: crate::hid::connected_tablets_for_import()
+                    .and_then(|names| {
+                        let names = background::import_tablet_order(names, selected_tablet.as_deref());
+                        crate::plugins::load_original_profile(&names)
+                    })
                     .map(Box::new),
             });
     }
@@ -2269,6 +2311,7 @@ impl App {
                 self.profile_revision_floor = profile.settings_revision;
                 self.recovered_backup = false;
                 self.dirty = false;
+                self.runtime_dirty_origin = None;
                 self.update_title();
                 self.update_save_tip();
                 self.log(
@@ -2339,7 +2382,7 @@ impl App {
         }
     }
 
-    fn submit_control(&mut self, command: client::ClientCommand) -> bool {
+    pub(super) fn submit_control(&mut self, command: client::ClientCommand) -> bool {
         if self.closing || self.update_restart_pending {
             return false;
         }
@@ -2449,12 +2492,15 @@ impl App {
         else {
             return;
         };
-        if self.submit_control(client::ClientCommand::Restart {
+        let command = if let Some(device) = &self.selected_device {
+            client::ClientCommand::ApplyDevice { expected, id: device.id.clone(),
+                device_generation: device.device_generation, profile: Box::new(profile) }
+        } else { client::ClientCommand::Restart {
             expected,
             profile: Box::new(profile),
-        }) {
-            self.set_driver_state(DriverState::Stopping);
-            self.log(Level::Info, "Daemon", "Restart requested with current settings; the daemon waits for cleanup before starting again.");
+        } };
+        if self.submit_control(command) {
+            self.log(Level::Info, "Daemon", "Settings apply requested for the selected tablet. Other tablets keep their profiles; the device state reports completion.");
         }
     }
 
@@ -2506,22 +2552,45 @@ impl App {
                 }
                 client::ClientEvent::Offline(error) => {
                     self.running = None;
+                    self.device_sessions.clear();
+                    self.selected_device = None;
                     self.set_driver_state(DriverState::Disconnected);
                     self.log(if error.is_some() { Level::Warning } else { Level::Info }, "Daemon",
                         error.unwrap_or_else(|| "No daemon is available. Start driver launches it; closing this panel stops tablet input.".into()));
                 }
-                client::ClientEvent::Snapshot { status, profile } => {
+                client::ClientEvent::Snapshot { status, profile, sessions, editing_device } => {
                     let identity = status.identity();
                     if self.daemon_instance.as_deref() != Some(&status.instance) {
                         self.daemon_instance = Some(status.instance.clone());
                         self.daemon_log_sequence = 0;
                     }
                     self.running = client::active(status.state).then_some(Running { identity });
+                    let next_device = sessions.sessions.iter().find(|device| Some(&device.id) == editing_device.as_ref()).cloned();
+                    let switched_device = next_device.as_ref().map(|device| &device.id)
+                        != self.selected_device.as_ref().map(|device| &device.id);
+                    self.device_sessions = sessions.sessions;
+                    self.selected_device = next_device;
+                    if profile.is_none() && !self.closing {
+                        if let Some(device) = self.selected_device.clone() {
+                            self.refresh_runtime_saved_origin(&status.instance, &device);
+                        }
+                    }
                     if let Some(profile) = profile.filter(|_| !self.closing) {
-                        if self.dirty || !self.invalid.is_empty() {
+                        if !self.can_adopt_runtime_profile(&status.instance, self.selected_device.as_ref()) {
                             self.log(Level::Warning, "Settings", "Daemon configuration changed. Unsaved local edits were kept; Apply deliberately replaces the active configuration.");
                         } else {
-                            self.load_active_profile(*profile);
+                            if let Some(device) = self.selected_device.clone()
+                                && (switched_device || self.profile_path == PathBuf::from(&device.profile_path)) {
+                                self.profile_path = PathBuf::from(&device.profile_path);
+                                self.profile_revision_floor = device.persisted_revision.unwrap_or(0);
+                                self.recovered_backup = false;
+                                match crate::device_sessions::observed_profile_snapshot(&device) {
+                                    Ok(snapshot) => self.profile_snapshot = Some(snapshot),
+                                    Err(error) => { self.profile_snapshot = None; self.log(Level::Warning, "Settings", error); }
+                                }
+                            }
+                            let device = self.selected_device.clone();
+                            self.adopt_runtime_profile(*profile, &status.instance, device.as_ref());
                             self.log(Level::Info, "Settings", "Loaded the daemon's active configuration. Save writes it to the local profile file.");
                         }
                     }

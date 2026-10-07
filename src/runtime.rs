@@ -40,6 +40,7 @@ pub enum Directive {
 }
 #[derive(Debug)]
 pub enum Notice {
+    PreparedProfile(Box<Profile>),
     Prepared,
     ActivationReady,
     Running,
@@ -69,7 +70,26 @@ impl Drop for Done {
     }
 }
 impl Worker {
-    pub fn spawn(profile: Profile) -> Result<Self, String> {
+    #[cfg(test)]
+    pub(crate) fn fixture(script: impl FnOnce(Receiver<Directive>, SyncSender<Notice>, Arc<AtomicBool>) -> Result<(), String> + Send + 'static) -> Self {
+        let interrupt = Event::create(true).unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let thread_cancelled = Arc::clone(&cancelled);
+        let (commands, receiver) = mpsc::sync_channel(4);
+        let (notifier, notices) = mpsc::sync_channel(8);
+        let (_logger, logs) = mpsc::sync_channel(1);
+        let done = Arc::new(AtomicBool::new(false));
+        let thread_done = Done(Arc::clone(&done));
+        let thread = std::thread::spawn(move || { let _done = thread_done; script(receiver, notifier, thread_cancelled) });
+        Self { interrupt, cancelled, commands, notices, logs, thread, done }
+    }
+    pub fn spawn(profile: Profile, devices: crate::device_sessions::Handle, prefer_saved: bool) -> Result<Self, String> {
+        Self::spawn_bound(profile, devices, None, prefer_saved)
+    }
+    pub(crate) fn spawn_device(profile: Profile, devices: crate::device_sessions::Handle, id: String) -> Result<Self, String> {
+        Self::spawn_bound(profile, devices, Some(id), false)
+    }
+    fn spawn_bound(profile: Profile, devices: crate::device_sessions::Handle, id: Option<String>, prefer_saved: bool) -> Result<Self, String> {
         let interrupt = Event::create(true).map_err(|error| error.to_string())?;
         let thread_interrupt = interrupt.duplicate().map_err(|error| error.to_string())?;
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -90,6 +110,9 @@ impl Worker {
                     receiver,
                     notifier,
                     logger,
+                    devices,
+                    id,
+                    prefer_saved,
                 )
             })
             .map_err(|error| error.to_string())?;
@@ -149,16 +172,25 @@ fn reset_plugins(plugins: &mut PluginChain) -> Result<(), String> {
     Ok(())
 }
 
+/// Execution-only substitutions must never become the settings published to
+/// clients or compared with a saved physical profile. Clone before porting.
+fn execution_profile(authored: &Profile, port: impl FnOnce(&mut Profile)) -> Profile {
+    let mut execution = authored.clone();
+    port(&mut execution);
+    execution
+}
+
 fn run(
-    mut profile: Profile,
+    profile: Profile,
     interrupt: &Event,
     cancelled: &AtomicBool,
     commands: Receiver<Directive>,
     notices: SyncSender<Notice>,
     logs: SyncSender<String>,
+    device_sessions: crate::device_sessions::Handle,
+    bound_id: Option<String>,
+    prefer_saved: bool,
 ) -> Result<(), String> {
-    let companions = std::cell::RefCell::new(None::<crate::companions::Companions>);
-    let outcome = (|| {
     let log = |line: &str| {
         let _ = logs.try_send(line.to_owned());
         crate::control::wake();
@@ -172,14 +204,18 @@ fn run(
     };
     let configured_tablets = crate::check_tablet_configurations()?;
     let database = configured_tablets.as_ref();
-    profile.validate_runtime_tablet_in(database)?;
+    crate::plugins::prepare_parser_registry(&profile, database)?;
+    profile.validate_runtime_tablet_in_with_parser_support(database, &crate::dotnet::installed_report_parser)?;
     profile.validate_filter_execution()?;
     let tablet_name = profile.tablet_name()?;
-    if profile.plugins.iter().any(|plugin| plugin.enabled)
+    if profile.plugin_configs().any(|plugin| plugin.enabled)
         && !crate::plugin_catalog::recover_installations()? {
         return Err("Plugins are being installed or recovered; retry starting the driver after that finishes.".into());
     }
-    crate::plugin_catalog::use_native_ports(&mut profile, log);
+    let mut authored_profile = profile;
+    let mut profile = execution_profile(&authored_profile, |execution| {
+        crate::plugin_catalog::use_native_ports(execution, log);
+    });
     // Exercise deterministic pipeline construction before old output pauses.
     // A fresh output/relative pipeline is used on activation and rollback.
     if tablet_name.is_some() {
@@ -190,21 +226,21 @@ fn run(
     }
     let notification = Notification::register().map_err(|error| error.to_string())?;
     let mut waiting = false;
+    let mut profile_loaded = false;
     'connect: loop {
-        if let Some(companions) = &mut *companions.borrow_mut() {
-            companions.check_finished()?;
-        }
         if cancelled.load(Ordering::Acquire) {
             return Ok(());
         }
         let devices = crate::hid::enumerate_with_database(database)
             .map_err(|error| format!("HID discovery failed: {error}"))?;
-        let Some(selected) = crate::hid::select_device(
-            &devices,
-            database,
-            profile.device_path.as_deref(),
-            tablet_name.as_deref(),
-        )?
+        let stable_id = bound_id.clone().or(device_sessions.primary_id()?);
+        let choice = if let Some(id) = &stable_id {
+            device_sessions.validate_profile(id, &profile)?;
+            device_sessions.find(id, &devices, database)?
+        } else {
+            crate::hid::select_device_for_start(&devices, database, profile.device_path.as_deref(), tablet_name.as_deref())?
+        };
+        let Some(selected) = choice
         else {
             if !waiting {
                 notify(Notice::Waiting)?;
@@ -217,16 +253,12 @@ fn run(
             if !crate::session::wait_for_retry(&notification, interrupt)
                 .map_err(|error| error.to_string())?
             {
-                if let Some(companions) = &mut *companions.borrow_mut() {
-                    companions.check_finished()?;
-                }
                 if cancelled.load(Ordering::Acquire) {
                     return Ok(());
                 }
                 // A quiesce while disconnected has no live report resources.
                 match receive(&commands, cancelled).map_err(|error| error.to_string())? {
                     Directive::Quiesce => {
-                        finish_companions(&companions)?;
                         notify(Notice::Quiesced)?;
                         match receive(&commands, cancelled).map_err(|error| error.to_string())? {
                             Directive::Stop => return Ok(()),
@@ -244,29 +276,44 @@ fn run(
             continue;
         };
         waiting = false;
-        if let Some(companions) = &mut *companions.borrow_mut() {
-            companions.reserve_primary(&selected.pen.path_text(), &selected.configuration.name)?;
+        let id = if let Some(id) = &bound_id {
+            device_sessions.discover(&selected)?;
+            id.clone()
+        } else { device_sessions.reserve_primary(&selected)? };
+        crate::device_sessions::set_debug_key(&id);
+        if !profile_loaded {
+            authored_profile = device_sessions.effective_profile(&id, &authored_profile, prefer_saved)?;
+            if authored_profile.plugin_configs().any(|plugin| plugin.enabled) && !crate::plugin_catalog::recover_installations()? {
+                return Err("Plugins are being installed or recovered; retry starting the driver after that finishes.".into());
+            }
+            profile = execution_profile(&authored_profile, |execution| {
+                crate::plugin_catalog::use_native_ports(execution, log);
+            });
+            crate::plugins::prepare_parser_registry(&profile, database)?;
+            profile.validate_runtime_tablet_in_with_parser_support(database, &crate::dotnet::installed_report_parser)?;
+            profile.validate_filter_execution()?;
+            let _ = otd_core::pipeline::ReportPipeline::new(&profile.for_tablet(selected.spec)?)?;
+            if profile.relative.is_none() { crate::display::read_snapshot()?.mapper(&profile.for_tablet(selected.spec)?)?; }
+            profile_loaded = true;
         }
-        // These stay on this thread and survive a quiesce/failed replacement.
-        // Construction/reset executes trusted plugin code (including its
-        // reset/range-loss callback), but has no live input or host output sink.
-        let mut plugins = PluginChain::load_for_profile(&profile, &selected.configuration)?;
+        if cancelled.load(Ordering::Acquire) { return Ok(()); }
+        let source = PreparedSession::new(&selected, &notification, interrupt)
+            .map_err(|error| format!("HID preparation failed: {error}"))?;
+        // Metadata names the endpoints actually opened, not configuration
+        // alternatives. Preparation still issues no input read or init write.
+        let mut plugins = PluginChain::load_for_profile_with_identifiers(
+            &profile, &selected.configuration, &source.identifiers())?;
         plugins.validate_output_mode(profile.relative.is_some())?;
         reset_plugins(&mut plugins)?;
-        if cancelled.load(Ordering::Acquire) {
-            return Ok(());
-        }
-        let mut prepared = Some(
-            PreparedSession::new(&selected, &notification, interrupt)
-                .map_err(|error| format!("HID preparation failed: {error}"))?,
-        );
+        if cancelled.load(Ordering::Acquire) { return Ok(()); }
+        let mut prepared = Some(source);
+        notify(Notice::PreparedProfile(Box::new(authored_profile.clone())))?;
         notify(Notice::Prepared)?;
         loop {
             match receive(&commands, cancelled).map_err(|error| error.to_string())? {
                 Directive::Stop => return Ok(()),
                 Directive::Quiesce => {
                     prepared = None;
-                    finish_companions(&companions)?;
                     reset_plugins(&mut plugins)?;
                     notify(Notice::Quiesced)?;
                     continue;
@@ -276,9 +323,6 @@ fn run(
             }
             if unsafe { ResetEvent(interrupt.raw()) } == 0 {
                 return Err(io::Error::last_os_error().to_string());
-            }
-            if let Some(companions) = &mut *companions.borrow_mut() {
-                companions.check_finished()?;
             }
             if cancelled.load(Ordering::Acquire) {
                 return Ok(());
@@ -304,7 +348,6 @@ fn run(
                 // acknowledge that command after closing the prepared handle.
                 match commands.try_recv() {
                     Ok(Directive::Quiesce) => {
-                        finish_companions(&companions)?;
                         reset_plugins(&mut plugins)?;
                         notify(Notice::Quiesced)?;
                         continue;
@@ -323,38 +366,27 @@ fn run(
             }
             let running = Cell::new(false);
             let quiesced = Cell::new(false);
+            let opened_epoch = Cell::new(None);
             // Tools run while this worker owns the output, like the tablet.
             let tools = std::cell::RefCell::new(None);
-            let result = source.run(&profile, &mut plugins, &log, || {
-                if let Some(companions) = &mut *companions.borrow_mut() {
-                    companions.check_finished().map_err(io::Error::other)?;
-                }
+            let result = source.run(&profile, &mut plugins, &log, |identifiers| {
                 notify(Notice::ActivationReady).map_err(io::Error::other)?;
                 match receive(&commands, cancelled)? {
                     Directive::Run if !cancelled.load(Ordering::Acquire) => {
+                        let epoch = device_sessions.activated_with_identifiers(&id, &selected, identifiers);
+                        if epoch == 0 { return Err(io::Error::other("Cannot register this activation's actual opened endpoints.")); }
+                        opened_epoch.set(Some(epoch));
                         running.set(true);
-                        let companion_logs = logs.clone();
-                        if companions.borrow().is_none() {
-                            *companions.borrow_mut() = Some(
-                            crate::companions::Companions::start(
-                                profile.clone(),
-                                database.clone(),
-                                selected.pen.path_text(),
-                                selected.configuration.name.clone(),
-                                interrupt,
-                                move |line| {
-                                    let _ = companion_logs.try_send(line.to_owned());
-                                    crate::control::wake();
-                                },
-                            )
-                            .map_err(io::Error::other)?,
-                            );
-                        }
                         notify(Notice::Running).map_err(io::Error::other)?;
-                        *tools.borrow_mut() =
-                            Some(crate::plugins::Tools::start(&profile.plugins, |line| {
-                                log(line)
-                            }));
+                        // Pinned DriverDaemon owns one Settings.Tools collection,
+                        // separate from tablet profiles. Peer workers run their
+                        // filters/output/bindings, never another global tool set.
+                        if bound_id.is_none() {
+                            *tools.borrow_mut() =
+                                Some(crate::plugins::Tools::start(&profile.plugins, |line| {
+                                    log(line)
+                                }));
+                        }
                         Ok(true)
                     }
                     Directive::Stop | Directive::Run => Ok(false),
@@ -365,10 +397,10 @@ fn run(
                     _ => Err(io::Error::other("unexpected activation gate command")),
                 }
             });
-            drop(tools.take());
-            if let Some(companions) = &mut *companions.borrow_mut() {
-                companions.check_finished()?;
+            if let Some(epoch) = opened_epoch.get() {
+                device_sessions.clear_opened_identifiers(&id, epoch);
             }
+            drop(tools.take());
             // source has drained its read and core output cleanup has completed.
             if let Err(error) = &result
                 && otd_core::session::is_cleanup_failure(error)
@@ -387,7 +419,6 @@ fn run(
                 return Ok(());
             }
             if matches!(requested, Some(Directive::Quiesce)) {
-                finish_companions(&companions)?;
                 reset_plugins(&mut plugins)?;
                 notify(Notice::Quiesced)?;
                 continue;
@@ -412,13 +443,9 @@ fn run(
             if !crate::session::wait_for_retry(&notification, interrupt)
                 .map_err(|error| error.to_string())?
             {
-                if let Some(companions) = &mut *companions.borrow_mut() {
-                    companions.check_finished()?;
-                }
                 match receive(&commands, cancelled).map_err(|error| error.to_string())? {
                     Directive::Stop => return Ok(()),
                     Directive::Quiesce => {
-                        finish_companions(&companions)?;
                         reset_plugins(&mut plugins)?;
                         notify(Notice::Quiesced)?;
                         // Retain this graph while the daemon attempts apply.
@@ -431,10 +458,47 @@ fn run(
             continue 'connect;
         }
     }
-    })();
-    finish_companions(&companions).and(outcome)
 }
 
-fn finish_companions(companions: &std::cell::RefCell<Option<crate::companions::Companions>>) -> Result<(), String> {
-    companions.take().map_or(Ok(()), |mut companions| companions.finish())
+#[cfg(test)]
+mod authored_profile_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn native_filter_execution_preserves_saved_settings_and_reconnect_publication() {
+        let path = Path::new("E:/AgentWork/tmp/authored-profile-fixture.toml");
+        let source = format!(
+            "[[plugins]]\npath='radial.dll'\nkind='dotnet'\nenabled=true\ntype_name='{}'\nsettings_json='{{\"InnerRadius\":0.302,\"OuterRadius\":0.7039,\"SmoothingCoefficient\":0.302,\"SmoothingLeakCoefficient\":0.201,\"SoftKneeScale\":0.603}}'\n",
+            otd_core::radial_follow::FILTER_PATH,
+        );
+        let authored = Profile::from_toml_text(&source, path).unwrap();
+        let saved = authored.to_toml().unwrap();
+        // The real port transformation runs with an injected verification
+        // predicate; the fixture loads no DLL and never opens a device.
+        let execution = execution_profile(&authored, |execution| {
+            assert_eq!(execution.use_native_ports(|dll| dll.ends_with("radial.dll")), 1);
+        });
+        assert_eq!(execution.radial_follow.len(), 1);
+        assert!(!execution.plugins[0].enabled);
+        assert_ne!(execution.to_toml().unwrap(), saved);
+        assert!(authored.plugins[0].enabled);
+        assert!(authored.radial_follow.is_empty());
+        let persisted = Profile::from_toml_text(&saved, path).unwrap();
+        for published in [&authored, &persisted] {
+            // PreparedProfile is what both primary and peer transactions
+            // commit, including physical reconnect after saved-file reload.
+            let Notice::PreparedProfile(profile) =
+                Notice::PreparedProfile(Box::new(published.clone())) else { unreachable!() };
+            assert_eq!(profile.to_toml().unwrap(), persisted.to_toml().unwrap(),
+                "raw saved-profile semantic comparison must remain equal");
+            assert!(profile.plugins[0].enabled);
+            let reopened = execution_profile(&profile, |execution| {
+                assert_eq!(execution.use_native_ports(|_| true), 1);
+            });
+            assert_eq!(serde_json::to_value(&reopened.radial_follow).unwrap(),
+                serde_json::to_value(&execution.radial_follow).unwrap());
+            assert_eq!(profile.to_toml().unwrap(), saved);
+        }
+    }
 }

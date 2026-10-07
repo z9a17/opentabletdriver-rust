@@ -12,7 +12,10 @@ pub(super) fn create(
     plugins: &[Plugin],
     builtin_slot: Option<usize>,
 ) -> Result<Option<Graph>, String> {
-    if !plugins.iter().any(|plugin| plugin.managed) {
+    create_if(plugins, builtin_slot, false)
+}
+pub(super) fn create_if(plugins: &[Plugin], builtin_slot: Option<usize>, force: bool) -> Result<Option<Graph>, String> {
+    if !force && !plugins.iter().any(|plugin| plugin.managed) {
         return Ok(None);
     }
     let mut nodes: Vec<_> = plugins
@@ -114,6 +117,7 @@ impl Scope<'_> {
     }
 
     fn step(&mut self, operation: u32, index: u32, frame: &mut GraphReport) -> io::Result<bool> {
+        if operation == 6 { self.runtime.managed_command(frame.managed_command()?)?; return Ok(true); }
         let (kind, mut values) = frame.decode()?;
         let keep = match operation {
             0 => {
@@ -138,6 +142,7 @@ impl Scope<'_> {
                 }
                 keep
             }
+            5 => { self.runtime.bindings(kind, &mut values, unsafe { frame.raw()? })?; true }
             3 => {
                 // .NET pins this report's current Raw array until the callback
                 // returns. The output stage cannot retain this borrowed view.
@@ -147,7 +152,8 @@ impl Scope<'_> {
             }
             _ => return Err(io::Error::other("unknown synchronous graph operation")),
         };
-        if operation != 3 {
+        if operation == 5 { frame.pressure = values.pressure.unwrap_or(0); }
+        if operation != 3 && operation != 5 {
             frame.set_position(&values);
         }
         Ok(keep)
@@ -230,6 +236,7 @@ impl PluginChain {
         input: DispatchInput<'_>,
         runtime: &mut dyn PipelineRuntime,
     ) -> io::Result<()> {
+        if input.values.managed_report.is_some() && self.graph.is_none() { return Err(io::Error::other("Managed source parser requires its original report graph to be prepared")); }
         let mut values = input.values;
         let raw = input.raw;
         let time_ns = input
@@ -265,8 +272,10 @@ impl PluginChain {
                 builtins_in_graph,
                 error: None,
             };
-            let result =
-                unsafe { graph.dispatch(&frame, callback, (&mut scope as *mut Scope<'_>).cast()) };
+            let result = unsafe { match input.values.managed_report {
+                Some(token) => graph.dispatch_parsed(token, &frame, callback, (&mut scope as *mut Scope<'_>).cast()),
+                None => graph.dispatch(&frame, callback, (&mut scope as *mut Scope<'_>).cast()),
+            } };
             if let Some(error) = scope.error {
                 return Err(error);
             }

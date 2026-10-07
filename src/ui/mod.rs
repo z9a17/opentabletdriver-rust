@@ -26,10 +26,12 @@ mod conversion;
 mod debugger;
 mod debugger_data;
 mod debugger_capture;
+mod device_controls;
 mod draw;
 mod experimental;
 mod layout;
 mod model;
+mod managed_settings;
 mod paint;
 mod plugin_manager;
 mod presets;
@@ -124,6 +126,10 @@ const CMD_UPDATE_ON_OPEN: u16 = 243;
 const CMD_TABLET_ANY: u16 = 6000;
 const CMD_TABLET_FIRST: u16 = 6001;
 const TABLET_CHOICES: u16 = 64;
+const CMD_DEVICE_FIRST: u16 = 6100;
+const DEVICE_CHOICES: u16 = 32;
+const CMD_DEVICE_START: u16 = 6132;
+const CMD_DEVICE_STOP: u16 = 6133;
 const CMD_ADD_DOTNET: u16 = 220;
 const CMD_ADD_NATIVE: u16 = 221;
 const CMD_PLUGIN_MANAGER: u16 = 229;
@@ -190,6 +196,7 @@ const WM_TRAY: u32 = WM_APP + 6;
 const WM_BACKGROUND: u32 = WM_APP + 7;
 const WM_METADATA_REFRESH: u32 = WM_APP + 8;
 const WM_EXPERIMENTAL_APPLY: u32 = WM_APP + 9;
+const WM_MANAGED_SETTINGS: u32 = WM_APP + 10;
 
 const PANEL_CLASS: &str = "OpenTabletDriverRustControlPanel";
 const PANEL_MUTEX: &str = "Local\\OpenTabletDriverRustPanel";
@@ -692,6 +699,7 @@ struct Controls {
 }
 
 enum BackgroundResult {
+    Managed { guard: managed_settings::Guard, result: Result<Vec<crate::dotnet::InspectedFilter>, String> },
     Metadata {
         generation: u64,
         revision: u64,
@@ -753,6 +761,9 @@ struct App {
     profile_revision_floor: u64,
     recovered_backup: bool,
     dirty: bool,
+    /// A runtime-origin draft may become clean on its owned persisted echo,
+    /// but only while no intervening user edit changed edit_revision.
+    runtime_dirty_origin: Option<(String, String, u64, u64)>,
     selected_filter: usize,
     properties: Vec<PropertyRow>,
     /// Discovery results are UI-only; they are never written into profiles.
@@ -762,6 +773,7 @@ struct App {
     metadata_generation: u64,
     metadata_refresh_deferred: bool,
     edit_revision: u64,
+    managed_token: u64,
     background_tx: std::sync::mpsc::Sender<BackgroundResult>,
     background_rx: std::sync::mpsc::Receiver<BackgroundResult>,
     device_scan: background::DeviceScan,
@@ -769,6 +781,9 @@ struct App {
     import_pending: bool,
     diagnostics_pending: bool,
     connected_tablets: Vec<String>,
+    device_sessions: Vec<crate::device_sessions::SessionSnapshot>,
+    selected_device: Option<crate::device_sessions::SessionSnapshot>,
+    device_choices: Vec<String>,
     /// Pen button, express key and wheel binding dropdowns.
     binding_rows: Vec<bindings::BindingRow>,
     wheel_fields: Vec<bindings::WheelField>,
@@ -1176,6 +1191,7 @@ unsafe extern "system" fn window_proc(
             with_app(App::driver_status);
             0
         }
+        WM_MANAGED_SETTINGS => { managed_settings::open_ready(window); 0 }
         WM_BACKGROUND => {
             if let Some(text) = with_app(App::background_results).flatten() {
                 // Modal dialogs pump messages; release the App borrow first.
@@ -1451,7 +1467,7 @@ pub fn run() -> Result<(), String> {
             ),
         }
     } else {
-        match crate::load_profile(None, None) {
+        match crate::load_runtime_profile(None, None) {
             Ok(profile) => {
                 let message = if profile.source.starts_with("OpenTabletDriver") {
                     "Imported the active OpenTabletDriver mapping. Save writes it as a separate Rust profile."
