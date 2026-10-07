@@ -121,6 +121,7 @@ fn record(file: std::fs::File, stop: &AtomicBool, written: &AtomicU64,
         status = Some(capture);
         writeln!(writer, "{}", json!({"format":"otd-rust-captured-reports", "version":1,
             "capture_mode":"full_rate", "complete_hid_stream":false, "tap_losses_measured":true,
+            "capture_boundary":"selected_session_read_completions", "hardware_or_transport_losses_measured":false,
             "capture":status.as_ref().unwrap()})).map_err(|error| error.to_string())?;
         durable(&mut writer)?;
         let token = status.as_ref().unwrap().token.clone();
@@ -208,9 +209,17 @@ fn record(file: std::fs::File, stop: &AtomicBool, written: &AtomicU64,
             && same_token(&capture.token, &final_status.token)
         { status = Some(final_status); }
     }
+    // Preserve both the primary failure and every known tap-loss counter on
+    // the visible completion path, even when Stop/drain fails afterward.
+    let result = match (result, status.as_ref().and_then(loss)) {
+        (Ok(()), Some(detail)) => Err(detail),
+        (Err(error), Some(detail)) if !error.contains(&detail) => Err(format!("{error} {detail}")),
+        (result, _) => result,
+    };
     let footer = writeln!(writer, "{}", json!({"summary":{"written":written.load(Ordering::Relaxed),
         "queue_dropped":0, "sequence_gaps":cursor.saturating_sub(written.load(Ordering::Relaxed)), "statistics":statistics.ranges,
-        "complete_hid_stream":result.is_ok(), "error":result.as_ref().err(), "final_sequence":cursor,
+        "complete_tap_stream":result.is_ok(), "complete_hid_stream":false,
+        "error":result.as_ref().err(), "final_sequence":cursor,
         "capture":status}})).map_err(|error| format!("Cannot write recording summary: {error}"))
         .and_then(|_| durable(&mut writer));
     let mut outcome = result.and(footer);
@@ -246,7 +255,7 @@ mod tests {
     fn packet(sequence: u64) -> DebugCapturePacket {
         DebugCapturePacket { sequence, elapsed_us: sequence * 211, auxiliary: sequence == 2, raw_hex:"1001".into() }
     }
-    fn recording_fixture(name: &str, transport: &mut impl FnMut(Command) -> Result<Reply, String>)
+    fn recording_fixture(name: &str, stop_immediately: bool, transport: &mut impl FnMut(Command) -> Result<Reply, String>)
         -> (Result<(), String>, Vec<serde_json::Value>)
     {
         let directory = std::path::PathBuf::from("E:/AgentWork/tmp").join(format!(
@@ -255,7 +264,7 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("capture.jsonl");
         let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).unwrap();
-        let result = record(file, &AtomicBool::new(true), &AtomicU64::new(0), transport);
+        let result = record(file, &AtomicBool::new(stop_immediately), &AtomicU64::new(0), transport);
         let lines = std::fs::read_to_string(&path).unwrap().lines()
             .map(|line| serde_json::from_str(line).unwrap()).collect();
         std::fs::remove_file(path).unwrap();
@@ -267,7 +276,7 @@ mod tests {
         let mut start_ids = Vec::new();
         let mut cursors = Vec::new();
         let mut failed_read = false;
-        let (result, lines) = recording_fixture("retry-drain", &mut |command| match command {
+        let (result, lines) = recording_fixture("retry-drain", true, &mut |command| match command {
             Command::Status => Ok(daemon()),
             Command::DebugCaptureStart { start_id, .. } => {
                 start_ids.push(start_id);
@@ -296,12 +305,15 @@ mod tests {
         assert_eq!(rows[1]["auxiliary"], true);
         assert_eq!(rows[1]["epoch"], 7);
         assert_eq!(rows[1]["session"], 9);
-        assert_eq!(lines.last().unwrap()["summary"]["complete_hid_stream"], true);
+        assert_eq!(lines[0]["capture_boundary"], "selected_session_read_completions");
+        assert_eq!(lines[0]["hardware_or_transport_losses_measured"], false);
+        assert_eq!(lines.last().unwrap()["summary"]["complete_tap_stream"], true);
+        assert_eq!(lines.last().unwrap()["summary"]["complete_hid_stream"], false);
     }
     #[test]
     fn capture_loss_and_session_end_remain_explicit_in_saved_summary() {
         for (lost, reason) in [(1, "requested"), (0, "session_ended")] {
-            let (result, lines) = recording_fixture(reason, &mut |command| match command {
+            let (result, lines) = recording_fixture(reason, true, &mut |command| match command {
                 Command::Status => Ok(daemon()),
                 Command::DebugCaptureStart { .. } => Ok(Reply::DebugCaptureStarted { capture:status(true, 0, 0, "requested") }),
                 Command::DebugCaptureStop { .. } => Ok(Reply::DebugCaptureStopped { capture:status(false, 0, lost, reason) }),
@@ -314,8 +326,39 @@ mod tests {
             assert!(result.is_err());
             let summary = &lines.last().unwrap()["summary"];
             assert_eq!(summary["complete_hid_stream"], false);
+            assert_eq!(summary["complete_tap_stream"], false);
             assert_eq!(summary["capture"]["lost_tap"], lost);
             assert!(summary["error"].as_str().is_some());
         }
+    }
+    #[test]
+    fn known_loss_survives_a_failed_final_drain_in_ui_and_footer() {
+        let mut frozen = false;
+        let mut reads_after_stop = 0;
+        let (result, lines) = recording_fixture("loss-then-disconnect", false, &mut |command| match command {
+            Command::Status => Ok(daemon()),
+            Command::DebugCaptureStart { .. } => Ok(Reply::DebugCaptureStarted { capture:status(true, 2, 0, "requested") }),
+            Command::DebugCaptureRead { .. } if !frozen => Ok(Reply::DebugCaptureRead { batch:DebugCaptureBatch {
+                capture:status(true, 1, 1, "requested"), packets:vec![packet(1)], next_sequence:1,
+            } }),
+            Command::DebugCaptureStop { .. } => {
+                frozen = true;
+                Ok(Reply::DebugCaptureStopped { capture:status(false, 0, 1, "requested") })
+            }
+            Command::DebugCaptureRead { .. } => {
+                reads_after_stop += 1;
+                Err("fixture transport disconnected during final drain".into())
+            }
+            Command::DebugCaptureRelease { .. } => Ok(Reply::DebugCaptureReleased),
+            _ => panic!("unexpected command"),
+        });
+        assert_eq!(reads_after_stop, 3);
+        let error = result.unwrap_err();
+        assert!(error.contains("transport disconnected during final drain"));
+        assert!(error.contains("lost tap 1, overflow 0, oversized 0"));
+        let summary = &lines.last().unwrap()["summary"];
+        assert_eq!(summary["error"], error);
+        assert_eq!(summary["complete_tap_stream"], false);
+        assert_eq!(summary["capture"]["lost_tap"], 1);
     }
 }
