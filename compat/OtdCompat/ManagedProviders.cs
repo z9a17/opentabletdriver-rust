@@ -369,6 +369,12 @@ sealed class HostPluginManager : DesktopPluginManager
         AddService<IDeviceHubsProvider>(() => (IDeviceHubsProvider)services.GetService(typeof(IDeviceHubsProvider))!);
         AddService<IDeviceHub>(() => (IDeviceHub)services.GetService(typeof(IDeviceHub))!);
         AddService<ICompositeDeviceHub>(() => (ICompositeDeviceHub)services.GetService(typeof(ICompositeDeviceHub))!);
+        AddService<OpenTabletDriver.Plugin.Timers.ITimer>(() => (OpenTabletDriver.Plugin.Timers.ITimer)services.GetService(typeof(OpenTabletDriver.Plugin.Timers.ITimer))!);
+        AddService<OpenTabletDriver.Plugin.Platform.Pointer.IAbsolutePointer>(() => (OpenTabletDriver.Plugin.Platform.Pointer.IAbsolutePointer)services.GetService(typeof(OpenTabletDriver.Plugin.Platform.Pointer.IAbsolutePointer))!);
+        AddService<OpenTabletDriver.Plugin.Platform.Pointer.IRelativePointer>(() => (OpenTabletDriver.Plugin.Platform.Pointer.IRelativePointer)services.GetService(typeof(OpenTabletDriver.Plugin.Platform.Pointer.IRelativePointer))!);
+        AddService<OpenTabletDriver.Plugin.Platform.Keyboard.IVirtualKeyboard>(() => (OpenTabletDriver.Plugin.Platform.Keyboard.IVirtualKeyboard)services.GetService(typeof(OpenTabletDriver.Plugin.Platform.Keyboard.IVirtualKeyboard))!);
+        AddService<OpenTabletDriver.Plugin.Platform.Pointer.IPressureHandler>(() => (OpenTabletDriver.Plugin.Platform.Pointer.IPressureHandler)services.GetService(typeof(OpenTabletDriver.Plugin.Platform.Pointer.IPressureHandler))!);
+        AddService<OpenTabletDriver.Plugin.Platform.Keyboard.IVirtualPad>(() => (OpenTabletDriver.Plugin.Platform.Keyboard.IVirtualPad)services.GetService(typeof(OpenTabletDriver.Plugin.Platform.Keyboard.IVirtualPad))!);
         AddService<OpenTabletDriver.Plugin.Platform.Display.IVirtualScreen>(() =>
             (OpenTabletDriver.Plugin.Platform.Display.IVirtualScreen)services.GetService(typeof(OpenTabletDriver.Plugin.Platform.Display.IVirtualScreen))!);
         AddService<PluginManager>(() => this);

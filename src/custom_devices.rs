@@ -80,9 +80,9 @@ impl Reader {
                     },
                     Err(error)=>{if let Ok(mut ring)=target.ring.lock(){ring.error=Some(error);}break;}
                 }
-                if let Ok(wake)=target.wake.lock(){wake();}
+                if let Ok(wake)=target.wake.lock().map(|wake|wake.clone()){wake();}
             }
-            if let Ok(mut ring)=target.ring.lock(){ring.done=true;}if let Ok(wake)=target.wake.lock(){wake();}
+            if let Ok(mut ring)=target.ring.lock(){ring.done=true;}if let Ok(wake)=target.wake.lock().map(|wake|wake.clone()){wake();}
         });
         let thread=match started {Ok(thread)=>thread,Err(error)=>{handle.start_close();return Err(error);}};
         let pump=Arc::new(Pump{handle,shared,thread:Mutex::new(Some(thread)),report_length,closing:AtomicBool::new(false),leases:AtomicUsize::new(1)});
@@ -122,7 +122,7 @@ impl Reader {
         self.pump.closing.store(true,Ordering::Release);
         drop(owners);
         let deadline=Instant::now()+timeout;
-        self.pump.shared.stopped.store(true,Ordering::Release);self.pump.handle.start_close();if let Ok(wake)=self.pump.shared.wake.lock(){wake();}
+        self.pump.shared.stopped.store(true,Ordering::Release);self.pump.handle.start_close();if let Ok(wake)=self.pump.shared.wake.lock().map(|wake|wake.clone()){wake();}
         let result=self.pump.handle.wait_close(deadline);
         let mut worker=self.pump.thread.lock().map_err(|_|io::Error::other("Managed reader join poisoned"))?;
         while worker.as_ref().is_some_and(|thread|!thread.is_finished()) && Instant::now()<deadline {

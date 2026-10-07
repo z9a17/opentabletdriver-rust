@@ -5,6 +5,8 @@ using OpenTabletDriver.Plugin;
 using OpenTabletDriver.Plugin.Components;
 using OpenTabletDriver.Plugin.Devices;
 using OpenTabletDriver.Plugin.Tablet;
+using OpenTabletDriver.Plugin.Output;
+using OpenTabletDriver.Plugin.Platform.Pointer;
 
 namespace OtdCompat;
 
@@ -18,6 +20,9 @@ sealed class HostedCore : IDisposable, IServiceProvider
     readonly JObject? source;
     readonly object gate;
     readonly Dictionary<string, (InputDeviceTree Tree, JObject Identity)> trees = new();
+    readonly OriginalInputServices originalInputs = new();
+    readonly object pointerGate = new();
+    readonly Dictionary<IOutputMode, object> queuedPointers = new(ReferenceEqualityComparer.Instance);
     bool disposed;
     internal RootHub Root { get; }
     internal Driver Driver { get; }
@@ -79,7 +84,8 @@ sealed class HostedCore : IDisposable, IServiceProvider
                             readers.Add(reader);
                         }
                         var tree = new InputDeviceTree(configuration, readers);
-                        tree.HostedOutputOwnership = enabled => SetOutput(identity, enabled);
+                        tree.HostedOutputOwnership = mode => SwitchOutput(tree, identity, mode);
+                        tree.HostedShouldDisposeOutput = mode => !IsQueuedMode(mode);
                         replacement.Add(treeKey, (tree, identity));
                     } catch { foreach (var reader in readers) reader.Dispose(); throw; }
                 }
@@ -97,6 +103,38 @@ sealed class HostedCore : IDisposable, IServiceProvider
                     foreach (var reader in entry.Value.Tree.InputDevices) reader.Dispose();
                 throw;
             }
+        }
+    }
+    void SwitchOutput(InputDeviceTree tree, JObject identity, IOutputMode? mode)
+    {
+        // A native-graph SessionPointer only buffers commands for that graph.
+        // Delegated concrete reads need actual original platform output instead.
+        ServiceClient.RequireIoAllowed();
+        if (mode == null) {
+            if (tree.OutputMode is { } previous) RestorePointer(previous);
+            SetOutput(identity, false); return;
+        }
+        object? queued = mode switch {
+            AbsoluteOutputMode absolute when absolute.Pointer is SessionPointer => absolute.Pointer,
+            RelativeOutputMode relative when relative.Pointer is SessionPointer => relative.Pointer,
+            _ => null };
+        object? actual = queued == null ? null : mode is AbsoluteOutputMode
+            ? originalInputs.Get(typeof(IAbsolutePointer)) : originalInputs.Get(typeof(IRelativePointer));
+        SetOutput(identity, true);
+        if (tree.OutputMode is { } old && !ReferenceEquals(old, mode)) RestorePointer(old);
+        if (queued != null && actual != null) {
+            lock (pointerGate) queuedPointers[mode] = queued;
+            if (mode is AbsoluteOutputMode absolute) absolute.Pointer = (IAbsolutePointer)actual;
+            else if (mode is RelativeOutputMode relative) relative.Pointer = (IRelativePointer)actual;
+        }
+    }
+    bool IsQueuedMode(IOutputMode? mode) { lock (pointerGate) return mode != null && queuedPointers.ContainsKey(mode); }
+    void RestorePointer(IOutputMode mode)
+    {
+        lock (pointerGate) {
+            if (!queuedPointers.Remove(mode, out var pointer)) return;
+            if (mode is AbsoluteOutputMode absolute) absolute.Pointer = (IAbsolutePointer)pointer;
+            else if (mode is RelativeOutputMode relative) relative.Pointer = (IRelativePointer)pointer;
         }
     }
     void SetOutput(JObject identity, bool enabled)
@@ -121,6 +159,7 @@ sealed class HostedCore : IDisposable, IServiceProvider
     {
         lock (gate) {
             if (disposed) return; disposed = true;
+            originalInputs.Dispose();
             foreach (var item in trees.Values) {
                 var payload = (JObject)item.Identity.DeepClone(); payload.Remove("members"); payload["managed_output"] = false;
                 // Scope retirement must not synchronously await its own native apply.
@@ -131,13 +170,16 @@ sealed class HostedCore : IDisposable, IServiceProvider
             Driver?.Dispose(); trees.Clear();
             Root.HostedDispose();
             HostedCustomDevices.Remove(scope);
+            // Actual input cleanup follows the delegated callback drain tasks.
         }
     }
     async Task RetireAndRelease(InputDeviceTree tree, JObject payload)
     {
         // Drain the shadow callback independently of the native apply thread.
         // Its output ownership stays delegated until this drain completes.
+        var mode = tree.OutputMode;
         await Task.Run(tree.HostedRetire).ConfigureAwait(false);
+        if (mode != null) RestorePointer(mode);
         await ReleaseOutput(payload).ConfigureAwait(false);
     }
     async Task ReleaseOutput(JObject payload)

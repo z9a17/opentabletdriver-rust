@@ -58,9 +58,10 @@ namespace OpenTabletDriver
         internal void HostedRetire()
         {
             hostedRetired = true;
-            lock (hostedAssignment) lock (sync) { outputMode?.Dispose(); outputMode = null; }
+            lock (hostedAssignment) lock (sync) { if (HostedShouldDisposeOutput?.Invoke(outputMode) ?? true) outputMode?.Dispose(); outputMode = null; }
         }
-        internal Action<bool>? HostedOutputOwnership;
+        internal Action<IOutputMode?>? HostedOutputOwnership;
+        internal Func<IOutputMode?, bool>? HostedShouldDisposeOutput;
         public IOutputMode? OutputMode
         {
             set
@@ -71,8 +72,7 @@ namespace OpenTabletDriver
                 {
                     if (hostedRetired && value != null) throw new ObjectDisposedException(nameof(InputDeviceTree));
                     if (ReferenceEquals(outputMode, value)) return;
-                    HostedOutputOwnership?.Invoke(value != null);
-                    lock (sync) outputMode = value;
+                    lock (sync) { HostedOutputOwnership?.Invoke(value); outputMode = value; }
                 }
             }
             get { lock (sync) return outputMode; }
