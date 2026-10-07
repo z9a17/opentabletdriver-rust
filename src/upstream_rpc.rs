@@ -1,9 +1,11 @@
 //! Opt-in upstream Windows RPC. Native v2 framing and daemon ownership remain
-//! separate. Never start the original daemon, a tablet worker, or .NET for RPC.
+//! separate. Never start the original daemon or a tablet worker for RPC.
+//! Only explicit managed provider/debug requests initialize .NET.
 mod protocol;
 mod service;
 mod settings;
 mod apply;
+mod debug;
 
 use std::io;
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};

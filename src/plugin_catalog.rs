@@ -409,13 +409,21 @@ fn install_archive_with_cancel(
 /// plugin manager accepts, or a single DLL. There is no catalog hash to
 /// check, so the user vouches for the file.
 pub fn install_file(file: &Path) -> Result<PathBuf, String> {
+    install_file_with_cancel(file, None)
+}
+pub(crate) fn install_file_with_cancel(file: &Path, cancel: Option<&std::sync::atomic::AtomicBool>) -> Result<PathBuf, String> {
+    crate::download::cancelled(cancel)?;
     let work = crate::update::temporary_work("otd-plugin")?;
-    let result = install_file_into(file, &plugins_directory()?, &work);
+    let result = install_file_into_with_cancel(file, &plugins_directory()?, &work, cancel);
     let _ = fs::remove_dir_all(&work);
     result
 }
 
 fn install_file_into(file: &Path, root: &Path, work: &Path) -> Result<PathBuf, String> {
+    install_file_into_with_cancel(file, root, work, None)
+}
+fn install_file_into_with_cancel(file: &Path, root: &Path, work: &Path, cancel: Option<&std::sync::atomic::AtomicBool>) -> Result<PathBuf, String> {
+    crate::download::cancelled(cancel)?;
     let name = file
         .file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
@@ -443,7 +451,7 @@ fn install_file_into(file: &Path, root: &Path, work: &Path) -> Result<PathBuf, S
         .extension()
         .map(|extension| extension.to_string_lossy().to_ascii_lowercase());
     match extension.as_deref() {
-        Some("zip") => extract_plugin(file, &staged)?,
+        Some("zip") => extract_plugin_with_cancel(file, &staged, cancel)?,
         Some("dll") => {
             fs::create_dir_all(&staged).map_err(|error| error.to_string())?;
             let copied = staged.join(file.file_name().unwrap_or_default());
@@ -455,6 +463,7 @@ fn install_file_into(file: &Path, root: &Path, work: &Path) -> Result<PathBuf, S
     if dlls(&staged).is_empty() {
         return Err(format!("{} contains no DLL", file.display()));
     }
+    crate::download::cancelled(cancel)?;
     place(&entry, &staged, root)
 }
 

@@ -23,13 +23,15 @@ pub struct Connection {
     tablet_cursor: Option<Value>,
     resync_cursor: u64,
     update: Option<UpdateOwnership>,
+    debug: Option<super::debug::Capture>,
+    debug_sessions: Vec<crate::device_sessions::SessionSnapshot>,
 }
 struct UpdateOwnership { token: String, exit: bool }
 impl Connection {
     pub fn new(shared: Arc<Shared>, stop: Arc<AtomicBool>) -> Self {
         let resync_cursor = shared.resynchronize.load(Ordering::Acquire);
         Self { shared, stop, next_poll: Instant::now(), log_cursor: None,
-            tablet_cursor: None, resync_cursor, update:None }
+            tablet_cursor: None, resync_cursor, update:None, debug:None, debug_sessions:Vec::new() }
     }
     fn call(&self, command: Command) -> Result<Reply, Error> {
         if self.stop.load(Ordering::Acquire) { return Err(Error::failed("daemon is shutting down")); }
@@ -220,13 +222,17 @@ impl Connection {
         let text = serde_json::to_string(&settings).map_err(|error| Error::invalid(error.to_string()))?;
         if text.len() > control::MAX_PROFILE_BYTES { return Err(Error::invalid("settings exceed 128 KiB")); }
         let path = otd_core::storage::data_directory()?.join("upstream-rpc-settings.json");
+        let registry = crate::dotnet::registry_snapshot();
         let mut plans = Vec::new();
         // Validate every applicable profile and capture every guarded prior
         // configuration before accepting the first mutation.
         for session in &sessions {
             let index = profiles.iter().position(|profile| profile["Tablet"] == session.tablet)
                 .ok_or_else(|| Error::invalid("detected tablet profile is missing"))?;
-            let profile = crate::config::Profile::from_otd_profile_text(&text,&path,index,Default::default())?;
+            let mut profile = import_profile(&text,&path,index,registry.as_deref())?;
+            if let Some(registry) = &registry {
+                crate::plugins::resolve_imported_stores(&mut profile,&registry.plugins)?;
+            }
             if let Some(diagnostic) = profile.diagnostics.iter().find(|diagnostic| diagnostic.kind == "unsupported_active") {
                 return Err(Error::unsupported("SetSettings",&diagnostic.message));
             }
@@ -252,9 +258,25 @@ impl Connection {
         Ok(Value::Null)
     }
     pub fn events(&mut self) -> Vec<Value> {
-        if Instant::now() < self.next_poll || self.stop.load(Ordering::Acquire) { return Vec::new(); }
-        self.next_poll = Instant::now() + Duration::from_millis(250);
+        if self.stop.load(Ordering::Acquire) { return Vec::new(); }
         let mut events = Vec::new();
+        if let Some(capture) = &mut self.debug {
+            match capture.poll(Some(&self.debug_sessions)) {
+                Ok((reports, diagnostics)) => {
+                    events.extend(reports);
+                    events.extend(diagnostics.iter().map(|message| protocol::event("Message", native_log(message))));
+                }
+                Err(error) => {
+                    self.debug = None;
+                    events.push(protocol::event("Message", native_log(&format!("Compatibility report capture stopped: {error}"))));
+                }
+            }
+        }
+        if Instant::now() < self.next_poll { return events; }
+        self.next_poll = Instant::now() + Duration::from_millis(250);
+        if self.debug.is_some() {
+            if let Ok(sessions) = self.session_snapshots() { self.debug_sessions = sessions; }
+        }
         if let Ok(status) = self.status() {
             if let Some((instance, sequence)) = &self.log_cursor {
                 if instance == &status.instance {
@@ -347,8 +369,29 @@ impl super::apply::Backend for DeviceApply<'_> {
         self.wait(&restored,&plan.before,deadline)
     }
 }
-/// Resolved Windows DLL paths are host details, not OTD store identities. Only
-/// reconcile an existing one-to-one store in the same group/order. Extra DLLs,
+/// Import a verified installed output only when ordinary import cannot represent it.
+fn import_profile(text:&str,path:&Path,index:usize,registry:Option<&crate::dotnet::ManagedRegistryInfo>) -> Result<crate::config::Profile,Error> {
+    match crate::config::Profile::from_otd_profile_text(text,path,index,Default::default()) {
+        Ok(profile) => Ok(profile),
+        Err(original) => {
+            // Pure cached registry lookup never starts CLR for ordinary/native
+            // profiles. An unknown output is accepted only by its actual loaded
+            // unchanged IOutputMode identity; malformed native stores still fail.
+            let Some(registry) = registry else { return Err(original.into()); };
+            let settings:Value = serde_json::from_str(text).map_err(|error| Error::invalid(error.to_string()))?;
+            let name = settings["Profiles"][index]["OutputMode"]["Path"].as_str();
+            let mut matches = registry.plugins.iter().filter(|entry| entry.metadata.category == "output"
+                && entry.metadata.supported && Some(entry.config.type_name.as_str()) == name);
+            let Some(entry) = matches.next() else { return Err(original.into()); };
+            if matches.any(|other| other.config.path != entry.config.path) {
+                return Err(Error::failed("managed output class occurs in multiple installed DLLs; select its identity explicitly"));
+            }
+            Ok(crate::config::Profile::from_managed_output_store(text,path,index,Default::default(),
+                entry.config.clone(),entry.metadata.relative_output)?)
+        }
+    }
+}
+/// Reconcile an existing one-to-one store in the same group/order. Extra DLLs,
 /// native ABI entries, mixed native/managed Radial Follow or ambiguous stores
 /// fail rather than returning stale source filters as if they were active.
 fn export_settings(profile: &crate::config::Profile) -> Result<String, Error> {
@@ -474,7 +517,7 @@ impl Service for Connection {
                 }
             }
             "InstallPlugin" => {
-                crate::plugin_catalog::install_file(Path::new(text_argument(params, "filePath")?))?;
+                crate::plugin_catalog::install_file_with_cancel(Path::new(text_argument(params, "filePath")?), Some(&self.stop))?;
                 Ok(json!(true))
             }
             "UninstallPlugin" => {
@@ -521,7 +564,20 @@ impl Service for Connection {
                 self.shared.resynchronize.fetch_add(1, Ordering::AcqRel); Ok(Value::Null)
             }
             "DetectTablets" => { protocol::no_arguments(params)?; self.tablet_reply(Command::DetectDeviceSessions) },
-            "LoadPlugins" => { protocol::no_arguments(params)?; Err(Error::unsupported(method, "dynamic plugin-manager reload is not implemented; installing a DLL does not imply loading it")) },
+            "LoadPlugins" => {
+                protocol::no_arguments(params)?;
+                crate::download::cancelled(Some(&self.stop))?;
+                let directory = crate::plugin_catalog::plugins_directory()?;
+                std::fs::create_dir_all(&directory).map_err(|error| Error::failed(error.to_string()))?;
+                let registry = crate::dotnet::reload_installed_plugins(&directory)?;
+                crate::download::cancelled(Some(&self.stop))?;
+                self.shared.resynchronize.fetch_add(1, Ordering::AcqRel);
+                // Original contract is Task, not a fabricated inventory result.
+                // Loading is real; unchanged constructors execute only when a
+                // guarded device profile actually starts through its owner.
+                let _ = registry;
+                Ok(Value::Null)
+            },
             "ResetSettings" => {
                 protocol::no_arguments(params)?;
                 let sessions = match self.call(Command::ListDeviceSessions)? {
@@ -532,8 +588,15 @@ impl Service for Connection {
                 self.set_settings(&super::settings::defaults(&tablets,crate::display::read_snapshot()?.virtual_screen)?)
             },
             "SetTabletDebug" => {
-                if !aliased_argument(params, "isEnabled", "enabled")?.is_boolean() { return Err(Error::invalid("isEnabled must be bool")); }
-                Err(Error::unsupported(method, "full-rate multi-tablet DeviceReport events are not implemented; use native bounded capture explicitly"))
+                let enabled = aliased_argument(params, "isEnabled", "enabled")?.as_bool()
+                    .ok_or_else(|| Error::invalid("isEnabled must be bool"))?;
+                if enabled && self.debug.is_none() {
+                    let sessions = self.session_snapshots()?;
+                    let capture = super::debug::Capture::new(&sessions)?;
+                    self.debug_sessions = sessions;
+                    self.debug = Some(capture);
+                } else if !enabled { self.debug = None; self.debug_sessions.clear(); }
+                Ok(Value::Null)
             }
             "GetDevices" => {
                 protocol::no_arguments(params)?;
