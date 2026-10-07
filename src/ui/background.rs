@@ -115,7 +115,6 @@ impl App {
         // A confirmed update restart freezes the editor until it succeeds or
         // fails; keep profile-changing completions queued during that interval.
         if self.closing || self.update_restart_pending { return None; }
-        let mut dialog = None;
         while let Ok(event) = self.background_rx.try_recv() {
             match event {
                 BackgroundResult::Managed { guard, result } => managed_settings::inspected(self, guard, result),
@@ -303,6 +302,20 @@ impl App {
                         self.refresh_tablets(announce || again);
                     }
                 }
+                BackgroundResult::Original { generation,revision,result } => {
+                    self.original_pending=false;
+                    match result {
+                        Ok((message,profile))=>{
+                            if let Some(profile)=profile {
+                                if generation==self.metadata_generation&&revision==self.edit_revision&&!self.closing&&!self.update_restart_pending {self.replace_profile(*profile,None,true);}
+                                else{self.log(Level::Warning,"Original settings","The collection was applied; newer editor changes were kept.");}
+                            }
+                            self.log(Level::Info,"Original settings",message);
+                            self.refresh_presets();
+                        }
+                        Err(error)=>self.log(Level::Error,"Original settings",error),
+                    }
+                }
                 BackgroundResult::Import {
                     generation,
                     edit_revision,
@@ -328,11 +341,6 @@ impl App {
                         Err(error) => self.log(Level::Error, "Settings", error),
                     }
                 }
-                BackgroundResult::Strings(text) => {
-                    self.device_strings_pending = false;
-                    self.log(Level::Info, "Device strings", text.clone());
-                    dialog = Some(text);
-                }
                 BackgroundResult::Presets(result) => {
                     self.preset_scan_pending = false;
                     self.presets_loaded = true;
@@ -352,16 +360,7 @@ impl App {
                 }
             }
         }
-        dialog
-    }
-
-    pub(super) fn read_device_strings(&mut self) {
-        if self.device_strings_pending {
-            return;
-        }
-        self.device_strings_pending = self.background("device-strings", || {
-            BackgroundResult::Strings(commands::device_string_report())
-        });
+        None
     }
 
     pub(super) fn add_plugin_folder(&mut self, folder: PathBuf, name: String) {

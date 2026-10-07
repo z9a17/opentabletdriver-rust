@@ -1,28 +1,31 @@
 //! One persistent daemon-owned Console connection per invocation/read-modify-write.
-use std::sync::atomic::AtomicBool;
+use std::sync::{Arc,atomic::{AtomicBool,Ordering}};
 use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use crate::control::pipe::CompatPipe;
 use crate::upstream_rpc::protocol;
 
-pub struct Client { pipe:CompatPipe, next:u64, stop:AtomicBool, failed:bool }
+pub struct Client { pipe:CompatPipe, next:u64, stop:Arc<AtomicBool>, failed:bool }
 impl Client {
-    pub fn connect() -> Result<Self,String> {
+    pub fn connect() -> Result<Self,String> {Self::connect_cancellable(Arc::new(AtomicBool::new(false)))}
+    pub fn connect_cancellable(stop:Arc<AtomicBool>)->Result<Self,String>{
+        if stop.load(Ordering::Acquire){return Err("console request cancelled".into());}
         crate::daemon::call(crate::control::Command::Status)?;
         let endpoint=crate::control::endpoint_name().map_err(|error|error.to_string())?;
         let pid=CompatPipe::server_process_id(&endpoint).map_err(|error|error.to_string())?;
         let pipe = CompatPipe::open_client(crate::upstream_rpc::CONSOLE_PIPE,
             Instant::now()+Duration::from_secs(5),Some(pid)).map_err(|error| error.to_string())?;
-        Ok(Self {pipe,next:1,stop:AtomicBool::new(false),failed:false})
+        Ok(Self {pipe,next:1,stop,failed:false})
     }
     pub fn usable(&self)->bool{!self.failed}
-    pub fn call(&mut self,method:&str,params:Value) -> Result<Value,String> {
+    pub fn call(&mut self,method:&str,params:Value) -> Result<Value,String> {self.call_with_timeout(method,params,Duration::from_secs(120))}
+    pub fn call_with_timeout(&mut self,method:&str,params:Value,timeout:Duration)->Result<Value,String>{
         if self.failed { return Err("console connection failed; mutation outcome may be unknown; reconnect and inspect settings before retrying".into()); }
         let id=self.next;
         self.next=self.next.checked_add(1).ok_or("console request sequence exhausted")?;
         let request=protocol::encode(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
             .map_err(|error|error.to_string())?;
-        let deadline=Instant::now()+Duration::from_secs(120);
+        let deadline=Instant::now()+timeout;
         let result:Result<Result<Value,String>,String>=(|| {
             self.pipe.write(&request,deadline,&self.stop).map_err(|error|error.to_string())?;
             loop {

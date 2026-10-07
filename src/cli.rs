@@ -2,7 +2,7 @@
 //! Native TOML/file commands remain separate from these live commands.
 mod client;
 mod settings;
-use client::Client;
+pub(crate) use client::Client;
 use serde_json::{Value,json};
 use std::path::{Path,PathBuf};
 use std::io::{self,BufRead};

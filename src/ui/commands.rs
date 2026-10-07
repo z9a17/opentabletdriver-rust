@@ -70,6 +70,8 @@ pub(super) fn accelerator_table() -> HACCEL {
 #[derive(Clone, Copy)]
 pub(super) enum FileKind {
     Profile,
+    Original,
+    OriginalPreset,
     Dll,
     /// A plugin archive or DLL for the plugin folder.
     Package,
@@ -85,12 +87,18 @@ pub(super) fn file_dialog(
     let mut buffer = vec![0u16; 32_768];
     let (filter, extension) = match kind {
         FileKind::Profile => ("Rust profile (*.toml)\0*.toml\0All files\0*.*\0\0", "toml"),
+        FileKind::Original|FileKind::OriginalPreset => ("Original settings (*.json)\0*.json\0All files\0*.*\0\0", "json"),
         FileKind::Dll => ("Plugin DLL (*.dll)\0*.dll\0\0", "dll"),
         FileKind::Package => ("Plugin (*.zip;*.dll)\0*.zip;*.dll\0\0", "zip"),
         FileKind::Recording => ("Sampled reports (*.jsonl)\0*.jsonl\0\0", "jsonl"),
     };
     let (filter, extension) = (wide(filter), wide(extension));
     let title = wide(title);
+    let initial=if matches!(kind,FileKind::OriginalPreset){
+        let store=otd_core::presets::PresetStore::user()?;
+        std::fs::create_dir_all(store.directory()).map_err(|error|error.to_string())?;
+        Some(wide(&store.directory().to_string_lossy()))
+    }else{None};
     let mut dialog = OPENFILENAMEW {
         lStructSize: size_of::<OPENFILENAMEW>() as u32,
         hwndOwner: window,
@@ -99,6 +107,7 @@ pub(super) fn file_dialog(
         nMaxFile: buffer.len() as u32,
         lpstrDefExt: extension.as_ptr(),
         lpstrTitle: title.as_ptr(),
+        lpstrInitialDir:initial.as_ref().map_or(ptr::null(),|initial|initial.as_ptr()),
         Flags: OFN_NOCHANGEDIR
             | OFN_PATHMUSTEXIST
             | if save {
@@ -291,6 +300,10 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                     CMD_OPEN_FOLDER,
                     "Open settings directory...",
                 );
+                append(menu,MF_STRING,original_settings::CMD_LOAD,"Load original settings collection...");
+                append(menu,MF_STRING,original_settings::CMD_EXPORT,"Export original settings collection...");
+                append(menu,if app.original_pending||app.control_busy{MF_GRAYED}else{MF_STRING},original_settings::CMD_APPLY,"Apply original settings collection...");
+                append(menu,MF_STRING,original_settings::CMD_SAVE_PRESET,"Save original collection as preset...");
                 presets::append_menu(menu, app);
                 append(menu, MF_STRING, CMD_SAVE_LOG, "Save console log...");
                 unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null()) };
@@ -452,6 +465,7 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
             }
             _ => {
                 append(menu, MF_STRING, CMD_DOCS, "Open documentation...");
+                append(menu, MF_STRING, CMD_GUIDE, "Show guide...");
                 append(menu, if app.updates.blocking() { MF_GRAYED } else { MF_STRING }, CMD_CHECK_UPDATES, "Check for updates...");
                 append(
                     menu,
@@ -550,10 +564,12 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         CMD_PREV_TAB => {
             with_app(|app| app.cycle_tab(-1));
         }
+        original_settings::CMD_LOAD|original_settings::CMD_EXPORT|original_settings::CMD_APPLY|original_settings::CMD_SAVE_PRESET=>original_settings::command(window,id),
         CMD_LOAD => {
             if confirm_discard(window) {
                 match file_dialog(window, false, FileKind::Profile, "Load settings") {
                     Ok(Some(path)) => {
+                        if path.extension().is_some_and(|extension|extension.eq_ignore_ascii_case("json")){with_app(|app|original_settings::load(app,path));return;}
                         let loaded = with_app(|app| app.load_file(path.clone())).unwrap_or(false);
                         if !loaded
                             && otd_core::storage::backup_path(&path)
@@ -739,6 +755,7 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
             };
             with_app(|app| app.set_theme(mode));
         }
+        CMD_GUIDE => {if let Err(error)=guide::show(window){with_app(|app|app.log(Level::Error,"Guide",error));}},
         CMD_DOCS => shell_open(window, DOCS_URL),
         CMD_ABOUT => about(window),
         CMD_START_STOP => {
@@ -755,11 +772,13 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         CMD_CHECK_UPDATES => updates::check(window, true),
         presets::CMD_PRESET_SAVE => presets::save(window),
         presets::CMD_PRESET_FOLDER => presets::open_folder(window),
+        presets::CMD_PRESET_PREVIOUS=>{with_app(|app|app.preset_page=app.preset_page.saturating_sub(1));},
+        presets::CMD_PRESET_NEXT=>{with_app(|app|app.preset_page=app.preset_page.saturating_add(1));},
         id if (presets::CMD_PRESET_FIRST..presets::CMD_PRESET_FIRST + presets::PRESET_CHOICES)
             .contains(&id) =>
         {
             let index = usize::from(id - presets::CMD_PRESET_FIRST);
-            with_app(|app| presets::apply(app, index));
+            if confirm_discard(window){with_app(|app|presets::apply(app,index));}
         }
         CMD_START_WITH_WINDOWS => {
             let enable = !startup::enabled();
@@ -834,7 +853,7 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
             with_app(|app| app.export_diagnostics(None));
         }
         CMD_DEVICE_STRINGS => {
-            with_app(App::read_device_strings);
+            if let Err(error)=string_reader::show(window){with_app(|app|app.log(Level::Error,"Device strings",error));}
         }
         ID_MODE => {
             let mode = with_app(|app| app.editor.profile.managed_output.is_none().then(|| (app.editor.mode(), app.editor.pen()))).flatten();
@@ -942,43 +961,6 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
 }
 
 /// A save dialog for a text file, asking before replacing one.
-/// Upstream's Device string reader asks for IDs and one index; this reads
-/// strings 1-10 of every connected tablet, which is what writing a
-/// configuration needs. `device-strings` reads any IDs and indices.
-pub(super) fn device_string_report() -> String {
-    let database = otd_core::tablets::Database::builtin();
-    let mut tablets: Vec<(u16, u16, String)> = Vec::new();
-    for device in crate::hid::enumerate().unwrap_or_default() {
-        if let Some((name, _, _)) = crate::hid::identify(&device, database)
-            && !tablets
-                .iter()
-                .any(|(vendor, product, _)| (*vendor, *product) == (device.vendor, device.product))
-        {
-            tablets.push((device.vendor, device.product, name));
-        }
-    }
-    if tablets.is_empty() {
-        return "No tablet from OpenTabletDriver's database is connected. For other devices, run: opentabletdriver-rust.exe device-strings VID PID".into();
-    }
-    let indices: Vec<u8> = (1..=10).collect();
-    let mut report = String::new();
-    for (vendor, product, name) in tablets {
-        report.push_str(&format!("{name} ({vendor:04x}:{product:04x})\n"));
-        let collections = crate::hid::read_strings(vendor, product, &indices).unwrap_or_default();
-        // Every collection of one device reports the same strings.
-        if let Some((_, strings)) = collections.first() {
-            for (index, value) in strings {
-                if let Ok(text) = value
-                    && !text.is_empty()
-                {
-                    report.push_str(&format!("  {index}: {text}\n"));
-                }
-            }
-        }
-    }
-    report.trim_end().to_owned()
-}
-
 pub(super) fn text_save_dialog(
     window: HWND,
     title: &str,

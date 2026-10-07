@@ -218,8 +218,8 @@ impl App {
             background_tx,
             background_rx,
             device_scan: background::DeviceScan::default(),
-            device_strings_pending: false,
             import_pending: false,
+            original_pending: false,
             diagnostics_pending: false,
             connected_tablets: Vec::new(),
             device_sessions: Vec::new(),
@@ -248,6 +248,7 @@ impl App {
             tablet_present: None,
             tablet_choices: Vec::new(),
             preset_choices: Vec::new(),
+            preset_page: 0,
             preset_names: Vec::new(),
             preset_scan_pending: false,
             presets_loaded: false,
@@ -1953,6 +1954,8 @@ impl App {
         experimental::refresh_theme();
         shortcut::refresh_theme();
         accent::refresh_theme();
+        guide::refresh_theme();
+        string_reader::refresh_theme();
         managed_settings::refresh_theme();
         let mut scrolling = vec![self.c.filter_list, self.c.log];
         if !self.tooltip.is_null() {
@@ -2283,6 +2286,7 @@ impl App {
     }
 
     fn save_to_mode(&mut self, path: PathBuf, create_new: bool) {
+        if self.original_pending{self.log(Level::Warning,"Original settings","Wait for the collection operation before saving this profile.");return;}
         if self.recovered_backup && !create_new {
             self.log(
                 Level::Error,
@@ -2383,6 +2387,7 @@ impl App {
     }
 
     pub(super) fn submit_control(&mut self, command: client::ClientCommand) -> bool {
+        if self.original_pending&&!matches!(&command,client::ClientCommand::DeviceLifecycle{start:false,..}) { self.log(Level::Warning,"Original settings","Wait for the original collection operation to finish."); return false; }
         if self.closing || self.update_restart_pending {
             return false;
         }

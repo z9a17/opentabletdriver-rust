@@ -1,28 +1,46 @@
 //! File > Presets: named settings, as in OpenTabletDriver's preset menu.
-//! Choosing a preset loads it into the editor as unsaved settings; Save or
-//! Apply then uses it. Saving writes a new preset, or replaces one after the
+//! Choosing a native preset loads an unsaved draft and applies it if attached;
+//! original JSON presets apply their whole collection through the daemon. Saving writes a new preset, or replaces one after the
 //! save dialog's overwrite prompt.
 use super::commands::{append, shell_open};
 use super::*;
 use otd_core::presets::{PresetName, PresetStore};
 
-pub(super) const CMD_PRESET_FIRST: u16 = 6100;
+pub(super) const CMD_PRESET_FIRST: u16 = 6400;
 pub(super) const PRESET_CHOICES: u16 = 64;
 pub(super) const CMD_PRESET_SAVE: u16 = 6200;
 pub(super) const CMD_PRESET_FOLDER: u16 = 6201;
+pub(super) const CMD_PRESET_PREVIOUS: u16 = 6202;
+pub(super) const CMD_PRESET_NEXT: u16 = 6203;
 
 /// Called by the background worker; menu creation only uses its cached result.
 pub(super) fn list_names() -> Result<Vec<String>, String> {
-    PresetStore::user().and_then(|store| store.list()).map(|listing| {
-        listing.presets.into_iter().filter(|preset| preset.error.is_none())
-            .map(|preset| preset.name).take(usize::from(PRESET_CHOICES)).collect()
-    })
+    let store=PresetStore::user()?;
+    let mut names:Vec<_>=store.list()?.presets.into_iter().filter(|preset|preset.error.is_none()).map(|preset|preset.name).collect();
+    if store.directory().exists(){
+        for entry in std::fs::read_dir(store.directory()).map_err(|error|error.to_string())?{
+            let path=entry.map_err(|error|error.to_string())?.path();
+            if path.extension().is_some_and(|extension|extension.eq_ignore_ascii_case("json")){
+                if let Some(name)=path.file_stem().and_then(|name|name.to_str()).filter(|name|PresetName::parse(name).is_ok()) {names.push(format!("{}{name}",original_settings::PRESET_PREFIX));}
+            }
+        }
+    }
+    names.sort();Ok(names)
 }
 
 /// Appends the Presets submenu and remembers the listed names.
 pub(super) fn append_menu(menu: HMENU, app: &mut App) {
     let presets = unsafe { CreatePopupMenu() };
-    let names = app.preset_names.clone();
+    let count=usize::from(PRESET_CHOICES);
+    let pages=app.preset_names.len().div_ceil(count).max(1);
+    app.preset_page=app.preset_page.min(pages-1);
+    let names:Vec<_>=app.preset_names.iter().skip(app.preset_page*count).take(count).cloned().collect();
+    if pages>1{
+        append(presets,if app.preset_page==0{MF_GRAYED}else{MF_STRING},CMD_PRESET_PREVIOUS,"Previous preset page");
+        append(presets,if app.preset_page+1==pages{MF_GRAYED}else{MF_STRING},CMD_PRESET_NEXT,"Next preset page");
+        append(presets,MF_GRAYED,0,&format!("Page {} of {pages}",app.preset_page+1));
+        unsafe{AppendMenuW(presets,MF_SEPARATOR,0,ptr::null())};
+    }
     app.refresh_presets();
     if names.is_empty() {
         append(presets, MF_GRAYED, 0, if !app.presets_loaded && app.preset_scan_pending { "Loading presets..." } else { "No presets saved" });
@@ -49,17 +67,15 @@ pub(super) fn apply(app: &mut App, index: usize) {
     let Some(name) = app.preset_choices.get(index).cloned() else {
         return;
     };
+    if let Some(name)=name.strip_prefix(original_settings::PRESET_PREFIX){original_settings::apply_preset(app,name);return;}
     let loaded = PresetName::parse(&name)
         .and_then(|name| PresetStore::user()?.load(&name))
         .map(|preset| preset.profile().clone());
     match loaded {
         Ok(profile) => {
             app.replace_profile(profile, None, true);
-            app.log(
-                Level::Info,
-                "Presets",
-                format!("Loaded preset {name}. Save or Apply to use it."),
-            );
+            app.log(Level::Info,"Presets",format!("Loaded preset {name} as an unsaved draft."));
+            if app.running.is_some(){app.apply();}
         }
         Err(error) => app.log(Level::Error, "Presets", error),
     }
@@ -68,6 +84,7 @@ pub(super) fn apply(app: &mut App, index: usize) {
 /// Saves the current settings as a preset chosen in a save dialog opened in
 /// the presets folder.
 pub(super) fn save(window: HWND) {
+    let guard=with_app(|app|(app.edit_revision,app.metadata_generation));
     let result = (|| -> Result<Option<String>, String> {
         let store = PresetStore::user()?;
         std::fs::create_dir_all(store.directory()).map_err(|error| error.to_string())?;
@@ -88,7 +105,10 @@ pub(super) fn save(window: HWND) {
             .and_then(|stem| stem.to_str())
             .ok_or("invalid preset file name")?;
         let name = PresetName::parse(stem)?;
-        let profile = with_app(|app| app.checked_profile()).ok_or("the panel is closing")??;
+        let profile = with_app(|app|{
+            if guard!=Some((app.edit_revision,app.metadata_generation))||app.closing||app.update_restart_pending{return Err("editor changed while choosing a preset file".into());}
+            app.checked_profile()
+        }).ok_or("the panel is closing")??;
         // The dialog already asked before replacing an existing preset.
         let previous = path.exists().then(|| store.load(&name)).transpose()?;
         store.save(&name, &profile, previous.as_ref())?;
