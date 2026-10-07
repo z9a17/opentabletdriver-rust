@@ -91,7 +91,7 @@ impl Connection {
             }
             let executable = std::env::current_exe().map_err(|error| Error::failed(error.to_string()))?;
             let folder = executable.parent().ok_or_else(|| Error::failed("install directory is unavailable"))?;
-            match crate::update::install(&release,folder,&|_| {}) {
+            match crate::update::install_with_cancel(&release,folder,&|_| {}, Some(&self.stop)) {
                 Ok(()) => { self.update.as_mut().unwrap().exit = true; Ok(Value::Null) },
                 Err(error) => {
                     // Download/hash failures have no transaction. A journaled
@@ -492,7 +492,7 @@ impl Service for Connection {
                 let metadata: crate::plugin_catalog::PluginMetadata = serde_json::from_value(protocol::argument(params, "metadata")?.clone())
                     .map_err(|error| Error::invalid(error.to_string()))?;
                 if !metadata.supports_driver() { return Err(Error::invalid("plugin does not support pinned OpenTabletDriver 0.6.7")); }
-                crate::plugin_catalog::install(&metadata)?; Ok(json!(true))
+                crate::plugin_catalog::install_with_cancel(&metadata, Some(&self.stop))?; Ok(json!(true))
             }
             "RequestDeviceString" => {
                 let values = match params {
@@ -551,7 +551,7 @@ impl Service for Connection {
             }
             "CheckForUpdates" => {
                 protocol::no_arguments(params)?;
-                let release = crate::update::latest()?;
+                let release = crate::update::latest_with_cancel(Some(&self.stop))?;
                 let available = release.version > crate::update::current_version();
                 let result = if available { json!({"Version":format!("{}.{}.{}",release.version.0,release.version.1,release.version.2)}) } else { Value::Null };
                 *self.shared.update.lock().map_err(|_| Error::failed("update state lock poisoned"))? = available.then_some(release);

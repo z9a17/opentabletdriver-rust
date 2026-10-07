@@ -138,13 +138,15 @@ fn extract(archive: &Path, into: &Path) -> Result<(), String> {
 /// The embedded extractor validates all paths and bounded sizes before writes.
 /// Environment arguments preserve arbitrary local paths without shell quoting.
 fn extract_plugin(archive: &Path, into: &Path) -> Result<(), String> {
-    let output = Command::new(system_tool("WindowsPowerShell/v1.0/powershell.exe"))
+    extract_plugin_with_cancel(archive, into, None)
+}
+fn extract_plugin_with_cancel(archive: &Path, into: &Path, cancel: Option<&std::sync::atomic::AtomicBool>) -> Result<(), String> {
+    let output = crate::download::run(Command::new(system_tool("WindowsPowerShell/v1.0/powershell.exe"))
         .creation_flags(CREATE_NO_WINDOW)
         .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
         .arg(include_str!("../compat/ExtractPluginArchive.ps1"))
         .env("OTD_PLUGIN_ARCHIVE", archive)
-        .env("OTD_PLUGIN_STAGE", into)
-        .output()
+        .env("OTD_PLUGIN_STAGE", into), cancel)
         .map_err(|error| format!("cannot validate plugin ZIP: {error}"))?;
     if output.status.success() {
         Ok(())
@@ -325,6 +327,10 @@ pub fn installed() -> Result<Vec<(PathBuf, PluginMetadata)>, String> {
 /// Downloads, verifies and installs a catalog entry, replacing an installed
 /// version. Returns the plugin folder.
 pub fn install(entry: &PluginMetadata) -> Result<PathBuf, String> {
+    install_with_cancel(entry, None)
+}
+pub(crate) fn install_with_cancel(entry: &PluginMetadata, cancel: Option<&std::sync::atomic::AtomicBool>) -> Result<PathBuf, String> {
+    crate::download::cancelled(cancel)?;
     let url = entry
         .download_url
         .as_deref()
@@ -333,8 +339,11 @@ pub fn install(entry: &PluginMetadata) -> Result<PathBuf, String> {
     let work = crate::update::temporary_work("otd-plugin")?;
     fs::create_dir_all(&work).map_err(|error| error.to_string())?;
     let archive = work.join("download");
-    let result = crate::download::to_file(url, None, None, &archive)
-        .and_then(|()| install_archive(entry, &archive, &plugins_directory()?, &work));
+    let result = crate::download::to_file_with_cancel(url, None, None, &archive, cancel)
+        .and_then(|()| {
+            crate::download::cancelled(cancel)?;
+            install_archive_with_cancel(entry, &archive, &plugins_directory()?, &work, cancel)
+        });
     let _ = fs::remove_dir_all(&work);
     result
 }
@@ -348,6 +357,13 @@ fn install_archive(
     root: &Path,
     work: &Path,
 ) -> Result<PathBuf, String> {
+    install_archive_with_cancel(entry, archive, root, work, None)
+}
+fn install_archive_with_cancel(
+    entry: &PluginMetadata, archive: &Path, root: &Path, work: &Path,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<PathBuf, String> {
+    crate::download::cancelled(cancel)?;
     if !entry.supports_driver() {
         return Err(format!("{} does not support OpenTabletDriver 0.6.7", entry.name));
     }
@@ -379,12 +395,13 @@ fn install_archive(
         .map(str::to_ascii_lowercase)
         .as_deref()
     {
-        Some("zip") | None => extract_plugin(archive, &staged)?,
+        Some("zip") | None => extract_plugin_with_cancel(archive, &staged, cancel)?,
         Some(other) => return Err(format!("unsupported plugin format {other}")),
     }
     if dlls(&staged).is_empty() {
         return Err(format!("{} contains no DLL", archive.display()));
     }
+    crate::download::cancelled(cancel)?;
     place(entry, &staged, root)
 }
 

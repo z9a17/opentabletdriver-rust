@@ -15,6 +15,7 @@ use std::io;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::AtomicBool;
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 pub(crate) mod transaction;
 
@@ -34,7 +35,7 @@ pub struct Release {
 }
 
 /// A GitHub token for a private repository, if one is available.
-fn token() -> Option<String> {
+fn token(cancel: Option<&AtomicBool>) -> Option<String> {
     ["GH_TOKEN", "GITHUB_TOKEN"]
         .iter()
         .find_map(|name| {
@@ -43,10 +44,9 @@ fn token() -> Option<String> {
                 .filter(|token| !token.trim().is_empty())
         })
         .or_else(|| {
-            let output = Command::new("gh")
+            let output = crate::download::run(Command::new("gh")
                 .creation_flags(CREATE_NO_WINDOW)
-                .args(["auth", "token"])
-                .output()
+                .args(["auth", "token"]), cancel)
                 .ok()?;
             let token = String::from_utf8(output.stdout).ok()?.trim().to_owned();
             (output.status.success() && !token.is_empty()).then_some(token)
@@ -75,11 +75,16 @@ pub(crate) fn system_tool(name: &str) -> PathBuf {
 
 /// The latest published release, from the GitHub API.
 pub fn latest() -> Result<Release, String> {
-    let token = token();
-    let body = crate::download::to_memory(
+    latest_with_cancel(None)
+}
+pub(crate) fn latest_with_cancel(cancel: Option<&AtomicBool>) -> Result<Release, String> {
+    crate::download::cancelled(cancel)?;
+    let token = token(cancel);
+    let body = crate::download::to_memory_with_cancel(
         &format!("https://api.github.com/repos/{REPOSITORY}/releases/latest"),
         Some("application/vnd.github+json"),
         token.as_deref(),
+        cancel,
     )
     .map_err(|error| {
         if token.is_none() {
@@ -92,17 +97,18 @@ pub fn latest() -> Result<Release, String> {
 }
 
 /// Downloads a release file, through the API when a token is available.
-fn download(public: &str, api: &str, output: Option<&Path>) -> Result<Vec<u8>, String> {
-    let token = token();
+fn download(public: &str, api: &str, output: Option<&Path>, cancel: Option<&AtomicBool>) -> Result<Vec<u8>, String> {
+    crate::download::cancelled(cancel)?;
+    let token = token(cancel);
     let (url, accept) = match &token {
         Some(_) => (api, Some("application/octet-stream")),
         None => (public, None),
     };
     match output {
         Some(path) => {
-            crate::download::to_file(url, accept, token.as_deref(), path).map(|()| Vec::new())
+            crate::download::to_file_with_cancel(url, accept, token.as_deref(), path, cancel).map(|()| Vec::new())
         }
-        None => crate::download::to_memory(url, accept, token.as_deref()),
+        None => crate::download::to_memory_with_cancel(url, accept, token.as_deref(), cancel),
     }
 }
 
@@ -219,6 +225,10 @@ fn files(root: &Path, directory: &Path, found: &mut Vec<PathBuf>) -> io::Result<
 /// step. Failures attempt rollback; blocked recovery preserves the journal
 /// and its backups for the next startup.
 pub fn install(release: &Release, install: &Path, progress: &dyn Fn(&str)) -> Result<(), String> {
+    install_with_cancel(release, install, progress, None)
+}
+pub(crate) fn install_with_cancel(release: &Release, install: &Path, progress: &dyn Fn(&str), cancel: Option<&AtomicBool>) -> Result<(), String> {
+    crate::download::cancelled(cancel)?;
     let work = temporary_work("otd-update")?;
     let result = (|| {
         let package = work.join(&release.package_name);
@@ -227,11 +237,13 @@ pub fn install(release: &Release, install: &Path, progress: &dyn Fn(&str)) -> Re
             &release.package_url,
             &release.package_api_url,
             Some(&package),
+            cancel,
         )?;
         let expected = String::from_utf8(download(
             &release.checksum_url,
             &release.checksum_api_url,
             None,
+            cancel,
         )?)
         .map_err(|_| "the checksum file is not text")?;
         let expected = expected
@@ -248,14 +260,12 @@ pub fn install(release: &Release, install: &Path, progress: &dyn Fn(&str)) -> Re
         progress("Checksum verified. Extracting...");
         let extracted = work.join("extracted");
         fs::create_dir_all(&extracted).map_err(|error| error.to_string())?;
-        let status = Command::new(system_tool("tar.exe"))
+        let status = crate::download::run(Command::new(system_tool("tar.exe"))
             .creation_flags(CREATE_NO_WINDOW)
             .arg("-xf")
             .arg(&package)
             .arg("-C")
-            .arg(&extracted)
-            .status()
-            .map_err(|error| format!("cannot run tar.exe: {error}"))?;
+            .arg(&extracted), cancel)?.status;
         if !status.success() {
             return Err("the package could not be extracted".into());
         }
@@ -267,6 +277,9 @@ pub fn install(release: &Release, install: &Path, progress: &dyn Fn(&str)) -> Re
         let mut new_files = Vec::new();
         files(&root, &root, &mut new_files).map_err(|error| error.to_string())?;
         progress(&format!("Installing {} files...", new_files.len()));
+        // Cancellation is safe while preparing scratch files. Once replacement
+        // starts, complete its journal/rollback before releasing daemon ownership.
+        crate::download::cancelled(cancel)?;
         replace(&root, install, &new_files)?;
         progress(&format!(
             "{} is installed. Restart the driver and panel to use it.",

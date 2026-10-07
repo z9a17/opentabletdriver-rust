@@ -65,3 +65,12 @@ managed store reconciliation have regression fixtures. They were written but
 not executed. Source review is the current evidence; no test/check suites,
 original-client integration, live daemon, hardware or UI validation was run.
 Package compilation is performed separately by the release integrator.
+
+Compatibility-worker release checks, plugin downloads and update extraction
+observe daemon cancellation, kill and reap only their own helper, and retain at
+most 64 KiB from each output pipe. Both pipes drain concurrently. Each helper has
+a 180-second deadline. Automatic Windows proxy discovery still uses the existing
+synchronous WinHTTP provider and cannot be interrupted by the cancellation flag.
+Cancellation is checked before transactional file replacement; replacement and
+rollback finish before daemon ownership is released. Cancellation fixtures are
+written but unrun.
