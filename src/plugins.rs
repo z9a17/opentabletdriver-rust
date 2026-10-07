@@ -32,6 +32,14 @@ pub fn prepare_parser_registry(profile: &crate::config::Profile, database: &Data
     }
     Ok(())
 }
+/// Explicit Apply/Start validation. Missing named parsers may load the trusted
+/// installed registry; passive UI/discovery must use the cached predicate only.
+pub fn validate_runtime_profile(profile: &crate::config::Profile) -> Result<(), String> {
+    let database = crate::config::configured_tablets()?;
+    prepare_parser_registry(profile, database.as_ref())?;
+    profile.validate_runtime_tablet_in_with_parser_support(database.as_ref(), &crate::dotnet::installed_report_parser)
+}
+
 pub fn load_parser_registry() -> Result<(), String> {
     if !crate::plugin_catalog::recover_installations()? { return Err("Plugin installation is busy; retry parser startup.".into()); }
     let directory = crate::plugin_catalog::plugins_directory()?;
