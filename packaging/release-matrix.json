@@ -1,6 +1,6 @@
 {
   "win-x64": {"target": "x86_64-pc-windows-gnu", "format": "zip", "binaries": ["opentabletdriver-rust.exe", "opentabletdriver-rust-ui.exe"]},
-  "linux-x64": {"target": "x86_64-unknown-linux-musl", "format": "tar.gz", "binaries": ["opentabletdriver-rust-linux"]},
+  "linux-x64": {"target": "x86_64-unknown-linux-gnu", "format": "tar.gz", "binaries": ["opentabletdriver-rust-linux"]},
   "macos-x64": {"target": "x86_64-apple-darwin", "format": "tar.gz", "binaries": ["opentabletdriver-rust-macos"]},
   "macos-arm64": {"target": "aarch64-apple-darwin", "format": "tar.gz", "binaries": ["opentabletdriver-rust-macos"]}
 }

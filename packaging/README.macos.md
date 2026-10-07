@@ -3,15 +3,25 @@
 Use the archive for your Mac's processor, Intel x64 or Apple Silicon arm64.
 macOS 11 or newer is required. Extract it and open a terminal in its directory.
 
-Grant Input Monitoring and Accessibility permissions in System Settings, then:
+Install the .NET 8 runtime for this CPU.
+Grant Input Monitoring and Accessibility permissions in System Settings, then
+start the original desktop frontend:
+
+```sh
+./opentabletdriver-rust-macos ui
+```
+
+For foreground operation without the frontend:
 
 ```sh
 ./opentabletdriver-rust-macos run
 ```
 
-Stop other tablet drivers before using this driver. This package provides a
-command-line driver, without the Windows control panel. The binaries are
-unsigned and not notarized, and native hardware validation remains pending.
+Stop other tablet drivers before using this driver. Keep the adjacent original
+frontend, Rust daemon watchdog launcher and managed assemblies beside the native
+executable. The binaries are unsigned and not notarized. The shipped apphosts
+and libnethost match this CPU; original MonoMac/Objective-C behavior and native
+hardware validation remain pending.
 
 See [the macOS guide](data/MACOS.md) for permissions, profiles, Gatekeeper and
 current limitations. Keep the `data` folder for the guide and license notices.
