@@ -154,6 +154,14 @@ fn check_discovery(stop: Option<&AtomicBool>, deadline: Option<Instant>) -> io::
 
 /// Enumerates services without opening unrelated keyboards or pointing devices.
 /// Registry IDs identify live endpoints; the USB parent identifies the tablet.
+/// Actual IOKit HID properties preserve null when the endpoint omits one.
+pub fn rpc_inventory(devices:&[Device])->serde_json::Value{
+    let mut inventory=otd_platform::daemon::inventory(&devices.iter().map(|device|device.endpoint.clone()).collect::<Vec<_>>());
+    for(value,device)in inventory.as_array_mut().unwrap().iter_mut().zip(devices){let hid=device.handle.0.cast_mut();
+        value["Manufacturer"]=serde_json::json!(string(property(hid,"Manufacturer")));value["ProductName"]=serde_json::json!(string(property(hid,"Product")));value["SerialNumber"]=serde_json::json!(string(property(hid,"SerialNumber")));
+    }inventory
+}
+
 pub fn enumerate(database: &Database, stop: Option<&AtomicBool>, deadline: Option<Instant>) -> io::Result<Vec<Device>> {
     let mut iterator = 0;
     // SAFETY: IOServiceMatching returns a dictionary consumed by matching.

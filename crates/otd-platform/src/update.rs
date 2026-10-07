@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64,Ordering};
 pub mod transaction;
 #[path = "../../../src/update.rs"]
 mod common;
-pub use common::{Release,latest,current_version};
+pub use common::{Release,latest,current_version,remove_leftovers};
 pub(crate) use common::{latest_with_cancel,install_with_cancel,recover_for_daemon};
 static NEXT:AtomicU64=AtomicU64::new(1);
 pub fn system_tool(name:&str)->PathBuf {PathBuf::from(match name{"curl.exe"=>"curl","tar.exe"=>"tar",name=>name})}

@@ -51,3 +51,6 @@ pub mod input_owner;
 #[cfg(unix)]
 #[path = "../../../src/plugin_manager.rs"]
 pub mod plugin_manager;
+
+#[cfg(unix)]
+mod cold_services;

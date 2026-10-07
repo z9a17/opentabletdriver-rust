@@ -40,6 +40,7 @@ pub trait Platform: Send + Sync + 'static {
     /// All exit paths must dispose output and report cleanup errors accurately.
     fn run(&self, device: Device, profile: Profile, context: WorkerContext) -> Result<(),String>;
     fn inventory(&self) -> Result<Value,String>;
+    fn device_string(&self,vendor:u16,product:u16,index:u8)->Result<String,String>;
     /// Executed on the independent I/O lane. Implementations must route through
     /// the actual reader's bounded mailbox, never open a second input stream.
     fn service_io(&self, request: crate::managed_services::Request) -> Result<Value,String>;
@@ -74,8 +75,8 @@ pub fn prepare_connected(database:&otd_core::tablets::Database,endpoints:&[Endpo
 pub fn inventory(endpoints:&[Endpoint]) -> Value {
     json!(endpoints.iter().map(|endpoint|json!({"DevicePath":endpoint.path,"VendorID":endpoint.vendor_id,"ProductID":endpoint.product_id,
         "CanOpen":endpoint.can_open,"InputReportLength":endpoint.input_length,"OutputReportLength":endpoint.output_length,
-        "FeatureReportLength":endpoint.feature_length,"Manufacturer":endpoint.strings.get(&1),"ProductName":endpoint.strings.get(&2),
-        "SerialNumber":endpoint.strings.get(&3),"Attributes":endpoint.attributes})).collect::<Vec<_>>())
+        "FeatureReportLength":endpoint.feature_length,"Manufacturer":Value::Null,"ProductName":Value::Null,
+        "SerialNumber":Value::Null,"DeviceAttributes":endpoint.attributes})).collect::<Vec<_>>())
 }
 pub struct WorkerContext {
     pub id: String,
@@ -190,6 +191,7 @@ fn tool_configs(settings:&Value)->Result<Vec<otd_core::plugins::PluginConfig>,St
 pub enum Command {
     Status, Detect, Start, Stop, Shutdown,
     SuspendTools,StopReaders{shutdown:bool},
+    ReserveUpdate{expected:Option<WorkerIdentity>},DrainUpdate{token:String},ReadyUpdate{token:String},CancelUpdate{token:String},ResumeUpdate{token:String},FinishUpdate{token:String},
     Select { expected:WorkerIdentity,id:String },
     GetProfile { id:String,generation:u64 },
     Apply { expected:WorkerIdentity,id:String,generation:u64,profile_toml:String,binding_inhibit:Option<u32> },
@@ -200,21 +202,33 @@ pub enum Command {
 struct Completion {value:Value,tools:Option<crate::global_tools::Receipt>}
 struct Call { command:Command, reply:SyncSender<Result<Completion,String>> }
 #[derive(Clone)]
-pub struct Handle { tx:SyncSender<Call> }
+pub struct Handle { tx:SyncSender<Call>,cold:Arc<crate::cold_services::Services> }
 impl Handle {
     pub fn call(&self,command:Command) -> Result<Value,String> {
         if matches!(&command,Command::Stop|Command::Shutdown){let shutdown=matches!(&command,Command::Shutdown);
             self.call(Command::SuspendTools)?;return self.call(Command::StopReaders{shutdown});}
-        let (reply,rx) = mpsc::sync_channel(1);
-        self.tx.try_send(Call { command,reply }).map_err(|_| "Native control queue is full or owner stopped".to_owned())?;
-        let completion=rx.recv_timeout(Duration::from_secs(60)).map_err(|_| "Native control timeout; query state before retrying mutation".to_owned())??;
+        if let Command::Original{expected,source:_,binding_owner:_,method,params}=&command{
+            if let Some(value)=self.cold.invoke(self,method,params,expected.clone())?{return Ok(value);}
+        }
+        let completion=self.submit(command)?;
         if let Some(receipt)=completion.tools{let _=receipt.wait(Duration::from_secs(60))?;}
         Ok(completion.value)
     }
+    fn submit(&self,command:Command)->Result<Completion,String>{
+        let(reply,rx)=mpsc::sync_channel(1);
+        self.tx.try_send(Call{command,reply}).map_err(|_|"Native control queue is full or owner stopped".to_owned())?;
+        rx.recv_timeout(Duration::from_secs(60)).map_err(|_|"Native control timeout; query state before retrying mutation".to_owned())?
+    }
+    pub(crate) fn reserve_update(&self,expected:Option<WorkerIdentity>)->Result<(String,Option<crate::global_tools::Receipt>),String>{
+        let completion=self.submit(Command::ReserveUpdate{expected})?;
+        Ok((completion.value.as_str().ok_or("Missing update reservation token")?.to_owned(),completion.tools))
+    }
+
 }
+struct UpdateReservation{token:String,was_enabled:bool,tools:Vec<otd_core::plugins::PluginConfig>,ready:bool}
 struct State {
     identity:WorkerIdentity, slots:BTreeMap<String,Slot>, next_id:u64,next_reader:u64,
-    selected:Option<String>, enabled:bool, shutdown:bool,retiring:bool,
+    selected:Option<String>, enabled:bool, shutdown:bool,retiring:bool,update:Option<UpdateReservation>,next_update:u64,tools_configs:Vec<otd_core::plugins::PluginConfig>,
     settings:Value, logs:VecDeque<Value>, log_sequence:u64,resynchronize:u64,
     tools:crate::global_tools::Handle,pending_tools:Option<crate::global_tools::Receipt>,tools_configured:bool,
     bindings:SyncSender<(u64,crate::binding_presets::Request)>,
@@ -386,16 +400,18 @@ impl State {
         // Pinned SetToolSettings disposes old tools before constructing the new
         // collection; constructors cannot overlap duplicated global timers.
         let generation=self.tools.snapshot()?.generation;
-        self.pending_tools=Some(self.tools.set(generation,tools)?);self.tools_configured=true;
+        self.pending_tools=Some(self.tools.set(generation,tools.clone())?);self.tools_configs=tools;self.tools_configured=true;
         self.settings=settings;self.changed()
     }
+    fn update_token(&self,token:&str)->Result<(),String>{if self.update.as_ref().is_some_and(|update|update.token==token){Ok(())}else{Err("Update reservation is stale or absent".into())}}
     fn command(&mut self,platform:&Arc<dyn Platform>,command:Command) -> Result<Value,String> {
         if self.retiring&&matches!(&command,Command::Start|Command::StartDevice{..}|Command::Select{..}){return Err("Daemon retirement owns the transaction; start/selection is blocked".into());}
+        if self.update.is_some()&&matches!(&command,Command::SuspendTools|Command::Stop|Command::Shutdown|Command::StopReaders{..}){return Err("Update reservation owns daemon lifetime".into());}
         if self.tools.pending()?&&matches!(&command,Command::Start|Command::Stop|Command::Shutdown){return Err("Global tools are still changing; refresh before changing daemon lifetime".into());}
         match command {
-            Command::Status=>Ok(json!({"identity":self.identity,"sessions":self.slots.values().map(|slot|&slot.session).collect::<Vec<_>>(),"selected_id":self.selected,"enabled":self.enabled})),
-            Command::Detect=>{self.scan(platform)?;Ok(json!(self.tablets()))},
-            Command::Start=>{platform.prepare_start()?;self.enabled=true;if !self.tools_configured{let generation=self.tools.snapshot()?.generation;self.pending_tools=Some(self.tools.set(generation,match platform.startup_tools(){Some(configs)=>configs,None=>tool_configs(&self.settings)?})?);self.tools_configured=true;}for slot in self.slots.values_mut(){slot.explicitly_stopped=false;if slot.session.state==SessionState::Failed{slot.session.state=SessionState::Detected;}}self.scan(platform)?;self.changed()?;Ok(Value::Null)},
+            Command::Status=>Ok(json!({"identity":self.identity,"sessions":self.slots.values().map(|slot|&slot.session).collect::<Vec<_>>(),"selected_id":self.selected,"enabled":self.enabled,"update":self.update.as_ref().map(|update|json!({"token":update.token,"ready":update.ready}))})),
+            Command::Detect=>{if self.retiring{return Err("Daemon retirement reserves discovery".into());}self.scan(platform)?;Ok(json!(self.tablets()))},
+            Command::Start=>{platform.prepare_start()?;self.enabled=true;if !self.tools_configured{let generation=self.tools.snapshot()?.generation;let configs=match platform.startup_tools(){Some(configs)=>configs,None=>tool_configs(&self.settings)?};self.pending_tools=Some(self.tools.set(generation,configs.clone())?);self.tools_configs=configs;self.tools_configured=true;}for slot in self.slots.values_mut(){slot.explicitly_stopped=false;if slot.session.state==SessionState::Failed{slot.session.state=SessionState::Detected;}}self.scan(platform)?;self.changed()?;Ok(Value::Null)},
             Command::SuspendTools=>{if self.tools.pending()?{return Err("Global tools are still changing; refresh before stopping".into());}self.retiring=true;self.enabled=false;
                 if self.tools_configured{let generation=self.tools.snapshot()?.generation;self.pending_tools=Some(self.tools.drain(generation)?);self.tools_configured=false;}self.changed()?;Ok(Value::Null)},
             Command::Stop|Command::Shutdown|Command::StopReaders{..}=>{
@@ -404,6 +420,27 @@ impl State {
                 self.stop_readers()?;
                 self.retiring=false;if shutdown{self.shutdown=true;}self.changed()?;Ok(Value::Null)
             },
+            Command::ReserveUpdate{expected}=>{
+                if let Some(expected)=expected{self.expected(&expected)?;}
+                if self.retiring||self.update.is_some()||self.tools.pending()?{return Err("Daemon/tools already reserved or changing".into());}
+                let next=self.next_update.checked_add(1).ok_or("Update token exhausted")?;
+                let generation=self.tools.snapshot()?.generation;let receipt=self.tools.drain(generation)?;self.next_update=next;
+                let token=format!("{}-update-{}",self.identity.instance,self.next_update);
+                self.update=Some(UpdateReservation{token:token.clone(),was_enabled:self.enabled,tools:self.tools_configs.clone(),ready:false});
+                self.enabled=false;self.retiring=true;self.tools_configured=false;self.pending_tools=Some(receipt);self.changed()?;Ok(json!(token))
+            },
+            Command::DrainUpdate{token}=>{self.update_token(&token)?;
+                if self.tools.pending()?||!self.tools.snapshot()?.failures.is_empty(){return Err("Global tool disposal has not completed cleanly".into());}
+                self.stop_readers()?;self.changed()?;Ok(Value::Null)
+            },
+            Command::ReadyUpdate{token}=>{self.update_token(&token)?;if self.slots.values().any(|slot|slot.worker.is_some())||self.tools.pending()?{return Err("Update owners are not drained".into());}
+                self.update.as_mut().unwrap().ready=true;self.changed()?;Ok(Value::Null)},
+            Command::CancelUpdate{token}=>{self.update_token(&token)?;if self.tools.pending()?{return Err("Update cleanup is still pending".into());}
+                let generation=self.tools.snapshot()?.generation;let configs=self.update.as_ref().unwrap().tools.clone();
+                self.pending_tools=Some(self.tools.set(generation,configs)?);self.tools_configured=true;self.changed()?;Ok(Value::Null)},
+            Command::ResumeUpdate{token}=>{self.update_token(&token)?;if self.tools.pending()?{return Err("Update rollback tools are still changing".into());}
+                let update=self.update.take().unwrap();self.retiring=false;self.enabled=update.was_enabled;self.scan(platform)?;self.changed()?;Ok(Value::Null)},
+            Command::FinishUpdate{token}=>{self.update_token(&token)?;if !self.update.as_ref().unwrap().ready{return Err("Update reservation is not ready".into());}self.shutdown=true;self.changed()?;Ok(Value::Null)},
             Command::Select{expected,id}=>{self.expected(&expected)?;if !self.slots.contains_key(&id){return Err("Unknown device session".into());}self.selected=Some(id);self.changed()?;Ok(Value::Null)},
             Command::GetProfile{id,generation}=>{let slot=self.slots.get(&id).ok_or("Unknown device session")?;if slot.session.device_generation!=generation{return Err("Stale device generation".into());}Ok(json!(slot.profile.to_toml()?))},
             Command::Apply{expected,id,generation,profile_toml,binding_inhibit}=>{self.expected(&expected)?;
@@ -420,7 +457,7 @@ impl State {
     fn original(&mut self,platform:&Arc<dyn Platform>,method:&str,params:Value,source:Option<(String,u64)>,binding_owner:Option<u32>) -> Result<Value,String> {
         let first=||params.as_array().and_then(|values|values.first()).ok_or("Method requires a parameter".to_owned());
         match method {
-            "GetDevices"=>platform.inventory(),"GetTablets"=>Ok(json!(self.tablets())),"DetectTablets"=>{self.scan(platform)?;Ok(json!(self.tablets()))},
+            "GetDevices"=>platform.inventory(),"GetTablets"=>Ok(json!(self.tablets())),"DetectTablets"=>{if self.retiring{return Err("Daemon retirement reserves discovery".into());}self.scan(platform)?;Ok(json!(self.tablets()))},
             "GetSettings"=>self.settings(platform),
             "SetSettings"=>{let settings=first()?.clone();self.apply_settings(platform,settings,source,binding_owner)?;Ok(Value::Null)},
             "ResetSettings"=>{let tablets:Vec<_>=self.slots.values().filter(|slot|slot.session.connected).map(|slot|slot.device.configuration.clone()).collect();let settings=crate::upstream_settings::defaults(&tablets,platform.screen()?)?;self.apply_settings(platform,settings,source,None)?;Ok(Value::Null)},
@@ -437,9 +474,9 @@ impl State {
             "DownloadPlugin"=>{let metadata:crate::plugin_catalog::PluginMetadata=serde_json::from_value(first()?.clone()).map_err(|error|error.to_string())?;
                 if !metadata.supports_driver(){return Err("Plugin does not support pinned OpenTabletDriver 0.6.7".into());}
                 crate::plugin_catalog::install(&metadata)?;Ok(json!(true))},
-            // Each remaining method has an explicit failure until its actual
-            // portable service is connected; no successful empty provider.
-            "CheckForUpdates"|"InstallUpdate"|"SetTabletDebug"|"RequestDeviceString"|"GetDiagnosticInfo"=>Err(format!("{method}: portable service is not connected yet")),
+            "GetDiagnosticInfo"=>Ok(json!({"App Version":format!("OpenTabletDriver Rust v{}",env!("OTD_RELEASE_VERSION")),"Build Date":env!("OTD_BUILD_DATE"),
+                "Operating System":crate::cold_services::operating_system()?,"Environment Variables":std::env::vars().collect::<BTreeMap<_,_>>(),
+                "HID Devices":platform.inventory()?,"Console Log":self.logs})),
             _=>Err(format!("Unknown original daemon method {method}")),
         }
     }
@@ -472,7 +509,8 @@ impl crate::managed_services::Backend for Services {
         match request.operation {
             Operation::Daemon=>{
                 let method=request.payload["method"].as_str().ok_or("Managed request method is missing")?.to_owned();
-                if let Some(value)=crate::plugin_manager::invoke(&method,&request.payload.get("params").cloned().unwrap_or(json!([])),None)?{return Ok(value);}
+                self.handle.cold.allow_plugin_call(&method)?;
+                if let Some(value)=crate::plugin_manager::invoke(&method,&request.payload.get("params").cloned().unwrap_or(json!([])),Some(&self.handle.cold.stopped))?{return Ok(value);}
                 let binding_owner=request.payload.get("source_binding_owner").map(|value|value.as_u64().and_then(|value|u32::try_from(value).ok()).ok_or("Invalid source binding owner")).transpose()?;
                 self.handle.call(Command::Original {expected:request.expected_daemon,source:request.expected_source,binding_owner,method,params:request.payload.get("params").cloned().unwrap_or(json!([]))})
             },
@@ -485,7 +523,7 @@ impl crate::managed_services::Backend for Services {
         }
     }
 }
-pub struct Owner { pub handle:Handle, stop:Arc<AtomicBool>, join:Option<JoinHandle<Result<(),String>>> }
+pub struct Owner { pub handle:Handle, stop:Arc<AtomicBool>, join:Option<JoinHandle<Result<(),String>>>,host:Option<crate::managed_services::Host> }
 impl Owner {
     pub fn start(platform:Arc<dyn Platform>,stop:Arc<AtomicBool>) -> Result<Self,String> {
         let instance=format!("unix-{}-{}",std::process::id(),SystemTime::now().duration_since(UNIX_EPOCH).map_err(|error|error.to_string())?.as_nanos());
@@ -496,9 +534,9 @@ impl Owner {
         },_=>crate::upstream_settings::collection::empty()};
         let mut tools=crate::global_tools::Owner::start(|line|eprintln!("{line}"))?;
         let(bindings,binding_rx)=mpsc::sync_channel(64);
-        let state=State { identity:WorkerIdentity {instance,generation:1},slots:BTreeMap::new(),next_id:0,next_reader:0,selected:None,enabled:false,shutdown:false,retiring:false,
+        let state=State { identity:WorkerIdentity {instance,generation:1},slots:BTreeMap::new(),next_id:0,next_reader:0,selected:None,enabled:false,shutdown:false,retiring:false,update:None,next_update:0,tools_configs:Vec::new(),
             settings,logs:VecDeque::new(),log_sequence:0,resynchronize:0,tools:tools.handle.clone(),pending_tools:None,tools_configured:false,bindings };
-        let (tx,rx)=mpsc::sync_channel::<Call>(64);let handle=Handle {tx};
+        let (tx,rx)=mpsc::sync_channel::<Call>(64);let handle=Handle {tx,cold:Arc::new(crate::cold_services::Services::new(platform.clone(),stop.clone()))};
         let services=Arc::new(Services {handle:handle.clone(),platform:platform.clone()});
         let snapshot=state.snapshot(&platform,1);
         let host=crate::managed_services::Host::start(snapshot.clone(),services)?;
@@ -516,7 +554,7 @@ impl Owner {
                         if let Err(error)=result{eprintln!("Preset binding failed: {error}");if let Some(slot)=state.slots.get_mut(&id){slot.session.last_error=Some(error);}}
                     }
                 }
-                if Instant::now()>=next_scan {
+                if !state.retiring&&Instant::now()>=next_scan {
                     discovery_error=state.scan(&platform).err();next_scan=Instant::now()+Duration::from_secs(2);
                     version=version.checked_add(1).ok_or("Snapshot generation exhausted")?;
                     crate::managed_host::publish(state.snapshot(&platform,version))?;
@@ -542,12 +580,15 @@ impl Owner {
             let result=state.stop_readers();
             let retired=crate::dotnet::drain_managed_retirements(Duration::from_secs(15));
             // No report owner remains when the input lane performs final retry.
-            drop(rx);drop(host);crate::managed_host::clear();
+            drop(rx);
             owner_stop.store(true,Ordering::Release);
             tool_retirement?;result?;retired?;if let Some(error)=discovery_error{eprintln!("Last discovery error: {error}");}Ok(())
         }).map_err(|error|error.to_string())?;
-        Ok(Self {handle,stop,join:Some(join)})
+        Ok(Self {handle,stop,join:Some(join),host:Some(host)})
     }
-    pub fn join(mut self) -> Result<(),String> { self.join.take().ok_or("Owner already joined")?.join().map_err(|_|"Native owner panicked")? }
+    /// Join tablet/tool retirement while callback I/O lanes still exist. The
+    /// caller can then stop original RPC/Instance before dropping this owner.
+    pub fn drain(&mut self)->Result<(),String>{self.join.take().ok_or("Owner already joined")?.join().map_err(|_|"Native owner panicked")?}
+    pub fn join(mut self) -> Result<(),String> { self.drain() }
 }
-impl Drop for Owner {fn drop(&mut self){self.stop.store(true,Ordering::Release);if let Some(join)=self.join.take(){let _=join.join();}}}
+impl Drop for Owner {fn drop(&mut self){self.stop.store(true,Ordering::Release);if let Some(join)=self.join.take(){let _=join.join();}drop(self.host.take());crate::managed_host::clear();}}

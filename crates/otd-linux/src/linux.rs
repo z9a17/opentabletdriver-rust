@@ -120,6 +120,15 @@ pub fn enumerate(database: &Database) -> io::Result<Vec<Device>> {
     Ok(devices)
 }
 
+/// Actual descriptor identity exposed by sysfs, not assumed USB string indices.
+pub fn rpc_inventory(devices:&[Device])->serde_json::Value{
+    let mut inventory=otd_platform::daemon::inventory(&devices.iter().map(|device|device.endpoint.clone()).collect::<Vec<_>>());
+    for(value,device)in inventory.as_array_mut().unwrap().iter_mut().zip(devices){
+        let text=|name:&str|device.usb.as_ref().and_then(|usb|fs::read_to_string(usb.join(name)).ok()).map(|text|text.trim_end_matches(['\r','\n']).to_owned());
+        value["Manufacturer"]=serde_json::json!(text("manufacturer"));value["ProductName"]=serde_json::json!(text("product"));value["SerialNumber"]=serde_json::json!(text("serial"));
+    }inventory
+}
+
 fn accessible(node: &Path) -> bool {
     let Ok(path) = CString::new(node.as_os_str().as_bytes()) else {
         return false;

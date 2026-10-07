@@ -100,6 +100,7 @@ mod app {
                 let options = otd_platform::cli::Options::parse(arguments)?;
                 otd_platform::cli::daemon(std::sync::Arc::new(NativePlatform::default()), options, &STOP)
             }
+            Some("update") => otd_platform::cli::update(std::sync::Arc::new(NativePlatform::default()),arguments.collect()),
             Some("ui") => otd_platform::cli::ui(arguments.collect()),
             Some("original-console" | "otd") => otd_platform::cli::original_console(arguments.collect()),
             Some("plugins") => otd_platform::plugin_catalog::run(arguments.collect()),
@@ -417,8 +418,8 @@ mod app {
         fn screen(&self) -> Result<otd_core::mapping::Rect,String> { Ok(match self.screen{Some(screen)=>crate::displays::explicit(screen),None=>crate::displays::discover()?}.virtual_screen) }
         fn inventory(&self) -> Result<serde_json::Value,String> {
             let database=otd_core::config::configured_tablets()?;
-            let endpoints=linux::enumerate(&database).map_err(|error|error.to_string())?.into_iter().map(|device|device.endpoint).collect::<Vec<_>>();
-            let mut inventory=otd_platform::daemon::inventory(&endpoints).as_array().cloned().ok_or("Native inventory is not an array")?;inventory.extend(otd_platform::managed_source::inventory()?);Ok(serde_json::json!(inventory))
+            let devices=linux::enumerate(&database).map_err(|error|error.to_string())?;
+            let mut inventory=linux::rpc_inventory(&devices).as_array().cloned().ok_or("Native inventory is not an array")?;inventory.extend(otd_platform::managed_source::inventory()?);Ok(serde_json::json!(inventory))
         }
         fn run(&self,device:otd_platform::daemon::Device,profile:Profile,context:otd_platform::daemon::WorkerContext) -> Result<(),String> {
             let database=otd_core::config::configured_tablets()?;
@@ -430,6 +431,15 @@ mod app {
             let selected=RunSelection {device:SourceEndpoint{endpoint:&device.endpoint,native:actual,custom:device.custom_endpoint},spec:TabletSpec::from_configuration(&device.configuration)?,configuration:device.configuration,identifier:device.identifier,auxiliary};
             let mut displays=StaticDisplays(match self.screen{Some(screen)=>crate::displays::explicit(screen),None=>crate::displays::discover()?});
             run_session(&selected,&profile,&mut displays,&context.stop,Some(&context)).map_err(|error|match error{SessionError::Fatal(error)|SessionError::Retry(error)=>error.to_string()})
+        }
+        fn device_string(&self,vendor:u16,product:u16,index:u8)->Result<String,String>{
+            let database=otd_core::config::configured_tablets()?;
+            for device in linux::enumerate(&database).map_err(|e|e.to_string())?.iter().filter(|device|device.endpoint.vendor_id==vendor&&device.endpoint.product_id==product){
+                if let Some(value)=otd_platform::shared_devices::device_string(&device.endpoint.path,index){return value;}
+                if let Some(usb)=&device.usb{return linux::usb_string(usb,index).map_err(|e|e.to_string());}
+            }
+            for device in otd_platform::dotnet::custom_devices::snapshot()?.iter().filter(|device|device.vendor==vendor&&device.product==product){return otd_platform::dotnet::custom_devices::device_string(device.endpoint,index);}
+            Err("No endpoint matches the requested vendor/product".into())
         }
         fn service_io(&self,request:otd_platform::managed_services::Request) -> Result<serde_json::Value,String> {
             if matches!(request.operation,otd_platform::managed_services::Operation::InputHold|otd_platform::managed_services::Operation::InputRelease){

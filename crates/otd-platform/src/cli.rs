@@ -35,15 +35,16 @@ pub fn daemon(platform:Arc<dyn Platform>,options:Options,signal:&'static AtomicB
         }).map_err(|error|error.to_string())?;
     }
     let result=(||{
-        let owner=crate::daemon::Owner::start(platform,stop.clone())?;
+        let lease=crate::local_control::Ownership::reserve()?;crate::update::remove_leftovers()?;
+        let mut owner=crate::daemon::Owner::start(platform,stop.clone())?;
         // Admission/listener ownership precedes Start: another daemon can never
         // fail its lease after this instance has started injecting input.
-        let server=crate::local_control::Server::start(owner.handle.clone(),stop.clone())?;
+        let server=crate::local_control::Server::start_reserved(owner.handle.clone(),stop.clone(),lease)?;
         let rpc=options.upstream_pipe.as_deref().map(crate::dotnet::HostedRpc::start).transpose()?;
         owner.handle.call(Command::Start)?;
         while !stop.load(Ordering::Acquire){std::thread::sleep(Duration::from_millis(100));}
         // Stop original responder tasks before retiring the callback service.
-        drop(rpc);drop(server);owner.join()
+        let result=owner.drain();drop(rpc);drop(owner);drop(server);result
     })();
     stop.store(true,Ordering::Release);let _=monitor.join();result
 }
@@ -90,4 +91,25 @@ pub fn original_console(arguments:Vec<String>)->Result<(),String>{
     if !path.is_file(){return Err("Original console is absent; install the complete distribution".into());}
     let status=std::process::Command::new("dotnet").arg(path).args(arguments).current_dir(base).status().map_err(|error|error.to_string())?;
     if status.success(){Ok(())}else{Err(format!("Original console exited with {status}"))}
+}
+
+/// The CLI stages through the same drained transaction as original RPC. A
+/// stopped machine gets a cold owner/listener lease, never a tablet Start.
+pub fn update(platform:Arc<dyn Platform>,arguments:Vec<String>)->Result<(),String>{
+    let check=match arguments.as_slice(){[]=>false,[arg]if arg=="--check"||arg=="check"=>true,[arg]if arg=="install"=>false,_=>return Err("update [--check | check | install]".into())};
+    let original=|method:&str|Command::Original{expected:None,source:None,binding_owner:None,method:method.into(),params:serde_json::json!([])};
+    let perform=|handle:Option<&crate::daemon::Handle>|->Result<(),String>{
+        let request=|command|match handle{Some(handle)=>handle.call(command),None=>crate::local_control::request(command)};
+        let value=request(original("CheckForUpdates"))?;
+        if value.is_null(){println!("The current version is up to date.");return Ok(());}
+        println!("Update available: {}",value["Version"].as_str().ok_or("Update version missing")?);
+        if !check{request(original("InstallUpdate"))?;println!("Update staged. Restart the driver and frontend.");
+            if let Some(handle)=handle{use std::io::Write;io::stdout().flush().map_err(|e|e.to_string())?;handle.call(original("FinishUpdate"))?;}}
+        Ok(())
+    };
+    if crate::local_control::available()?{return perform(None);}
+    let lease=crate::local_control::Ownership::reserve()?;crate::update::remove_leftovers()?;
+    let stop=Arc::new(AtomicBool::new(false));let mut owner=crate::daemon::Owner::start(platform,stop.clone())?;
+    let server=crate::local_control::Server::start_reserved(owner.handle.clone(),stop.clone(),lease)?;
+    let result=perform(Some(&owner.handle));stop.store(true,Ordering::Release);let cleaned=owner.join();drop(server);result.and(cleaned)
 }
