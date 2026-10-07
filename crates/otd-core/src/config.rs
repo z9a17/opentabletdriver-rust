@@ -1094,7 +1094,7 @@ impl Profile {
         let store = document.get_mut("Profiles").and_then(serde_json::Value::as_array_mut).and_then(|profiles| profiles.get_mut(selected))
             .and_then(|profile| profile.get_mut("OutputMode")).ok_or("selected source output store is missing")?;
         if store["Path"].as_str() != Some(config.type_name.as_str()) { return Err("verified managed output type differs from the source store".into()); }
-        config.enabled = store["Enable"].as_bool().unwrap_or(true);
+        config.enabled = store["Enable"].as_bool().unwrap_or(false);
         config.settings_json = Self::managed_store_settings(store)?;
         store["Path"] = serde_json::json!(if relative { "OpenTabletDriver.Desktop.Output.RelativeMode" } else { "OpenTabletDriver.Desktop.Output.AbsoluteMode" });
         let mut profile = Self::from_otd_profile_text(&document.to_string(), path, selected, options)?;
@@ -1106,6 +1106,9 @@ impl Profile {
     /// Missing keys remain absent and explicit null remains null. Duplicate
     /// source entries retain last-value semantics while the archive keeps all.
     pub fn managed_store_settings(store: &serde_json::Value) -> Result<String, String> {
+        if store["Enable"].as_bool() == Some(true) && store.get("Settings").is_none_or(serde_json::Value::is_null) {
+            return Err("Enabled original managed store has null/missing Settings; upstream ApplySettings cannot iterate it".into());
+        }
         let mut result = serde_json::Map::new();
         if let Some(settings) = store.get("Settings").filter(|settings| !settings.is_null()) {
             for setting in settings.as_array().ok_or("managed store Settings must be an array")? {
@@ -1922,6 +1925,17 @@ impl Profile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn original_managed_store_missing_enable_stays_disabled_and_null_settings_stays_truthful() {
+        let missing = serde_json::json!({ "Path": "Fixture.Binding", "Settings": null });
+        assert!(!missing["Enable"].as_bool().unwrap_or(false));
+        assert_eq!(Profile::managed_store_settings(&missing).unwrap(), "{}");
+        let enabled_null = serde_json::json!({ "Enable": true, "Settings": null });
+        assert!(Profile::managed_store_settings(&enabled_null).is_err());
+        assert!(Profile::managed_store_settings(&serde_json::json!({ "Enable": true })).is_err());
+        assert_eq!(Profile::managed_store_settings(&serde_json::json!({ "Enable": true, "Settings": [] })).unwrap(), "{}");
+    }
 
     #[test]
     fn unchanged_contact_threshold_mutates_pressure_before_binding() {

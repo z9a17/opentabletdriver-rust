@@ -45,7 +45,7 @@ pub fn resolve_imported_bindings(profile: &mut crate::config::Profile, inspected
         let mut matches = inspected.iter().filter(|entry| entry.metadata.category == "binding" && entry.metadata.supported && entry.config.type_name == type_name);
         let Some(entry) = matches.next() else { return Ok(None); };
         if matches.any(|other| other.config.path != entry.config.path) { return Err(format!("unchanged binding {type_name} exists in multiple DLLs; select one explicitly")); }
-        let mut config = entry.config.clone(); config.enabled = store["Enable"].as_bool().unwrap_or(true);
+        let mut config = entry.config.clone(); config.enabled = store["Enable"].as_bool().unwrap_or(false);
         config.settings_json = crate::config::Profile::managed_store_settings(store)?; config.validate()?;
         count += 1; Ok(Some(config))
     };
@@ -108,11 +108,11 @@ pub fn resolve_imported_stores(profile: &mut crate::config::Profile, inspected: 
         let mut matches = inspected.iter().filter(|entry| entry.config.type_name == name && entry.metadata.category == category && entry.metadata.supported);
         let Some(entry) = matches.next() else { return Ok(None); };
         if matches.any(|other| other.config.path != entry.config.path) { return Err(format!("Unchanged {category} {name} occurs in multiple installed DLLs")); }
-        let mut config = entry.config.clone(); config.enabled = store["Enable"].as_bool().unwrap_or(true);
+        let mut config = entry.config.clone(); config.enabled = store["Enable"].as_bool().unwrap_or(false);
         config.settings_json = crate::config::Profile::managed_store_settings(store)?; config.validate()?; Ok(Some(config))
     };
     for store in source["Profiles"][selected]["Filters"].as_array().into_iter().flatten() {
-        let enabled = store["Enable"].as_bool().unwrap_or(true);
+        let enabled = store["Enable"].as_bool().unwrap_or(false);
         let radial = store["Path"].as_str() == Some(otd_core::radial_follow::FILTER_PATH);
         if let Some(config) = resolve(store, "filter")? {
             installed_radial |= radial && enabled;
