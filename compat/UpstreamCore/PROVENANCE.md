@@ -23,3 +23,8 @@ OtdCompat internal access. No physical hub or second physical handle is created.
 DeviceReader exposes an internal worker-completion Task for cold scoped retirement
 after its exact reader exits; public APIs remain unchanged. This prevents native
 tool/update completion while managed parser/report callbacks still execute.
+
+Instance has an internal hosted disposal hook that releases its named mutex on
+the original owner thread and removes the exact retained owner reference; shared
+owner-list reads/writes are synchronized. Hosted original RPC retains its actual
+Instance until listener/client/provider retirement completes.

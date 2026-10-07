@@ -13,7 +13,7 @@ namespace OpenTabletDriver
             this.Name = name;
             AlreadyExists = !createdNew;
             if (createdNew)
-                ownedInstances.Add(this);
+                lock (ownedInstances) ownedInstances.Add(this);
         }
 
         public static bool Exists(string name)
@@ -28,7 +28,7 @@ namespace OpenTabletDriver
 
         public static bool IsOwnerOf(string name)
         {
-            return ownedInstances.Any(i => i.Name == name);
+            lock (ownedInstances) return ownedInstances.Any(i => i.Name == name);
         }
 
         private const string MUTEX_PREFIX = @"Global\";
@@ -38,6 +38,15 @@ namespace OpenTabletDriver
 
         public string Name { get; }
         public bool AlreadyExists { protected set; get; }
+
+        // The hosted RPC thread owns the named mutex for its entire lifetime.
+        // Release on that same thread before closing its real original instance.
+        internal void HostedDispose()
+        {
+            if (_isDisposed) return;
+            if (!AlreadyExists) { mutex.ReleaseMutex(); lock (ownedInstances) ownedInstances.Remove(this); }
+            Dispose();
+        }
 
         public void Dispose()
         {

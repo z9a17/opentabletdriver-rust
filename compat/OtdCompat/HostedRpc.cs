@@ -14,22 +14,56 @@ public static unsafe partial class EntryPoints
     sealed class HostedRpc : IDisposable
     {
         readonly CancellationTokenSource cancellation = new();
-        readonly ManagedProviders provider = new();
-        readonly Task serving;
+        readonly TaskCompletionSource ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        readonly TaskCompletionSource completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        readonly Thread worker;
+        int disposed;
         internal HostedRpc(string pipe)
         {
-            var host = new RpcHost<IDriverDaemon>(pipe) { HostedUpdateResponseFlushed = () => provider.Call("FinishUpdate") };
+            worker=new Thread(()=>Run(pipe)) { IsBackground=true,Name="Original OpenTabletDriver RPC owner" };
+            worker.Start();
+            try {ready.Task.GetAwaiter().GetResult();}
+            catch {cancellation.Cancel();worker.Join(5000);throw;}
+        }
+        void Run(string pipe)
+        {
+            ManagedProviders? provider=null;
+            OpenTabletDriver.Instance? instance=null;
+            List<Exception> failures=[];
             try {
-                // Run binds its first listening pipe before its initial await.
-                serving = host.Run(provider, cancellation.Token);
+                if (pipe=="OpenTabletDriver.Daemon") {
+                    instance=new OpenTabletDriver.Instance(pipe);
+                    if (instance.AlreadyExists) throw new IOException("Original OpenTabletDriver daemon instance already exists.");
+                }
+                provider=new ManagedProviders();
+                var host=new RpcHost<IDriverDaemon>(pipe) {HostedUpdateResponseFlushed=()=>provider.Call("FinishUpdate")};
+                // Original Run binds its first listener before the initial await.
+                var serving=host.Run(provider,cancellation.Token);
                 if (serving.IsFaulted) serving.GetAwaiter().GetResult();
-            } catch { cancellation.Cancel(); provider.Dispose(); cancellation.Dispose(); throw; }
+                ready.TrySetResult();
+                serving.GetAwaiter().GetResult();
+            } catch(Exception error) {ready.TrySetException(error);failures.Add(error);}
+            finally {
+                var batch=new ManagedRetirements.Batch();
+                using(var owned=ManagedRetirements.Enter(batch)) {
+                    try {provider?.Dispose();} catch(Exception error) {failures.Add(error);}
+                }
+                try {
+                    var drained=batch.Drain();
+                    if (!drained.Wait(TimeSpan.FromSeconds(15))) throw new TimeoutException("Hosted original RPC dependencies did not retire.");
+                    drained.GetAwaiter().GetResult();
+                } catch(Exception error) {failures.Add(error);}
+                try {instance?.HostedDispose();} catch(Exception error) {failures.Add(error);}
+                if (failures.Count==0) completion.TrySetResult();
+                else completion.TrySetException(new AggregateException("Original RPC owner retirement failed.",failures));
+            }
         }
         public void Dispose()
         {
             cancellation.Cancel();
-            try { serving.GetAwaiter().GetResult(); }
-            finally { provider.Dispose(); cancellation.Dispose(); }
+            if (!worker.Join(20000)) throw new TimeoutException("Original RPC owner remains live; retirement did not complete.");
+            completion.Task.GetAwaiter().GetResult();
+            if (Interlocked.Exchange(ref disposed,1)==0) cancellation.Dispose();
         }
     }
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
@@ -57,8 +91,10 @@ public static unsafe partial class EntryPoints
             ServiceClient.RequireBlockingAllowed();
             if (token <= 0) throw new ArgumentException("Invalid hosted RPC token.");
             HostedRpc? owner;
-            lock (RpcGate) RpcHosts.Remove(token, out owner);
-            owner?.Dispose(); return 0;
+            lock (RpcGate) RpcHosts.TryGetValue(token,out owner);
+            owner?.Dispose();
+            lock (RpcGate) { if (RpcHosts.TryGetValue(token,out var current) && ReferenceEquals(current,owner)) RpcHosts.Remove(token); }
+            return 0;
         } catch (Exception error) { lastError = error.GetBaseException().Message; return -1; }
     }
 }
