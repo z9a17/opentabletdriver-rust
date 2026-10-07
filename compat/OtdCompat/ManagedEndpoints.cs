@@ -159,7 +159,7 @@ abstract class EndpointInstance : IDisposable
             Type type = context.LoadFromAssemblyPath(path).GetType(config.Value<string>("type_name") ?? "", true)!;
             PluginEligibility.RequireLoadable(type);
             if (!contract.IsAssignableFrom(type)) throw new NotSupportedException($"'{type.FullName}' does not implement {contract.Name}.");
-            value = Activator.CreateInstance(type) ?? throw new InvalidOperationException("Cannot construct plugin.");
+            value = HostServices.Construct(type) ?? throw new InvalidOperationException("Cannot construct plugin.");
             Value = value;
             services.Inject(type, value);
             Instance.ApplySettings(type, value, config["settings"] as JObject ?? new JObject());
@@ -168,7 +168,7 @@ abstract class EndpointInstance : IDisposable
         catch
         {
             Queue.Dispose();
-            try { (value as IDisposable)?.Dispose(); } finally { foreach (var timer in timers) timer.Dispose(); services.Dispose(); context.Unload(); }
+            try { HostServices.DisposePlugin(value); } finally { foreach (var timer in timers) timer.Dispose(); services.Dispose(); context.Unload(); }
             throw;
         }
     }
@@ -204,7 +204,7 @@ abstract class EndpointInstance : IDisposable
     {
         if (disposed) return;
         CheckThread(); disposed = true;
-        try { (Value as IDisposable)?.Dispose(); }
+        try { HostServices.DisposePlugin(Value); }
         finally { Queue.Dispose(); foreach (var timer in timers) timer.Dispose(); services.Dispose(); context.Unload(); }
     }
 }
@@ -221,8 +221,13 @@ sealed class BindingInstance(JObject config) : EndpointInstance(config, typeof(I
         CheckThread(); Queue.Owner = owner;
         var current = SynchronousGraph.CurrentReport ?? report ?? throw new InvalidOperationException("Binding has no source report.");
         report = current;
-        if (down) { pressed = true; ((IStateBinding)Value).Press(Tablet, current); }
-        else { try { ((IStateBinding)Value).Release(Tablet, current); } finally { pressed = false; } }
+        uint? previousOwner = ServiceClient.BindingOwner;
+        string? previousTablet = ServiceClient.BindingTablet;
+        ServiceClient.BindingOwner = owner; ServiceClient.BindingTablet = Tablet.Properties.Name; ServiceClient.ReportDepth++;
+        try {
+            if (down) { pressed = true; ((IStateBinding)Value).Press(Tablet, current); }
+            else { try { ((IStateBinding)Value).Release(Tablet, current); } finally { pressed = false; } }
+        } finally { ServiceClient.ReportDepth--; ServiceClient.BindingOwner = previousOwner; ServiceClient.BindingTablet = previousTablet; }
     }
     public void Release() { if (pressed) Set(false, Queue.Owner); }
     public override void Dispose() { try { Release(); } finally { base.Dispose(); } }

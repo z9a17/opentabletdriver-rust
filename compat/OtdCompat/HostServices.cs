@@ -15,6 +15,7 @@ namespace OtdCompat;
 sealed class HostServices(Func<ITimer>? timer = null, Func<Type, object?>? input = null) : IServiceProvider, IDisposable
 {
     IVirtualScreen? display;
+    ManagedProviders? providers;
     int disposed;
     public bool ProviderInjected { get; private set; }
     public object? GetService(Type serviceType)
@@ -24,13 +25,15 @@ sealed class HostServices(Func<ITimer>? timer = null, Func<Type, object?>? input
         if (serviceType == typeof(ITimer)) return timer?.Invoke();
         if (serviceType == typeof(IVirtualScreen) && OperatingSystem.IsWindows())
             return display ??= new WindowsScreen();
-        return input?.Invoke(serviceType);
+        if (input?.Invoke(serviceType) is { } value) return value;
+        return (providers ??= new ManagedProviders()).Get(serviceType);
     }
 
-    public void Dispose() => Interlocked.Exchange(ref disposed, 1);
+    public void Dispose() { if (Interlocked.Exchange(ref disposed, 1) == 0) providers?.Dispose(); }
 
     internal void Inject(Type type, object value)
     {
+        using var setup = ServiceClient.Setup();
         foreach (MemberInfo member in Members(type))
         {
             if (member.GetCustomAttribute<ResolvedAttribute>() == null) continue;
@@ -47,6 +50,7 @@ sealed class HostServices(Func<ITimer>? timer = null, Func<Type, object?>? input
 
     internal static void Complete(Type type, object value, TabletReference? tablet)
     {
+        using var setup = ServiceClient.Setup();
         foreach (MemberInfo member in Members(type))
         {
             Type dependency = member is PropertyInfo property ? property.PropertyType : ((FieldInfo)member).FieldType;
@@ -59,6 +63,14 @@ sealed class HostServices(Func<ITimer>? timer = null, Func<Type, object?>? input
         foreach (MethodInfo method in type.GetMethods())
             if (method.GetCustomAttribute<OnDependencyLoadAttribute>() != null)
                 method.Invoke(value, []);
+    }
+    internal static object? Construct(Type type, object[]? arguments = null) {
+        using var setup = ServiceClient.Setup();
+        return Activator.CreateInstance(type, arguments ?? []);
+    }
+    internal static void DisposePlugin(object? value) {
+        using var setup = ServiceClient.Setup();
+        (value as IDisposable)?.Dispose();
     }
 
     static IEnumerable<MemberInfo> Members(Type type)

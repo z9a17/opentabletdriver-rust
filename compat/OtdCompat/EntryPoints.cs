@@ -50,6 +50,12 @@ sealed class PluginContext(string path, bool inspect = false) : AssemblyLoadCont
             return typeof(ITabletReport).Assembly;
         if (name.Name == typeof(OpenTabletDriver.Configurations.ReportParserProvider).Assembly.GetName().Name)
             return typeof(OpenTabletDriver.Configurations.ReportParserProvider).Assembly;
+        if (name.Name == typeof(OpenTabletDriver.Driver).Assembly.GetName().Name)
+            return typeof(OpenTabletDriver.Driver).Assembly;
+        if (name.Name == typeof(OpenTabletDriver.Interop.SystemInterop).Assembly.GetName().Name)
+            return typeof(OpenTabletDriver.Interop.SystemInterop).Assembly;
+        if (name.Name == typeof(OpenTabletDriver.Desktop.Contracts.IDriverDaemon).Assembly.GetName().Name)
+            return typeof(OpenTabletDriver.Desktop.Contracts.IDriverDaemon).Assembly;
         string? dependency = resolver.ResolveAssemblyToPath(name);
         if (dependency == null)
         {
@@ -61,6 +67,11 @@ sealed class PluginContext(string path, bool inspect = false) : AssemblyLoadCont
     internal Assembly LoadPluginAssembly(string file)
     {
         string? identity = AssemblyName.GetAssemblyName(file).FullName;
+        foreach (Assembly shared in new[] { typeof(ITabletReport).Assembly,
+            typeof(OpenTabletDriver.Configurations.ReportParserProvider).Assembly,
+            typeof(OpenTabletDriver.Driver).Assembly, typeof(OpenTabletDriver.Interop.SystemInterop).Assembly,
+            typeof(OpenTabletDriver.Desktop.Contracts.IDriverDaemon).Assembly })
+            if (shared.FullName == identity) return shared;
         var loaded = Assemblies.FirstOrDefault(assembly => assembly.FullName == identity);
         if (loaded != null) return loaded;
         if (!inspect) return LoadFromAssemblyPath(file);
@@ -165,7 +176,7 @@ sealed class Instance : IDisposable
             PluginEligibility.RequireLoadable(type);
             if (!typeof(IPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(type))
                 throw new NotSupportedException("Only OTD position filters are supported; output modes and bindings are not supported.");
-            created = Activator.CreateInstance(type) ?? throw new InvalidOperationException("Cannot construct filter");
+            created = HostServices.Construct(type) ?? throw new InvalidOperationException("Cannot construct filter");
             filter = (IPositionedPipelineElement<IDeviceReport>)created;
             // PluginManager.ConstructObject injects services before
             // PluginSettingStore.ApplySettings, so Frequency finds its timer.
@@ -186,7 +197,7 @@ sealed class Instance : IDisposable
         catch
         {
             // Cleanup failures must not hide the construction/settings error.
-            try { (created as IDisposable)?.Dispose(); }
+            try { HostServices.DisposePlugin(created); }
             catch (Exception error) { Console.Error.WriteLine($".NET plugin cleanup failed: {error.GetBaseException().Message}"); }
             finally
             {
@@ -200,6 +211,7 @@ sealed class Instance : IDisposable
 
     internal static void ApplySettings(Type type, object value, JObject settings)
     {
+        using var setup = ServiceClient.Setup();
         var properties = type.GetProperties().Where(p => p.GetCustomAttribute<PropertyAttribute>() != null).ToArray();
         // Upstream ignores saved keys no longer declared by a plugin. Keep
         // those keys in the Rust profile for upgrades and rollback.
@@ -406,7 +418,7 @@ sealed class Instance : IDisposable
     public void Dispose()
     {
         filter.Emit -= OnEmit;
-        try { (filter as IDisposable)?.Dispose(); }
+        try { HostServices.DisposePlugin(filter); }
         finally
         {
             foreach (var timer in timers) timer.Dispose();
@@ -479,6 +491,7 @@ sealed class ToolInstance : IDisposable
 
     public ToolInstance(JObject config)
     {
+        using var setup = ServiceClient.Setup();
         string path = Path.GetFullPath(config.Value<string>("assembly_path") ?? throw new ArgumentException("assembly_path missing"));
         context = new PluginLoad(path);
         object? created = null;
@@ -488,7 +501,7 @@ sealed class ToolInstance : IDisposable
             PluginEligibility.RequireLoadable(type);
             if (!typeof(OpenTabletDriver.Plugin.ITool).IsAssignableFrom(type))
                 throw new NotSupportedException($"'{type.FullName}' is not an OpenTabletDriver tool.");
-            created = Activator.CreateInstance(type) ?? throw new InvalidOperationException("Cannot construct tool");
+            created = HostServices.Construct(type) ?? throw new InvalidOperationException("Cannot construct tool");
             tool = (OpenTabletDriver.Plugin.ITool)created;
             services.Inject(type, created);
             Instance.ApplySettings(type, created, config["settings"] as JObject ?? new JObject());
@@ -498,7 +511,7 @@ sealed class ToolInstance : IDisposable
         }
         catch
         {
-            try { (created as IDisposable)?.Dispose(); }
+            try { HostServices.DisposePlugin(created); }
             catch (Exception error) { Console.Error.WriteLine($".NET tool cleanup failed: {error.GetBaseException().Message}"); }
             finally { services.Dispose(); context.Unload(); }
             throw;
@@ -507,6 +520,7 @@ sealed class ToolInstance : IDisposable
 
     public void Dispose()
     {
+        using var setup = ServiceClient.Setup();
         try { tool.Dispose(); }
         finally { services.Dispose(); context.Unload(); }
     }
