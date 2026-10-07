@@ -14,6 +14,7 @@ struct Published {
     last_devices: Option<Instant>,
     sessions: Vec<(String, u64, Option<u64>)>,
     retained: Option<Arc<Value>>,
+    projection_pending: bool,
 }
 struct NativeBackend { stopped: Arc<AtomicBool>, published: Mutex<Published> }
 
@@ -39,6 +40,7 @@ impl Owner {
         let backend = Arc::new(NativeBackend { stopped: Arc::clone(&stop), published: Mutex::new(Published {
             publisher: None, snapshot: snapshot.clone(), last_devices: None, sessions: Vec::new(),
             retained: crate::upstream_rpc::cached_original_settings(),
+            projection_pending: true,
         }) });
         let host = Host::start(snapshot, backend.clone())?;
         backend.published.lock().map_err(|_| "Managed snapshot lock poisoned")?.publisher = Some(host.publisher());
@@ -75,7 +77,11 @@ impl Drop for Owner {
 /// installed, so this does not enumerate hardware or contact another daemon.
 pub fn prime() {
     let backend = CURRENT.get_or_init(|| Mutex::new(Weak::new())).lock().ok().and_then(|current| current.upgrade());
-    if let Some(backend) = backend { let _ = backend.refresh(false, true, false); }
+    // CLR can first initialize inside a daemon control handler. Sending an IPC
+    // request back to that handler here would wait on its own control thread.
+    // Seed only cold metadata; the background observer projects live settings
+    // once CLR initialization has completed.
+    if let Some(backend) = backend { let _ = backend.prime_metadata(); }
 }
 fn call(command: Command) -> Result<Reply, String> {
     let response = control::request_owned(&control::Request::new(1, command), Duration::from_secs(2), std::process::id())
@@ -83,6 +89,16 @@ fn call(command: Command) -> Result<Reply, String> {
     match response.reply { Reply::Error { error } => Err(error.message), reply => Ok(reply) }
 }
 impl NativeBackend {
+    fn prime_metadata(&self) -> Result<(), String> {
+        let mut state = self.published.lock().map_err(|_| "Managed snapshot lock poisoned")?;
+        state.snapshot.devices = crate::hid::enumerate_rpc_devices().ok().map(|devices| json!(devices));
+        state.last_devices = Some(Instant::now());
+        state.snapshot.settings = crate::upstream_rpc::initial_original_settings().ok();
+        state.snapshot.resynchronize = crate::upstream_rpc::original_resynchronize_epoch();
+        state.projection_pending = true;
+        state.snapshot.version = state.snapshot.version.checked_add(1).ok_or("Managed snapshot version exhausted")?;
+        state.publisher.as_ref().ok_or("Managed snapshot publisher unavailable")?.publish(state.snapshot.clone())
+    }
     fn refresh(&self, full_settings: bool, force_devices: bool, allow_projection: bool) -> Result<(), String> {
         if self.stopped.load(Ordering::Acquire) { return Err("Managed native owner is stopping".into()); }
         let mut state = self.published.lock().map_err(|_| "Managed snapshot lock poisoned")?;
@@ -93,13 +109,16 @@ impl NativeBackend {
         let retained_changed = match (&state.retained, &retained) {
             (Some(old), Some(new)) => !Arc::ptr_eq(old, new), (None, None) => false, _ => true,
         };
-        let settings_changed = full_settings || retained_changed || state.sessions != session_generations
+        let settings_changed = full_settings || state.projection_pending || retained_changed || state.sessions != session_generations
             || state.snapshot.daemon_identity.as_ref() != Some(&status.identity());
         let tablets: Vec<_> = sessions.iter().filter(|session| session.connected).filter_map(|session| {
             session.opened_identifiers.as_ref().map(|identifiers| json!({"Properties": session.properties, "Identifiers": identifiers}))
         }).collect();
         state.snapshot.tablets = Some(json!(tablets));
-        if allow_projection && settings_changed { state.snapshot.settings = crate::upstream_rpc::get_original_settings().ok(); }
+        if allow_projection && settings_changed {
+            state.snapshot.settings = crate::upstream_rpc::get_original_settings().ok();
+            state.projection_pending = false;
+        }
         if force_devices || state.last_devices.is_none_or(|last| last.elapsed() >= Duration::from_secs(3)) {
             state.snapshot.devices = crate::hid::enumerate_rpc_devices().ok().map(|devices| json!(devices));
             state.last_devices = Some(Instant::now());
@@ -123,7 +142,13 @@ impl NativeBackend {
                 let settings = if method == "ResetSettings" { Value::Null } else {
                     params.as_array().and_then(|values| values.first()).cloned().ok_or("SetSettings requires one settings collection")?
                 };
-                crate::upstream_rpc::set_original_settings_expected(settings, expected)?;
+                let source = match (request.payload.get("source_tablet_name"), request.payload.get("source_binding_owner")) {
+                    (None, None) => None,
+                    (Some(name), Some(owner)) => Some((name.as_str().ok_or("Invalid source tablet name")?.to_owned(),
+                        owner.as_u64().and_then(|owner| u32::try_from(owner).ok()).ok_or("Invalid source binding owner")?)),
+                    _ => return Err("Managed preset source needs both tablet name and binding owner".into()),
+                };
+                crate::upstream_rpc::set_original_settings_expected_with_source(settings, expected, source)?;
                 Ok(Value::Null)
             }
             "SetTabletDebug" => Err("Managed IDriverDaemon.DeviceReport subscriptions are not supplied yet; use the native/full-rate RPC recording endpoint".into()),

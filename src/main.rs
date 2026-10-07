@@ -11,6 +11,8 @@ mod display;
 mod download;
 mod experimental;
 mod dotnet;
+mod managed_host;
+mod managed_services;
 mod hid;
 mod original_driver;
 mod output;
