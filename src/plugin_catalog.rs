@@ -607,9 +607,12 @@ pub fn run(arguments: Vec<String>) -> Result<(), String> {
             Ok(())
         }
         ("remove", Some(name)) => {
-            let (folder, plugin) = installed()?
-                .into_iter()
-                .find(|(_, plugin)| matches(plugin, &name))
+            let candidates: Vec<_> = installed()?.into_iter()
+                .filter(|(_, plugin)| matches(plugin, &name)).collect();
+            if candidates.len() > 1 {
+                return Err(format!("{name} matches multiple installed identities; select a unique owner/name or repository URL"));
+            }
+            let (folder, plugin) = candidates.into_iter().next()
                 .ok_or_else(|| format!("no installed plugin is named {name}"))?;
             uninstall(&folder)?;
             println!("Removed {}", plugin.name);
