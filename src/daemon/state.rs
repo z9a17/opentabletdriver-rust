@@ -243,7 +243,7 @@ impl Daemon {
             let handle = self.device_sessions().unwrap();
             self.profile = Some(profile.source.clone());
             self.configuration = Some(text);
-            handle.commit(id, next, profile);
+            handle.commit_applied(id, next, profile);
             handle.primary_stopped(next, None);
             return Ok(crate::device_sessions::SessionReceipt { id: id.to_owned(), device_generation: generation,
                 target_generation: next, accepted_pending: false });
@@ -699,7 +699,7 @@ impl Daemon {
                 self.profile = Some(pending.profile.clone());
                 self.configuration = Some(pending.text.clone());
                 if let Some(devices) = &self.devices {
-                    if let Err(error) = devices.handle().primary_commit(pending.applied_profile.clone()) {
+                    if let Err(error) = devices.handle().primary_commit_with_origin(pending.applied_profile.clone(), !pending.initial && !pending.device_start) {
                         self.fail_stop(error); return;
                     }
                 }
