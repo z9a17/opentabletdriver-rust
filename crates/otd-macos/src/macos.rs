@@ -131,11 +131,26 @@ impl Device {
             "USB parent service is unavailable for indexed string requests"))?;
         crate::usb::Strings::open(service.0)?.read(index)
     }
+    fn indexed_string_checked(&self, index: u8, check: impl FnMut() -> io::Result<()>) -> io::Result<String> {
+        let service = self.usb_parent.as_ref().ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported,
+            "USB parent service is unavailable for indexed string requests"))?;
+        crate::usb::Strings::open(service.0)?.read_checked(index, check)
+    }
+}
+
+fn check_discovery(stop: Option<&AtomicBool>, deadline: Option<Instant>) -> io::Result<()> {
+    if stop.is_some_and(|stop| stop.load(Ordering::Acquire)) {
+        return Err(io::Error::new(io::ErrorKind::Interrupted, "USB discovery/initialization cancelled"));
+    }
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        return Err(io::Error::new(io::ErrorKind::TimedOut, "capture deadline elapsed during USB discovery/initialization"));
+    }
+    Ok(())
 }
 
 /// Enumerates services without opening unrelated keyboards or pointing devices.
 /// Registry IDs identify live endpoints; the USB parent identifies the tablet.
-pub fn enumerate(database: &Database) -> io::Result<Vec<Device>> {
+pub fn enumerate(database: &Database, stop: Option<&AtomicBool>, deadline: Option<Instant>) -> io::Result<Vec<Device>> {
     let mut iterator = 0;
     // SAFETY: IOServiceMatching returns a dictionary consumed by matching.
     let matching = unsafe { ffi::IOServiceMatching(c"IOHIDDevice".as_ptr()) };
@@ -145,6 +160,7 @@ pub fn enumerate(database: &Database) -> io::Result<Vec<Device>> {
     let iterator = IoObject(iterator);
     let mut devices = Vec::new();
     loop {
+        check_discovery(stop, deadline)?;
         let service = IoObject(unsafe { ffi::IOIteratorNext(iterator.0) });
         if service.0 == 0 { break; }
         let handle = Owned(unsafe { ffi::IOHIDDeviceCreate(ptr::null(), service.0) }.cast_const());
@@ -210,14 +226,20 @@ pub fn enumerate(database: &Database) -> io::Result<Vec<Device>> {
                     "USB parent service is unavailable for indexed string matching"))?;
                 let mut strings = crate::usb::Strings::open(parent.0)?;
                 for index in indices {
-                    match strings.read(index) {
+                    check_discovery(stop, deadline)?;
+                    match strings.read_checked(index, || check_discovery(stop, deadline)) {
                         Ok(value) => { device.endpoint.strings.insert(index, value); }
+                        Err(error) if matches!(error.kind(), io::ErrorKind::Interrupted | io::ErrorKind::TimedOut)
+                            && (stop.is_some_and(|stop| stop.load(Ordering::Acquire)) || deadline.is_some_and(|deadline| Instant::now() >= deadline)) => return Err(error),
                         Err(error) => { device.string_error.get_or_insert_with(|| error.to_string()); }
                     }
                 }
                 Ok(())
             })();
-            if let Err(error) = result { device.string_error = Some(error.to_string()); }
+            if let Err(error) = result {
+                if matches!(error.kind(), io::ErrorKind::Interrupted | io::ErrorKind::TimedOut) { return Err(error); }
+                device.string_error = Some(error.to_string());
+            }
         }
         devices.push(device);
     }
@@ -324,7 +346,7 @@ impl<'a> HidSource<'a> {
             if capture_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 return Err(io::Error::new(io::ErrorKind::TimedOut, "capture deadline elapsed during string initialization"));
             }
-            self.device.indexed_string(*index)?;
+            self.device.indexed_string_checked(*index, || check_discovery(Some(self.stop), capture_deadline))?;
         }
         let delay = configuration.attributes.as_ref().and_then(|a| a.get("FeatureInitDelayMs"))
             .map(|text| text.parse::<u32>().map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid FeatureInitDelayMs")))

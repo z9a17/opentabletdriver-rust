@@ -106,7 +106,7 @@ mod app {
 
     fn list() -> Result<(), String> {
         let database = otd_core::config::configured_tablets()?;
-        let devices = macos::enumerate(&database).map_err(|error| error.to_string())?;
+        let devices = macos::enumerate(&database, None, None).map_err(|error| error.to_string())?;
         if devices.is_empty() { println!("No USB HID endpoints."); }
         for device in &devices {
             let endpoint = &device.endpoint;
@@ -134,7 +134,7 @@ mod app {
             .ok().filter(|index| *index != 0).ok_or_else(|| "string indices must be between 1 and 255".to_owned()))
             .collect::<Result<_, _>>()?;
         let database = otd_core::config::configured_tablets()?;
-        let devices = macos::enumerate(&database).map_err(|error| error.to_string())?;
+        let devices = macos::enumerate(&database, None, None).map_err(|error| error.to_string())?;
         let mut physical = std::collections::BTreeSet::new();
         for device in devices.iter().filter(|device| device.endpoint.vendor_id == vendor && device.endpoint.product_id == product) {
             if !physical.insert(&device.endpoint.physical_id) { continue; }
@@ -204,7 +204,11 @@ mod app {
         let mut waiting = false;
         while !STOP.load(Ordering::Acquire) {
             if deadline.is_some_and(|deadline| Instant::now() >= deadline) { return Err("capture deadline elapsed before a supported tablet was available".into()); }
-            let devices = macos::enumerate(&database).map_err(|error| error.to_string())?;
+            let devices = match macos::enumerate(&database, Some(&STOP), deadline) {
+                Ok(devices) => devices,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted && STOP.load(Ordering::Acquire) => break,
+                Err(error) => return Err(error.to_string()),
+            };
             let device_path = requested_profile.as_ref().and_then(|profile| profile.device_path.as_deref());
             let Some(selected) = select(&devices, &database, tablet.as_deref(), device_path)? else {
                 if !waiting { eprintln!("Waiting for {}.", tablet.as_deref().unwrap_or("a supported USB tablet")); waiting = true; }

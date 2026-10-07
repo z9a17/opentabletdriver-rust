@@ -1,4 +1,4 @@
-//! Indexed USB strings, using Apple's IOUSBDeviceInterface182 ABI.
+//! Indexed USB strings, using Apple's IOUSBDeviceInterface245 ABI.
 //! Descriptor parsing stays portable; device requests run only during setup.
 
 use std::io;
@@ -75,7 +75,9 @@ mod native {
 
     const DEVICE: Uuid = Uuid { bytes: [0x9d,0xc7,0xb7,0x80,0x9e,0xc0,0x11,0xd4,0xa5,0x4f,0x00,0x0a,0x27,0x05,0x28,0x61] };
     const PLUGIN: Uuid = Uuid { bytes: [0xc2,0x44,0xe8,0x58,0x10,0x9c,0x11,0xd4,0x91,0xd4,0x00,0x50,0xe4,0xc6,0x42,0x6f] };
-    const INTERFACE: Uuid = Uuid { bytes: [0x15,0x2f,0xc4,0x96,0x48,0x91,0x11,0xd5,0x9d,0x52,0x00,0x0a,0x27,0x80,0x1e,0x86] };
+    // 245 retains its IOService; older UUIDs have Apple's documented
+    // over-release bug. The prefix through DeviceRequestTO is unchanged.
+    const INTERFACE: Uuid = Uuid { bytes: [0xfe,0x2f,0xd5,0x2f,0x3b,0x5a,0x47,0x3b,0x97,0x7b,0xad,0x99,0x00,0x1e,0xb3,0xed] };
 
     fn error(operation: &str, result: i32) -> io::Error {
         io::Error::other(format!("{operation} failed (IOReturn 0x{:08x}); check USB access and competing drivers", result as u32))
@@ -133,11 +135,17 @@ mod native {
         }
 
         pub fn read(&mut self, index: u8) -> io::Result<String> {
+            self.read_checked(index, || Ok(()))
+        }
+
+        pub fn read_checked(&mut self, index: u8, mut check: impl FnMut() -> io::Result<()>) -> io::Result<String> {
+            check()?;
             if index == 0 { return super::text(&self.descriptor(0, 0)?); }
             let language = match self.language {
                 Some(language) => language,
                 None => { let language = super::language(&self.descriptor(0, 0)?)?; self.language = Some(language); language }
             };
+            check()?;
             super::text(&self.descriptor(index, language)?)
         }
     }
