@@ -51,6 +51,7 @@ pub struct ReportPipeline {
 impl ReportPipeline {
     pub fn new(profile: &Profile) -> Result<Self, String> {
         profile.validate_filter_execution()?;
+        profile.contact.validate_percentages()?;
         let pen_requested = profile.output == OutputKind::Pen;
         if pen_requested && profile.relative.is_some() {
             return Err("pen output is absolute; choose mouse output for relative mode".into());

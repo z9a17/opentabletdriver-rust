@@ -56,6 +56,15 @@ impl Default for ContactPolicy {
 }
 
 impl ContactPolicy {
+    pub fn validate_percentages(self) -> Result<(), String> {
+        for percent in [self.tip_threshold_percent, self.eraser_threshold_percent].into_iter().flatten() {
+            if !percent.is_finite() || !(0.0..=100.0).contains(&percent) {
+                return Err("contact threshold percentages must be finite values from 0 to 100".into());
+            }
+        }
+        Ok(())
+    }
+
     /// BindingHandler invokes ThresholdBindingState before side buttons. Its
     /// remapped uint pressure, not raw pressure or contact enabled, gates drag.
     /// Native raw-only thresholds use the same midpoint representation as OTD
@@ -1363,6 +1372,7 @@ impl Profile {
             target_tablet,
             ..Self::default()
         };
+        profile.contact.validate_percentages()?;
         if profile.crop.width == 0 || profile.crop.height == 0
             || profile.crop.x.checked_add(profile.crop.width).is_none()
             || profile.crop.y.checked_add(profile.crop.height).is_none()
@@ -1454,16 +1464,7 @@ impl Profile {
     /// This profile for the tablet the runtime selected. Raw pressure
     /// thresholds must fit the tablet's pressure range.
     pub fn for_tablet(&self, spec: TabletSpec) -> Result<Self, String> {
-        for percent in [
-            self.contact.tip_threshold_percent,
-            self.contact.eraser_threshold_percent,
-        ] {
-            if let Some(percent) = percent {
-                if !percent.is_finite() || !(0.0..=100.0).contains(&percent) {
-                    return Err("contact threshold percentages must be finite values from 0 to 100".into());
-                }
-            }
-        }
+        self.contact.validate_percentages()?;
         for threshold in [
             self.contact.tip_threshold_raw,
             self.contact.eraser_threshold_raw,
@@ -1505,6 +1506,7 @@ impl Profile {
     }
 
     pub fn to_toml(&self) -> Result<String, String> {
+        self.contact.validate_percentages()?;
         self.validate_filter_execution()?;
         if self.relative.is_some() && self.output == OutputKind::Pen {
             return Err("pen output is absolute; choose mouse output for relative mode".into());
@@ -2616,6 +2618,20 @@ mod tests {
         policy.tip_threshold_raw = Some(51);
         assert_eq!(policy.drag_pressure(Some(50), 100, false), Some(0));
         assert!(policy.drag_pressure(Some(51), 100, false).unwrap() > 0);
+    }
+
+    #[test]
+    fn ordinary_native_profiles_reject_invalid_threshold_percentages() {
+        for field in ["tip_threshold_percent", "eraser_threshold_percent"] {
+            for value in ["nan", "inf", "-inf", "-1", "101"] {
+                let text = format!("[bindings]\n{field} = {value}\n");
+                assert!(Profile::from_toml_text(&text, Path::new("unnamed.toml")).is_err(), "{text}");
+            }
+        }
+        let mut profile = Profile::default();
+        profile.contact.tip_threshold_percent = Some(f32::NAN);
+        assert!(profile.to_toml().is_err());
+        assert!(crate::pipeline::ReportPipeline::new(&profile).is_err());
     }
 
 }
