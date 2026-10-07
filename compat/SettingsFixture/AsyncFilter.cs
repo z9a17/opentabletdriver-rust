@@ -73,3 +73,21 @@ public sealed class LateTimerFilter : BaseFilter, IDisposable
 
     public void Dispose() { Scheduler.Stop(); Scheduler.Elapsed -= Tick; }
 }
+
+/// An unchanged plugin Emit raised by its own thread, after Consume returns.
+/// Methods are invoked by the offline probe only; no real timer/hardware/input.
+[PluginName("Background emission fixture")]
+public sealed class BackgroundFixtureFilter : BaseFilter
+{
+    public override void Consume(IDeviceReport report) { }
+    public void EmitBackground(IDeviceReport[] reports)
+    {
+        Exception failure = null;
+        var worker = new Thread(() => {
+            try { foreach (var report in reports) Publish(report); }
+            catch (Exception error) { failure = error; }
+        });
+        worker.Start(); worker.Join();
+        if (failure != null) throw failure;
+    }
+}

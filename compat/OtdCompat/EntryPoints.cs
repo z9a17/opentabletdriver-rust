@@ -156,6 +156,9 @@ sealed class Instance : IDisposable
     int emissionCount;
     int consuming;
     int asyncEmission;
+    int disposed;
+    Action<IDeviceReport?>? asyncSink;
+    Action? asyncReset;
     Action<IDeviceReport>? graphContinuation;
     // Timers injected into [Resolved] ITimer members. The report thread fires
     // them, so timer emissions continue the graph on the thread that owns it.
@@ -295,10 +298,24 @@ sealed class Instance : IDisposable
         return new TabletReference(configuration, identifiers);
     }
 
+    // Installed once after graph construction, detached before graph retirement.
+    // Legacy sample-only callers retain their explicit unsupported-async result.
+    internal void AttachAsyncSink(Action<IDeviceReport?>? sink, Action? reset = null)
+    {
+        Volatile.Write(ref asyncReset, reset);
+        Volatile.Write(ref asyncSink, sink);
+        if (sink != null) Interlocked.Exchange(ref asyncEmission, 0);
+    }
+
     void OnEmit(IDeviceReport? value)
     {
+        if (Volatile.Read(ref disposed) != 0) return;
         if (Environment.CurrentManagedThreadId != ownerThread || Volatile.Read(ref consuming) == 0)
-        { Interlocked.Exchange(ref asyncEmission, 1); return; }
+        {
+            if (Volatile.Read(ref asyncSink) is { } sink) sink(value);
+            else Interlocked.Exchange(ref asyncEmission, 1);
+            return;
+        }
         if (graphContinuation is { } continuation)
         {
             continuation(value ?? throw new InvalidOperationException("A filter emitted a null report."));
@@ -342,8 +359,8 @@ sealed class Instance : IDisposable
     public void ConsumeGraph(IDeviceReport report, Action<IDeviceReport> continuation)
     {
         using var reportScope = ServiceClient.Report();
-        if (Environment.CurrentManagedThreadId != ownerThread || Volatile.Read(ref asyncEmission) != 0)
-            throw new NotSupportedException("Asynchronous plugin emissions require the P05 scheduler.");
+        if (Environment.CurrentManagedThreadId != ownerThread)
+            throw new InvalidOperationException("Graph consumption must run on its owning thread.");
         // Owner-thread state, as in TickGraph: no locked instruction per report.
         if (consuming != 0)
             throw new InvalidOperationException("Reentrant consumption of the same filter is unsupported.");
@@ -352,8 +369,6 @@ sealed class Instance : IDisposable
         try
         {
             filter.Consume(report);
-            if (Volatile.Read(ref asyncEmission) != 0)
-                throw new NotSupportedException("Asynchronous plugin emissions require the P05 scheduler.");
         }
         finally
         {
@@ -408,6 +423,7 @@ sealed class Instance : IDisposable
     public void Reset(ReadOnlySpan<byte> raw)
     {
         using var reportScope = ServiceClient.Report();
+        Volatile.Read(ref asyncReset)?.Invoke();
         // OTD filters receive a range-loss report; they decide how to reset.
         // A fresh boxed struct and raw array keep retained loss reports stable.
         byte[] ownedRaw = new byte[raw.Length];
@@ -422,6 +438,8 @@ sealed class Instance : IDisposable
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref disposed, 1) != 0) return;
+        AttachAsyncSink(null);
         filter.Emit -= OnEmit;
         try { HostServices.DisposePlugin(filter); }
         finally
