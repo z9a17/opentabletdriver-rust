@@ -10,6 +10,8 @@ use std::sync::OnceLock;
 
 #[path = "dotnet/graph.rs"]
 mod graph;
+#[path = "dotnet/endpoints.rs"]
+pub mod endpoints;
 pub use graph::{Graph, GraphNode, GraphReport};
 
 type GetApi = unsafe extern "C" fn() -> *const FilterApi;
@@ -37,6 +39,7 @@ struct NativePenReport {
 }
 
 struct Bridge {
+    endpoints: Option<endpoints::Api>,
     get_api: GetApi,
     get_position: GetPosition,
     inspect: Inspect,
@@ -183,6 +186,7 @@ fn load_bridge() -> Result<Bridge, String> {
         Ok(entry)
     };
     let bridge = Bridge {
+        endpoints: endpoints::Api::load(&entry).ok(),
         create_graph: unsafe {
             std::mem::transmute::<*mut c_void, graph::CreateGraph>(entry("CreateGraph").map_err(|error| format!("The installed .NET bridge lacks synchronous graph support. Replace the data/compat directory with this release's files: {error}"))?)
         },
@@ -372,11 +376,25 @@ pub struct EnumChoice {
 
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct FilterMetadata {
+    #[serde(default = "filter_category")]
+    pub category: String,
+    #[serde(default = "property_writable")]
+    pub supported: bool,
+    #[serde(default)]
+    pub absolute_output: bool,
+    #[serde(default)]
+    pub relative_output: bool,
     pub type_name: String,
     pub display_name: Option<String>,
     pub properties: Vec<PropertyMetadata>,
     /// Attribute defaults from inspection; omitted properties retain constructor defaults.
     pub default_settings_json: String,
+}
+
+fn filter_category() -> String { "filter".into() }
+impl Default for FilterMetadata {
+    fn default() -> Self { Self { category: filter_category(), supported: true, absolute_output: false, relative_output: false,
+        type_name: String::new(), display_name: None, properties: Vec::new(), default_settings_json: "{}".into() } }
 }
 
 /// Starts an OpenTabletDriver tool: constructs it, applies its settings and
@@ -444,6 +462,9 @@ pub fn inspect_details(path: &Path) -> Result<Vec<InspectedFilter>, String> {
     struct Entry {
         #[serde(default)]
         kind: Option<String>,
+        #[serde(default = "property_writable")] supported: bool,
+        #[serde(default)] absolute_output: bool,
+        #[serde(default)] relative_output: bool,
         type_name: String,
         display_name: Option<String>,
         settings: serde_json::Value,
@@ -465,6 +486,8 @@ pub fn inspect_details(path: &Path) -> Result<Vec<InspectedFilter>, String> {
                 settings_json: entry.settings.to_string(),
             },
             metadata: FilterMetadata {
+                category: entry.kind.unwrap_or_else(filter_category), supported: entry.supported,
+                absolute_output: entry.absolute_output, relative_output: entry.relative_output,
                 type_name: entry.type_name,
                 display_name: entry.display_name,
                 properties: entry.properties.into_iter().map(|mut property| {
@@ -478,7 +501,7 @@ pub fn inspect_details(path: &Path) -> Result<Vec<InspectedFilter>, String> {
 }
 
 pub fn inspect(path: &Path) -> Result<Vec<crate::plugins::PluginConfig>, String> {
-    inspect_details(path).map(|entries| entries.into_iter().map(|entry| entry.config).collect())
+    inspect_details(path).map(|entries| entries.into_iter().filter(|entry| entry.metadata.supported && matches!(entry.metadata.category.as_str(), "filter" | "tool")).map(|entry| entry.config).collect())
 }
 
 #[cfg(test)]

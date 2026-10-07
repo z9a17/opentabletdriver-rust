@@ -12,7 +12,7 @@ namespace OtdCompat;
 // Exact-Type lookup matches Desktop/Reflection/ServiceManager at 736003ed.
 // Missing services return null; they must never become fabricated devices,
 // drivers or no-op input providers. Each plugin owns its service scope.
-sealed class HostServices(Func<ITimer>? timer = null) : IServiceProvider, IDisposable
+sealed class HostServices(Func<ITimer>? timer = null, Func<Type, object?>? input = null) : IServiceProvider, IDisposable
 {
     IVirtualScreen? display;
     int disposed;
@@ -24,7 +24,7 @@ sealed class HostServices(Func<ITimer>? timer = null) : IServiceProvider, IDispo
         if (serviceType == typeof(ITimer)) return timer?.Invoke();
         if (serviceType == typeof(IVirtualScreen) && OperatingSystem.IsWindows())
             return display ??= new WindowsScreen();
-        return null;
+        return input?.Invoke(serviceType);
     }
 
     public void Dispose() => Interlocked.Exchange(ref disposed, 1);

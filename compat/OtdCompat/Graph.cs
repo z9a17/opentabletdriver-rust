@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using OpenTabletDriver.Plugin.Tablet;
+using OpenTabletDriver.Plugin.Output;
 using OpenTabletDriver.Plugin.Tablet.Touch;
 using OpenTabletDriver.Plugin.Tablet.Wheel;
 
@@ -65,13 +66,17 @@ unsafe sealed class SynchronousGraph
             : (Instance)GCHandle.FromIntPtr(description.Context).Target!;
         public readonly Action<IDeviceReport> Emit = emit;
         public bool Disabled;
+        public Action<IDeviceReport>? ModeEmit;
     }
+    [ThreadStatic] internal static IDeviceReport? CurrentReport;
+    OutputInstance? managedOutput;
     readonly Node[] pre, post, timed;
     readonly Action<IDeviceReport> transform, output;
     readonly int ownerThread = Environment.CurrentManagedThreadId;
     delegate* unmanaged[Cdecl]<nint, uint, uint, GraphReport*, int> callback;
     nint scope;
     bool running, failed;
+    int foreignOutputEmission;
     // Fused continuations: the host already ran its built-in filters, and
     // operation 4 transforms and outputs in one native call. Each native call
     // exports the report, crosses into Rust and decodes it there.
@@ -124,12 +129,17 @@ unsafe sealed class SynchronousGraph
     {
         if (running || Environment.CurrentManagedThreadId != ownerThread)
             throw new InvalidOperationException("The synchronous graph must run on its owning thread.");
+        if (Volatile.Read(ref foreignOutputEmission) != 0) throw new InvalidOperationException("Managed output emitted outside its owning dispatch; the mode must be restarted.");
         running = true; failed = false; FailedIndex = -1; currentEmitter = -1; Error = null;
         callback = native; scope = nativeScope; fused = fusedContinuations;
         try
         {
             IDeviceReport report = Import(input);
-            if (fused || Call(0, 0, report)) Visit(pre, 0, report, transform);
+            if (fused || Call(0, 0, report))
+            {
+                if (managedOutput is { } endpoint) { endpoint.Mode.Read(report); DrainOutput(); }
+                else Visit(pre, 0, report, transform);
+            }
             return failed ? -1 : 0;
         }
         catch (GraphAbort) { return -1; }
@@ -140,7 +150,8 @@ unsafe sealed class SynchronousGraph
     /// has no timer capability. Only -2 is safe for the native host to cache.
     public long NextTickMicros()
     {
-        if (timed.Length == 0) return -2;
+        if (Volatile.Read(ref foreignOutputEmission) != 0) return 0;
+        if (timed.Length == 0 && managedOutput == null) return -2;
         long now = Stopwatch.GetTimestamp(), best = -1;
         foreach (Node node in timed)
             if (!node.Disabled && node.Filter is { HasTimers: true } filter)
@@ -148,6 +159,7 @@ unsafe sealed class SynchronousGraph
                 long micros = filter.NextTickMicros(now);
                 if (micros >= 0 && (best < 0 || micros < best)) best = micros;
             }
+        if (managedOutput is { } endpoint) { long next = endpoint.NextTickMicros(); if (next >= 0 && (best < 0 || next < best)) best = next; }
         return best;
     }
 
@@ -158,6 +170,7 @@ unsafe sealed class SynchronousGraph
     {
         if (running || Environment.CurrentManagedThreadId != ownerThread)
             throw new InvalidOperationException("The synchronous graph must run on its owning thread.");
+        if (Volatile.Read(ref foreignOutputEmission) != 0) throw new InvalidOperationException("Managed output emitted outside its owning dispatch; the mode must be restarted.");
         running = true; failed = false; FailedIndex = -1; currentEmitter = -1; Error = null;
         callback = native; scope = nativeScope; fused = fusedContinuations;
         try
@@ -165,6 +178,7 @@ unsafe sealed class SynchronousGraph
             long now = Stopwatch.GetTimestamp();
             TickStage(pre, now);
             TickStage(post, now);
+            if (managedOutput is { } endpoint) { endpoint.Tick(); DrainOutput(); }
             return failed ? -1 : 0;
         }
         catch (GraphAbort) { return -1; }
@@ -180,7 +194,7 @@ unsafe sealed class SynchronousGraph
 
             try
             {
-                filter.TickGraph(now, node.Emit);
+                filter.TickGraph(now, node.ModeEmit ?? node.Emit);
                 if (failed) throw new GraphAbort();
             }
             catch (GraphAbort) { throw; }
@@ -195,6 +209,48 @@ unsafe sealed class SynchronousGraph
                 }
                 throw new GraphAbort();
             }
+        }
+    }
+
+    sealed class ModeElement(SynchronousGraph graph, Node? node, PipelinePosition position) : IPositionedPipelineElement<IDeviceReport>
+    {
+        public PipelinePosition Position => position;
+        public event Action<IDeviceReport> Emit = delegate { };
+        public void Continue(IDeviceReport report) => Emit(report);
+        public void Consume(IDeviceReport report)
+        {
+            if (!graph.running || Environment.CurrentManagedThreadId != graph.ownerThread) { Interlocked.Exchange(ref graph.foreignOutputEmission, 1); return; }
+            if (graph.failed) throw new GraphAbort();
+            if (node == null)
+            {
+                if (graph.Call(5, 0, report)) { Emit(report); graph.DrainOutput(); }
+                return;
+            }
+            if (node.Disabled) { Emit(report); return; }
+            if (node.Filter == null) { if (graph.Call(1, node.Index, report)) Emit(report); return; }
+            try { node.Filter.ConsumeGraph(report, Continue); if (graph.failed) throw new GraphAbort(); }
+            catch (GraphAbort) { throw; }
+            catch (Exception error) { node.Disabled = true; graph.FailedIndex = checked((int)node.Index); graph.Error = error.GetBaseException().Message; graph.failed = true; throw new GraphAbort(); }
+        }
+    }
+    internal void AttachOutput(OutputInstance endpoint)
+    {
+        if (managedOutput != null || running || Environment.CurrentManagedThreadId != ownerThread) throw new InvalidOperationException("Invalid output attachment lifecycle.");
+        var elements = new List<IPositionedPipelineElement<IDeviceReport>>();
+        foreach (Node node in pre) { var element = new ModeElement(this, node, PipelinePosition.PreTransform); elements.Add(element); node.ModeEmit = element.Continue; }
+        foreach (Node node in post) { var element = new ModeElement(this, node, PipelinePosition.PostTransform); elements.Add(element); node.ModeEmit = element.Continue; }
+        elements.Add(new ModeElement(this, null, PipelinePosition.PostTransform));
+        endpoint.Mode.Elements = elements;
+        managedOutput = endpoint;
+    }
+    void DrainOutput()
+    {
+        if (managedOutput is not { } endpoint) return;
+        while (endpoint.Queue.Take(out ManagedCommand command))
+        {
+            GraphReport frame = new() { Version = 2, Size = (uint)sizeof(GraphReport), Kind = command.Kind, Reserved = command.Owner,
+                X = command.X, Y = command.Y, Pressure = command.Value, Flags = command.Flags, TiltX = command.TiltX, TiltY = command.TiltY };
+            if (callback(scope, 6, 0, &frame) != 0) { failed = true; throw new GraphAbort(); }
         }
     }
 
@@ -253,8 +309,14 @@ unsafe sealed class SynchronousGraph
             {
                 frame.Raw = bytes; frame.RawLength = checked((uint)raw.Length);
                 var originalPosition = new Vector2(frame.X, frame.Y);
-                int result = callback(scope, operation, index, &frame);
+                IDeviceReport? previous = CurrentReport;
+                int result;
+                CurrentReport = report;
+                try { result = callback(scope, operation, index, &frame); }
+                finally { CurrentReport = previous; }
                 if (result < 0) { failed = true; throw new GraphAbort(); }
+                if (operation == 5 && (capabilities & Tablet) != 0)
+                    Unsafe.As<ITabletReport>(report).Pressure = frame.Pressure;
                 var updatedPosition = new Vector2(frame.X, frame.Y);
                 // Transform (2, or 4 fused with output) moves the report itself,
                 // as upstream's output mode does.
@@ -414,7 +476,7 @@ unsafe sealed class SynchronousGraph
         return s;
     }
 
-    IDeviceReport Import(GraphReport* f)
+    internal IDeviceReport Import(GraphReport* f)
     {
         if (f == null || f->Version != 2 || f->Size != sizeof(GraphReport)
             || f->RawLength > ushort.MaxValue || (f->Raw == null && f->RawLength != 0))

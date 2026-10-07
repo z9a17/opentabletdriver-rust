@@ -197,6 +197,9 @@ pub(super) fn extract_unknown_fields(document: &mut toml::Value) -> BTreeMap<Str
             "mouse_scroll_down",
             "wheels",
             "output",
+            "managed_output",
+            "managed_tip_binding",
+            "managed_eraser_binding",
             "radial_follow",
             "disabled_radial_follow",
             "plugins",
@@ -205,6 +208,9 @@ pub(super) fn extract_unknown_fields(document: &mut toml::Value) -> BTreeMap<Str
         &mut preserved,
     );
     for (name, keys) in [
+        ("managed_output", &["path", "kind", "enabled", "type_name", "settings_json"][..]),
+        ("managed_tip_binding", &["path", "kind", "enabled", "type_name", "settings_json"][..]),
+        ("managed_eraser_binding", &["path", "kind", "enabled", "type_name", "settings_json"][..]),
         ("crop", &["x", "y", "width", "height"][..]),
         (
             "disabled_radial_follow",
@@ -646,8 +652,14 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
     {
         return Err("Rust device_path/monitor/crop/rotation overrides cannot be represented exactly in an OTD export; use explicit absolute areas or relative settings.".into());
     }
+    let mut baseline_json = imported.settings_json.clone();
+    if profile.managed_output.is_some() {
+        let mut source: Value = serde_json::from_str(&baseline_json).map_err(|error| error.to_string())?;
+        source["Profiles"][imported.selected_profile]["OutputMode"]["Path"] = json!(if profile.relative.is_some() { "OpenTabletDriver.Desktop.Output.RelativeMode" } else { "OpenTabletDriver.Desktop.Output.AbsoluteMode" });
+        baseline_json = source.to_string();
+    }
     let baseline = Profile::from_otd_profile_text(
-        &imported.settings_json,
+        &baseline_json,
         Path::new(&imported.source_path),
         imported.selected_profile,
         ImportOptions {
@@ -660,7 +672,7 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
     let selected = &mut document["Profiles"][imported.selected_profile];
     let target = profile.tablet_name()?.ok_or("OTD export requires a named tablet; choose a tablet before exporting an automatic profile")?;
     selected["Tablet"] = Value::String(target);
-    let target_mode;
+    let mut target_mode;
     let pen = profile.output == super::OutputKind::Pen;
     if let Some(relative) = profile.relative {
         if profile.otd_mapping.is_some() || pen {
@@ -769,6 +781,13 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
     } else {
         return Err("OTD export needs explicit absolute areas or relative settings; simple Rust crops need display/device geometry conversion first".into());
     }
+    if let Some(config) = &profile.managed_output {
+        target_mode = config.type_name.as_str();
+        ensure_object(&mut selected["OutputMode"])?;
+        let settings: serde_json::Map<String, Value> = serde_json::from_str(&config.settings_json).map_err(|error| error.to_string())?;
+        for (property, value) in settings { set_store_property(&mut selected["OutputMode"], &property, value)?; }
+        set_field(&mut selected["OutputMode"], "Enable", json!(config.enabled))?;
+    }
     if selected["OutputMode"]["Path"].as_str() != Some(target_mode) {
         if selected["OutputMode"]["Settings"]
             .as_array()
@@ -780,6 +799,9 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
             );
         }
         set_field(&mut selected["OutputMode"], "Path", json!(target_mode))?;
+    }
+    for (field, config) in [("TipButton", &profile.managed_tip_binding), ("EraserButton", &profile.managed_eraser_binding)] {
+        if let Some(config) = config { write_pen_button(&mut selected["Bindings"][field], &crate::output::buttons::ButtonAction::Managed(config.clone()), pen)?; }
     }
     for (
         button,
@@ -817,7 +839,8 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
     ] {
         // A changed output kind rewrites an enabled contact binding for it.
         let rebind = current_enabled && profile.output != baseline.output;
-        if current_enabled != old_enabled || rebind {
+        let managed = if button == "TipButton" { &profile.managed_tip_binding } else { &profile.managed_eraser_binding };
+        if managed.is_none() && (current_enabled != old_enabled || rebind) {
             ensure_object(&mut selected["Bindings"])?;
             let store = &mut selected["Bindings"][button];
             if current_enabled {
@@ -1191,6 +1214,18 @@ fn write_pen_button(
     use crate::actions::MouseButton;
     use crate::output::buttons::ButtonAction;
 
+    if let ButtonAction::Managed(config) = action {
+        config.validate()?;
+        if !store.is_null() && store["Path"].as_str() != Some(config.type_name.as_str()) {
+            return Err("replacing a preserved binding with a different managed type would discard its settings".into());
+        }
+        ensure_object(store)?;
+        set_field(store, "Path", json!(config.type_name))?;
+        set_field(store, "Enable", json!(config.enabled))?;
+        let settings: serde_json::Map<String, Value> = serde_json::from_str(&config.settings_json).map_err(|error| error.to_string())?;
+        for (property, value) in settings { set_store_property(store, &property, value)?; }
+        return Ok(());
+    }
     if !store.is_null() {
         let parsed: super::OtdStore = serde_json::from_value(store.clone())
             .map_err(|error| format!("unreadable preserved binding: {error}"))?;
@@ -1217,7 +1252,7 @@ fn write_pen_button(
         return Ok(());
     }
     let (path, property, value) = match action {
-        ButtonAction::Scroll(_) => unreachable!("scroll handled above"),
+        ButtonAction::Scroll(_) | ButtonAction::Managed(_) => unreachable!("handled above"),
         ButtonAction::None => {
             if !store.is_null() {
                 set_field(store, "Enable", json!(false))?;

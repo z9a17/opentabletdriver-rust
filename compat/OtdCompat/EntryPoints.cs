@@ -619,14 +619,18 @@ public static unsafe partial class EntryPoints
             {
                 var types = context.LoadPluginAssembly(file).GetExportedTypes()
                     .Where(t => !t.IsAbstract && (typeof(IPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(t)
-                            || typeof(OpenTabletDriver.Plugin.ITool).IsAssignableFrom(t))
+                            || typeof(OpenTabletDriver.Plugin.ITool).IsAssignableFrom(t)
+                            || typeof(IOutputMode).IsAssignableFrom(t) || typeof(OpenTabletDriver.Plugin.IBinding).IsAssignableFrom(t))
                         && PluginEligibility.IsDiscoverable(t))
                     .Select(t =>
                     {
                         var properties = t.GetProperties()
                             .Where(p => p.GetCustomAttribute<PropertyAttribute>() != null).ToArray();
                         return new {
-                            kind = typeof(OpenTabletDriver.Plugin.ITool).IsAssignableFrom(t) ? "tool" : "filter",
+                            kind = typeof(IOutputMode).IsAssignableFrom(t) ? "output" : typeof(OpenTabletDriver.Plugin.IBinding).IsAssignableFrom(t) ? "binding" : typeof(OpenTabletDriver.Plugin.ITool).IsAssignableFrom(t) ? "tool" : "filter",
+                            supported = !typeof(OpenTabletDriver.Plugin.IBinding).IsAssignableFrom(t) || typeof(OpenTabletDriver.Plugin.IStateBinding).IsAssignableFrom(t),
+                            relative_output = typeof(RelativeOutputMode).IsAssignableFrom(t),
+                            absolute_output = typeof(AbsoluteOutputMode).IsAssignableFrom(t),
                             type_name = t.FullName,
                             display_name = t.GetCustomAttribute<PluginNameAttribute>()?.Name,
                             // Omitted values preserve the plugin constructor's defaults.

@@ -17,6 +17,67 @@ pub use otd_core::plugins::{PipelineStage, PluginConfig, PluginKind};
 #[path = "plugins/graph.rs"]
 mod graph;
 
+/// Verify an unchanged output class without constructing it, then import its
+/// original property store and geometry. Runtime construction verifies again.
+pub fn import_managed_output(text: &str, source: &Path, selected: usize, mut config: PluginConfig) -> Result<crate::config::Profile, String> {
+    let inspected = crate::dotnet::inspect_details(&config.path)?.into_iter().find(|entry| entry.config.type_name == config.type_name)
+        .ok_or("managed output type was not discovered in the selected DLL")?;
+    config.path = inspected.config.path;
+    let metadata = inspected.metadata;
+    if metadata.category != "output" || !metadata.supported { return Err("selected type is not a supported unchanged IOutputMode".into()); }
+    crate::config::Profile::from_managed_output_store(text, source, selected, otd_core::config::ImportOptions::default(), config, metadata.relative_output)
+}
+
+/// Resolve preserved stores only from already inspected installed DLL classes.
+/// A duplicate class is an explicit ambiguity; unknown stores remain archived.
+pub fn resolve_imported_bindings(profile: &mut crate::config::Profile, inspected: &[crate::dotnet::InspectedFilter]) -> Result<usize, String> {
+    let Some(imported) = &profile.imported_otd else { return Ok(0); };
+    let mut resolved = profile.clone();
+    let source: serde_json::Value = serde_json::from_str(&imported.settings_json).map_err(|error| error.to_string())?;
+    let bindings = &source["Profiles"][imported.selected_profile]["Bindings"];
+    let selected = imported.selected_profile;
+    let original_profile = profile;
+    let profile = &mut resolved;
+    let mut locations = std::collections::BTreeSet::new();
+    let mut count = 0;
+    let mut resolve = |store: &serde_json::Value| -> Result<Option<PluginConfig>, String> {
+        let Some(type_name) = store["Path"].as_str() else { return Ok(None); };
+        let mut matches = inspected.iter().filter(|entry| entry.metadata.category == "binding" && entry.metadata.supported && entry.config.type_name == type_name);
+        let Some(entry) = matches.next() else { return Ok(None); };
+        if matches.any(|other| other.config.path != entry.config.path) { return Err(format!("unchanged binding {type_name} exists in multiple DLLs; select one explicitly")); }
+        let mut config = entry.config.clone(); config.enabled = store["Enable"].as_bool().unwrap_or(true);
+        config.settings_json = crate::config::Profile::managed_store_settings(store)?; config.validate()?;
+        count += 1; Ok(Some(config))
+    };
+    for (field, destination) in [("TipButton", &mut profile.managed_tip_binding), ("EraserButton", &mut profile.managed_eraser_binding)] {
+        if let Some(config) = resolve(&bindings[field])? { *destination = Some(config); locations.insert(format!("Bindings.{}", if field == "TipButton" { "Tip" } else { "Eraser" })); }
+    }
+    if let Some(config) = &profile.managed_tip_binding { profile.contact.tip_enabled = config.enabled; }
+    if let Some(config) = &profile.managed_eraser_binding { profile.contact.eraser_enabled = config.enabled; }
+    for (field, destination) in [("PenButtons", &mut profile.pen_buttons), ("AuxButtons", &mut profile.aux_buttons), ("MouseButtons", &mut profile.mouse_buttons)] {
+        for (index, store) in bindings[field].as_array().into_iter().flatten().take(64).enumerate() {
+            if let Some(config) = resolve(store)? { if destination.len() <= index { destination.resize_with(index + 1, || otd_core::output::buttons::ButtonAction::None); } destination[index] = otd_core::output::buttons::ButtonAction::Managed(config); locations.insert(format!("Bindings.{field}[{index}]")); }
+        }
+    }
+    for (field, destination) in [("MouseScrollUp", &mut profile.mouse_scroll_up), ("MouseScrollDown", &mut profile.mouse_scroll_down)] {
+        if let Some(config) = resolve(&bindings[field])? { *destination = otd_core::output::buttons::ButtonAction::Managed(config); locations.insert(format!("Bindings.{field}")); }
+    }
+    for (index, wheel) in bindings["WheelBindings"].as_array().into_iter().flatten().take(otd_core::reports::MAX_WHEELS).enumerate() {
+        let clockwise = resolve(&wheel["ClockwiseRotation"])?; let counter_clockwise = resolve(&wheel["CounterClockwiseRotation"])?;
+        let buttons = wheel["WheelButtons"].as_array().into_iter().flatten().take(64).map(&mut resolve).collect::<Result<Vec<_>, _>>()?;
+        if clockwise.is_some() || counter_clockwise.is_some() || buttons.iter().any(Option::is_some) {
+            if profile.wheels.len() <= index { profile.wheels.resize_with(index + 1, Default::default); }
+            let destination = &mut profile.wheels[index];
+            if let Some(config) = clockwise { destination.clockwise = otd_core::output::buttons::ButtonAction::Managed(config); locations.insert(format!("Bindings.WheelBindings[{index}].ClockwiseRotation")); }
+            if let Some(config) = counter_clockwise { destination.counter_clockwise = otd_core::output::buttons::ButtonAction::Managed(config); locations.insert(format!("Bindings.WheelBindings[{index}].CounterClockwiseRotation")); }
+            for (button, config) in buttons.into_iter().enumerate() { if let Some(config) = config { if destination.buttons.len() <= button { destination.buttons.resize_with(button + 1, || otd_core::output::buttons::ButtonAction::None); } destination.buttons[button] = otd_core::output::buttons::ButtonAction::Managed(config); locations.insert(format!("Bindings.WheelBindings[{index}].WheelButtons[{button}]")); } }
+        }
+    }
+    profile.diagnostics.retain(|diagnostic| !locations.contains(&diagnostic.location) && !locations.contains(diagnostic.location.strip_prefix(&format!("Profiles[{selected}].")).unwrap_or(&diagnostic.location)));
+    *original_profile = resolved;
+    Ok(count)
+}
+
 pub struct Library(HMODULE);
 
 pub fn wide(value: &OsStr) -> Result<Vec<u16>, String> {
@@ -265,6 +326,7 @@ impl Drop for Plugin {
 pub struct PluginChain {
     // Drop the graph's managed references before disposing the plugin handles.
     graph: Option<crate::dotnet::Graph>,
+    managed_output: Option<crate::dotnet::endpoints::OutputSession>,
     plugins: Vec<Plugin>,
     has_pre: bool,
     has_pixels: bool,
@@ -328,7 +390,14 @@ impl PluginChain {
         profile: &crate::config::Profile,
         tablet: &TabletConfiguration,
     ) -> Result<Self, String> {
-        Self::load_with_builtins(&profile.plugins, tablet, profile.builtin_filter_slot())
+        let mut chain = Self::load_with_builtins(&profile.plugins, tablet, profile.builtin_filter_slot())?;
+        if let Some(config) = profile.managed_output.as_ref().filter(|config| config.enabled) {
+            let output = crate::dotnet::endpoints::OutputSession::new(config, profile, tablet)?;
+            if chain.graph.is_none() { chain.graph = graph::create_if(&chain.plugins, chain.builtin_slot, true)?; }
+            chain.graph.as_mut().ok_or("managed output graph was not created")?.attach_output(&output)?;
+            chain.managed_output = Some(output);
+        }
+        Ok(chain)
     }
 
     fn load_with_builtins(
@@ -352,6 +421,7 @@ impl PluginChain {
         let graph = graph::create(&plugins, builtin_slot)?;
         Ok(Self {
             graph,
+            managed_output: None,
             plugins,
             has_pre,
             has_pixels,
@@ -359,6 +429,13 @@ impl PluginChain {
             epoch: Instant::now(),
             failure: None,
         })
+    }
+
+    /// Binds to this graph's exact output instance; third-party pointers retain
+    /// their own real services/prerequisites rather than a native substitute.
+    pub fn wrap_action_sink(&self, profile: &crate::config::Profile, tablet: &TabletConfiguration,
+        native: Box<dyn otd_core::output::buttons::ActionSink>) -> Result<Box<dyn otd_core::output::buttons::ActionSink>, String> {
+        crate::dotnet::endpoints::wrap_sink_with_output(profile, tablet, native, self.managed_output.as_ref())
     }
 
     /// The filters in the order they run and the settings they run with, for
@@ -492,6 +569,7 @@ impl PluginChain {
 }
 
 impl otd_core::plugins::Filters for PluginChain {
+    fn owns_mapping(&self) -> bool { self.managed_output.is_some() }
     fn uses_managed_graph(&self) -> bool {
         self.graph.is_some()
     }
@@ -604,6 +682,7 @@ mod tests {
         // Config order may interleave stages; execution order is by stage.
         let mut chain = PluginChain {
             graph: None,
+            managed_output: None,
             plugins: vec![
                 fake(
                     PipelineStage::Pixels,
