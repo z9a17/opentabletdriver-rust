@@ -349,6 +349,16 @@ impl App {
                         Err(error) => self.log(Level::Warning, "Presets", error),
                     }
                 }
+                BackgroundResult::OriginalDiagnostics { token, result } => {
+                    self.diagnostics_pending=false;
+                    if token!=self.managed_token || self.closing || self.update_restart_pending { continue; }
+                    match result {
+                        Ok(DiagnosticExport::Clipboard(text)) if copy_to_clipboard(self.hwnd,&text)=>self.log(Level::Info,"UI","Copied original daemon diagnostics, including environment variables and console logs, to the clipboard."),
+                        Ok(DiagnosticExport::Clipboard(_))=>self.log(Level::Error,"UI","Cannot open the clipboard."),
+                        Ok(DiagnosticExport::Saved(path))=>self.log(Level::Info,"UI",format!("Saved original daemon diagnostics to {}. This export includes environment variables and console logs.",path.display())),
+                        Err(error)=>self.log(Level::Error,"UI",format!("Cannot export original daemon diagnostics: {error}")),
+                    }
+                }
                 BackgroundResult::Diagnostics(result) => {
                     self.diagnostics_pending = false;
                     match result {
@@ -504,6 +514,26 @@ impl App {
                     None => Ok(DiagnosticExport::Clipboard(text)),
                 });
             BackgroundResult::Diagnostics(result)
+        });
+    }
+
+    pub(super) fn export_original_diagnostics(&mut self,path:Option<PathBuf>) {
+        if self.closing || self.update_restart_pending { return; }
+        if self.diagnostics_pending { self.log(Level::Info,"UI","A diagnostic export is already running.");return; }
+        let token=self.managed_token;
+        let expected=self.daemon_instance.clone();
+        self.diagnostics_pending=self.background("original-diagnostic-export",move||{
+            let result=(||{
+                let mut client=crate::cli::Client::connect()?;
+                if expected.as_ref().is_some_and(|expected|expected!=client.instance()){return Err("daemon changed before original diagnostic export".into());}
+                let value=client.call("GetDiagnosticInfo",serde_json::json!([]))?;
+                let text=serde_json::to_string_pretty(&value).map_err(|error|error.to_string())?;
+                match path {
+                    Some(path)=>{otd_core::storage::save(&path,text.as_bytes(),otd_core::storage::SaveMode::CreateNew)?;Ok(DiagnosticExport::Saved(path))},
+                    None=>Ok(DiagnosticExport::Clipboard(text)),
+                }
+            })();
+            BackgroundResult::OriginalDiagnostics{token,result}
         });
     }
 

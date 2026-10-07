@@ -1,6 +1,8 @@
 //! Menus, dialogs and the `WM_COMMAND` dispatcher. Modal UI (menus, file
 //! dialogs, message boxes) runs here, outside any `App` borrow.
 use super::*;
+const CMD_EXPORT_ORIGINAL_DIAGNOSTICS:u16=287;
+const CMD_COPY_ORIGINAL_DIAGNOSTICS:u16=288;
 
 pub(super) fn checked(value: bool) -> u32 {
     if value { MF_CHECKED } else { MF_UNCHECKED }
@@ -481,15 +483,17 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                     menu,
                     MF_STRING,
                     CMD_EXPORT_DIAGNOSTICS,
-                    "Export diagnostics...",
+                    "Export redacted native diagnostics...",
                 );
                 append(
                     menu,
                     MF_STRING,
                     CMD_COPY_DIAGNOSTICS,
-                    "Export diagnostics to clipboard",
+                    "Copy redacted native diagnostics",
                 );
                 append(menu, MF_SEPARATOR, 0, "");
+                append(menu,MF_STRING,CMD_EXPORT_ORIGINAL_DIAGNOSTICS,"Export original daemon diagnostics (includes environment/logs)...");
+                append(menu,MF_STRING,CMD_COPY_ORIGINAL_DIAGNOSTICS,"Copy original daemon diagnostics (includes environment/logs)");
                 append(menu, MF_STRING, CMD_ABOUT, "About...\tF1");
             }
         }
@@ -871,6 +875,19 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         CMD_COPY_DIAGNOSTICS => {
             with_app(|app| app.export_diagnostics(None));
         }
+        CMD_EXPORT_ORIGINAL_DIAGNOSTICS => {
+            let guard=with_app(|app|(app.managed_token,app.daemon_instance.clone()));
+            match text_save_dialog(window,"Export original daemon diagnostics to a new file","opentabletdriver-original-diagnostics.json") {
+                Ok(Some(path))=>{with_app(|app|{
+                    if guard==Some((app.managed_token,app.daemon_instance.clone())) && !app.closing && !app.update_restart_pending {
+                        app.export_original_diagnostics(Some(path));
+                    }
+                });},
+                Ok(None)=>{},
+                Err(error)=>{with_app(|app|app.log(Level::Error,"UI",error));},
+            }
+        }
+        CMD_COPY_ORIGINAL_DIAGNOSTICS => { with_app(|app|app.export_original_diagnostics(None)); }
         CMD_DEVICE_STRINGS => {
             if let Err(error)=string_reader::show(window){with_app(|app|app.log(Level::Error,"Device strings",error));}
         }

@@ -733,6 +733,7 @@ enum BackgroundResult {
     },
     Presets(Result<Vec<String>, String>),
     Diagnostics(Result<DiagnosticExport, String>),
+    OriginalDiagnostics { token:u64, result:Result<DiagnosticExport,String> },
 }
 
 enum DiagnosticExport {
