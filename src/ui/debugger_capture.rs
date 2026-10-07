@@ -13,6 +13,47 @@ use std::time::{Duration, Instant};
 const LEASE_MS: u32 = 15_000;
 const CAPACITY_BYTES: u32 = 8 * 1024 * 1024;
 
+/// Each endpoint owns its parser's touch/tool history for this capture only.
+/// A global gap can belong to either endpoint, so invalidate both histories.
+struct CaptureDecoders {
+    primary: crate::decode_cli::DebugCaptureDecoder,
+    auxiliary: crate::decode_cli::DebugCaptureDecoder,
+    sequence: u64,
+    continuity_lost: bool,
+    reset_pending: bool,
+}
+
+impl CaptureDecoders {
+    fn new(capture: &DebugCaptureStatus) -> Self {
+        Self {
+            primary: crate::decode_cli::DebugCaptureDecoder::new(Some(&capture.parser), capture.token.session, 0),
+            auxiliary: crate::decode_cli::DebugCaptureDecoder::new(capture.auxiliary_parser.as_deref(), capture.token.session, 1),
+            sequence: 0, continuity_lost: false, reset_pending: false,
+        }
+    }
+    fn reset_for_gap(&mut self) {
+        self.primary.reset();
+        self.auxiliary.reset();
+        self.continuity_lost = true;
+        self.reset_pending = true;
+    }
+    fn decode(&mut self, report: &mut DebugReport, elapsed_us: u64, auxiliary: bool) -> bool {
+        if report.sequence != self.sequence.saturating_add(1) { self.reset_for_gap(); }
+        let decoder = if auxiliary { &mut self.auxiliary } else { &mut self.primary };
+        decoder.decode(report, elapsed_us);
+        // The helper also resets its endpoint after a decoding failure. Raw
+        // capture can remain complete while decoded history becomes unknown.
+        if report.values.get("error").is_some() { self.continuity_lost = true; }
+        self.sequence = report.sequence;
+        std::mem::take(&mut self.reset_pending)
+    }
+    fn advance(&mut self, cursor: u64) {
+        // Read cursors may also advance across a trailing explicit loss gap
+        // with no later packet. Reset before the next batch's first decode.
+        if cursor > self.sequence { self.reset_for_gap(); self.sequence = cursor; }
+    }
+}
+
 pub(super) struct Recorder {
     stop: Arc<AtomicBool>,
     written: Arc<AtomicU64>,
@@ -101,6 +142,7 @@ fn record(file: std::fs::File, stop: &AtomicBool, written: &AtomicU64,
     let mut status: Option<DebugCaptureStatus> = None;
     let mut cursor = 0;
     let mut statistics = Statistics::default();
+    let mut decoded_continuity_lost = false;
     let result = (|| -> Result<(), String> {
         let Reply::Status { status: daemon } = request(transport, Command::Status)? else {
             return Err("The daemon did not return its capture identity.".into());
@@ -122,9 +164,11 @@ fn record(file: std::fs::File, stop: &AtomicBool, written: &AtomicU64,
         writeln!(writer, "{}", json!({"format":"otd-rust-captured-reports", "version":1,
             "capture_mode":"full_rate", "complete_hid_stream":false, "tap_losses_measured":true,
             "capture_boundary":"selected_session_read_completions", "hardware_or_transport_losses_measured":false,
+            "decoded_state_scope":"capture_local", "initial_prior_session_state_available":false,
             "capture":status.as_ref().unwrap()})).map_err(|error| error.to_string())?;
         durable(&mut writer)?;
         let token = status.as_ref().unwrap().token.clone();
+        let mut decoders = CaptureDecoders::new(status.as_ref().unwrap());
         let mut frozen = None;
         let mut failure = None;
         let mut draining_since = None;
@@ -177,16 +221,21 @@ fn record(file: std::fs::File, stop: &AtomicBool, written: &AtomicU64,
                 let mut report = DebugReport { tablet: Some(batch.capture.tablet.clone()),
                     parser: if packet.auxiliary { batch.capture.auxiliary_parser.clone() } else { Some(batch.capture.parser.clone()) },
                     sequence: packet.sequence, raw_hex: packet.raw_hex.clone(), values: serde_json::Value::Null };
-                crate::decode_cli::decode_debug_report(&mut report);
+                let reset_before = decoders.decode(&mut report, packet.elapsed_us, packet.auxiliary);
+                decoded_continuity_lost = decoders.continuity_lost;
                 statistics.observe(&report);
                 // Preserve the sampled recorder's elapsed_us/report row shape.
                 writeln!(writer, "{}", json!({"elapsed_us":packet.elapsed_us, "report":report,
-                    "auxiliary":packet.auxiliary, "session":token.session, "epoch":token.epoch}))
+                    "auxiliary":packet.auxiliary, "session":token.session, "epoch":token.epoch,
+                    "decoded_reset_before":reset_before, "decoded_continuity_lost":decoded_continuity_lost}))
                     .map_err(|error| error.to_string())?;
             }
+            decoders.advance(batch.next_sequence);
+            decoded_continuity_lost = decoders.continuity_lost;
             // A gap cursor is durable too, including the explicit loss counters.
             if batch.next_sequence != cursor || !batch.capture.active || loss(&batch.capture).is_some() {
                 writeln!(writer, "{}", json!({"capture_batch":{"next_sequence":batch.next_sequence,
+                    "decoded_continuity_lost":decoded_continuity_lost,
                     "capture":batch.capture}})).map_err(|error| error.to_string())?;
                 durable(&mut writer)?;
                 written.fetch_add(batch.packets.len() as u64, Ordering::Relaxed);
@@ -219,6 +268,7 @@ fn record(file: std::fs::File, stop: &AtomicBool, written: &AtomicU64,
     let footer = writeln!(writer, "{}", json!({"summary":{"written":written.load(Ordering::Relaxed),
         "queue_dropped":0, "sequence_gaps":cursor.saturating_sub(written.load(Ordering::Relaxed)), "statistics":statistics.ranges,
         "complete_tap_stream":result.is_ok(), "complete_hid_stream":false,
+        "decoded_continuity_lost":decoded_continuity_lost,
         "error":result.as_ref().err(), "final_sequence":cursor,
         "capture":status}})).map_err(|error| format!("Cannot write recording summary: {error}"))
         .and_then(|_| durable(&mut writer));
@@ -254,6 +304,55 @@ mod tests {
     }
     fn packet(sequence: u64) -> DebugCapturePacket {
         DebugCapturePacket { sequence, elapsed_us: sequence * 211, auxiliary: sequence == 2, raw_hex:"1001".into() }
+    }
+
+    fn touch_report(sequence: u64, contact: u8, x: u8) -> DebugReport {
+        let mut raw = [0u8; 40];
+        raw[0] = 0x21;
+        raw[2] = contact;
+        raw[3] = 1;
+        raw[4] = x;
+        DebugReport { tablet:Some("fixture".into()), parser:Some("Wacom.IntuosV2.IntuosV2ReportParser".into()),
+            sequence, raw_hex:raw.iter().map(|byte| format!("{byte:02x}")).collect(), values:serde_json::Value::Null }
+    }
+
+    #[test]
+    fn capture_touch_decoders_keep_endpoint_state_and_clear_both_after_gaps() {
+        let mut capture = status(true, 0, 0, "requested");
+        capture.parser = "Wacom.IntuosV2.IntuosV2ReportParser".into();
+        capture.auxiliary_parser = Some(capture.parser.clone());
+        let mut decoders = CaptureDecoders::new(&capture);
+        let mut first = touch_report(1, 1, 10);
+        assert!(!decoders.decode(&mut first, 211, false));
+        let mut auxiliary = touch_report(2, 3, 30);
+        assert!(!decoders.decode(&mut auxiliary, 422, true));
+        assert!(auxiliary.values["values"]["touches"][0].is_null());
+        let mut second = touch_report(3, 2, 20);
+        assert!(!decoders.decode(&mut second, 633, false));
+        assert_eq!(second.values["values"]["touches"][0]["position"][0], 10.0);
+        assert_eq!(second.values["values"]["touches"][1]["position"][0], 20.0);
+        assert!(second.values["values"]["touches"][2].is_null());
+        assert_eq!(second.values["decoder_state"]["source_session"], 9);
+        assert_eq!(second.values["decoder_state"]["endpoint"], 0);
+        assert_eq!(second.values["decoder_state"]["elapsed_us"], 633);
+        assert_eq!(auxiliary.values["decoder_state"]["endpoint"], 1);
+        assert!(!decoders.continuity_lost);
+        // Missing global sequence 4 could have changed either endpoint.
+        let mut after_gap = touch_report(5, 4, 40);
+        assert!(decoders.decode(&mut after_gap, 1055, true));
+        assert!(after_gap.values["values"]["touches"][2].is_null());
+        assert_eq!(after_gap.values["decoder_state"]["scope"], "since_last_reset");
+        assert_eq!(after_gap.values["decoder_state"]["generation"], 1);
+        let mut primary_after_gap = touch_report(6, 5, 50);
+        assert!(!decoders.decode(&mut primary_after_gap, 1266, false));
+        assert!(primary_after_gap.values["values"]["touches"][0].is_null());
+        assert!(primary_after_gap.values["values"]["touches"][1].is_null());
+        assert!(decoders.continuity_lost);
+        // A cursor can resolve a loss gap without returning another packet.
+        decoders.advance(8);
+        let mut after_trailing_gap = touch_report(9, 1, 90);
+        assert!(decoders.decode(&mut after_trailing_gap, 1899, false));
+        assert!(after_trailing_gap.values["values"]["touches"][4].is_null());
     }
     fn recording_fixture(name: &str, stop_immediately: bool, transport: &mut impl FnMut(Command) -> Result<Reply, String>)
         -> (Result<(), String>, Vec<serde_json::Value>)
@@ -307,6 +406,8 @@ mod tests {
         assert_eq!(rows[1]["session"], 9);
         assert_eq!(lines[0]["capture_boundary"], "selected_session_read_completions");
         assert_eq!(lines[0]["hardware_or_transport_losses_measured"], false);
+        assert_eq!(lines[0]["decoded_state_scope"], "capture_local");
+        assert_eq!(lines[0]["initial_prior_session_state_available"], false);
         assert_eq!(lines.last().unwrap()["summary"]["complete_tap_stream"], true);
         assert_eq!(lines.last().unwrap()["summary"]["complete_hid_stream"], false);
     }
