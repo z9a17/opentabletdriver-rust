@@ -43,9 +43,6 @@ pub fn cached_settings_collection_revision() -> Option<u64> { collection::cached
 /// identity. Does not reserve OWNER because the originating RPC already owns it.
 pub fn publish_idle_original_settings(settings:serde_json::Value, expected_revision:u64) -> Result<u64,String> {
     let document = collection::normalize(&settings).map_err(|error| error.message)?;
-    if document["Tools"].as_array().is_some_and(|tools| tools.iter().any(|store| store["Enable"].as_bool().unwrap_or(false))) {
-        return Err("enabled global Tools need a running primary tool owner".into());
-    }
     let revision = collection::publish(document,expected_revision,true).map_err(|error| error.message)?;
     shared().resynchronize.fetch_add(1,Ordering::AcqRel);
     Ok(revision)
