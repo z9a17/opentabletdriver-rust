@@ -436,6 +436,15 @@ struct Runtime<'a, F> {
 
 impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F> {
     fn builtins(&mut self, values: &mut ReportValues) -> io::Result<()> {
+        // RadialFollowSmoothingTabletSpace.Consume filters ITabletReport only.
+        // Native decoders and managed GraphReport::Export/Decode provide pressure
+        // only for tablet reports; zero pressure still carries the interface.
+        // Legacy PenReport callers may omit button readings, so do not require
+        // pen_buttons here or fabricate empty buttons that release held actions.
+        // Puck and other positional reports must not advance its cursor/clock.
+        if values.pressure.is_none() {
+            return Ok(());
+        }
         if let Some([mut x, mut y]) = values.position {
             for filter in &mut self.pipeline.filters {
                 (x, y) = filter.filter_raw_at(x, y, self.now);
@@ -706,6 +715,74 @@ mod tests {
             }
         });
         emitted
+    }
+
+    #[test]
+    fn radial_follow_passes_puck_positions_without_advancing_pen_history() {
+        // Pinned tablet-space Consume tests ITabletReport. IMouseReport is a
+        // separate interface; interleaved puck positions must not alter either
+        // the pen cursor or its 50ms reset clock. Exercise the real boundary.
+        fn filter(pipeline: &mut ReportPipeline, values: &mut ReportValues, now: Instant) {
+            let mut send = |_| Ok(());
+            let mut runtime = Runtime {
+                pipeline,
+                mapper: None,
+                now,
+                send: &mut send,
+                stats: DispatchStats::default(),
+                exact_position: None,
+                shown_position: None,
+                preserve_precision: true,
+                unfiltered_raw: None,
+                timer: false,
+                physical_loss: false,
+            };
+            runtime.builtins(values).unwrap();
+        }
+        let profile = Profile {
+            radial_follow: vec![RadialFollowSettings::default()],
+            ..Profile::default()
+        };
+        let mut interleaved = ReportPipeline::new(&profile).unwrap();
+        let mut pen_only = ReportPipeline::new(&profile).unwrap();
+        let start = Instant::now() + Duration::from_millis(100);
+        for (millis, position) in [(0, [20000.0, 5000.0]), (2, [20200.0, 5000.0]), (60, [20400.0, 5000.0])] {
+            if millis != 0 {
+                for mut other in [
+                    ReportValues {
+                        position: Some([60000.0, 40000.0]),
+                        mouse_buttons: Some(Buttons::default()),
+                        mouse_scroll: Some([0.0, 1.0]),
+                        ..ReportValues::default()
+                    },
+                    ReportValues {
+                        position: Some([50000.0, 30000.0]),
+                        aux_buttons: Some(Buttons::default()),
+                        ..ReportValues::default()
+                    },
+                ] {
+                    let before = other;
+                    filter(&mut interleaved, &mut other, start + Duration::from_millis(millis - 1));
+                    assert_eq!(other, before);
+                }
+            }
+            let mut actual = ReportValues {
+                position: Some(position),
+                pressure: Some(0), // Hover is still ITabletReport.
+                pen_buttons: (millis != 2).then(Buttons::default),
+                ..ReportValues::default()
+            };
+            let mut expected = actual;
+            let now = start + Duration::from_millis(millis);
+            filter(&mut interleaved, &mut actual, now);
+            filter(&mut pen_only, &mut expected, now);
+            assert_eq!(actual, expected);
+            if millis == 2 {
+                assert_ne!(actual.position, Some(position), "hover must be filtered");
+            } else {
+                assert_eq!(actual.position, Some(position), "50ms gap resets");
+            }
+        }
     }
 
     /// Expected state comes from the unchanged AbstractQbit 0.3.0 DLL on

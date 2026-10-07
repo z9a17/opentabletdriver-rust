@@ -150,7 +150,7 @@ fn reset_plugins(plugins: &mut PluginChain) -> Result<(), String> {
 }
 
 fn run(
-    profile: Profile,
+    mut profile: Profile,
     interrupt: &Event,
     cancelled: &AtomicBool,
     commands: Receiver<Directive>,
@@ -179,6 +179,7 @@ fn run(
         && !crate::plugin_catalog::recover_installations()? {
         return Err("Plugins are being installed or recovered; retry starting the driver after that finishes.".into());
     }
+    crate::plugin_catalog::use_native_ports(&mut profile, log);
     // Exercise deterministic pipeline construction before old output pauses.
     // A fresh output/relative pipeline is used on activation and rollback.
     if tablet_name.is_some() {
