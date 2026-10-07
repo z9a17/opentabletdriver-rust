@@ -11,6 +11,9 @@ replace the command implementation. The original client uses the original
 `OpenTabletDriver.Daemon` instance and pipe; start the native daemon with that
 explicit pipe or let the original UX launch the packaged native daemon launcher.
 
-The native `original-console` and `otd` aliases invoke the packaged original
-console with `dotnet`. This requires the .NET runtime. Source integration is
-separate from package compilation and native runtime validation.
+On Linux and macOS, the native `original-console` and `otd` aliases invoke the
+packaged original `OpenTabletDriver.Console.dll` with `dotnet`; the .NET runtime
+is required. Windows translates the original command surface through the native
+console/daemon bridge and does not package or invoke this Console.dll. This source
+project's original executable client is therefore a Linux/macOS package component.
+Source integration is separate from package compilation and runtime validation.
