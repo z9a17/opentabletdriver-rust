@@ -76,7 +76,7 @@ sealed class SessionPointer(CommandQueue queue, bool relative, bool pen) : IAbso
         lock (stateGate) { state.Value = BitConverter.SingleToUInt32Bits(percentage); state.Flags |= 4; dirty = true; }
     }
     public void SetTilt(Vector2 tilt) { lock (stateGate) { state.TiltX = tilt.X; state.TiltY = tilt.Y; state.Flags |= 8; dirty = true; } }
-    public void SetEraser(bool eraser) { lock (stateGate) { state.Flags = (state.Flags & ~16u) | (eraser ? 16u : 0); dirty = true; } }
+    public void SetEraser(bool eraser) { lock (stateGate) { state.Flags = (state.Flags & ~16u) | (eraser ? 16u : 0) | 64u; dirty = true; } }
     // Synthetic Windows pointer injection has no physical hover-distance field.
     // Expose that optional provider only when a backend actually supports it.
     public void SetHoverDistance(uint distance) => throw new NotSupportedException("The native Windows pointer backend has no hover-distance injection field.");

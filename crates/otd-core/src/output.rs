@@ -37,6 +37,17 @@ enum Motion {
     Relative(i32, i32),
 }
 
+/// Optional pointer properties mirror the original composable handlers.
+/// None retains a previously assigned value; pressure is normalized independently
+/// of contact. Reset invokes the synchronous pointer's lifecycle cleanup.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MouseAttributes {
+    pub pressure: Option<f32>,
+    pub tilt: Option<[f32; 2]>,
+    pub eraser: Option<bool>,
+    pub reset: bool,
+}
+
 /// One `MOUSEINPUT`: a move and a button change travel together.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MousePacket {

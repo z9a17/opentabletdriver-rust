@@ -169,6 +169,8 @@ impl BindingSink {
     }
 }
 impl ActionSink for BindingSink {
+    fn pointer_attributes(&mut self, attributes: otd_core::output::MouseAttributes) -> io::Result<()> { self.native.pointer_attributes(attributes) }
+    fn flush_pointer(&mut self) -> io::Result<()> { self.native.flush_pointer() }
     fn has_managed(&self) -> bool { true }
     fn supports(&self, action: Action) -> bool { self.native.supports(action) }
     fn supports_scroll(&self) -> bool { self.native.supports_scroll() }

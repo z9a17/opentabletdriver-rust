@@ -238,6 +238,8 @@ impl fmt::Display for ButtonAction {
 /// Where held actions become operating-system input. One sink serves one
 /// tablet session; the platform decides whether sessions share ownership.
 pub trait ActionSink {
+    fn pointer_attributes(&mut self, _attributes: crate::output::MouseAttributes) -> io::Result<()> { Ok(()) }
+    fn flush_pointer(&mut self) -> io::Result<()> { Ok(()) }
     fn inhibited_binding(&self) -> Option<u32> { None }
     fn supports_presets(&self) -> bool { false }
     fn preset(&mut self, _owner: u32, _name: &crate::presets::PresetName) -> io::Result<()> {
@@ -276,9 +278,17 @@ pub struct LocalActions<F> {
     send: F,
     supports: Box<dyn Fn(Action) -> bool>,
     scroll: Option<Box<dyn FnMut(ScrollPulse) -> io::Result<()>>>,
+    pointer_attributes: Option<Box<dyn FnMut(crate::output::MouseAttributes) -> io::Result<()>>>,
+    pointer_flush: Option<Box<dyn FnMut() -> io::Result<()>>>,
 }
 
 impl<F: FnMut(ActionTransition) -> io::Result<()>> LocalActions<F> {
+    pub fn with_pointer_attributes(mut self, callback: impl FnMut(crate::output::MouseAttributes) -> io::Result<()> + 'static) -> Self {
+        self.pointer_attributes = Some(Box::new(callback)); self
+    }
+    pub fn with_pointer_flush(mut self, callback: impl FnMut() -> io::Result<()> + 'static) -> Self {
+        self.pointer_flush = Some(Box::new(callback)); self
+    }
     pub fn with_scroll(mut self, scroll: impl FnMut(ScrollPulse) -> io::Result<()> + 'static) -> Self {
         self.scroll = Some(Box::new(scroll));
         self
@@ -289,11 +299,19 @@ impl<F: FnMut(ActionTransition) -> io::Result<()>> LocalActions<F> {
             send,
             supports: Box::new(supports),
             scroll: None,
+            pointer_attributes: None,
+            pointer_flush: None,
         }
     }
 }
 
 impl<F: FnMut(ActionTransition) -> io::Result<()>> ActionSink for LocalActions<F> {
+    fn pointer_attributes(&mut self, attributes: crate::output::MouseAttributes) -> io::Result<()> {
+        self.pointer_attributes.as_mut().map_or(Ok(()), |callback| callback(attributes))
+    }
+    fn flush_pointer(&mut self) -> io::Result<()> {
+        self.pointer_flush.as_mut().map_or(Ok(()), |callback| callback())
+    }
     fn supports(&self, action: Action) -> bool {
         (self.supports)(action)
     }
@@ -747,6 +765,8 @@ impl ButtonOutput {
         self.inhibition_active.set(remaining);
     }
     pub fn set_report(&mut self, kind: crate::reports::ReportKind, values: &crate::reports::ReportValues, raw: &[u8]) -> io::Result<()> { self.sink.set_report(kind, values, raw) }
+    pub fn pointer_attributes(&mut self, attributes: crate::output::MouseAttributes) -> io::Result<()> { self.sink.pointer_attributes(attributes) }
+    pub fn flush_pointer(&mut self) -> io::Result<()> { self.sink.flush_pointer() }
     pub fn next_managed_command(&mut self) -> Option<crate::plugins::ManagedCommand> { self.sink.next_managed_command() }
     pub fn managed_hold(&mut self, owner: u32, action: Action, held: bool) -> io::Result<()> { self.sink.hold(owner, action, held) }
     pub fn managed_scroll(&mut self, pulse: ScrollPulse) -> io::Result<()> { self.sink.scroll(pulse) }
