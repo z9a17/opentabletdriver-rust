@@ -172,8 +172,16 @@ fn reset_plugins(plugins: &mut PluginChain) -> Result<(), String> {
     Ok(())
 }
 
+/// Execution-only substitutions must never become the settings published to
+/// clients or compared with a saved physical profile. Clone before porting.
+fn execution_profile(authored: &Profile, port: impl FnOnce(&mut Profile)) -> Profile {
+    let mut execution = authored.clone();
+    port(&mut execution);
+    execution
+}
+
 fn run(
-    mut profile: Profile,
+    profile: Profile,
     interrupt: &Event,
     cancelled: &AtomicBool,
     commands: Receiver<Directive>,
@@ -204,7 +212,10 @@ fn run(
         && !crate::plugin_catalog::recover_installations()? {
         return Err("Plugins are being installed or recovered; retry starting the driver after that finishes.".into());
     }
-    crate::plugin_catalog::use_native_ports(&mut profile, log);
+    let mut authored_profile = profile;
+    let mut profile = execution_profile(&authored_profile, |execution| {
+        crate::plugin_catalog::use_native_ports(execution, log);
+    });
     // Exercise deterministic pipeline construction before old output pauses.
     // A fresh output/relative pipeline is used on activation and rollback.
     if tablet_name.is_some() {
@@ -271,11 +282,13 @@ fn run(
         } else { device_sessions.reserve_primary(&selected)? };
         crate::device_sessions::set_debug_key(&id);
         if !profile_loaded {
-            profile = device_sessions.effective_profile(&id, &profile, prefer_saved)?;
-            if profile.plugin_configs().any(|plugin| plugin.enabled) && !crate::plugin_catalog::recover_installations()? {
+            authored_profile = device_sessions.effective_profile(&id, &authored_profile, prefer_saved)?;
+            if authored_profile.plugin_configs().any(|plugin| plugin.enabled) && !crate::plugin_catalog::recover_installations()? {
                 return Err("Plugins are being installed or recovered; retry starting the driver after that finishes.".into());
             }
-            crate::plugin_catalog::use_native_ports(&mut profile, log);
+            profile = execution_profile(&authored_profile, |execution| {
+                crate::plugin_catalog::use_native_ports(execution, log);
+            });
             crate::plugins::prepare_parser_registry(&profile, database)?;
             profile.validate_runtime_tablet_in_with_parser_support(database, &crate::dotnet::installed_report_parser)?;
             profile.validate_filter_execution()?;
@@ -294,7 +307,7 @@ fn run(
         reset_plugins(&mut plugins)?;
         if cancelled.load(Ordering::Acquire) { return Ok(()); }
         let mut prepared = Some(source);
-        notify(Notice::PreparedProfile(Box::new(profile.clone())))?;
+        notify(Notice::PreparedProfile(Box::new(authored_profile.clone())))?;
         notify(Notice::Prepared)?;
         loop {
             match receive(&commands, cancelled).map_err(|error| error.to_string())? {
@@ -443,6 +456,49 @@ fn run(
                 }
             }
             continue 'connect;
+        }
+    }
+}
+
+#[cfg(test)]
+mod authored_profile_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn native_filter_execution_preserves_saved_settings_and_reconnect_publication() {
+        let path = Path::new("E:/AgentWork/tmp/authored-profile-fixture.toml");
+        let source = format!(
+            "[[plugins]]\npath='radial.dll'\nkind='dotnet'\nenabled=true\ntype_name='{}'\nsettings_json='{{\"InnerRadius\":0.302,\"OuterRadius\":0.7039,\"SmoothingCoefficient\":0.302,\"SmoothingLeakCoefficient\":0.201,\"SoftKneeScale\":0.603}}'\n",
+            otd_core::radial_follow::FILTER_PATH,
+        );
+        let authored = Profile::from_toml_text(&source, path).unwrap();
+        let saved = authored.to_toml().unwrap();
+        // The real port transformation runs with an injected verification
+        // predicate; the fixture loads no DLL and never opens a device.
+        let execution = execution_profile(&authored, |execution| {
+            assert_eq!(execution.use_native_ports(|dll| dll.ends_with("radial.dll")), 1);
+        });
+        assert_eq!(execution.radial_follow.len(), 1);
+        assert!(!execution.plugins[0].enabled);
+        assert_ne!(execution.to_toml().unwrap(), saved);
+        assert!(authored.plugins[0].enabled);
+        assert!(authored.radial_follow.is_empty());
+        let persisted = Profile::from_toml_text(&saved, path).unwrap();
+        for published in [&authored, &persisted] {
+            // PreparedProfile is what both primary and peer transactions
+            // commit, including physical reconnect after saved-file reload.
+            let Notice::PreparedProfile(profile) =
+                Notice::PreparedProfile(Box::new(published.clone())) else { unreachable!() };
+            assert_eq!(profile.to_toml().unwrap(), persisted.to_toml().unwrap(),
+                "raw saved-profile semantic comparison must remain equal");
+            assert!(profile.plugins[0].enabled);
+            let reopened = execution_profile(&profile, |execution| {
+                assert_eq!(execution.use_native_ports(|_| true), 1);
+            });
+            assert_eq!(serde_json::to_value(&reopened.radial_follow).unwrap(),
+                serde_json::to_value(&execution.radial_follow).unwrap());
+            assert_eq!(profile.to_toml().unwrap(), saved);
         }
     }
 }
