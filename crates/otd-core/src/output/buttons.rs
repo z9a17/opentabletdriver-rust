@@ -1503,4 +1503,34 @@ mod tests {
         assert_eq!(out.next_tick(start), None);
     }
 
+    #[test]
+    fn scroll_rotation_taps_do_not_start_repeating_timers() {
+        let pulses = Rc::new(RefCell::new(Vec::new()));
+        let log = pulses.clone();
+        let sink = Box::new(LocalActions::new(|_| Ok(()), |_| true)
+            .with_scroll(move |pulse| { log.borrow_mut().push(pulse); Ok(()) }));
+        let (mut out, _) = ButtonOutput::new(&[], false, sink);
+        let wheel = WheelBinding {
+            clockwise: "scroll:horizontal:-240:1".parse().unwrap(),
+            counter_clockwise: "scroll:vertical:120:1".parse().unwrap(),
+            ..Default::default()
+        };
+        assert!(out.set_auxiliary(&[], &[wheel], crate::spec::TabletSpec::PTH_660.controls.wheels()).is_empty());
+        let steps = |delta| ReportValues {
+            relative_analog: Some(RelativeAnalogReport { kind: AnalogKind::Wheel, deltas: RelativeAnalog::from_slice(&[delta]).unwrap() }),
+            ..Default::default()
+        };
+        out.apply_auxiliary(&steps(2)).unwrap();
+        out.apply_auxiliary(&steps(-1)).unwrap();
+        assert_eq!(*pulses.borrow(), [
+            ScrollPulse { axis: ScrollAxis::Horizontal, delta: 240 },
+            ScrollPulse { axis: ScrollAxis::Horizontal, delta: 240 },
+            ScrollPulse { axis: ScrollAxis::Vertical, delta: -120 },
+        ]);
+        let now = Instant::now();
+        assert_eq!(out.next_tick(now), None);
+        out.tick(now + Duration::from_secs(1)).unwrap();
+        assert_eq!(pulses.borrow().len(), 3);
+    }
+
 }
