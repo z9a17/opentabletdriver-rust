@@ -23,3 +23,9 @@ Uninstall/Unload/type-removal to the authoritative native installation and lease
 registry owner. Context reads return immutable generation snapshots. RpcHost wraps
 the original header-delimited handler to defer update retirement until its exact
 success response completes WriteAsync (write and flush), keyed by RequestId.
+
+DesktopInterop has an internal cold display factory using exactly its original
+platform provider selection. The host can enumerate a fresh read-only screen
+without changing the public cached VirtualScreen or constructing input services.
+The fallback exports actual aggregate/child geometry; native conversion rejects
+nonfinite, empty, excessive monitor counts and out-of-range rectangles.

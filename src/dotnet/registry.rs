@@ -21,7 +21,7 @@ type PluginTypes = unsafe extern "C" fn(*mut u8,i32,i32)->i32;
 type StartRpc = unsafe extern "C" fn(*const u8,u32)->isize;
 type StopRpc = unsafe extern "C" fn(isize)->i32;
 pub(super) struct Api { has_parser: HasParser, reload: Reload, mutate: Reload, create: CreateParser, decode: DecodeParser, reset: ResetParser, destroy: DestroyParser,
-    store:Reload, types:PluginTypes, start_rpc:StartRpc, stop_rpc:StopRpc,
+    store:Reload, types:PluginTypes, display:PluginTypes, start_rpc:StartRpc, stop_rpc:StopRpc,
     create_tool:CreateRetainedTool,destroy_tool:DestroyRetainedTool,wait_retirement:WaitRetirement,release_retirement:ReleaseRetirement }
 impl Api {
     pub(super) fn load(entry: &impl Fn(&str) -> Result<*mut c_void, String>) -> Result<Self, String> {
@@ -33,6 +33,7 @@ impl Api {
             destroy: std::mem::transmute::<*mut c_void, DestroyParser>(entry("DestroyDebugParser")?),
             store:std::mem::transmute::<*mut c_void,Reload>(entry("ConstructPluginStore")?),
             types:std::mem::transmute::<*mut c_void,PluginTypes>(entry("GetPluginTypes")?),
+            display:std::mem::transmute::<*mut c_void,PluginTypes>(entry("OriginalDisplaySnapshot")?),
             start_rpc:std::mem::transmute::<*mut c_void,StartRpc>(entry("StartHostedRpc")?),
             stop_rpc:std::mem::transmute::<*mut c_void,StopRpc>(entry("StopHostedRpc")?),
             create_tool:std::mem::transmute::<*mut c_void,CreateRetainedTool>(entry("CreateToolRetained")?),
@@ -87,6 +88,38 @@ fn copy_result(size:i32,copy:impl FnOnce(*mut u8,i32)->i32)->Result<serde_json::
 pub fn get_plugin_types()->Result<serde_json::Value,String> {
     let api=api()?;let size=unsafe{(api.types)(std::ptr::null_mut(),0,1)};
     copy_result(size,|out,cap|unsafe{(api.types)(out,cap,0)})
+}
+/// Cold display-only enumeration through the pinned Desktop provider. It never
+/// constructs a Driver, physical reader, or input/output provider.
+pub fn original_display_snapshot()->Result<otd_core::display::DisplaySnapshot,String> {
+    #[derive(serde::Deserialize)]
+    struct Geometry { x:f64, y:f64, width:f64, height:f64 }
+    #[derive(serde::Deserialize)]
+    struct Snapshot { virtual_screen:Geometry, displays:Vec<Geometry> }
+    fn rectangle(value:Geometry)->Result<otd_core::mapping::Rect,String> {
+        if ![value.x,value.y,value.width,value.height].into_iter().all(f64::is_finite)
+            || value.width<=0.0 || value.height<=0.0 {
+            return Err("Original display provider returned nonfinite or empty geometry".into());
+        }
+        let left=value.x.floor();let top=value.y.floor();
+        let right=(value.x+value.width).ceil();let bottom=(value.y+value.height).ceil();
+        if ![left,top,right,bottom].into_iter().all(|v|v.is_finite() && v>=f64::from(i32::MIN) && v<=f64::from(i32::MAX))
+            || right-left<1.0 || bottom-top<1.0
+            || right-left>f64::from(i32::MAX) || bottom-top>f64::from(i32::MAX) {
+            return Err("Original display geometry exceeds native rectangle range".into());
+        }
+        Ok(otd_core::mapping::Rect{left:left as i32,top:top as i32,right:right as i32,bottom:bottom as i32})
+    }
+    let api=api()?;let size=unsafe{(api.display)(std::ptr::null_mut(),0,1)};
+    let value=copy_result(size,|out,cap|unsafe{(api.display)(out,cap,0)})?;
+    let snapshot:Snapshot=serde_json::from_value(value).map_err(|error|error.to_string())?;
+    if snapshot.displays.is_empty() || snapshot.displays.len()>256 {
+        return Err("Original display provider returned an invalid physical monitor count".into());
+    }
+    let virtual_screen=rectangle(snapshot.virtual_screen)?;
+    let mut monitors=snapshot.displays.into_iter().map(rectangle).collect::<Result<Vec<_>,_>>()?;
+    monitors.sort_by_key(|r|(r.left,r.top,r.right,r.bottom));
+    Ok(otd_core::display::DisplaySnapshot{virtual_screen,monitors})
 }
 pub fn construct_plugin_store(path:&str,category:&str)->Result<serde_json::Value,String> {
     let json=serde_json::json!({"path":path,"category":category}).to_string();

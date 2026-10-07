@@ -23,7 +23,7 @@ mod parser;
 pub mod custom_devices;
 pub use parser::{RuntimeDecoder, ManagedReportParser, installed_report_parser};
 pub use registry::{drain_managed_retirements, mutate_installed_plugins, ManagedDebugDecoder, ManagedDebugReport, ManagedRegistryInfo, known_report_parser, registry_snapshot, reload_installed_plugins};
-pub use registry::{HostedRpc, get_plugin_types, construct_plugin_store};
+pub use registry::{HostedRpc, get_plugin_types, construct_plugin_store, original_display_snapshot};
 pub(crate) fn source_session_json()->Option<serde_json::Value> {
     #[cfg(windows)] {crate::shared_devices::source_session_json()}
     #[cfg(unix)] {crate::device_sessions::source_session_json()}
