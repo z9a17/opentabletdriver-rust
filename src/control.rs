@@ -64,6 +64,7 @@ impl Request {
             }
             Command::ApplyDeviceProfile { profile_toml, .. }
             | Command::ApplyDeviceProfileWithInhibit { profile_toml, .. }
+            | Command::ApplyOriginalDeviceProfile { profile_toml, .. }
             | Command::SaveDeviceProfile { profile_toml, .. } => Some(profile_toml),
             _ => None,
         };
@@ -94,6 +95,7 @@ impl Request {
             | Command::GetDeviceProfile { id, .. }
             | Command::ApplyDeviceProfile { id, .. }
             | Command::ApplyDeviceProfileWithInhibit { id, .. }
+            | Command::ApplyOriginalDeviceProfile { id, .. }
             | Command::SaveDeviceProfile { id, .. }
             | Command::StopDevice { id, .. }
             | Command::StartDevice { id, .. } => {
@@ -141,6 +143,8 @@ pub enum Command {
     ApplyDeviceProfile { expected: WorkerIdentity, id: String, device_generation: u64, profile_toml: String },
     ApplyDeviceProfileWithInhibit { expected: WorkerIdentity, id: String, device_generation: u64,
         profile_toml: String, binding_inhibit: u32 },
+    ApplyOriginalDeviceProfile { expected: WorkerIdentity, id: String, device_generation: u64,
+        profile_toml: String, binding_inhibit: Option<u32> },
     SaveDeviceProfile { expected: WorkerIdentity, id: String, device_generation: u64,
         expected_revision: Option<u64>, expected_digest: Option<String>, profile_toml: String },
     StopDevice { expected: WorkerIdentity, id: String, device_generation: u64 },
