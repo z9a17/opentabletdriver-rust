@@ -38,23 +38,24 @@ sealed class HostedCore : IDisposable, IServiceProvider
             var endpoints = ServiceClient.Snapshot()["devices"] as JArray
                 ?? throw new NotSupportedException("Actual native endpoint metadata is unavailable.");
             var groups = endpoints.OfType<JObject>().Where(e => e["reader_generation"] != null && e["Configuration"] is JObject && e["Identifier"] is JObject)
-                .GroupBy(e => e.Value<string>("session_id") ?? throw new InvalidOperationException("Owned endpoint has no session identity."));
+                .GroupBy(e => (Session: e.Value<string>("session_id") ?? throw new InvalidOperationException("Owned endpoint has no session identity."), Reader: e.Value<ulong>("reader_generation")));
             var replacement = new Dictionary<string, (InputDeviceTree Tree, JObject Identity)>();
             try {
                 foreach (var group in groups) {
                     var owned = group.ToArray();
+                    string treeKey = group.Key.Session + ":" + group.Key.Reader;
                     // A cold prepared reader and the current reader may share a path.
                     // Exact reader identity, not VID/PID/path-first selection, owns DI.
                     if (source != null) {
-                        if (source.Value<string>("id") != group.Key) continue;
+                        if (source.Value<string>("id") != group.Key.Session) continue;
                         if (source.Value<ulong?>("reader_generation") is { } expected
-                            && !owned.Any(e => e.Value<ulong>("reader_generation") == expected)) continue;
+                            && group.Key.Reader != expected) continue;
                     }
-                    JObject identity = new() { ["session_id"] = group.Key,
+                    JObject identity = new() { ["session_id"] = group.Key.Session,
                         ["device_generation"] = owned[0]["device_generation"], ["reader_generation"] = owned[0]["reader_generation"],
                         ["members"] = new JArray(owned.Select(e => new JObject { ["path"] = e["DevicePath"], ["reader_generation"] = e["reader_generation"] })) };
-                    if (trees.TryGetValue(group.Key, out var existing) && JToken.DeepEquals(existing.Identity, identity)) {
-                        replacement.Add(group.Key, existing); continue;
+                    if (trees.TryGetValue(treeKey, out var existing) && JToken.DeepEquals(existing.Identity, identity)) {
+                        replacement.Add(treeKey, existing); continue;
                     }
                     var configuration = owned[0]["Configuration"]!.ToObject<TabletConfiguration>()!;
                     var readers = new List<InputDevice>();
@@ -67,7 +68,7 @@ sealed class HostedCore : IDisposable, IServiceProvider
                         }
                         var tree = new InputDeviceTree(configuration, readers);
                         tree.HostedOutputOwnership = enabled => SetOutput(identity, enabled);
-                        replacement.Add(group.Key, (tree, identity));
+                        replacement.Add(treeKey, (tree, identity));
                     } catch { foreach (var reader in readers) reader.Dispose(); throw; }
                 }
                 Driver.PublishHostedTrees(replacement.Values.Select(value => value.Tree));
