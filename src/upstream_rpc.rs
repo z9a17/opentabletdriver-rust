@@ -6,6 +6,7 @@ mod service;
 mod settings;
 mod apply;
 mod debug;
+mod collection;
 
 use std::io;
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
@@ -18,11 +19,79 @@ const MAX_CLIENTS: u32 = 4;
 const IDLE_BUDGET: Duration = Duration::from_secs(120);
 const FRAME_BUDGET: Duration = Duration::from_secs(5);
 
+fn shared() -> Arc<service::Shared> {
+    static SHARED: std::sync::OnceLock<Arc<service::Shared>> = std::sync::OnceLock::new();
+    Arc::clone(SHARED.get_or_init(|| Arc::new(service::Shared::default())))
+}
+fn provider_connection() -> service::Connection {
+    service::Connection::new(shared(), Arc::new(AtomicBool::new(false)))
+}
+/// Background/control worker only; active settings projection uses native IPC.
+pub fn get_original_settings() -> Result<serde_json::Value, String> {
+    provider_connection().settings().map_err(|error| error.message)
+}
+pub fn initial_original_settings() -> Result<serde_json::Value, String> {
+    collection::snapshot().map(|snapshot| snapshot.document).map_err(|error| error.message)
+}
+pub fn settings_collection_revision() -> Result<u64,String> {
+    collection::snapshot().map(|snapshot| snapshot.revision).map_err(|error| error.message)
+}
+pub fn cached_settings_collection_revision() -> Option<u64> { collection::cached_revision() }
+/// Native daemon-owner admission only: caller must guard lifecycle and worker
+/// identity. Does not reserve OWNER because the originating RPC already owns it.
+pub fn publish_idle_original_settings(settings:serde_json::Value, expected_revision:u64) -> Result<u64,String> {
+    let document = collection::normalize(&settings).map_err(|error| error.message)?;
+    if document["Tools"].as_array().is_some_and(|tools| tools.iter().any(|store| store["Enable"].as_bool().unwrap_or(false))) {
+        return Err("enabled global Tools need a running primary tool owner".into());
+    }
+    let revision = collection::publish(document,expected_revision,true).map_err(|error| error.message)?;
+    shared().resynchronize.fetch_add(1,Ordering::AcqRel);
+    Ok(revision)
+}
+/// Report callbacks may only use this nonblocking, already initialized snapshot.
+/// None means unavailable/busy; no disk, CLR, native IPC or mutation is performed.
+pub fn cached_original_settings() -> Option<Arc<serde_json::Value>> { collection::cached() }
+pub fn set_original_settings(settings: serde_json::Value) -> Result<(), String> {
+    provider_connection().set_settings(&settings).map(|_| ()).map_err(|error| error.message)
+}
+pub fn set_original_settings_expected(settings: serde_json::Value,
+    expected: crate::control::WorkerIdentity) -> Result<(), String> {
+    set_original_settings_expected_with_source(settings,expected,None)
+}
+pub fn set_original_settings_expected_with_source(settings:serde_json::Value,
+    expected:crate::control::WorkerIdentity,source:Option<(String,u32)>) -> Result<(),String> {
+    provider_connection().set_settings_expected(&settings,expected,source).map(|_| ()).map_err(|error| error.message)
+}
+pub fn reset_original_settings() -> Result<(), String> { set_original_settings(serde_json::Value::Null) }
+pub fn load_original_settings() -> Result<(), String> {
+    provider_connection().load_settings().map(|_| ()).map_err(|error| error.message)
+}
+pub fn save_original_settings() -> Result<(), String> {
+    provider_connection().save_settings().map(|_| ()).map_err(|error| error.message)
+}
+pub fn original_settings_path() -> Result<std::path::PathBuf, String> { collection::path() }
+/// Path metadata only, available before the native control pipe is serving.
+pub fn original_application_info() -> Result<serde_json::Value, String> {
+    let data = otd_core::storage::data_directory()?;
+    Ok(serde_json::json!({"AppDataDirectory":data,"SettingsFile":collection::path()?,
+        "PluginDirectory":crate::plugin_catalog::plugins_directory()?,
+        "PresetDirectory":otd_core::presets::PresetStore::user()?.directory(),"LogDirectory":data,
+        "TemporaryDirectory":std::env::temp_dir(),"CacheDirectory":null,"BackupDirectory":null,"TrashDirectory":null,
+        "ConfigurationDirectory":otd_core::config::configurations_directory()}))
+}
+pub fn invoke_original(method: &str, params: &serde_json::Value) -> Result<serde_json::Value, String> {
+    use protocol::Service;
+    provider_connection().invoke(method,params).map_err(|error| error.message)
+}
+pub fn original_resynchronize_epoch() -> u64 { shared().resynchronize.load(Ordering::Acquire) }
+pub fn profile_for_tablet(tablet: &otd_core::tablets::TabletConfiguration)
+    -> Result<Option<crate::config::Profile>, String> { collection::profile_for_tablet(tablet) }
+
 pub struct Listener { stop: Arc<AtomicBool>, workers: Vec<JoinHandle<()>> }
 impl Listener {
     pub fn start(name: &str) -> io::Result<Self> {
         let pipes = CompatPipe::instances(name, MAX_CLIENTS)?;
-        let shared = Arc::new(service::Shared::default());
+        let shared = shared();
         let mut listener = Self { stop: Arc::new(AtomicBool::new(false)), workers: Vec::new() };
         for (index, pipe) in pipes.into_iter().enumerate() {
             let stop = Arc::clone(&listener.stop);
