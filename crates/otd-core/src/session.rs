@@ -552,7 +552,7 @@ pub fn run_gated_with_endpoints(
                 timing.queued += 1;
             }
             counters.read += 1;
-            crate::debug::record(bytes);
+            crate::debug::record_at(bytes, ready, from_auxiliary);
             let decoded = match auxiliary.as_deref_mut() {
                 Some(decoder) if from_auxiliary => decoder.decode_input(bytes),
                 _ => decoder.decode_input(bytes),
