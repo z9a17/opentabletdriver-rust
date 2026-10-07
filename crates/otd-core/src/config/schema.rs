@@ -1382,14 +1382,14 @@ fn write_pen_button(
         ButtonAction::Keys(keys) if keys.len() == 1 => (
             super::KEY_BINDING,
             "Key",
-            crate::keys::name_of(keys[0])
-                .ok_or("unsupported key usage")?
+            crate::keys::original_name_of(keys[0])
+                .ok_or("Native physical key has no exact original platform binding name; save TOML")?
                 .to_owned(),
         ),
         ButtonAction::Keys(keys) => (
             super::MULTI_KEY_BINDING,
             "Keys",
-            crate::keys::chord_text(keys),
+            crate::keys::original_chord_text(keys)?,
         ),
     };
     if !store.is_null() && store["Path"].as_str() != Some(path) {

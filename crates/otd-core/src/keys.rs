@@ -14,6 +14,7 @@
 //! described by `actions::ConsumerKey`, preserving the managed command ABI.
 
 use crate::actions::KeyboardUsage;
+mod platform;
 
 /// Name, usage. The first name listed for a usage is its canonical name,
 /// used when a profile is written back.
@@ -166,9 +167,29 @@ pub fn name_of(key: KeyboardUsage) -> Option<&'static str> {
     if let Some(code) = key.windows_virtual_code() {
         return windows_names().find(|(_, vk)| *vk == code).map(|(name, _)| name);
     }
+    if let Some(code)=key.macos_virtual_code(){return macos_names().find(|(name,candidate)|*name!="None"&&*candidate==code).map(|(name,_)|name);}
+    if let Some(code)=key.linux_event_code(){return linux_names().find(|(name,candidate)|*name!="None"&&*candidate==code).map(|(name,_)|name);}
     KEYS.iter()
         .find(|(_, usage)| *usage == key.usage())
         .map(|(name, _)| *name)
+}
+
+/// Original export rejects physical keys whose OS code has no original name.
+/// The portable keypad position remains distinct from the upstream name alias.
+pub fn original_name_of(key:KeyboardUsage)->Option<&'static str>{
+    if key.windows_virtual_code().is_some(){return cfg!(windows).then(||name_of(key)).flatten();}
+    if key.macos_virtual_code().is_some(){return cfg!(target_os="macos").then(||name_of(key)).flatten();}
+    if key.linux_event_code().is_some(){return cfg!(target_os="linux").then(||name_of(key)).flatten();}
+    if cfg!(target_os="linux"){
+        match key.usage(){0x54|0x55|0x63|0x46|0x68..=0x73|0x10b7=>return None,0x57=>return Some("Plus"),_=>{}}
+        let name=name_of(key)?;linux_usage_from_name(name).map(|_|name)
+    }else if cfg!(target_os="macos"){
+        match key.usage(){0x2e|0x56|0x46|0x47|0x48|0x68..=0x73=>return None,0x38=>return Some("ForwardSlash"),_=>{}}
+        let name=name_of(key)?;macos_usage_from_name(name).map(|_|name)
+    }else{name_of(key)}
+}
+pub fn original_chord_text(keys:&[KeyboardUsage])->Result<String,String>{
+    keys.iter().map(|key|original_name_of(*key).ok_or_else(||format!("Native physical key {:#x} has no exact original platform binding name; save TOML",key.usage()))).collect::<Result<Vec<_>,_>>().map(|names|names.join("+"))
 }
 
 /// Exact pinned WindowsVirtualKeyboard names and VK values, including None.
@@ -205,7 +226,18 @@ pub fn windows_usage_from_name(name: &str) -> Option<KeyboardUsage> {
     windows_code(name).and_then(KeyboardUsage::windows_virtual_key)
 }
 pub fn usage_from_original_name(name: &str) -> Option<KeyboardUsage> {
-    if cfg!(windows) { windows_usage_from_name(name) } else { usage_from_name(name) }
+    if cfg!(windows) { windows_usage_from_name(name) } else if cfg!(target_os="macos"){macos_usage_from_name(name)}else if cfg!(target_os="linux"){linux_usage_from_name(name)}else{usage_from_name(name)}
+}
+
+pub fn macos_names()->impl Iterator<Item=(&'static str,u16)>{platform::MACOS.iter().copied()}
+pub fn linux_names()->impl Iterator<Item=(&'static str,u16)>{platform::LINUX.iter().copied()}
+pub fn macos_usage_from_name(name:&str)->Option<KeyboardUsage>{if name=="None"{return None;}macos_names().find(|(candidate,_)|*candidate==name).and_then(|(_,code)|KeyboardUsage::macos_virtual_key(code))}
+pub fn linux_usage_from_name(name:&str)->Option<KeyboardUsage>{if name=="None"{return None;}linux_names().find(|(candidate,_)|*candidate==name).and_then(|(_,code)|KeyboardUsage::linux_event_key(code))}
+fn native_usage_from_name(name:&str)->Option<KeyboardUsage>{
+    if let Some(name)=name.strip_prefix("vk:"){windows_usage_from_name(name)}
+    else if let Some(name)=name.strip_prefix("cg:"){macos_usage_from_name(name)}
+    else if let Some(name)=name.strip_prefix("evdev:"){linux_usage_from_name(name)}
+    else{usage_from_name(name)}
 }
 
 /// Longest chord accepted. Upstream has no limit, but a chord has to fit the
@@ -217,7 +249,7 @@ pub const MAX_CHORD: usize = 8;
 /// all-or-nothing: one unsupported name rejects the whole chord. `vk:` marks
 /// an original Windows logical key without changing native physical names.
 pub fn parse_chord(text: &str) -> Result<Vec<KeyboardUsage>, String> {
-    parse_names(text, |name| name.strip_prefix("vk:").map_or_else(|| usage_from_name(name), windows_usage_from_name), false)
+    parse_names(text,native_usage_from_name,false)
 }
 pub fn parse_original_chord(text: &str) -> Result<Vec<KeyboardUsage>, String> {
     parse_names(text, usage_from_original_name, true)
@@ -255,7 +287,7 @@ fn format_chord(keys: &[KeyboardUsage], native: bool) -> String {
         if !text.is_empty() {
             text.push('+');
         }
-        if native && key.windows_virtual_code().is_some() { text.push_str("vk:"); }
+        if native {if key.windows_virtual_code().is_some(){text.push_str("vk:");}else if key.macos_virtual_code().is_some(){text.push_str("cg:");}else if key.linux_event_code().is_some(){text.push_str("evdev:");}}
         text.push_str(name_of(*key).unwrap_or("None"));
     }
     text
@@ -264,6 +296,18 @@ fn format_chord(keys: &[KeyboardUsage], native: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn original_unix_aliases_preserve_exact_platform_codes_and_native_roundtrip(){
+        let mac=|name|macos_usage_from_name(name).unwrap().macos_virtual_code().unwrap();
+        assert_eq!(mac("A"),0);assert_eq!(mac("Slash"),0x2a);assert_eq!(mac("ForwardSlash"),0x2c);
+        assert_eq!(mac("Equal"),0x51);assert_eq!(mac("Plus"),0x45);assert_eq!(mac("Clear"),mac("NumberLock"));
+        for name in ["F13","Subtract","Menu","PlayPause"]{assert!(macos_usage_from_name(name).is_none());}
+        let linux=|name|linux_usage_from_name(name).unwrap().linux_event_code().unwrap();
+        assert_eq!(linux("Divide"),53);assert_eq!(linux("Multiply"),0x20a);assert_eq!(linux("Plus"),78);
+        assert_eq!(linux("Add"),linux("Equal"));assert_eq!(linux("StopSong"),128);assert_eq!(linux("BrightnessUp"),225);
+        for key in [macos_usage_from_name("A").unwrap(),linux_usage_from_name("RotateDisplay").unwrap()]{assert_eq!(parse_chord(&native_chord_text(&[key])).unwrap(),vec![key]);}
+    }
 
     #[test]
     fn logical_windows_names_remain_distinct_and_roundtrip_native_storage() {

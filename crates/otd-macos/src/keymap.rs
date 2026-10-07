@@ -7,6 +7,7 @@
 use otd_core::actions::KeyboardUsage;
 
 pub fn key_code(key: KeyboardUsage) -> Option<u16> {
+    if let Some(code)=key.macos_virtual_code(){return Some(code);}
     Some(match key.usage() {
         0x04 => 0x00,
         0x05 => 0x0b,
@@ -131,3 +132,6 @@ pub fn modifier_flags(held: u8) -> u64 {
     }
     flags
 }
+
+/// Pinned MacOSVirtualKeyboard also carries AlphaShift, Help and SecondaryFn.
+pub fn auxiliary_flags(held:u8)->u64{let mut flags=0;for(bit,flag)in[(1,1<<16),(2,1<<22),(4,1<<23)]{if held&bit!=0{flags|=flag;}}flags}

@@ -44,6 +44,8 @@ fn envelope(config: &PluginConfig, profile: &Profile, tablet: &TabletConfigurati
     let keys: serde_json::Map<String, serde_json::Value> = if cfg!(windows) {
         otd_core::keys::windows_names().map(|(name, code)| (name.into(),
             serde_json::json!(KeyboardUsage::windows_virtual_key(code).map_or(0, KeyboardUsage::usage)))).collect()
+    } else if cfg!(target_os="macos") {otd_core::keys::macos_names().map(|(name,code)|(name.into(),serde_json::json!(if name=="None"{0}else{KeyboardUsage::macos_virtual_key(code).unwrap().usage()}))).collect()
+    } else if cfg!(target_os="linux") {otd_core::keys::linux_names().map(|(name,code)|(name.into(),serde_json::json!(KeyboardUsage::linux_event_key(code).map_or(0,KeyboardUsage::usage)))).collect()
     } else { otd_core::keys::names()
         .filter(|(_, key)| crate::action_output::supports(Action::Key(*key)))
         .map(|(name, usage)| (name.into(), serde_json::json!(usage.usage()))).collect() };

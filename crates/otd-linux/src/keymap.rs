@@ -160,6 +160,7 @@ const KEYS: &[(u16, u16)] = &[
 
 /// The evdev key code for a usage, if this backend can press it.
 pub fn key_code(key: KeyboardUsage) -> Option<u16> {
+    if let Some(code)=key.linux_event_code(){return Some(code);}
     KEYS.binary_search_by_key(&key.usage(), |(usage, _)| *usage)
         .ok()
         .map(|index| KEYS[index].1)
@@ -167,7 +168,7 @@ pub fn key_code(key: KeyboardUsage) -> Option<u16> {
 
 /// Every key code the virtual keyboard declares.
 pub fn key_codes() -> impl Iterator<Item = u16> {
-    KEYS.iter().map(|(_, code)| *code)
+    KEYS.iter().map(|(_, code)| *code).chain(otd_core::keys::linux_names().filter_map(|(_,code)|(code!=0).then_some(code)))
 }
 
 #[cfg(test)]
@@ -194,7 +195,7 @@ mod tests {
     #[test]
     fn the_table_is_sorted_and_free_of_duplicates() {
         assert!(KEYS.windows(2).all(|pair| pair[0].0 < pair[1].0));
-        let mut codes: Vec<_> = key_codes().collect();
+        let mut codes: Vec<_> = KEYS.iter().map(|(_,code)|*code).collect();
         codes.sort_unstable();
         codes.dedup();
         assert_eq!(codes.len(), KEYS.len());

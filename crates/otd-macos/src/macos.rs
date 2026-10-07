@@ -604,7 +604,7 @@ pub struct Mouse {
     _source: Owned, moved: Owned, dragged: Owned, down: Owned, up: Owned,
     contact_owner:otd_platform::input_owner::Native,
     geometry: Rc<Cell<Rect>>, contact: bool, last_absolute: Option<ffi::Point>,
-    last_position: Option<ffi::Point>, buttons: u8, modifiers: u8, pending_clear_flags: u64,
+    last_position: Option<ffi::Point>, buttons: u8, modifiers: u8, synthetic_flags:u64, pending_clear_flags: u64,
     clear_flags_deadline: Option<Instant>,
 }
 
@@ -644,7 +644,7 @@ impl Mouse {
             return Err(io::Error::other("cannot create CoreGraphics mouse events"));
         }
         Ok(Self { _source: source, moved, dragged, down, up, contact_owner, geometry, contact: false, last_absolute: None,
-            last_position: None, buttons: 0, modifiers: 0, pending_clear_flags: 0, clear_flags_deadline: None })
+            last_position: None, buttons: 0, modifiers: 0, synthetic_flags:0, pending_clear_flags: 0, clear_flags_deadline: None })
     }
 
     pub fn send(&mut self, packet: MousePacket) -> io::Result<()> {
@@ -719,7 +719,9 @@ impl Mouse {
 
     fn event_flags(&mut self) -> u64 {
         let modifiers=otd_platform::input_owner::key_mask([59,56,58,55,62,60,61,54]);
-        let released=crate::keymap::modifier_flags(self.modifiers)&!crate::keymap::modifier_flags(modifiers);self.modifiers=modifiers;
+        let extras=otd_platform::input_owner::key_mask([57,114,63,768,768,768,768,768]);
+        let synthetic=crate::keymap::modifier_flags(modifiers)|crate::keymap::auxiliary_flags(extras);
+        let released=self.synthetic_flags&!synthetic;self.modifiers=modifiers;self.synthetic_flags=synthetic;
         if released!=0{self.pending_clear_flags|=released;self.clear_flags_deadline=Some(Instant::now()+Duration::from_millis(50));}
         // CGEventSourceFlagsState can lag behind a posted release. Suppress
         // released synthetic flags while its snapshot catches up. Bound this
@@ -730,7 +732,7 @@ impl Mouse {
             self.pending_clear_flags = 0;
             self.clear_flags_deadline = None;
         }
-        (observed & !self.pending_clear_flags) | crate::keymap::modifier_flags(self.modifiers)
+        (observed & !self.pending_clear_flags) | self.synthetic_flags
     }
 
     fn send_action(&mut self, transition: ActionTransition) -> io::Result<()> {
@@ -830,18 +832,19 @@ impl otd_platform::paired_source::Retire for HidSource<'_>{}
 
 // CGEvent objects can be posted from any thread. The shared owner mutex is the
 // sole accessor; no CFRunLoop or tablet-thread resource is borrowed here.
-struct SharedInput {source:Owned,down:Owned,up:Owned,modifiers:u8,clear:u64,clear_until:Option<Instant>}
+struct SharedInput {source:Owned,down:Owned,up:Owned,modifiers:u8,extra_flags:u64,clear:u64,clear_until:Option<Instant>}
 unsafe impl Send for SharedInput {}
 impl SharedInput {
-    fn flags(&mut self)->u64{let observed=unsafe{ffi::CGEventSourceFlagsState(1)};self.clear&=observed;if self.clear_until.is_some_and(|until|Instant::now()>=until){self.clear=0;self.clear_until=None;}(observed&!self.clear)|crate::keymap::modifier_flags(self.modifiers)}
+    fn flags(&mut self)->u64{let observed=unsafe{ffi::CGEventSourceFlagsState(1)};self.clear&=observed;if self.clear_until.is_some_and(|until|Instant::now()>=until){self.clear=0;self.clear_until=None;}(observed&!self.clear)|crate::keymap::modifier_flags(self.modifiers)|self.extra_flags}
     fn send(&mut self,code:otd_platform::input_owner::Code,held:bool,position:Option<(f64,f64)>)->io::Result<()>{
         let timestamp=event_timestamp()?;
         match code{
             otd_platform::input_owner::Code::Key(code)=>{
                 let event=Owned(unsafe{ffi::CGEventCreateKeyboardEvent(self.source.0,code,held)});if event.0.is_null(){return Err(io::Error::other("Cannot create original keyboard event"));}
-                let old=crate::keymap::modifier_flags(self.modifiers);
+                let old=crate::keymap::modifier_flags(self.modifiers)|self.extra_flags;
                 if let Some(bit)=[59,56,58,55,62,60,61,54].iter().position(|modifier|*modifier==code){if held{self.modifiers|=1<<bit;}else{self.modifiers&=!(1<<bit);}}
-                let released=old&!crate::keymap::modifier_flags(self.modifiers);if released!=0{self.clear|=released;self.clear_until=Some(Instant::now()+Duration::from_millis(50));}
+                let auxiliary=match code{57=>1<<16,114=>1<<22,63=>1<<23,_=>0};if held{self.extra_flags|=auxiliary;}else{self.extra_flags&=!auxiliary;}
+                let released=old&!(crate::keymap::modifier_flags(self.modifiers)|self.extra_flags);if released!=0{self.clear|=released;self.clear_until=Some(Instant::now()+Duration::from_millis(50));}
                 let flags=self.flags();unsafe{ffi::CGEventSetIntegerValueField(event.0,8,0);ffi::CGEventSetFlags(event.0,flags);ffi::CGEventSetTimestamp(event.0,timestamp);ffi::CGEventPost(0,event.0);}
             },
             otd_platform::input_owner::Code::Button(button)=>{
@@ -856,5 +859,5 @@ pub fn ensure_shared_inputs()->io::Result<()>{otd_platform::input_owner::ensure(
     output_permission()?;let source=Owned(unsafe{ffi::CGEventSourceCreate(-1)});if source.0.is_null(){return Err(io::Error::other("Cannot create shared event source"));}
     let down=Owned(unsafe{ffi::CGEventCreateMouseEvent(source.0,1,ffi::Point::default(),0)});let up=Owned(unsafe{ffi::CGEventCreateMouseEvent(source.0,2,ffi::Point::default(),0)});
     if down.0.is_null()||up.0.is_null(){return Err(io::Error::other("Cannot create shared mouse events"));}
-    let mut writer=SharedInput{source,down,up,modifiers:0,clear:0,clear_until:None};Ok(Box::new(move|code,held,position|writer.send(code,held,position)))
+    let mut writer=SharedInput{source,down,up,modifiers:0,extra_flags:0,clear:0,clear_until:None};Ok(Box::new(move|code,held,position|writer.send(code,held,position)))
 })}

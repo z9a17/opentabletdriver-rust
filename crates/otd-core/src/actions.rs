@@ -28,7 +28,8 @@ pub struct ActionOwner {
 /// Keyboard/Keypad usage ID from USB HID usage page 0x07, not an OS key code.
 /// The seven pinned media controls use `0x1000 | consumer_usage` as a synthetic
 /// domain within the existing u16 command ABI; they are not page-0x07 usages.
-/// Original Windows logical keys use `0x2000 | VK` in that same ABI.
+/// Original logical keys use `0x2000 | VK`, `0x4000 | CGKeyCode`, or
+/// `0x8000 | evdev` in that same ABI.
 ///
 /// Values 0..=3 are reserved/no-key/error reports and cannot be held. Other IDs
 /// retain their portable identity; an adapter must reject unsupported usages.
@@ -47,6 +48,8 @@ impl KeyboardUsage {
     pub const fn is_modifier(self) -> bool {
         (self.0 >= 0xe0 && self.0 <= 0xe7)
             || matches!(self.windows_virtual_code(), Some(0x10..=0x12 | 0x5b..=0x5c | 0xa0..=0xa5))
+            || matches!(self.macos_virtual_code(),Some(54..=56 | 58..=62))
+            || matches!(self.linux_event_code(),Some(29 | 42 | 54 | 56 | 97 | 100 | 125 | 126))
     }
 
     /// Original Windows keys are logical virtual keys; native usages remain
@@ -57,6 +60,13 @@ impl KeyboardUsage {
     pub const fn windows_virtual_code(self) -> Option<u16> {
         if self.0 > 0x2000 && self.0 <= 0x20ff { Some(self.0 & 0xff) } else { None }
     }
+
+    /// CGKeyCode zero is the real A key; original None is handled as no-op
+    /// by the name resolver and must never erase this encoded identity.
+    pub const fn macos_virtual_key(code:u16)->Option<Self>{if code<128{Some(Self(0x4000|code))}else{None}}
+    pub const fn macos_virtual_code(self)->Option<u16>{if self.0>=0x4000&&self.0<0x4080{Some(self.0&0x7f)}else{None}}
+    pub const fn linux_event_key(code:u16)->Option<Self>{if code>0&&code<768{Some(Self(0x8000|code))}else{None}}
+    pub const fn linux_event_code(self)->Option<u16>{if self.0>0x8000&&self.0<0x8300{Some(self.0&0x3ff)}else{None}}
 
     pub const fn consumer_key(self) -> Option<ConsumerKey> {
         match self.0 {
