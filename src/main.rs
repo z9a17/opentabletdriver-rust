@@ -63,10 +63,12 @@ fn usage() -> &'static str {
   opentabletdriver-rust.exe start [--config driver.toml | --otd-settings settings.json]
   opentabletdriver-rust.exe restart [--config driver.toml | --otd-settings settings.json]
   opentabletdriver-rust.exe configuration
-  opentabletdriver-rust.exe save FILE [--replace] | save-defaults | stdio
+  opentabletdriver-rust.exe save FILE.json | save-defaults | stdio
+  opentabletdriver-rust.exe native-save FILE [--replace] | native-save-defaults | native-stdio
   opentabletdriver-rust.exe load FILE | preset NAME | savepreset NAME
-  opentabletdriver-rust.exe getallsettings|getoutputmode|getareas|getsensitivity|getbindings|getmiscsettings|getfilters|gettools
-  opentabletdriver-rust.exe listbindings | listoutputmodes | listpresets | listdisplays
+  opentabletdriver-rust.exe getoutputmode|getareas|getsensitivity|getbindings|getmiscsettings|getfilters TABLET
+  opentabletdriver-rust.exe getallsettings | getallsettingsjson | gettools
+  opentabletdriver-rust.exe listbindings | listoutputmodes | listfilters | listtools | listpresets | listdisplays
   opentabletdriver-rust.exe status | stop | shutdown | debug
   opentabletdriver-rust.exe profiles list|preview|import|export|select|get|set ...
   opentabletdriver-rust.exe devices list|select|profile|apply|start|stop|save|persist ...
@@ -87,6 +89,10 @@ fn usage() -> &'static str {
   opentabletdriver-rust.exe --version
 
 Without a profile argument, use the saved Rust driver.toml, then OTD settings if present.
+Original Console commands use the running daemon's JSON collection; explicit .toml load/save stays native.
+Native presets use the presets subcommands. Original stdio uses text; native-stdio uses JSON lines.
+The explicit original RPC listener defaults to OpenTabletDriver.Daemon and requires .NET 8+.
+Registered types/default constructors and managed plugins also require .NET 8+.
 OTD_RUST_PORTABLE_DIR selects portable storage and disables automatic OTD import.
 Capture does not inject cursor input. Plugin inspection/checks load trusted executable code."
 }
