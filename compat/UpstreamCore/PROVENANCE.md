@@ -10,6 +10,8 @@ InputDevice trees to already selected native readers; IHostedDeviceEndpoint mark
 streams whose physical initialization belongs to the native owner; InputDevice
 skips duplicate initialization for that marker only; InputDeviceTree.OutputMode
 calls an internal ownership handoff before assignment; RootHub.HostedDispose
-unhooks actual hub events without enumerating disposed native scopes. All other source is pinned.
+unhooks actual hub events without enumerating disposed native scopes; internal
+RootHub enumeration transform/publication routes actual custom hub endpoints
+through the native sole-reader broker without changing public contracts. All other source is pinned.
 The project references exact upstream dependency versions, and grants only
 OtdCompat internal access. No physical hub or second physical handle is created.

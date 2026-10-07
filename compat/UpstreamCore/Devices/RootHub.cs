@@ -28,11 +28,16 @@ namespace OpenTabletDriver.Devices
             Log.Write(nameof(RootHub), $"Initialized internal child hubs: {string.Join(", ", hubs.Select(h => h.GetType().Name))}", LogLevel.Debug);
         }
 
+        internal Func<IDeviceEndpoint, IDeviceEndpoint>? HostedEndpointTransform;
+        internal Action<IDeviceEndpoint[]>? HostedEndpointsChanged;
+        private bool hostedDisposed;
         internal void HostedDispose()
         {
             lock (syncObject)
             {
+                hostedDisposed = true;
                 foreach (var hub in hubs) UnhookDeviceNotification(hub);
+                DevicesChanged = null; HostedEndpointsChanged = null; HostedEndpointTransform = null;
                 hubs.Clear(); endpoints.Clear(); oldEndpoints = null;
             }
         }
@@ -107,6 +112,7 @@ namespace OpenTabletDriver.Devices
 
         private async void OnDevicesChanged(object? sender, DevicesChangedEventArgs eventArgs)
         {
+            if (hostedDisposed) return;
             var lastVersion = Interlocked.Increment(ref version);
             if (Interlocked.Increment(ref currentlyDebouncing) == 1)
             {
@@ -117,7 +123,9 @@ namespace OpenTabletDriver.Devices
             lock (syncObject)
             {
                 endpoints.RemoveAll(e => eventArgs.Removals.Contains(e, DevicesChangedEventArgs.Comparer));
-                endpoints.AddRange(eventArgs.Additions);
+                if (hostedDisposed) return;
+                endpoints.AddRange(eventArgs.Additions.Select(e => HostedEndpointTransform?.Invoke(e) ?? e));
+                HostedEndpointsChanged?.Invoke(endpoints.ToArray());
             }
 
             await Task.Delay(20);
@@ -165,7 +173,8 @@ namespace OpenTabletDriver.Devices
         private void ForceEnumeration()
         {
             endpoints.Clear();
-            endpoints.AddRange(hubs.SelectMany(h => h.GetDevices()));
+            endpoints.AddRange(hubs.SelectMany(h => h.GetDevices()).Select(e => HostedEndpointTransform?.Invoke(e) ?? e));
+            HostedEndpointsChanged?.Invoke(endpoints.ToArray());
         }
 
         private RootHub RegisterServiceProvider(IServiceProvider serviceProvider)

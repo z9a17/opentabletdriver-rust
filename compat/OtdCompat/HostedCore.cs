@@ -25,6 +25,8 @@ sealed class HostedCore : IDisposable, IServiceProvider
     {
         this.providers = providers; this.scope = scope; this.cancellation = cancellation; this.source = source;
         Root = RootHub.WithProvider(this);
+        Root.HostedEndpointTransform = endpoint => endpoint is HostedEndpoint ? endpoint : HostedCustomDevices.Wrap(endpoint, scope, cancellation);
+        Root.HostedEndpointsChanged = endpoints => HostedCustomDevices.Publish(scope, endpoints);
         Driver = new NativeDriver(this, Root, providers, providers);
 
     }
@@ -110,6 +112,7 @@ sealed class HostedCore : IDisposable, IServiceProvider
             }
             Driver?.Dispose(); trees.Clear();
             Root.HostedDispose();
+            HostedCustomDevices.Remove(scope);
         }
     }
     async Task RetireAndRelease(InputDeviceTree tree, JObject payload)

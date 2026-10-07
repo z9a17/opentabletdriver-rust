@@ -26,6 +26,7 @@ sealed class HostedSharedStream : IDeviceEndpointStream
     {
         ServiceClient.RequireIoAllowed();
         JObject request = new() { ["path"] = endpoint["DevicePath"], ["lease_ms"] = 15000, ["capacity_reports"] = 256 };
+        if (endpoint["custom_endpoint"] != null) request["custom_endpoint"] = endpoint["custom_endpoint"];
         if (endpoint.Value<ulong?>("reader_generation") is { } reader) request["reader_generation"] = reader;
         if (endpoint["session_id"] != null) request["session_id"] = endpoint["session_id"];
         if (endpoint["device_generation"] != null) request["device_generation"] = endpoint["device_generation"];
