@@ -11,7 +11,7 @@ impl Options {
     pub fn parse(arguments:impl IntoIterator<Item=String>) -> Result<Self,String> {
         let mut args=arguments.into_iter();let mut options=Self::default();
         while let Some(argument)=args.next(){match argument.as_str(){
-            "--upstream-rpc"=>options.upstream_pipe=Some("OpenTabletDriverRust.Compat".into()),
+            "--upstream-rpc"=>options.upstream_pipe=Some("OpenTabletDriver.Daemon".into()),
             "--upstream-pipe"=>{
                 let name=args.next().ok_or("--upstream-pipe requires a name")?;
                 if name.is_empty()||name.len()>128||!name.bytes().all(|byte|byte.is_ascii_alphanumeric()||b"._-".contains(&byte)){return Err("Upstream pipe requires a safe 1..128 byte name".into());}
@@ -40,11 +40,19 @@ pub fn daemon(platform:Arc<dyn Platform>,options:Options,signal:&'static AtomicB
         // Admission/listener ownership precedes Start: another daemon can never
         // fail its lease after this instance has started injecting input.
         let server=crate::local_control::Server::start_reserved(owner.handle.clone(),stop.clone(),lease)?;
-        let rpc=options.upstream_pipe.as_deref().map(crate::dotnet::HostedRpc::start).transpose()?;
+        let mut rpc=options.upstream_pipe.as_deref().map(crate::dotnet::HostedRpc::start).transpose()?;
         owner.handle.call(Command::Start)?;
         while !stop.load(Ordering::Acquire){std::thread::sleep(Duration::from_millis(100));}
-        // Stop original responder tasks before retiring the callback service.
-        let result=owner.drain();drop(rpc);drop(owner);drop(server);result
+        // Drain native owners first, then stop original responder tasks while
+        // their callback services remain alive. Both failures reach the caller.
+        let native_result=owner.drain();
+        let rpc_result=rpc.as_mut().map_or(Ok(()),crate::dotnet::HostedRpc::stop);
+        drop(rpc);drop(owner);drop(server);
+        match (native_result,rpc_result) {
+            (Err(native),Err(rpc))=>Err(format!("Native shutdown: {native}; original RPC shutdown: {rpc}")),
+            (Err(error),_)|(_,Err(error))=>Err(error),
+            (Ok(()),Ok(()))=>Ok(()),
+        }
     })();
     stop.store(true,Ordering::Release);let _=monitor.join();result
 }
