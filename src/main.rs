@@ -5,6 +5,7 @@ mod control;
 mod daemon;
 mod decode_cli;
 mod diagnostics;
+mod device_sessions;
 mod display;
 mod download;
 mod experimental;
