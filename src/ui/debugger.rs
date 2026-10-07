@@ -849,7 +849,7 @@ fn open_menu(window: HWND) {
         append(menu, MF_STRING, CMD_RESET_STATS, "Reset Statistics");
         append(menu, MF_STRING, CMD_COPY_STATS, "Copy All Statistics");
         append(menu, if finishing { MF_GRAYED } else { MF_STRING }, CMD_RECORD,
-            if recording { "Stop Recording" } else if finishing { "Finishing Recording…" } else { "Record Sampled Reports…" });
+            if recording { "Stop Recording" } else if finishing { "Finishing Recording..." } else { "Record Sampled Reports..." });
         let modes = CreatePopupMenu();
         append(modes, MF_STRING, CMD_HEX, "Hex");
         append(modes, MF_STRING, CMD_BINARY, "Binary");
