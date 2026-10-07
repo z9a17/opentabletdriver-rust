@@ -410,15 +410,27 @@ impl Handle {
     /// the initial generation; an explicit Apply wins unless the current file
     /// is its exact semantic source, in which case use that actual parsed file.
     pub(crate) fn effective_profile(&self, id: &str, incoming: &Profile, prefer_saved: bool) -> Result<Profile, String> {
-        let (path, tablet) = {
+        let (path, tablet, properties) = {
             let registry = self.registry.lock().map_err(|_| "device registry poisoned")?;
             let entry = registry.entries.get(id).ok_or("unknown device session")?;
-            (entry.file.path.clone(), entry.snapshot.tablet.clone())
+            (entry.file.path.clone(), entry.snapshot.tablet.clone(), entry.snapshot.properties.clone())
         };
         let file = ProfileFile::read(path)?;
         let effective = if prefer_saved || file.matches(incoming) {
             if let Some(error) = &file.error { return Err(error.clone()); }
-            file.profile.as_ref().unwrap_or(incoming).clone()
+            if let Some(saved) = &file.profile { saved.clone() }
+            else if prefer_saved {
+                // A retained original settings collection supplies startup
+                // defaults only. Explicit native Apply and physical files
+                // retain precedence, including their device identity.
+                match crate::upstream_rpc::profile_for_tablet(&properties)? {
+                    Some(mut retained) => {
+                        retained.device_path.clone_from(&incoming.device_path);
+                        retained
+                    }
+                    None => incoming.clone(),
+                }
+            } else { incoming.clone() }
         } else { incoming.clone() };
         if effective.tablet_name()?.is_some_and(|name| name != tablet) { return Err("saved physical profile belongs to another tablet".into()); }
         let mut registry = self.registry.lock().map_err(|_| "device registry poisoned")?;
