@@ -42,6 +42,10 @@ Implemented source contracts:
   intentional self-apply retains its completion through replacement/disposal.
   Binding source owner/tablet metadata and admission-time daemon identity let
   the native transaction reject stale applies and suppress held-button reentry.
+  Published source_sessions records also bind each named request at admission
+  to one connected Running physical ID/device_generation with no pending
+  replacement. Missing/ambiguous/unready sources fail admission (-6), and the
+  backend receives expected_source rather than resolving the name again later.
 - Original PluginManager/DesktopPluginManager identities use owned services and
   installed original types. Returned objects retain registry generations. The
   manager clears the pinned ServiceManager dictionary rather than installing

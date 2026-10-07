@@ -12,12 +12,27 @@ const MAX_BYTES: usize = 4 * 1024 * 1024;
 const MAX_QUEUED_BYTES: usize = 8 * 1024 * 1024;
 const TTL: Duration = Duration::from_secs(60);
 
+/// Actual physical session state published by the native owner. Admission
+/// resolves a binding's name here once; backend execution must not resolve it
+/// again against whichever same-named tablet happens to be running later.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SourceSession {
+    pub id: String,
+    pub tablet: String,
+    pub device_generation: u64,
+    pub pending_generation: Option<u64>,
+    pub connected: bool,
+    pub state: crate::device_sessions::SessionState,
+}
+
 /// Native JSON uses upstream Newtonsoft property names inside these fields.
 /// None means unavailable, not a successful fabricated empty value.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Snapshot {
     pub version: u64,
     pub daemon_identity: Option<crate::control::WorkerIdentity>,
+    #[serde(default)]
+    pub source_sessions: Vec<SourceSession>,
     pub settings: Option<Value>,
     pub application_info: Option<Value>,
     pub devices: Option<Value>,
@@ -43,7 +58,9 @@ impl Operation {
 }
 #[derive(Clone, Debug)]
 pub struct Request { pub operation: Operation, pub scope: u64, pub payload: Value,
-    pub expected_daemon: Option<crate::control::WorkerIdentity> }
+    pub expected_daemon: Option<crate::control::WorkerIdentity>,
+    /// Exact admitted physical source ID and generation, not a late name lookup.
+    pub expected_source: Option<(String, u64)> }
 /// Executed on the service owner thread, never on the HID/report thread.
 /// Daemon payload is {"method":string,"params":[...]}; other payloads use
 /// {"path":string,"index":u8} / {"stream":u64,"data":hex_string}.
@@ -55,6 +72,7 @@ pub trait Backend: Send + Sync + 'static {
 struct Ticket { deadline: Instant, reply: Option<Vec<u8>> }
 struct State {
     stopped: bool, snapshot: Vec<u8>, version: u64, daemon_identity: Option<crate::control::WorkerIdentity>,
+    source_sessions: Vec<SourceSession>,
     tickets: HashMap<u64, Ticket>, queue: VecDeque<(u64, usize, Request)>, queued_bytes: usize,
 }
 struct Engine { state: Mutex<State>, ready: Condvar }
@@ -86,6 +104,7 @@ impl Host {
         if slot.is_some() { return Err("Managed service owner already installed.".into()); }
         let engine = Arc::new(Engine { state: Mutex::new(State { stopped: false,
             snapshot: bytes, version: snapshot.version, daemon_identity: snapshot.daemon_identity, tickets: HashMap::new(),
+            source_sessions: snapshot.source_sessions,
             queue: VecDeque::new(), queued_bytes: 0 }), ready: Condvar::new() });
         let worker = engine.clone();
         let join = std::thread::Builder::new().name("managed-services".into()).spawn(move || loop {
@@ -127,7 +146,8 @@ impl Publisher {
         let mut state = self.engine.state.lock().map_err(|_| "Managed owner lock poisoned.")?;
         if state.stopped { return Err("Managed service owner stopped.".into()); }
         if snapshot.version <= state.version { return Err("Managed snapshot version must increase.".into()); }
-        state.version = snapshot.version; state.daemon_identity = snapshot.daemon_identity; state.snapshot = bytes; Ok(())
+        state.version = snapshot.version; state.daemon_identity = snapshot.daemon_identity;
+        state.source_sessions = snapshot.source_sessions; state.snapshot = bytes; Ok(())
     }
 }
 impl Drop for Host {
@@ -148,7 +168,8 @@ impl Drop for Host {
     }
 }
 
-/// ABI v1. Codes: -1 owner absent, -2 busy, -3 malformed, -4 size, -5 stopped.
+/// ABI v1. Codes: -1 owner absent, -2 busy, -3 malformed, -4 size, -5 stopped,
+/// -6 source absent/ambiguous/not running or currently being replaced.
 #[repr(C)]
 pub struct Callbacks { pub version: u32, pub size: u32,
     pub request: unsafe extern "C" fn(u32, u64, *const u8, u32, *mut u64) -> i32,
@@ -167,6 +188,15 @@ unsafe extern "C" fn request(op: u32, scope: u64, input: *const u8, len: u32, ou
     };
     let Ok(mut state) = engine.state.lock() else { return -5 };
     if state.stopped { return -5; }
+    let expected_source = if let Some(value) = payload.get("source_tablet_name") {
+        let Some(name) = value.as_str().filter(|name| !name.is_empty() && name.len() <= 4096) else { return -3 };
+        let mut matches = state.source_sessions.iter().filter(|source| source.tablet == name
+            && source.connected && source.state == crate::device_sessions::SessionState::Running
+            && source.pending_generation.is_none());
+        let Some(source) = matches.next() else { return -6 };
+        if source.id.is_empty() || source.device_generation == 0 || matches.next().is_some() { return -6; }
+        Some((source.id.clone(), source.device_generation))
+    } else { None };
     let now = Instant::now(); state.tickets.retain(|_, ticket| now < ticket.deadline);
     if state.tickets.len() >= MAX_TICKETS || state.queue.len() >= MAX_TICKETS
         || state.queued_bytes + len as usize > MAX_QUEUED_BYTES { return -2; }
@@ -175,7 +205,7 @@ unsafe extern "C" fn request(op: u32, scope: u64, input: *const u8, len: u32, ou
     state.tickets.insert(id, Ticket { deadline: now + TTL, reply: completed });
     if operation != Operation::Snapshot {
         let expected_daemon = state.daemon_identity.clone();
-        state.queue.push_back((id, len as usize, Request { operation, scope, payload, expected_daemon }));
+        state.queue.push_back((id, len as usize, Request { operation, scope, payload, expected_daemon, expected_source }));
         state.queued_bytes += len as usize; engine.ready.notify_one();
     }
     unsafe { *output = id; } 0
