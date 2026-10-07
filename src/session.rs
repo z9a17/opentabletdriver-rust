@@ -576,7 +576,7 @@ struct DebugDevice {
 impl DebugDevice {
     fn set(selected: &SelectedDevice<'_>, source: &HidSource<'_>) -> Self {
         Self {
-            _registration: otd_core::debug::Registration::with_reports(
+            _registration: otd_core::debug::Registration::with_selection_key(
                 otd_core::debug::Device {
                     name: selected.configuration.name.clone(),
                     parser: selected.identifier.parser().to_owned(),
@@ -585,6 +585,7 @@ impl DebugDevice {
                     |auxiliary| source.pen.buffer.len().max(auxiliary.buffer.len())),
                 source.auxiliary.as_ref().and(selected.auxiliary.as_ref())
                     .map(|(_, identifier)| identifier.parser().to_owned()),
+                crate::device_sessions::debug_key(),
             ),
         }
     }

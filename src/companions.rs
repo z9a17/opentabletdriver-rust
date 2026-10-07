@@ -18,6 +18,9 @@ use crate::plugins::PluginChain;
 use crate::session::{self, Mode};
 use otd_core::tablets::Database;
 
+mod supervisor;
+pub use supervisor::Supervisor;
+
 /// One active generation. The primary path is reserved before this is created.
 pub struct Companions {
     stop: Arc<AtomicBool>,

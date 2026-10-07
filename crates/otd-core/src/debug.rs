@@ -21,12 +21,16 @@ struct Capture {
     length: usize,
     sequence: u64,
     devices: Vec<(u64, Device, usize, Option<String>)>,
+    keys: Vec<(u64, String)>,
+    selected_key: Option<String>,
 }
 static CAPTURE: Mutex<Capture> = Mutex::new(Capture {
     bytes: [0; MAX_BYTES],
     length: 0,
     sequence: 0,
     devices: Vec::new(),
+    keys: Vec::new(),
+    selected_key: None,
 });
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,11 +58,19 @@ impl Registration {
     }
     /// Register the largest input report buffer actually opened for this session.
     pub fn with_reports(device: Device, report_length: usize, auxiliary_parser: Option<String>) -> Self {
+        Self::with_selection_key(device, report_length, auxiliary_parser, None)
+    }
+    /// The daemon supplies an opaque physical-device identity, outside the
+    /// report path. Reconnection retains explicit selection without choosing
+    /// another tablet when this one is absent.
+    pub fn with_selection_key(device: Device, report_length: usize, auxiliary_parser: Option<String>, key: Option<String>) -> Self {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let previous = SESSION.replace(id);
         if let Ok(mut capture) = CAPTURE.lock() {
             capture.devices.push((id, device, report_length, auxiliary_parser));
-            if SELECTED.load(Ordering::Relaxed) == 0 {
+            let wanted = key.as_ref().is_some_and(|key| capture.selected_key.as_ref() == Some(key));
+            if let Some(key) = key { capture.keys.push((id, key)); }
+            if SELECTED.load(Ordering::Relaxed) == 0 && (capture.selected_key.is_none() || wanted) {
                 capture.length = 0;
                 capture.sequence = 0;
                 SELECTED.store(id, Ordering::Release);
@@ -76,11 +88,14 @@ impl Drop for Registration {
         SESSION.set(self.previous);
         if let Ok(mut capture) = CAPTURE.lock() {
             capture.devices.retain(|(id, _, _, _)| *id != self.id);
+            capture.keys.retain(|(id, _)| *id != self.id);
             if SELECTED.load(Ordering::Relaxed) == self.id {
                 capture.length = 0;
                 capture.sequence = 0;
                 SELECTED.store(
-                    capture.devices.first().map_or(0, |(id, _, _, _)| *id),
+                    if let Some(key) = &capture.selected_key {
+                        capture.keys.iter().find(|(_, candidate)| candidate == key).map_or(0, |(id, _)| *id)
+                    } else { capture.devices.first().map_or(0, |(id, _, _, _)| *id) },
                     Ordering::Release,
                 );
             }
@@ -134,6 +149,46 @@ fn record_for(id: u64, bytes: &[u8]) {
         capture.length = length;
         capture.sequence = capture.sequence.saturating_add(1);
     }
+}
+
+/// Select one live registered tablet, preserving any owned full-rate capture.
+/// An active/frozen lease or unresolved tap reservations require its owner to
+/// drain/release first. Selecting the already selected identity is harmless.
+/// Establish the first daemon-selected identity before any peer starts. This
+/// does not select an unrelated live session while the desired tablet is absent.
+pub fn prefer_device_key(key: &str) -> Result<(), CaptureError> {
+    let mut capture = CAPTURE.lock().map_err(|_| CaptureError::Busy)?;
+    let full = FULL.ring.lock().map_err(|_| CaptureError::Busy)?;
+    if full.is_some() { return Err(CaptureError::Busy); }
+    capture.selected_key = Some(key.to_owned());
+    let selected = capture.keys.iter().find(|(_, candidate)| candidate == key).map_or(0, |(id, _)| *id);
+    capture.length = 0;
+    capture.sequence = 0;
+    SELECTED.store(selected, Ordering::Release);
+    Ok(())
+}
+
+pub fn select_device_key(key: &str) -> Result<(), CaptureError> {
+    let mut capture = CAPTURE.lock().map_err(|_| CaptureError::Busy)?;
+    let target = capture.keys.iter().find(|(_, candidate)| candidate == key).map(|(id, _)| *id)
+        .ok_or(CaptureError::Invalid("device has no live debugger endpoint"))?;
+    if SELECTED.load(Ordering::Acquire) != target {
+        let mut full = FULL.ring.lock().map_err(|_| CaptureError::Busy)?;
+        if let Some(ring) = full.as_mut() {
+            let now = Instant::now();
+            FULL.expire(ring, now);
+            let state = FULL.state.load(Ordering::Acquire);
+            if state & ACTIVE != 0 || FULL.resolved.load(Ordering::Acquire) != state & SEQUENCE_MASK ||
+                FULL.micros(now) < FULL.deadline_us.load(Ordering::Acquire) {
+                return Err(CaptureError::Busy);
+            }
+        }
+        capture.length = 0;
+        capture.sequence = 0;
+        SELECTED.store(target, Ordering::Release);
+    }
+    capture.selected_key = Some(key.to_owned());
+    Ok(())
 }
 
 pub fn poll() -> Snapshot {
@@ -771,27 +826,53 @@ mod tests {
     }
     #[test]
     fn packets_labels_and_lifetimes_belong_to_one_session() {
-        let first = Registration::new(Device {
+        let first = Registration::with_selection_key(Device {
             name: "A".into(),
             parser: "ParserA".into(),
-        });
+        }, 8, None, Some("fixture-a".into()));
         ARMED.store(0, Ordering::Relaxed);
         record(&[1]);
         assert!(poll().bytes.is_empty());
         record(&[2]);
-        let second = Registration::new(Device {
+        let second = Registration::with_selection_key(Device {
             name: "B".into(),
             parser: "ParserB".into(),
-        });
+        }, 8, None, Some("fixture-b".into()));
         record(&[3]);
         let snapshot = poll();
         assert_eq!(snapshot.device.unwrap().name, "A");
         assert_eq!(snapshot.bytes, [2]);
         assert_eq!(snapshot.sequence, 1);
+        select_device_key("fixture-b").unwrap();
+        assert!(poll().bytes.is_empty());
+        record(&[4]);
+        assert_eq!(poll().device.unwrap().name, "B");
+        assert_eq!(poll().bytes, [4]);
+        let capture = capture_start(7_777, MIN_CAPTURE_BYTES, 1_000).unwrap();
+        assert_eq!(select_device_key("fixture-a"), Err(CaptureError::Busy));
+        record(&[5]);
+        let stopped = capture_stop(capture.epoch, capture.session).unwrap();
+        assert_eq!(stopped.pending_reports, 0);
+        // Frozen ownership remains exclusive until the original token drains.
+        assert_eq!(select_device_key("fixture-a"), Err(CaptureError::Busy));
+        let batch = capture_read(capture.epoch, capture.session, 0, 512, 0, 1_000).unwrap();
+        assert_eq!(batch.packets[0].bytes, [5]);
+        capture_release(capture.epoch, capture.session).unwrap();
+        select_device_key("fixture-a").unwrap();
         drop(second);
         assert_eq!(poll().device.unwrap().name, "A");
         drop(first);
         assert_eq!(poll().device, None);
         assert!(poll().bytes.is_empty());
+        // The same stable identity reconnects with a new raw endpoint session.
+        let reconnected = Registration::with_selection_key(Device { name: "A".into(), parser: "ParserA".into() },
+            8, None, Some("fixture-a".into()));
+        assert_eq!(poll().device.unwrap().name, "A");
+        record(&[6]);
+        assert_eq!(poll().bytes, [6]);
+        drop(reconnected);
+        // This fixture is the sole global registration test; restore its
+        // preference so independent local FullCapture fixtures stay isolated.
+        CAPTURE.lock().unwrap().selected_key = None;
     }
 }

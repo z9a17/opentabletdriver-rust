@@ -1,0 +1,335 @@
+//! Control-plane identity and profiles for independently owned Windows tablets.
+//! Physical keys never leave this module. No registry operation runs per report.
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, mpsc};
+
+use serde::{Deserialize, Serialize};
+use crate::config::Profile;
+use crate::hid::{self, Candidate, Event, SelectedDevice};
+use otd_core::tablets::{Database, DeviceIdentifier, TabletConfiguration};
+
+pub const MAX_SESSIONS: usize = 32;
+pub type SessionId = String;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionState { Detected, Preparing, Starting, Running, Waiting, Stopping, Stopped, Failed }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityStability { PhysicalParent, PathFallback }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SessionSnapshot {
+    pub id: SessionId,
+    pub device_generation: u64,
+    pub pending_generation: Option<u64>,
+    pub tablet: String,
+    pub state: SessionState,
+    pub primary: bool,
+    pub selected: bool,
+    pub connected: bool,
+    pub identity_stability: IdentityStability,
+    pub properties: TabletConfiguration,
+    pub digitizer: DeviceIdentifier,
+    pub auxiliary: Option<DeviceIdentifier>,
+    pub profile_source: Option<String>,
+    pub last_error: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SessionList { pub sessions: Vec<SessionSnapshot>, pub selected_id: Option<SessionId> }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SessionReceipt {
+    pub id: SessionId,
+    pub device_generation: u64,
+    pub target_generation: u64,
+    pub accepted_pending: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct DeviceKey { tablet: String, parent: String, fallback: bool }
+impl DeviceKey {
+    pub(crate) fn of(selected: &SelectedDevice<'_>) -> Self {
+        let parent = &selected.pen.endpoint.physical_id;
+        Self { tablet: selected.configuration.name.clone(),
+            parent: if parent.is_empty() { selected.pen.path_text().to_uppercase() } else { parent.to_uppercase() },
+            fallback: parent.is_empty() }
+    }
+}
+pub(crate) struct Entry {
+    pub snapshot: SessionSnapshot,
+    key: DeviceKey,
+    pub path: String,
+    pub profile: Option<Profile>,
+    pub enabled: bool,
+}
+#[derive(Default)]
+pub(crate) struct Registry {
+    pub entries: BTreeMap<SessionId, Entry>,
+    pub primary: Option<SessionId>,
+    pub selected: Option<SessionId>,
+    next: u64,
+    pub shutting_down: bool,
+}
+pub(crate) enum Request {
+    Apply { id: SessionId, profile: Profile, generation: u64 },
+    Stop { id: SessionId, generation: u64 },
+    Start { id: SessionId, generation: u64 },
+}
+#[derive(Clone)]
+pub struct Handle {
+    pub(crate) registry: Arc<Mutex<Registry>>,
+    requests: mpsc::SyncSender<Request>,
+    wake: Arc<Mutex<Event>>,
+}
+impl Handle {
+    pub(crate) fn channel(wake: Event) -> (Self, mpsc::Receiver<Request>) {
+        let (requests, receiver) = mpsc::sync_channel(16);
+        (Self { registry: Arc::default(), requests, wake: Arc::new(Mutex::new(wake)) }, receiver)
+    }
+    pub fn snapshot(&self) -> Result<SessionList, String> {
+        let registry = self.registry.lock().map_err(|_| "device registry poisoned")?;
+        Ok(SessionList { sessions: registry.entries.values().map(|entry| entry.snapshot.clone()).collect(),
+            selected_id: registry.selected.clone() })
+    }
+    pub fn select(&self, id: &str) -> Result<(), String> {
+        let mut registry = self.registry.lock().map_err(|_| "device registry poisoned")?;
+        if registry.shutting_down { return Err("device supervisor is stopping".into()); }
+        let entry = registry.entries.get(id).ok_or("unknown device session")?;
+        if entry.snapshot.state != SessionState::Running { return Err("device session is not running".into()); }
+        otd_core::debug::select_device_key(id).map_err(|error| format!("debugger selection failed: {error:?}"))?;
+        registry.selected = Some(id.to_owned());
+        for entry in registry.entries.values_mut() { entry.snapshot.selected = entry.snapshot.id == id; }
+        Ok(())
+    }
+    pub fn profile(&self, id: &str, generation: u64) -> Result<String, String> {
+        let registry = self.registry.lock().map_err(|_| "device registry poisoned")?;
+        let entry = checked(&registry, id, generation)?;
+        entry.profile.as_ref().ok_or("device profile is not prepared")?.to_toml()
+    }
+    pub fn apply(&self, id: &str, generation: u64, profile: Profile) -> Result<SessionReceipt, String> {
+        profile.validate_runtime_tablet()?;
+        profile.validate_filter_execution()?;
+        let text = profile.to_toml()?;
+        if text.len() > crate::control::MAX_PROFILE_BYTES || serde_json::to_vec(&text).map_err(|error| error.to_string())?.len() > crate::control::MAX_FRAME_BYTES - 1024 {
+            return Err("device profile exceeds control frame limits".into());
+        }
+        let mut registry = self.registry.lock().map_err(|_| "device registry poisoned")?;
+        let entry = checked(&registry, id, generation)?;
+        if profile.tablet_name()?.is_some_and(|name| name != entry.snapshot.tablet) { return Err("profile belongs to another tablet".into()); }
+        if profile.device_path.as_deref().is_some_and(|path| !path.eq_ignore_ascii_case(&entry.path)) { return Err("profile selects another device endpoint".into()); }
+        self.submit(&mut registry, id, generation, |next| Request::Apply { id: id.to_owned(), profile, generation: next })
+    }
+    pub fn stop_device(&self, id: &str, generation: u64) -> Result<SessionReceipt, String> {
+        let mut registry = self.registry.lock().map_err(|_| "device registry poisoned")?;
+        if !checked(&registry, id, generation)?.enabled { return Err("device session is already stopped".into()); }
+        self.submit(&mut registry, id, generation, |next| Request::Stop { id: id.to_owned(), generation: next })
+    }
+    pub fn start_device(&self, id: &str, generation: u64) -> Result<SessionReceipt, String> {
+        let mut registry = self.registry.lock().map_err(|_| "device registry poisoned")?;
+        if checked(&registry, id, generation)?.enabled { return Err("device session is already active".into()); }
+        self.submit(&mut registry, id, generation, |next| Request::Start { id: id.to_owned(), generation: next })
+    }
+    fn submit(&self, registry: &mut Registry, id: &str, generation: u64, request: impl FnOnce(u64) -> Request) -> Result<SessionReceipt, String> {
+        let entry = checked(registry, id, generation)?;
+        if entry.snapshot.primary { return Err("primary device lifecycle requires the daemon transaction".into()); }
+        if entry.snapshot.pending_generation.is_some() { return Err("device session is transitioning".into()); }
+        let next = generation.checked_add(1).ok_or("device generation exhausted")?;
+        self.requests.try_send(request(next)).map_err(|error| format!("device command was not accepted: {error}"))?;
+        registry.entries.get_mut(id).unwrap().snapshot.pending_generation = Some(next);
+        // Acceptance is durable in the bounded command queue. A failed wake is
+        // harmless: the supervisor polls it within 20ms and never duplicates it.
+        if let Ok(wake) = self.wake.lock() { let _ = wake.signal(); }
+        Ok(SessionReceipt { id: id.to_owned(), device_generation: generation, target_generation: next, accepted_pending: true })
+    }
+    pub(crate) fn discover(&self, selected: &SelectedDevice<'_>) -> Result<SessionId, String> {
+        let mut registry = self.registry.lock().map_err(|_| "device registry poisoned")?;
+        let key = DeviceKey::of(selected);
+        if let Some(entry) = registry.entries.values_mut().find(|entry| entry.key == key) {
+            entry.path = selected.pen.path_text();
+            entry.snapshot.connected = true;
+            if !matches!(entry.snapshot.state, SessionState::Running | SessionState::Starting | SessionState::Stopping) {
+                entry.snapshot.properties = selected.configuration.clone();
+                entry.snapshot.digitizer = selected.identifier.clone();
+                entry.snapshot.auxiliary = selected.auxiliary.as_ref().map(|(_, identifier)| identifier.clone());
+            }
+            return Ok(entry.snapshot.id.clone());
+        }
+        if registry.entries.len() == MAX_SESSIONS { return Err("device identity registry is full (32 retained tablets)".into()); }
+        registry.next = registry.next.checked_add(1).ok_or("device identity counter exhausted")?;
+        let id = format!("device-{}", registry.next);
+        registry.entries.insert(id.clone(), Entry { key: key.clone(), path: selected.pen.path_text(), profile: None, enabled: true,
+            snapshot: SessionSnapshot { id: id.clone(), device_generation: 0, pending_generation: None,
+                tablet: selected.configuration.name.clone(), state: SessionState::Detected, primary: false, selected: false,
+                connected: true, identity_stability: if key.fallback { IdentityStability::PathFallback } else { IdentityStability::PhysicalParent },
+                properties: selected.configuration.clone(), digitizer: selected.identifier.clone(),
+                auxiliary: selected.auxiliary.as_ref().map(|(_, identifier)| identifier.clone()), profile_source: None, last_error: None } });
+        Ok(id)
+    }
+    pub(crate) fn primary_id(&self) -> Result<Option<SessionId>, String> {
+        Ok(self.registry.lock().map_err(|_| "device registry poisoned")?.primary.clone())
+    }
+    pub(crate) fn reserve_primary(&self, selected: &SelectedDevice<'_>) -> Result<SessionId, String> {
+        let id = self.discover(selected)?;
+        let mut registry = self.registry.lock().map_err(|_| "device registry poisoned")?;
+        if registry.primary.as_ref().is_some_and(|primary| *primary != id) { return Err("primary profile cannot switch physical tablets; use per-device controls".into()); }
+        registry.primary = Some(id.clone());
+        registry.entries.get_mut(&id).unwrap().snapshot.primary = true;
+        if registry.selected.is_none() {
+            // A previous frozen capture can still be owned while a new driver
+            // generation starts. It must drain its old token independently;
+            // capture ownership must not prevent new tablet processing.
+            let _ = otd_core::debug::prefer_device_key(&id);
+            registry.selected = Some(id.clone());
+            registry.entries.get_mut(&id).unwrap().snapshot.selected = true;
+        }
+        Ok(id)
+    }
+    pub(crate) fn find<'a>(&self, id: &str, devices: &'a [Candidate], database: &Database) -> Result<Option<SelectedDevice<'a>>, String> {
+        let key = self.registry.lock().map_err(|_| "device registry poisoned")?.entries.get(id).ok_or("unknown device session")?.key.clone();
+        for device in devices {
+            if let Ok(Some(selected)) = hid::select_device(devices, database, Some(&device.path_text()), Some(&key.tablet)) {
+                if DeviceKey::of(&selected) == key { return Ok(Some(selected)); }
+            }
+        }
+        Ok(None)
+    }
+    pub(crate) fn validate_profile(&self, id: &str, profile: &Profile) -> Result<(), String> {
+        let registry = self.registry.lock().map_err(|_| "device registry poisoned")?;
+        let entry = registry.entries.get(id).ok_or("unknown device session")?;
+        if profile.tablet_name()?.is_some_and(|name| name != entry.snapshot.tablet) { return Err("profile belongs to another physical tablet; use per-device controls".into()); }
+        // Once bound, the private physical key governs reconnects. A saved
+        // collection path may change; it must not retarget this worker.
+        Ok(())
+    }
+    pub(crate) fn state(&self, id: &str, state: SessionState, error: Option<String>) {
+        if let Ok(mut registry) = self.registry.lock() {
+            if let Some(entry) = registry.entries.get_mut(id) { entry.snapshot.state = state; entry.snapshot.last_error = error.map(bounded); }
+        }
+    }
+    pub(crate) fn commit(&self, id: &str, generation: u64, profile: Profile) {
+        if let Ok(mut registry) = self.registry.lock() {
+            if let Some(entry) = registry.entries.get_mut(id) {
+                entry.snapshot.device_generation = generation;
+                entry.snapshot.pending_generation = None;
+                entry.snapshot.profile_source = Some(bounded(profile.source.clone()));
+                entry.snapshot.last_error = None;
+                entry.profile = Some(profile);
+                entry.enabled = true;
+            }
+        }
+    }
+    pub(crate) fn reject(&self, id: &str, error: String) {
+        if let Ok(mut registry) = self.registry.lock() {
+            if let Some(entry) = registry.entries.get_mut(id) { entry.snapshot.pending_generation = None; entry.snapshot.last_error = Some(bounded(error)); }
+        }
+    }
+    pub(crate) fn primary_commit(&self, profile: Profile) -> Result<(), String> {
+        let Some(id) = self.primary_id()? else { return Err("primary device is not yet detected".into()); };
+        let generation = self.registry.lock().map_err(|_| "device registry poisoned")?.entries[&id].snapshot.device_generation.checked_add(1).ok_or("device generation exhausted")?;
+        self.commit(&id, generation, profile);
+        Ok(())
+    }
+    pub(crate) fn primary_state(&self, state: SessionState, error: Option<String>) {
+        if let Ok(Some(id)) = self.primary_id() { self.state(&id, state, error); }
+    }
+    pub(crate) fn activated(&self, id: &str, selected: &SelectedDevice<'_>) {
+        if let Ok(mut registry) = self.registry.lock() {
+            if let Some(entry) = registry.entries.get_mut(id) {
+                entry.snapshot.properties = selected.configuration.clone();
+                entry.snapshot.digitizer = selected.identifier.clone();
+                entry.snapshot.auxiliary = selected.auxiliary.as_ref().map(|(_, identifier)| identifier.clone());
+            }
+        }
+    }
+    pub(crate) fn error(&self, id: &str, error: String) {
+        if let Ok(mut registry) = self.registry.lock() {
+            if let Some(entry) = registry.entries.get_mut(id) { entry.snapshot.last_error = Some(bounded(error)); }
+        }
+    }
+    pub(crate) fn primary_pending(&self, generation: u64, state: SessionState) {
+        if let Ok(mut registry) = self.registry.lock() {
+            if let Some(id) = registry.primary.clone() {
+                let entry = registry.entries.get_mut(&id).unwrap();
+                entry.snapshot.pending_generation = Some(generation);
+                entry.snapshot.state = state;
+            }
+        }
+    }
+    pub(crate) fn primary_stopped(&self, generation: u64, error: Option<String>) {
+        if let Ok(mut registry) = self.registry.lock() {
+            if let Some(id) = registry.primary.clone() {
+                let entry = registry.entries.get_mut(&id).unwrap();
+                entry.snapshot.device_generation = generation;
+                entry.snapshot.pending_generation = None;
+                entry.snapshot.last_error = error.map(bounded);
+                entry.snapshot.state = if entry.snapshot.last_error.is_some() { SessionState::Failed } else { SessionState::Stopped };
+                entry.enabled = false;
+            }
+        }
+    }
+}
+fn checked<'a>(registry: &'a Registry, id: &str, generation: u64) -> Result<&'a Entry, String> {
+    if registry.shutting_down { return Err("device supervisor is stopping".into()); }
+    let entry = registry.entries.get(id).ok_or("unknown device session")?;
+    if entry.snapshot.device_generation != generation { return Err("device generation changed; refresh device sessions".into()); }
+    Ok(entry)
+}
+fn bounded(mut value: String) -> String {
+    if value.len() > crate::control::MAX_LOG_LINE_BYTES {
+        let mut end = crate::control::MAX_LOG_LINE_BYTES;
+        while !value.is_char_boundary(end) { end -= 1; }
+        value.truncate(end);
+    }
+    value
+}
+
+thread_local! { static DEBUG_KEY: RefCell<Option<String>> = const { RefCell::new(None) }; }
+pub(crate) fn set_debug_key(id: &str) { DEBUG_KEY.with(|key| *key.borrow_mut() = Some(id.to_owned())); }
+pub(crate) fn debug_key() -> Option<String> { DEBUG_KEY.with(|key| key.borrow().clone()) }
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use otd_core::endpoint_match::{Endpoint, Transport};
+    pub(crate) fn candidate(path: &str, parent: &str) -> Candidate {
+        Candidate { path: path.encode_utf16().chain([0]).collect(), vendor: 1, product: 2,
+            input_length: 10, usage_page: 13, usage: 2,
+            endpoint: Endpoint { path: path.into(), physical_id: parent.into(), transport: Transport::UsbHid,
+                vendor_id: 1, product_id: 2, can_open: true, input_length: 10, output_length: 0,
+                feature_length: 0, strings: BTreeMap::new(), attributes: None } }
+    }
+    pub(crate) fn selected(candidate: &Candidate) -> SelectedDevice<'_> {
+        SelectedDevice { pen: candidate, configuration: TabletConfiguration { name: "same model".into(), ..Default::default() },
+            identifier: DeviceIdentifier::default(), auxiliary: None, spec: Profile::default().tablet }
+    }
+    #[test]
+    fn same_model_devices_collections_and_reconnects_keep_independent_profiles() {
+        let (handle, _requests) = Handle::channel(Event::create(true).unwrap());
+        let a = candidate("collection-a", "parent-a");
+        let b = candidate("collection-b", "parent-b");
+        let a2 = candidate("another-collection-a", "parent-a");
+        let id_a = handle.discover(&selected(&a)).unwrap();
+        let id_b = handle.discover(&selected(&b)).unwrap();
+        assert_ne!(id_a, id_b);
+        assert_eq!(handle.discover(&selected(&a2)).unwrap(), id_a);
+        let reconnect = candidate("changed-path-a", "PARENT-A");
+        assert_eq!(handle.discover(&selected(&reconnect)).unwrap(), id_a);
+        handle.commit(&id_a, 1, Profile { rotation: 90, ..Profile::default() });
+        handle.commit(&id_b, 1, Profile { rotation: 180, ..Profile::default() });
+        let profile_a = Profile::from_toml_text(&handle.profile(&id_a, 1).unwrap(), std::path::Path::new("a.toml")).unwrap();
+        let profile_b = Profile::from_toml_text(&handle.profile(&id_b, 1).unwrap(), std::path::Path::new("b.toml")).unwrap();
+        assert_eq!((profile_a.rotation, profile_b.rotation), (90, 180));
+        assert!(handle.profile(&id_a, 0).is_err());
+        let json = serde_json::to_string(&handle.snapshot().unwrap()).unwrap();
+        assert!(!json.contains("parent-a"));
+        assert!(!json.contains("changed-path"));
+        assert_eq!(handle.snapshot().unwrap().sessions.len(), 2);
+    }
+    #[test]
+    fn missing_parent_is_an_explicit_path_fallback_not_model_identity() {
+        let (handle, _requests) = Handle::channel(Event::create(true).unwrap());
+        let a = candidate("path-a", "");
+        let b = candidate("path-b", "");
+        assert_ne!(handle.discover(&selected(&a)).unwrap(), handle.discover(&selected(&b)).unwrap());
+        assert!(handle.snapshot().unwrap().sessions.iter().all(|entry| entry.identity_stability == IdentityStability::PathFallback));
+    }
+}

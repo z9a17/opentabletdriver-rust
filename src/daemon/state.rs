@@ -91,8 +91,10 @@ struct Pending {
     expected: WorkerIdentity,
     profile: String,
     text: String,
+    applied_profile: Profile,
     generation: u64,
     initial: bool,
+    device_start: bool,
     phase: Phase,
     error: Option<String>,
 }
@@ -104,6 +106,9 @@ pub(super) struct Daemon {
     pending: Option<Pending>,
     retiring: Option<Worker>,
     ownership: Option<Ownership>,
+    devices: Option<crate::companions::Supervisor>,
+    primary_stopped: bool,
+    primary_stop_generation: Option<u64>,
     stopping: bool,
     cleanup_error: Option<String>,
     state: DriverState,
@@ -131,6 +136,9 @@ impl Daemon {
             pending: None,
             retiring: None,
             ownership: None,
+            devices: None,
+            primary_stopped: false,
+            primary_stop_generation: None,
             stopping: false,
             cleanup_error: None,
             state: DriverState::Stopped,
@@ -158,6 +166,67 @@ impl Daemon {
     }
     pub(super) fn scheduling_warning(&mut self, error: String) {
         self.log(format!("Experimental driver CPU affinity was not applied: {error}"));
+    }
+    pub(crate) fn device_sessions(&self) -> Option<crate::device_sessions::Handle> {
+        self.devices.as_ref().map(crate::companions::Supervisor::handle)
+    }
+    fn primary_device_guard(&self, id: &str, generation: u64) -> Result<crate::device_sessions::SessionSnapshot, ControlError> {
+        if self.stopping || self.cancelled.load(Ordering::Acquire) || self.pending.is_some() || self.retiring.is_some() {
+            return Err(ControlError::new(ErrorCode::Busy, "primary device is transitioning"));
+        }
+        let handle = self.device_sessions().ok_or_else(|| ControlError::new(ErrorCode::Busy, "device supervisor is unavailable"))?;
+        let snapshot = handle.snapshot().map_err(|error| ControlError::new(ErrorCode::Internal, error))?.sessions.into_iter()
+            .find(|session| session.id == id && session.primary)
+            .ok_or_else(|| ControlError::new(ErrorCode::Conflict, "requested session is not the primary device"))?;
+        if snapshot.device_generation != generation || snapshot.pending_generation.is_some() {
+            return Err(ControlError::new(ErrorCode::Conflict, "device generation changed; refresh device sessions"));
+        }
+        Ok(snapshot)
+    }
+    pub(crate) fn primary_stop(&mut self, id: &str, generation: u64) -> Result<crate::device_sessions::SessionReceipt, ControlError> {
+        self.primary_device_guard(id, generation)?;
+        let next = generation.checked_add(1).ok_or_else(|| ControlError::new(ErrorCode::Internal, "device generation exhausted"))?;
+        let worker = self.worker.take().ok_or_else(|| ControlError::new(ErrorCode::Busy, "primary device is already stopped"))?;
+        let signalled = worker.stop();
+        self.retiring = Some(worker);
+        self.primary_stop_generation = Some(next);
+        self.device_sessions().unwrap().primary_pending(next, crate::device_sessions::SessionState::Stopping);
+        signalled.map_err(|error| ControlError::new(ErrorCode::StopFailed, error))?;
+        Ok(crate::device_sessions::SessionReceipt { id: id.to_owned(), device_generation: generation,
+            target_generation: next, accepted_pending: true })
+    }
+    pub(crate) fn primary_start(&mut self, id: &str, generation: u64) -> Result<crate::device_sessions::SessionReceipt, ControlError> {
+        self.primary_device_guard(id, generation)?;
+        if !self.primary_stopped || self.worker.is_some() || self.ownership.is_none() {
+            return Err(ControlError::new(ErrorCode::Busy, "primary device is already active or ownership is unavailable"));
+        }
+        let next = generation.checked_add(1).ok_or_else(|| ControlError::new(ErrorCode::Internal, "device generation exhausted"))?;
+        let text = self.device_sessions().unwrap().profile(id, generation).map_err(|error| ControlError::new(ErrorCode::InvalidProfile, error))?;
+        let (profile, text) = Self::prepare(Some(text))?;
+        self.begin(profile, text, true)?;
+        self.device_sessions().unwrap().primary_pending(next, crate::device_sessions::SessionState::Preparing);
+        Ok(crate::device_sessions::SessionReceipt { id: id.to_owned(), device_generation: generation,
+            target_generation: next, accepted_pending: true })
+    }
+    pub(crate) fn primary_apply(&mut self, id: &str, generation: u64, profile_toml: String) -> Result<crate::device_sessions::SessionReceipt, ControlError> {
+        self.primary_device_guard(id, generation)?;
+        let next = generation.checked_add(1).ok_or_else(|| ControlError::new(ErrorCode::Internal, "device generation exhausted"))?;
+        let (profile, text) = Self::prepare(Some(profile_toml))?;
+        self.device_sessions().unwrap().validate_profile(id, &profile).map_err(|error| ControlError::new(ErrorCode::InvalidProfile, error))?;
+        if self.worker.is_none() && self.primary_stopped {
+            let handle = self.device_sessions().unwrap();
+            self.profile = Some(profile.source.clone());
+            self.configuration = Some(text);
+            handle.commit(id, next, profile);
+            handle.primary_stopped(next, None);
+            return Ok(crate::device_sessions::SessionReceipt { id: id.to_owned(), device_generation: generation,
+                target_generation: next, accepted_pending: false });
+        }
+        if self.worker.is_none() { return Err(ControlError::new(ErrorCode::Busy, "primary device is unavailable")); }
+        self.begin(profile, text, false)?;
+        self.device_sessions().unwrap().primary_pending(next, crate::device_sessions::SessionState::Running);
+        Ok(crate::device_sessions::SessionReceipt { id: id.to_owned(), device_generation: generation,
+            target_generation: next, accepted_pending: true })
     }
     fn identity(&self) -> WorkerIdentity {
         WorkerIdentity {
@@ -243,16 +312,29 @@ impl Daemon {
                 "driver is transitioning or daemon is shutting down",
             ));
         }
-        if initial && (self.worker.is_some() || self.ownership.is_some()) {
+        if initial && (self.worker.is_some() || (self.ownership.is_some() && !self.primary_stopped)) {
             return Err(ControlError::new(
                 ErrorCode::Busy,
                 "driver is active or cleanup is incomplete",
             ));
         }
+        let device_start = initial && self.ownership.is_some() && self.primary_stopped;
         let generation = self.next_generation()?;
         let name = profile.source.clone();
-        let worker = Worker::spawn(profile)
-            .map_err(|error| ControlError::new(ErrorCode::StartFailed, error))?;
+        if self.devices.is_none() {
+            self.devices = Some(crate::companions::Supervisor::prepare(profile.clone())
+                .map_err(|error| ControlError::new(ErrorCode::StartFailed, error))?);
+        }
+        let device_handle = self.devices.as_ref().unwrap().handle();
+        let worker = match Worker::spawn(profile.clone(), device_handle) {
+            Ok(worker) => worker,
+            Err(error) => {
+                if initial && !device_start {
+                    if let Some(mut devices) = self.devices.take() { let _ = devices.finish(); }
+                }
+                return Err(ControlError::new(ErrorCode::StartFailed, error));
+            }
+        };
         if initial {
             // A start reserves its identity immediately so StopIf can cancel
             // preparation using the generation returned by Started.
@@ -264,13 +346,24 @@ impl Daemon {
             self.cleanup_error = None;
             self.logs.clear();
         }
+        if let Some(devices) = &self.devices {
+            if let Ok(list) = devices.handle().snapshot() {
+                if let Some(primary) = list.sessions.into_iter().find(|session| session.primary) {
+                    if let Some(next) = primary.device_generation.checked_add(1) {
+                        devices.handle().primary_pending(next, if initial { crate::device_sessions::SessionState::Preparing } else { primary.state });
+                    }
+                }
+            }
+        }
         self.pending = Some(Pending {
             worker: Some(worker),
             expected: self.identity(),
             profile: name,
             text,
+            applied_profile: profile,
             generation,
             initial,
+            device_start,
             phase: Phase::Preparing,
             error: None,
         });
@@ -303,6 +396,7 @@ impl Daemon {
         self.stopping = true;
         self.state = DriverState::Stopping;
         let mut errors = Vec::new();
+        if let Some(devices) = &self.devices { if let Err(error) = devices.stop() { errors.push(error); } }
         for worker in [
             self.worker.as_ref(),
             self.pending
@@ -422,12 +516,17 @@ impl Daemon {
                     )
                 ) {
                     self.state = DriverState::Running;
+                    if let Some(devices) = &self.devices { devices.handle().primary_state(crate::device_sessions::SessionState::Running, None); }
                 }
                 if self
                     .pending
                     .as_ref()
                     .is_some_and(|pending| pending.phase == Phase::ResumeSent)
                 {
+                    if let Some(devices) = &self.devices {
+                        let handle = devices.handle();
+                        if let Ok(Some(id)) = handle.primary_id() { handle.reject(&id, self.last_error.clone().unwrap_or_else(|| "replacement failed".into())); }
+                    }
                     self.pending = None;
                     self.log("Replacement failed; previous profile resumed with fresh output/relative state. Retained plugins received reset/range-loss notification; their private state depends on their implementation. A physical disconnect recreates instances. Hardware initialization was reapplied, not undone.".into());
                 }
@@ -445,6 +544,7 @@ impl Daemon {
             }
             Notice::Waiting => {
                 self.state = DriverState::Starting;
+                if let Some(devices) = &self.devices { devices.handle().primary_state(crate::device_sessions::SessionState::Waiting, None); }
                 if self
                     .pending
                     .as_ref()
@@ -483,11 +583,13 @@ impl Daemon {
                     return;
                 }
                 if initial {
-                    match Ownership::acquire() {
-                        Ok(ownership) => self.ownership = Some(ownership),
-                        Err(error) => {
-                            self.reject_candidate(error, false);
-                            return;
+                    if self.ownership.is_none() {
+                        match Ownership::acquire() {
+                            Ok(ownership) => self.ownership = Some(ownership),
+                            Err(error) => {
+                                self.reject_candidate(error, false);
+                                return;
+                            }
                         }
                     }
                     self.pending.as_mut().unwrap().phase = Phase::Activating;
@@ -530,6 +632,11 @@ impl Daemon {
                 self.generation = pending.generation;
                 self.profile = Some(pending.profile.clone());
                 self.configuration = Some(pending.text.clone());
+                if let Some(devices) = &self.devices {
+                    if let Err(error) = devices.handle().primary_commit(pending.applied_profile.clone()) {
+                        self.fail_stop(error); return;
+                    }
+                }
                 self.last_error = None;
             }
             Notice::Running if phase == Phase::CommitSent => {
@@ -537,6 +644,14 @@ impl Daemon {
                 let previous = self.worker.take();
                 self.worker = pending.worker.take();
                 self.state = DriverState::Running;
+                self.primary_stopped = false;
+                if let Some(devices) = &self.devices {
+                    devices.handle().primary_state(crate::device_sessions::SessionState::Running, None);
+                    if let Ok(Some(id)) = devices.handle().primary_id() {
+                        if devices.handle().snapshot().is_ok_and(|list| list.selected_id.as_ref() == Some(&id)) { let _ = devices.handle().select(&id); }
+                    }
+                    devices.enable();
+                }
                 if let Some(previous) = previous {
                     let stop = previous.stop();
                     self.retiring = Some(previous);
@@ -550,14 +665,29 @@ impl Daemon {
             Notice::ActivationFailed(error) if phase == Phase::Activating => {
                 self.reject_candidate(error, !initial)
             }
-            Notice::Waiting => self.log(
-                "Replacement is waiting for its tablet; current generation remains unchanged."
-                    .into(),
-            ),
+            Notice::Waiting => {
+                if initial && self.ownership.is_none() {
+                    match Ownership::acquire() {
+                        Ok(ownership) => {
+                            self.ownership = Some(ownership);
+                            if let Some(devices) = &self.devices { devices.enable(); }
+                        }
+                        Err(error) => { self.reject_candidate(error, false); return; }
+                    }
+                }
+                self.log("Replacement is waiting for its tablet; current generation remains unchanged.".into());
+            }
             _ => self.fail_stop("Unexpected candidate lifecycle transition.".into()),
         }
     }
     fn reap(&mut self) {
+        if self.devices.as_ref().is_some_and(crate::companions::Supervisor::finished) {
+            let result = self.devices.as_mut().unwrap().finish();
+            self.devices = None;
+            if let Err(error) = result {
+                if self.stopping { self.remember_cleanup_error(error); } else { self.fail_stop(error); }
+            } else if !self.stopping { self.fail_stop("device supervisor ended unexpectedly".into()); }
+        }
         if self.worker.as_ref().is_some_and(Worker::finished) {
             let result = self.worker.take().unwrap().join();
             if self.stopping {
@@ -572,10 +702,21 @@ impl Daemon {
                 );
             }
         }
-        if self.retiring.as_ref().is_some_and(Worker::finished)
-            && let Err(error) = self.retiring.take().unwrap().join()
-        {
-            self.fail_stop(format!("Previous graph retirement failed: {error}"));
+        if self.retiring.as_ref().is_some_and(Worker::finished) {
+            let result = self.retiring.take().unwrap().join();
+            if let Some(generation) = self.primary_stop_generation.take() {
+                if self.stopping {
+                    if let Err(error) = result { self.remember_cleanup_error(error); }
+                } else {
+                    self.primary_stopped = true;
+                    self.state = DriverState::Running;
+                    if let Some(devices) = &self.devices { devices.handle().primary_stopped(generation, result.as_ref().err().cloned()); }
+                    if let Err(error) = result { self.last_error = Some(error.clone()); self.log(error); }
+                    self.log("Primary tablet stopped; independently owned tablet sessions remain enabled.".into());
+                }
+            } else if let Err(error) = result {
+                self.fail_stop(format!("Previous graph retirement failed: {error}"));
+            }
         }
         if self
             .pending
@@ -587,6 +728,7 @@ impl Daemon {
             let result = pending.worker.take().unwrap().join();
             let phase = pending.phase;
             let initial = pending.initial;
+            let device_start = pending.device_start;
             let error = pending.error.clone();
             if self.stopping {
                 if let Err(error) = result {
@@ -604,8 +746,21 @@ impl Daemon {
                 };
                 self.last_error = Some(error.clone());
                 self.log(format!("Replacement preparation rejected: {error}"));
-                if initial {
+                if let Some(devices) = &self.devices {
+                    let handle = devices.handle();
+                    if let Ok(Some(id)) = handle.primary_id() { handle.reject(&id, error.clone()); }
+                    if !initial { handle.primary_state(crate::device_sessions::SessionState::Running, Some(error.clone())); }
+                }
+                if initial && !device_start {
                     self.fail_stop(error);
+                } else if device_start {
+                    self.primary_stopped = true;
+                    self.state = DriverState::Running;
+                    if let Some(devices) = &self.devices {
+                        let handle = devices.handle();
+                        if let Ok(Some(id)) = handle.primary_id() { handle.reject(&id, error.clone()); }
+                        handle.primary_state(crate::device_sessions::SessionState::Failed, Some(error));
+                    }
                 }
                 // A failed preparation has never owned output. Keep the old
                 // thread and current generation completely intact.
@@ -623,6 +778,7 @@ impl Daemon {
             }
         }
         if self.stopping
+            && self.devices.is_none()
             && self.worker.is_none()
             && self.retiring.is_none()
             && self
@@ -631,6 +787,8 @@ impl Daemon {
                 .is_none_or(|pending| pending.worker.is_none())
         {
             self.pending = None;
+            self.primary_stop_generation = None;
+            self.primary_stopped = false;
             // Every worker has joined before releasing the driver mutex.
             self.ownership = None;
             self.stopping = false;
@@ -665,6 +823,9 @@ impl Daemon {
             }
         }
         self.pending = None;
+        if let Some(mut devices) = self.devices.take() {
+            if let Err(error) = devices.finish() { self.remember_cleanup_error(error); }
+        }
         // The mutex remains owned through all worker joins above.
         self.ownership = None;
         self.cleanup_error.clone().map_or(Ok(()), Err)

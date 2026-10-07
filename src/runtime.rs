@@ -69,7 +69,26 @@ impl Drop for Done {
     }
 }
 impl Worker {
-    pub fn spawn(profile: Profile) -> Result<Self, String> {
+    #[cfg(test)]
+    pub(crate) fn fixture(script: impl FnOnce(Receiver<Directive>, SyncSender<Notice>, Arc<AtomicBool>) -> Result<(), String> + Send + 'static) -> Self {
+        let interrupt = Event::create(true).unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let thread_cancelled = Arc::clone(&cancelled);
+        let (commands, receiver) = mpsc::sync_channel(4);
+        let (notifier, notices) = mpsc::sync_channel(8);
+        let (_logger, logs) = mpsc::sync_channel(1);
+        let done = Arc::new(AtomicBool::new(false));
+        let thread_done = Done(Arc::clone(&done));
+        let thread = std::thread::spawn(move || { let _done = thread_done; script(receiver, notifier, thread_cancelled) });
+        Self { interrupt, cancelled, commands, notices, logs, thread, done }
+    }
+    pub fn spawn(profile: Profile, devices: crate::device_sessions::Handle) -> Result<Self, String> {
+        Self::spawn_bound(profile, devices, None)
+    }
+    pub(crate) fn spawn_device(profile: Profile, devices: crate::device_sessions::Handle, id: String) -> Result<Self, String> {
+        Self::spawn_bound(profile, devices, Some(id))
+    }
+    fn spawn_bound(profile: Profile, devices: crate::device_sessions::Handle, id: Option<String>) -> Result<Self, String> {
         let interrupt = Event::create(true).map_err(|error| error.to_string())?;
         let thread_interrupt = interrupt.duplicate().map_err(|error| error.to_string())?;
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -90,6 +109,8 @@ impl Worker {
                     receiver,
                     notifier,
                     logger,
+                    devices,
+                    id,
                 )
             })
             .map_err(|error| error.to_string())?;
@@ -156,9 +177,9 @@ fn run(
     commands: Receiver<Directive>,
     notices: SyncSender<Notice>,
     logs: SyncSender<String>,
+    device_sessions: crate::device_sessions::Handle,
+    bound_id: Option<String>,
 ) -> Result<(), String> {
-    let companions = std::cell::RefCell::new(None::<crate::companions::Companions>);
-    let outcome = (|| {
     let log = |line: &str| {
         let _ = logs.try_send(line.to_owned());
         crate::control::wake();
@@ -191,20 +212,19 @@ fn run(
     let notification = Notification::register().map_err(|error| error.to_string())?;
     let mut waiting = false;
     'connect: loop {
-        if let Some(companions) = &mut *companions.borrow_mut() {
-            companions.check_finished()?;
-        }
         if cancelled.load(Ordering::Acquire) {
             return Ok(());
         }
         let devices = crate::hid::enumerate_with_database(database)
             .map_err(|error| format!("HID discovery failed: {error}"))?;
-        let Some(selected) = crate::hid::select_device(
-            &devices,
-            database,
-            profile.device_path.as_deref(),
-            tablet_name.as_deref(),
-        )?
+        let stable_id = bound_id.clone().or(device_sessions.primary_id()?);
+        let choice = if let Some(id) = &stable_id {
+            device_sessions.validate_profile(id, &profile)?;
+            device_sessions.find(id, &devices, database)?
+        } else {
+            crate::hid::select_device(&devices, database, profile.device_path.as_deref(), tablet_name.as_deref())?
+        };
+        let Some(selected) = choice
         else {
             if !waiting {
                 notify(Notice::Waiting)?;
@@ -217,16 +237,12 @@ fn run(
             if !crate::session::wait_for_retry(&notification, interrupt)
                 .map_err(|error| error.to_string())?
             {
-                if let Some(companions) = &mut *companions.borrow_mut() {
-                    companions.check_finished()?;
-                }
                 if cancelled.load(Ordering::Acquire) {
                     return Ok(());
                 }
                 // A quiesce while disconnected has no live report resources.
                 match receive(&commands, cancelled).map_err(|error| error.to_string())? {
                     Directive::Quiesce => {
-                        finish_companions(&companions)?;
                         notify(Notice::Quiesced)?;
                         match receive(&commands, cancelled).map_err(|error| error.to_string())? {
                             Directive::Stop => return Ok(()),
@@ -244,9 +260,11 @@ fn run(
             continue;
         };
         waiting = false;
-        if let Some(companions) = &mut *companions.borrow_mut() {
-            companions.reserve_primary(&selected.pen.path_text(), &selected.configuration.name)?;
-        }
+        let id = if let Some(id) = &bound_id {
+            device_sessions.discover(&selected)?;
+            id.clone()
+        } else { device_sessions.reserve_primary(&selected)? };
+        crate::device_sessions::set_debug_key(&id);
         // These stay on this thread and survive a quiesce/failed replacement.
         // Construction/reset executes trusted plugin code (including its
         // reset/range-loss callback), but has no live input or host output sink.
@@ -266,7 +284,6 @@ fn run(
                 Directive::Stop => return Ok(()),
                 Directive::Quiesce => {
                     prepared = None;
-                    finish_companions(&companions)?;
                     reset_plugins(&mut plugins)?;
                     notify(Notice::Quiesced)?;
                     continue;
@@ -276,9 +293,6 @@ fn run(
             }
             if unsafe { ResetEvent(interrupt.raw()) } == 0 {
                 return Err(io::Error::last_os_error().to_string());
-            }
-            if let Some(companions) = &mut *companions.borrow_mut() {
-                companions.check_finished()?;
             }
             if cancelled.load(Ordering::Acquire) {
                 return Ok(());
@@ -304,7 +318,6 @@ fn run(
                 // acknowledge that command after closing the prepared handle.
                 match commands.try_recv() {
                     Ok(Directive::Quiesce) => {
-                        finish_companions(&companions)?;
                         reset_plugins(&mut plugins)?;
                         notify(Notice::Quiesced)?;
                         continue;
@@ -326,30 +339,11 @@ fn run(
             // Tools run while this worker owns the output, like the tablet.
             let tools = std::cell::RefCell::new(None);
             let result = source.run(&profile, &mut plugins, &log, || {
-                if let Some(companions) = &mut *companions.borrow_mut() {
-                    companions.check_finished().map_err(io::Error::other)?;
-                }
                 notify(Notice::ActivationReady).map_err(io::Error::other)?;
                 match receive(&commands, cancelled)? {
                     Directive::Run if !cancelled.load(Ordering::Acquire) => {
                         running.set(true);
-                        let companion_logs = logs.clone();
-                        if companions.borrow().is_none() {
-                            *companions.borrow_mut() = Some(
-                            crate::companions::Companions::start(
-                                profile.clone(),
-                                database.clone(),
-                                selected.pen.path_text(),
-                                selected.configuration.name.clone(),
-                                interrupt,
-                                move |line| {
-                                    let _ = companion_logs.try_send(line.to_owned());
-                                    crate::control::wake();
-                                },
-                            )
-                            .map_err(io::Error::other)?,
-                            );
-                        }
+                        device_sessions.activated(&id, &selected);
                         notify(Notice::Running).map_err(io::Error::other)?;
                         *tools.borrow_mut() =
                             Some(crate::plugins::Tools::start(&profile.plugins, |line| {
@@ -366,9 +360,6 @@ fn run(
                 }
             });
             drop(tools.take());
-            if let Some(companions) = &mut *companions.borrow_mut() {
-                companions.check_finished()?;
-            }
             // source has drained its read and core output cleanup has completed.
             if let Err(error) = &result
                 && otd_core::session::is_cleanup_failure(error)
@@ -387,7 +378,6 @@ fn run(
                 return Ok(());
             }
             if matches!(requested, Some(Directive::Quiesce)) {
-                finish_companions(&companions)?;
                 reset_plugins(&mut plugins)?;
                 notify(Notice::Quiesced)?;
                 continue;
@@ -412,13 +402,9 @@ fn run(
             if !crate::session::wait_for_retry(&notification, interrupt)
                 .map_err(|error| error.to_string())?
             {
-                if let Some(companions) = &mut *companions.borrow_mut() {
-                    companions.check_finished()?;
-                }
                 match receive(&commands, cancelled).map_err(|error| error.to_string())? {
                     Directive::Stop => return Ok(()),
                     Directive::Quiesce => {
-                        finish_companions(&companions)?;
                         reset_plugins(&mut plugins)?;
                         notify(Notice::Quiesced)?;
                         // Retain this graph while the daemon attempts apply.
@@ -431,10 +417,4 @@ fn run(
             continue 'connect;
         }
     }
-    })();
-    finish_companions(&companions).and(outcome)
-}
-
-fn finish_companions(companions: &std::cell::RefCell<Option<crate::companions::Companions>>) -> Result<(), String> {
-    companions.take().map_or(Ok(()), |mut companions| companions.finish())
 }
