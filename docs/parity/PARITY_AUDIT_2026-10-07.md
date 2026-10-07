@@ -12,6 +12,7 @@ the pinned device, parser or plugin baseline.
 | Settings and bindings | Mouse/puck buttons, pressure percentage thresholds, drag-only pen bindings, pressure/tilt suppression, native scroll bindings and Mouse Scroll Up/Down stores | Extension binding DLLs and preset bindings remain open; imported unsupported stores retain diagnostics |
 | Windows panel | Tools tab with typed settings, separate Filters list, pen policies, Mouse Settings and pagination for all 32 mouse buttons | Interactive DPI/theme and hardware behavior have not been exercised |
 | Console | Active-profile getters/setters, guarded settings saves, preset apply/save-active and bounded v2 JSON stdio | This is the Rust control protocol; unchanged upstream StreamJsonRpc clients do not work |
+| Tablet debugger | Bounded full-rate capture batches, read-completion timestamps, primary/auxiliary provenance, session/epoch tokens, explicit loss counters and durable background recording; sampled fallback retained | Captures observe selected-session driver reads, not physical transport losses; runtime/performance and upstream TXT-format compatibility remain open |
 | Plugin hosting | Exact-Type service lookup, Windows virtual-screen injection, aligned settings/tablet/tool lifetime and timer provider support | Driver/device/input providers, unchanged output-mode/binding/parser extensions and a complete binary corpus remain open |
 | Plugin installation | Bounded archive preflight/extraction and full repository identity in catalog and installed-plugin workflows | Archive integrity and metadata eligibility do not establish plugin execution compatibility |
 | macOS | Indexed USB descriptor matching and initialization, explicit device-string inspection, layout-change detection and native scroll output | Native permissions, transport, display and output behavior remain unverified |
@@ -39,6 +40,17 @@ the pinned device, parser or plugin baseline.
    need implementation and qualified captures.
 
 ## Validation boundary
+
+Full-rate recording bypasses the visualizer's sampled update channel. The report
+tap reserves sequence numbers and copies into preallocated storage with
+`try_lock`; it never waits for the client or disk. The background writer flushes
+and syncs each batch before acknowledging its cursor. Stop freezes the final
+sequence, drains pending reservations, writes a summary and releases the capture.
+Panel close and updater restart drain recording before shutting down the daemon.
+Lost tap attempts, overflow, oversize packets, disconnect, lease expiry and
+transport failures remain explicit incomplete results. Ownership leases also
+expire abandoned frozen captures; expiry and renewal share control-thread
+synchronization rather than racing on the input thread.
 
 The owner has no native Linux or macOS test machines available for this work.
 Cross-compiling a package checks its source and linked artifact, not native

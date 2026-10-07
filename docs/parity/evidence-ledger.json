@@ -209,16 +209,32 @@
     },
     "CAP-13": {
       "state": "open",
-      "owner": null,
-      "pull_request": null,
+      "owner": "O02",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/85",
       "release": null,
-      "evidence": [],
-      "blockers": []
+      "evidence": [
+        {
+          "kind": "source-reviewed",
+          "task": "O02",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "3904b1b27a15aa8ccfe87c738a6361ef08df5233",
+          "platform": "Windows, Linux, macOS source review; native runtime not executed",
+          "architecture": "x86_64 and aarch64 source; no native platform qualification",
+          "date": "2026-10-07T13:27:28.183030+00:00",
+          "tester": "GPT 6.1 Sol integration and independent source reviewers",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/tree/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Desktop/Interop",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/pull/85",
+          "result": "pass"
+        }
+      ],
+      "blockers": [
+        "Cross-platform display implementation is source reviewed; native Linux/macOS and current topology/DPI evidence remain open."
+      ]
     },
     "CAP-14": {
       "state": "open",
-      "owner": null,
-      "pull_request": null,
+      "owner": "B02",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/85",
       "release": null,
       "evidence": [
         {
@@ -235,17 +251,48 @@
           "result": "pass",
           "command": "cargo test --locked -p otd-core differential",
           "fixture_sha256": "b22e0fd1b6c800bc61b82992199061bdf3de66d81e9451498c17991c40700c03"
+        },
+        {
+          "kind": "source-reviewed",
+          "task": "B02",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "3904b1b27a15aa8ccfe87c738a6361ef08df5233",
+          "platform": "Windows, Linux, macOS source review; native runtime not executed",
+          "architecture": "x86_64 and aarch64 source; no native platform qualification",
+          "date": "2026-10-07T13:27:28.183030+00:00",
+          "tester": "GPT 6.1 Sol integration and independent source reviewers",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/tree/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Desktop/Binding/BindingHandler.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/pull/85",
+          "result": "pass"
         }
       ],
-      "blockers": []
+      "blockers": [
+        "Native threshold/drag policies are source reviewed; unchanged binding extensions and current execution/hardware evidence remain open."
+      ]
     },
     "CAP-15": {
       "state": "open",
-      "owner": null,
-      "pull_request": null,
+      "owner": "B04",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/85",
       "release": null,
-      "evidence": [],
-      "blockers": []
+      "evidence": [
+        {
+          "kind": "source-reviewed",
+          "task": "B04",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "3904b1b27a15aa8ccfe87c738a6361ef08df5233",
+          "platform": "Windows, Linux, macOS source review; native runtime not executed",
+          "architecture": "x86_64 and aarch64 source; no native platform qualification",
+          "date": "2026-10-07T13:27:28.183030+00:00",
+          "tester": "GPT 6.1 Sol integration and independent source reviewers",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/tree/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Desktop/Binding/MouseScrollBinding.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/pull/85",
+          "result": "pass"
+        }
+      ],
+      "blockers": [
+        "Native button/chord/wheel/scroll implementations are source reviewed; extension bindings, all-device routing and runtime evidence remain open."
+      ]
     },
     "CAP-16": {
       "state": "open",
@@ -384,22 +431,50 @@
     },
     "CAP-29": {
       "state": "open",
-      "owner": null,
-      "pull_request": null,
+      "owner": "S04",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/85",
       "release": null,
-      "evidence": [],
+      "evidence": [
+        {
+          "kind": "source-reviewed",
+          "task": "S04",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "3904b1b27a15aa8ccfe87c738a6361ef08df5233",
+          "platform": "Windows, Linux, macOS source review; native runtime not executed",
+          "architecture": "x86_64 and aarch64 source; no native platform qualification",
+          "date": "2026-10-07T13:27:28.183030+00:00",
+          "tester": "GPT 6.1 Sol integration and independent source reviewers",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/tree/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Console/Program.Commands.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/pull/85",
+          "result": "pass"
+        }
+      ],
       "blockers": [
-        "Daemon/profile/area/diagnostic CLI increments are implemented; full command coverage and current CLI execution evidence remain open."
+        "Guarded saves, active settings and Rust stdio are implemented; full upstream command/RPC equivalence and current execution evidence remain open."
       ]
     },
     "CAP-30": {
       "state": "open",
-      "owner": null,
-      "pull_request": null,
+      "owner": "S05",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/85",
       "release": null,
-      "evidence": [],
+      "evidence": [
+        {
+          "kind": "source-reviewed",
+          "task": "S05",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "3904b1b27a15aa8ccfe87c738a6361ef08df5233",
+          "platform": "Windows, Linux, macOS source review; native runtime not executed",
+          "architecture": "x86_64 and aarch64 source; no native platform qualification",
+          "date": "2026-10-07T13:27:28.183030+00:00",
+          "tester": "GPT 6.1 Sol integration and independent source reviewers",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/tree/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.UX/Windows/Tablet/TabletDebugger.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/pull/85",
+          "result": "pass"
+        }
+      ],
       "blockers": [
-        "Static diagnostic JSON with conservative redaction is implemented; live debugger, device-string workflows and current privacy/export execution evidence remain open."
+        "Full-rate capture, sampled fallback, diagnostics and indexed strings are source reviewed; runtime/performance/hardware and upstream TXT compatibility remain open."
       ]
     },
     "CAP-31": {
@@ -414,11 +489,27 @@
     },
     "CAP-32": {
       "state": "open",
-      "owner": null,
-      "pull_request": null,
+      "owner": "U03",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/85",
       "release": null,
-      "evidence": [],
-      "blockers": []
+      "evidence": [
+        {
+          "kind": "source-reviewed",
+          "task": "U03",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "3904b1b27a15aa8ccfe87c738a6361ef08df5233",
+          "platform": "Windows, Linux, macOS source review; native runtime not executed",
+          "architecture": "x86_64 and aarch64 source; no native platform qualification",
+          "date": "2026-10-07T13:27:28.183030+00:00",
+          "tester": "GPT 6.1 Sol integration and independent source reviewers",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/tree/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.UX/Controls/ControlPanel.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/pull/85",
+          "result": "pass"
+        }
+      ],
+      "blockers": [
+        "Typed tools, pen policies, mouse buttons and scroll controls are source reviewed; interactive theme/DPI and hardware evidence remain open."
+      ]
     },
     "CAP-33": {
       "state": "open",
@@ -526,7 +617,7 @@
     "CAP-38": {
       "state": "open",
       "owner": "P02",
-      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/37",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/85",
       "release": "v0.7.12",
       "evidence": [
         {
@@ -573,10 +664,23 @@
           "result": "pass",
           "command": "cargo test --locked dotnet_tablet_reference_uses_selected_database_specification -- --ignored",
           "fixture_sha256": "f9e7e594a01fd45c38bd04a66db73f852ecfdec1b2ef175d2e6ca875eaf5f776"
+        },
+        {
+          "kind": "source-reviewed",
+          "task": "P07",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "3904b1b27a15aa8ccfe87c738a6361ef08df5233",
+          "platform": "Windows, Linux, macOS source review; native runtime not executed",
+          "architecture": "x86_64 and aarch64 source; no native platform qualification",
+          "date": "2026-10-07T13:27:28.183030+00:00",
+          "tester": "GPT 6.1 Sol integration and independent source reviewers",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/tree/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Desktop/Reflection/ServiceManager.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/pull/85",
+          "result": "pass"
         }
       ],
       "blockers": [
-        "Supported live selected configuration/identifier supplies TabletReference; broader dependency services and current selected-device integration evidence remain open."
+        "Scoped exact-Type provider/display/timer injection is source reviewed; real driver/device/input services and unchanged DLL execution remain open."
       ]
     },
     "CAP-39": {
@@ -601,19 +705,51 @@
     },
     "CAP-41": {
       "state": "open",
-      "owner": null,
-      "pull_request": null,
+      "owner": "P05",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/85",
       "release": null,
-      "evidence": [],
-      "blockers": []
+      "evidence": [
+        {
+          "kind": "source-reviewed",
+          "task": "P05",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "3904b1b27a15aa8ccfe87c738a6361ef08df5233",
+          "platform": "Windows, Linux, macOS source review; native runtime not executed",
+          "architecture": "x86_64 and aarch64 source; no native platform qualification",
+          "date": "2026-10-07T13:27:28.183030+00:00",
+          "tester": "GPT 6.1 Sol integration and independent source reviewers",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/tree/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Plugin/Output",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/pull/85",
+          "result": "pass"
+        }
+      ],
+      "blockers": [
+        "Managed async/timer infrastructure is present; arbitrary timer/thread lifetime, unchanged binary corpus and performance evidence remain open."
+      ]
     },
     "CAP-42": {
       "state": "open",
-      "owner": null,
-      "pull_request": null,
+      "owner": "P06",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/85",
       "release": null,
-      "evidence": [],
-      "blockers": []
+      "evidence": [
+        {
+          "kind": "source-reviewed",
+          "task": "P06",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "3904b1b27a15aa8ccfe87c738a6361ef08df5233",
+          "platform": "Windows, Linux, macOS source review; native runtime not executed",
+          "architecture": "x86_64 and aarch64 source; no native platform qualification",
+          "date": "2026-10-07T13:27:28.183030+00:00",
+          "tester": "GPT 6.1 Sol integration and independent source reviewers",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/tree/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Plugin/ITool.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/pull/85",
+          "result": "pass"
+        }
+      ],
+      "blockers": [
+        "Tools load/init/dispose and have a typed editor; unchanged output-mode and binding/state-binding contracts remain missing."
+      ]
     },
     "CAP-43": {
       "state": "open",
@@ -625,11 +761,27 @@
     },
     "CAP-44": {
       "state": "open",
-      "owner": null,
-      "pull_request": null,
+      "owner": "P08",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/85",
       "release": null,
-      "evidence": [],
-      "blockers": []
+      "evidence": [
+        {
+          "kind": "source-reviewed",
+          "task": "P08",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "3904b1b27a15aa8ccfe87c738a6361ef08df5233",
+          "platform": "Windows, Linux, macOS source review; native runtime not executed",
+          "architecture": "x86_64 and aarch64 source; no native platform qualification",
+          "date": "2026-10-07T13:27:28.183030+00:00",
+          "tester": "GPT 6.1 Sol integration and independent source reviewers",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/tree/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Desktop/Reflection/DesktopPluginManager.cs",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/pull/85",
+          "result": "pass"
+        }
+      ],
+      "blockers": [
+        "Bounded local/online archive and full-identity catalog workflows are source reviewed; runtime installation and binary execution evidence remain open."
+      ]
     },
     "CAP-45": {
       "state": "open",
@@ -701,11 +853,27 @@
     },
     "CAP-48": {
       "state": "open",
-      "owner": null,
-      "pull_request": null,
+      "owner": "X04",
+      "pull_request": "https://github.com/z9a17/opentabletdriver-rust/pull/85",
       "release": null,
-      "evidence": [],
-      "blockers": []
+      "evidence": [
+        {
+          "kind": "source-reviewed",
+          "task": "X04",
+          "source_revision": "736003ed72c8bbb28033b039d5a0bb76c344145c",
+          "rust_commit": "3904b1b27a15aa8ccfe87c738a6361ef08df5233",
+          "platform": "Windows, Linux, macOS source review; native runtime not executed",
+          "architecture": "x86_64 and aarch64 source; no native platform qualification",
+          "date": "2026-10-07T13:27:28.183030+00:00",
+          "tester": "GPT 6.1 Sol integration and independent source reviewers",
+          "reference": "https://github.com/OpenTabletDriver/OpenTabletDriver/tree/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Desktop/Interop",
+          "link": "https://github.com/z9a17/opentabletdriver-rust/pull/85",
+          "result": "pass"
+        }
+      ],
+      "blockers": [
+        "Indexed USB strings, layout refresh and native scroll are source reviewed; macOS GUI/daemon/plugins/drawing and native hardware/runtime evidence remain open. No native macOS test machine is available to the owner."
+      ]
     },
     "CAP-49": {
       "state": "open",
