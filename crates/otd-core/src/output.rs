@@ -42,6 +42,9 @@ enum Motion {
 /// of contact. Reset invokes the synchronous pointer's lifecycle cleanup.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MouseAttributes {
+    /// A position setter was present even if integer motion is unchanged/zero.
+    /// Attribute-only reports do not fabricate a pointer move on Flush.
+    pub has_position: bool,
     pub pressure: Option<f32>,
     pub tilt: Option<[f32; 2]>,
     pub eraser: Option<bool>,

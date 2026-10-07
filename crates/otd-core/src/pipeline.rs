@@ -638,6 +638,7 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
                 } else { pressure }
             });
             self.pipeline.buttons.pointer_attributes(MouseAttributes {
+                has_position: position.is_some(),
                 pressure: if policy.disable_pressure { None } else { pressure.map(|raw| raw as f32 / self.pipeline.max_pressure.max(1) as f32) },
                 tilt: if self.pipeline.contact.disable_tilt { None } else { values.tilt },
                 eraser: values.eraser.or_else(|| values.tool.map(|tool| tool.tool == ToolType::Eraser)),
@@ -752,6 +753,7 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> Runtime<'_, F> {
                 if command.flags & 4 != 0 && (!fraction.is_finite() || !(0.0..=1.0).contains(&fraction)) { return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid managed pressure fraction")); }
                 if self.pipeline.pen.is_none() {
                     self.pipeline.buttons.pointer_attributes(MouseAttributes {
+                        has_position: command.flags & 2 != 0,
                         pressure: (command.flags & 4 != 0).then_some(fraction),
                         tilt: (command.flags & 8 != 0).then_some(command.tilt),
                         eraser: (command.flags & 64 != 0).then_some(command.flags & 16 != 0),
