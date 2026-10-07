@@ -1521,6 +1521,15 @@ impl Profile {
     }
 
     /// Saved managed entries share path handling with filter/tool entries.
+    pub fn plugin_configs(&self) -> impl Iterator<Item = &PluginConfig> {
+        self.plugins.iter().chain(self.managed_output.iter()).chain(self.managed_tip_binding.iter()).chain(self.managed_eraser_binding.iter()).chain(
+            self.pen_buttons.iter().chain(self.aux_buttons.iter()).chain(self.mouse_buttons.iter())
+                .chain([&self.mouse_scroll_up, &self.mouse_scroll_down])
+                .chain(self.wheels.iter().flat_map(|wheel| [&wheel.clockwise, &wheel.counter_clockwise].into_iter().chain(wheel.buttons.iter())))
+                .filter_map(|action| if let ButtonAction::Managed(config) = action { Some(config) } else { None }))
+    }
+
+    /// Mutable counterpart for relocating all saved plugin paths.
     pub fn plugin_configs_mut(&mut self) -> impl Iterator<Item = &mut PluginConfig> {
         self.plugins.iter_mut().chain(self.managed_output.iter_mut()).chain(self.managed_tip_binding.iter_mut()).chain(self.managed_eraser_binding.iter_mut()).chain(
             self.pen_buttons.iter_mut().chain(self.aux_buttons.iter_mut()).chain(self.mouse_buttons.iter_mut())

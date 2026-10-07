@@ -199,7 +199,7 @@ fn run(
     profile.validate_runtime_tablet_in(database)?;
     profile.validate_filter_execution()?;
     let tablet_name = profile.tablet_name()?;
-    if profile.plugins.iter().any(|plugin| plugin.enabled)
+    if profile.plugin_configs().any(|plugin| plugin.enabled)
         && !crate::plugin_catalog::recover_installations()? {
         return Err("Plugins are being installed or recovered; retry starting the driver after that finishes.".into());
     }
@@ -271,7 +271,7 @@ fn run(
         crate::device_sessions::set_debug_key(&id);
         if !profile_loaded {
             profile = device_sessions.effective_profile(&id, &profile, prefer_saved)?;
-            if profile.plugins.iter().any(|plugin| plugin.enabled) && !crate::plugin_catalog::recover_installations()? {
+            if profile.plugin_configs().any(|plugin| plugin.enabled) && !crate::plugin_catalog::recover_installations()? {
                 return Err("Plugins are being installed or recovered; retry starting the driver after that finishes.".into());
             }
             crate::plugin_catalog::use_native_ports(&mut profile, log);
