@@ -131,13 +131,21 @@ impl ReportPipeline {
     /// Sends output to a pen device instead of the mouse. Pen packets go to
     /// this sink; the mouse sink then receives nothing.
     pub fn set_pen_sink(&mut self, sink: Box<dyn PenSink>) {
+        // Dynamic core callers can add a pen backend to a mouse profile. All
+        // storage needed by a later managed PenAction belongs to setup too.
+        self.prepare_managed_pen_owners();
         self.pen = Some(PenOutput::new(sink, self.max_pressure));
+    }
+
+    fn prepare_managed_pen_owners(&mut self) {
+        if self.managed_pen_holds.is_none() { self.managed_pen_holds = Some(Box::new([(0, 0); 128])); }
     }
 
     /// Sends keys and mouse buttons for the pen side buttons, express keys
     /// and wheels through `sink`. Returns a message for each binding the
     /// platform cannot carry out; those buttons do nothing.
     pub fn set_action_sink(&mut self, sink: Box<dyn ActionSink>) -> Vec<String> {
+        if (self.pen_requested || self.pen.is_some()) && sink.has_managed() { self.prepare_managed_pen_owners(); }
         let (mut buttons, mut rejected) =
             ButtonOutput::new(&self.profile_buttons, self.pen_requested, sink);
         rejected.extend(buttons.set_auxiliary(
@@ -749,7 +757,7 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> Runtime<'_, F> {
             3 => { self.pipeline.buttons.managed_scroll(ScrollPulse { axis: if command.flags & 1 == 0 { ScrollAxis::Vertical } else { ScrollAxis::Horizontal }, delta: command.value as i32 })?; }
             4 => {
                 if self.pipeline.pen.is_none() || command.value > 4 { return Err(io::Error::new(io::ErrorKind::Unsupported, "managed pen action has no prepared pen backend")); }
-                let holds = self.pipeline.managed_pen_holds.get_or_insert_with(|| Box::new([(0, 0); 128]));
+                let holds = self.pipeline.managed_pen_holds.as_mut().ok_or_else(|| io::Error::other("managed pen ownership was not prepared before dispatch"))?;
                 let index = holds.iter().position(|(owner, actions)| *actions != 0 && *owner == command.owner)
                     .or_else(|| holds.iter().position(|(_, actions)| *actions == 0)).ok_or_else(|| io::Error::other("managed pen ownership exceeded 128 owners"))?;
                 let bit = 1 << command.value;
@@ -794,6 +802,33 @@ mod tests {
     use crate::relative::RelativeSettings;
     use std::hint::black_box;
     use std::time::Duration;
+
+    #[test]
+    fn managed_pen_owner_storage_is_prepared_and_reused_for_interleaved_holds() {
+        // Exercise the dynamic API: the original mouse profile did not ask
+        // for managed pen storage, but an added backend must prepare it.
+        let mut pipeline = ReportPipeline::new(&Profile::default()).unwrap();
+        assert!(pipeline.managed_pen_holds.is_none());
+        pipeline.set_pen_sink(Box::new(|_: crate::output::pen::PenPacket| Ok(())));
+        let storage = pipeline.managed_pen_holds.as_ref().unwrap().as_ptr();
+        let mut send = |_: MousePacket| panic!("pen owner transition sent a mouse packet");
+        {
+            let mut runtime = Runtime { pipeline: &mut pipeline, mapper: None, now: Instant::now(), send: &mut send,
+                stats: DispatchStats::default(), exact_position: None, shown_position: None, preserve_precision: false,
+                unfiltered_raw: None, timer: false, physical_loss: false };
+            for _ in 0..256 {
+                for (owner, held) in [(1, true), (2, true), (1, false)] {
+                    runtime.apply_managed_command(crate::plugins::ManagedCommand { kind: 4, owner, value: 0, flags: u32::from(held), ..Default::default() }).unwrap();
+                    assert_eq!(runtime.managed_pen_actions(), 1, "one owner's release cannot lift another held tip");
+                }
+                runtime.apply_managed_command(crate::plugins::ManagedCommand { kind: 4, owner: 2, value: 0, flags: 0, ..Default::default() }).unwrap();
+                assert_eq!(runtime.managed_pen_actions(), 0);
+                assert_eq!(runtime.pipeline.managed_pen_holds.as_ref().unwrap().as_ptr(), storage);
+            }
+        }
+        pipeline.release_all(|_| Ok(())).unwrap();
+        assert_eq!(pipeline.managed_pen_holds.as_ref().unwrap().as_ptr(), storage);
+    }
 
     // Real USB report prefixes: hover, contact, and hover above In Range.
     const CAPTURE: [[u8; 17]; 3] = [
