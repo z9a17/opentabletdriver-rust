@@ -332,6 +332,7 @@ mod app {
         let clicks = managed || actions().any(|action| matches!(inner(action), ButtonAction::Mouse(_) | ButtonAction::Scroll(_)))
             || non_pen_actions().any(|action| matches!(inner(action), ButtonAction::Barrel(1 | 2)));
         let keyboard = keys.then(VirtualKeyboard::create).transpose().map_err(SessionError::Fatal)?;
+        if keys{linux::ensure_shared_inputs().map_err(SessionError::Fatal)?;}
         let pen = if profile.output == OutputKind::Pen {
             Some(VirtualTablet::create(displays.0.virtual_screen).map_err(SessionError::Fatal)?)
         } else { None };
@@ -355,9 +356,9 @@ mod app {
             &identifiers).map_err(|error| SessionError::Fatal(std::io::Error::other(error)))?;
         let mut decoder = plugins.source_decoder(selected.identifier.parser(), selected.spec)
             .map_err(|error| SessionError::Fatal(std::io::Error::other(error)))?;
-        let mut auxiliary_decoder=auxiliary.as_ref().map(|(_,identifier)|plugins.source_decoder(identifier.parser(),selected.spec)).transpose()
+        let mut auxiliary_decoder=auxiliary.as_ref().map(|(_,identifier)|plugins.source_decoder_for_endpoint(identifier.parser(),selected.spec,true)).transpose()
             .map_err(|error|SessionError::Fatal(std::io::Error::other(error)))?;
-        let actions = plugins.wrap_action_sink(profile, &selected.configuration, linux::action_sink(pointer.clone(), keyboard))
+        let actions = plugins.wrap_action_sink(profile, &selected.configuration, linux::action_sink(pointer.clone(), keyboard).map_err(SessionError::Fatal)?)
             .map_err(|error| SessionError::Fatal(std::io::Error::other(error)))?;
         let actions=match context{Some(context)=>context.actions(actions,profile.binding_inhibit),None=>actions};
         linux::initialize(
@@ -421,6 +422,10 @@ mod app {
             run_session(&selected,&profile,&mut displays,&context.stop,Some(&context)).map_err(|error|match error{SessionError::Fatal(error)|SessionError::Retry(error)=>error.to_string()})
         }
         fn service_io(&self,request:otd_platform::managed_services::Request) -> Result<serde_json::Value,String> {
+            if matches!(request.operation,otd_platform::managed_services::Operation::InputHold|otd_platform::managed_services::Operation::InputRelease){
+                if request.operation==otd_platform::managed_services::Operation::InputHold&&request.payload["type"]!="renew"{linux::ensure_shared_inputs().map_err(|error|error.to_string())?;}
+                return otd_platform::input_owner::execute(request.operation,request.scope,&request.payload);
+            }
             otd_platform::shared_devices::execute(request.operation,request.scope,&request.payload)
         }
     }

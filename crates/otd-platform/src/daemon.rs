@@ -449,11 +449,14 @@ fn import_profile(settings:&Value,index:usize) -> Result<Profile,String> {
 }
 struct Services { handle:Handle,platform:Arc<dyn Platform> }
 impl crate::managed_services::Backend for Services {
+    fn maintain(&self,lane:usize){if lane==4{crate::input_owner::maintain();}}
+    fn shutdown(&self,lane:usize){if lane==4{crate::input_owner::shutdown();}}
     fn execute(&self,request:crate::managed_services::Request) -> Result<Value,String> {
         use crate::managed_services::Operation;
         match request.operation {
             Operation::Daemon=>{
                 let method=request.payload["method"].as_str().ok_or("Managed request method is missing")?.to_owned();
+                if let Some(value)=crate::plugin_manager::invoke(&method,&request.payload.get("params").cloned().unwrap_or(json!([])),None)?{return Ok(value);}
                 let binding_owner=request.payload.get("source_binding_owner").map(|value|value.as_u64().and_then(|value|u32::try_from(value).ok()).ok_or("Invalid source binding owner")).transpose()?;
                 self.handle.call(Command::Original {expected:request.expected_daemon,source:request.expected_source,binding_owner,method,params:request.payload.get("params").cloned().unwrap_or(json!([]))})
             },
@@ -462,7 +465,7 @@ impl crate::managed_services::Backend for Services {
             // establish a detected output owner here; discovery never opens one.
             Operation::Detect=>Ok(json!(!crate::shared_devices::owned_metadata().is_empty())),
             Operation::Snapshot=>Err("Snapshot is served by its real native cache".into()),
-            Operation::DeviceString|Operation::OpenStream|Operation::ReadStream|Operation::WriteStream|Operation::GetFeature|Operation::SetFeature|Operation::CloseStream|Operation::DeviceReports|Operation::OutputOwner=>self.platform.service_io(request),
+            Operation::DeviceString|Operation::OpenStream|Operation::ReadStream|Operation::WriteStream|Operation::GetFeature|Operation::SetFeature|Operation::CloseStream|Operation::DeviceReports|Operation::OutputOwner|Operation::InputHold|Operation::InputRelease=>self.platform.service_io(request),
         }
     }
 }

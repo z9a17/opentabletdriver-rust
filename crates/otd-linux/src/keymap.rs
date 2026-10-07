@@ -140,6 +140,7 @@ const KEYS: &[(u16, u16)] = &[
     (0x72, 193), // KEY_F23
     (0x73, 194), // KEY_F24
     (0x75, 138), // KEY_HELP
+    (0x9c,355), // KEY_CLEAR, original EvdevVirtualKeyboard.
     (0xe0, 29),  // KEY_LEFTCTRL
     (0xe1, 42),  // KEY_LEFTSHIFT
     (0xe2, 56),  // KEY_LEFTALT
@@ -148,6 +149,13 @@ const KEYS: &[(u16, u16)] = &[
     (0xe5, 54),  // KEY_RIGHTSHIFT
     (0xe6, 100), // KEY_RIGHTALT
     (0xe7, 126), // KEY_RIGHTMETA
+    (0x10b5,163), // KEY_NEXTSONG
+    (0x10b6,165), // KEY_PREVIOUSSONG
+    (0x10b7,166), // KEY_STOPCD
+    (0x10cd,164), // KEY_PLAYPAUSE
+    (0x10e2,113), // KEY_MUTE
+    (0x10e9,115), // KEY_VOLUMEUP
+    (0x10ea,114), // KEY_VOLUMEDOWN
 ];
 
 /// The evdev key code for a usage, if this backend can press it.
@@ -194,7 +202,7 @@ mod tests {
 
     #[test]
     fn unknown_usages_are_not_pressed() {
-        for usage in [0x32, 0x66, 0x9c, 0xe8, 0x100] {
+        for usage in [0x32, 0x66, 0xe8, 0x100] {
             assert_eq!(key(usage), None, "{usage:#x}");
         }
     }

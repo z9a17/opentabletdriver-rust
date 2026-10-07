@@ -287,9 +287,9 @@ mod app {
         } else { PluginChain::load_with_tablet(&[], &selected.configuration) }.map_err(io::Error::other)?;
         let mut decoder = plugins.source_decoder(selected.identifier.parser(), selected.spec).map_err(io::Error::other)?;
 
-        let mut auxiliary_decoder=auxiliary.as_ref().map(|(_,identifier)|plugins.source_decoder(identifier.parser(),selected.spec)).transpose().map_err(io::Error::other)?;
+        let mut auxiliary_decoder=auxiliary.as_ref().map(|(_,identifier)|plugins.source_decoder_for_endpoint(identifier.parser(),selected.spec,true)).transpose().map_err(io::Error::other)?;
         let actions = mouse.as_ref().map(|mouse| plugins.wrap_action_sink(profile, &selected.configuration,
-            crate::macos::action_sink(std::rc::Rc::clone(mouse)))).transpose().map_err(io::Error::other)?;
+            crate::macos::action_sink(std::rc::Rc::clone(mouse)).map_err(|error|error.to_string())?)).transpose().map_err(io::Error::other)?;
         let actions=actions.map(|sink|match context{Some(context)=>context.actions(sink,profile.binding_inhibit),None=>sink});
         source.initialize(&selected.identifier, &selected.configuration,
             match mode { Mode::Capture { deadline, .. } => Some(deadline), Mode::Driver => None })?;
@@ -346,6 +346,10 @@ mod app {
             run_session(&selected,&profile,&mut displays,Mode::Driver,&context.stop,Some(&context)).map_err(|error|error.to_string())
         }
         fn service_io(&self,request:otd_platform::managed_services::Request) -> Result<serde_json::Value,String> {
+            if matches!(request.operation,otd_platform::managed_services::Operation::InputHold|otd_platform::managed_services::Operation::InputRelease){
+                if request.operation==otd_platform::managed_services::Operation::InputHold&&request.payload["type"]!="renew"{macos::ensure_shared_inputs().map_err(|error|error.to_string())?;}
+                return otd_platform::input_owner::execute(request.operation,request.scope,&request.payload);
+            }
             otd_platform::shared_devices::execute(request.operation,request.scope,&request.payload)
         }
     }

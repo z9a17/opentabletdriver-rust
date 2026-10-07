@@ -46,3 +46,8 @@ pub mod process;
 pub mod custom_devices;
 #[cfg(unix)]
 pub mod managed_source;
+#[cfg(unix)]
+pub mod input_owner;
+#[cfg(unix)]
+#[path = "../../../src/plugin_manager.rs"]
+pub mod plugin_manager;

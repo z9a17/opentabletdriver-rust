@@ -474,12 +474,15 @@ const BUS_VIRTUAL: u16 = 0x06;
 /// all screens.
 pub struct Uinput {
     file: File,
+    contact_owner:otd_platform::input_owner::Native,
     tip_held: std::cell::Cell<bool>,
     side_left_held: std::cell::Cell<bool>,
 }
 
 impl Uinput {
     pub fn create(relative: bool) -> io::Result<Self> {
+        ensure_shared_inputs()?;
+        let contact_owner=otd_platform::input_owner::Native::new()?;
         let file = OpenOptions::new()
             .write(true)
             .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
@@ -535,7 +538,7 @@ impl Uinput {
         if unsafe { libc::ioctl(fd, UI_DEV_CREATE as _) } < 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(Self { file, tip_held: std::cell::Cell::new(false), side_left_held: std::cell::Cell::new(false) })
+        Ok(Self { file,contact_owner, tip_held: std::cell::Cell::new(false), side_left_held: std::cell::Cell::new(false) })
     }
 
     /// Sends one packet as a single evdev frame, without allocating.
@@ -562,11 +565,6 @@ impl Uinput {
         let tip = if packet.flags & flags::LEFTDOWN != 0 { true }
             else if packet.flags & flags::LEFTUP != 0 { false }
             else { self.tip_held.get() };
-        let was_left = self.tip_held.get() || self.side_left_held.get();
-        let left = tip || self.side_left_held.get();
-        if was_left != left {
-            push(EV_KEY, BTN_LEFT, i32::from(left));
-        }
         push(EV_SYN, 0, 0);
         // SAFETY: `events[..count]` is initialized plain data.
         let bytes = unsafe {
@@ -576,6 +574,7 @@ impl Uinput {
             )
         };
         (&self.file).write_all(bytes)?;
+        if packet.flags&(flags::LEFTDOWN|flags::LEFTUP)!=0{self.contact_owner.hold(otd_platform::input_owner::Code::Button(0),tip)?;}
         self.tip_held.set(tip);
         Ok(())
     }
@@ -650,9 +649,12 @@ impl VirtualKeyboard {
             }
         };
         set(UI_SET_EVBIT, EV_KEY)?;
-        for code in crate::keymap::key_codes() {
+        // Exact original EventCode values include media and non-HID keys.
+        for code in 1..768u16 {
             set(UI_SET_KEYBIT, code)?;
         }
+        // Libinput recognizes the shared mouse-button owner as a pointer too.
+        set(UI_SET_EVBIT,EV_REL)?;set(UI_SET_RELBIT,0)?;set(UI_SET_RELBIT,1)?;
         // SAFETY: plain-data struct; zero is a valid value.
         let mut setup: libc::uinput_setup = unsafe { std::mem::zeroed() };
         setup.id.bustype = BUS_VIRTUAL;
@@ -691,31 +693,33 @@ impl Drop for VirtualKeyboard {
 pub fn action_sink(
     pointer: Option<std::rc::Rc<Uinput>>,
     keyboard: Option<VirtualKeyboard>,
-) -> Box<dyn ActionSink> {
+) -> io::Result<Box<dyn ActionSink>> {
+    if pointer.is_some()||keyboard.is_some(){ensure_shared_inputs()?;}
+    let owner=otd_platform::input_owner::Native::new()?;
     let scroll_pointer = pointer.clone();
     let supports_mouse = pointer.is_some();
     let supports_keys = keyboard.is_some();
     let actions = LocalActions::new(
-        move |transition: ActionTransition| match transition.action {
-            Action::Mouse(button) => pointer
-                .as_ref()
-                .ok_or_else(|| io::Error::other("no virtual pointer for mouse buttons"))?
-                .send_button(button, transition.pressed),
-            Action::Key(key) => keyboard
-                .as_ref()
-                .ok_or_else(|| io::Error::other("no virtual keyboard for keys"))?
-                .send_key(key, transition.pressed),
-        },
+        move |transition: ActionTransition|{let code=match transition.action{
+            Action::Mouse(button)=>otd_platform::input_owner::Code::Button(match button{MouseButton::Left=>0,MouseButton::Right=>1,MouseButton::Middle=>2,MouseButton::Backward=>3,MouseButton::Forward=>4}),
+            Action::Key(key)=>otd_platform::input_owner::Code::Key(crate::keymap::key_code(key).ok_or_else(||io::Error::new(io::ErrorKind::Unsupported,"No evdev key for this usage"))?),
+        };owner.hold(code,transition.pressed)},
         move |action| match action {
             Action::Mouse(_) => supports_mouse,
             Action::Key(key) => supports_keys && crate::keymap::key_code(key).is_some(),
         },
     );
     match scroll_pointer {
-        Some(pointer) => Box::new(actions.with_scroll(move |pulse| pointer.send_scroll(pulse))),
-        None => Box::new(actions),
+        Some(pointer) => Ok(Box::new(actions.with_scroll(move |pulse| pointer.send_scroll(pulse)))),
+        None => Ok(Box::new(actions)),
     }
 }
+pub fn ensure_shared_inputs()->io::Result<()>{otd_platform::input_owner::ensure(||{
+    let keyboard=VirtualKeyboard::create()?;Ok(Box::new(move|code,held,_position|write_key(&keyboard.file,match code{
+        otd_platform::input_owner::Code::Key(code)=>code,
+        otd_platform::input_owner::Code::Button(button)=>[0x110,0x111,0x112,0x113,0x114][button as usize],
+    },held)))
+})}
 
 impl Drop for Uinput {
     fn drop(&mut self) {
