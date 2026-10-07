@@ -254,6 +254,7 @@ sealed class Instance : IDisposable
     /// Fires this filter's due timers; emissions continue through `continuation`.
     public void TickGraph(long now, Action<IDeviceReport> continuation)
     {
+        using var reportScope = ServiceClient.Report();
         if (Environment.CurrentManagedThreadId != ownerThread)
             throw new InvalidOperationException("Timers must fire on the graph's owning thread.");
         // Only the owning thread reads or writes `consuming` (OnEmit checks the
@@ -339,6 +340,7 @@ sealed class Instance : IDisposable
 
     public void ConsumeGraph(IDeviceReport report, Action<IDeviceReport> continuation)
     {
+        using var reportScope = ServiceClient.Report();
         if (Environment.CurrentManagedThreadId != ownerThread || Volatile.Read(ref asyncEmission) != 0)
             throw new NotSupportedException("Asynchronous plugin emissions require the P05 scheduler.");
         // Owner-thread state, as in TickGraph: no locked instruction per report.
@@ -386,6 +388,7 @@ sealed class Instance : IDisposable
 
     int Consume(ref Sample sample, IDeviceReport report)
     {
+        using var reportScope = ServiceClient.Report();
         if (Volatile.Read(ref asyncEmission) != 0) return 2;
         emitted = null;
         emissionCount = 0;
@@ -403,6 +406,7 @@ sealed class Instance : IDisposable
 
     public void Reset(ReadOnlySpan<byte> raw)
     {
+        using var reportScope = ServiceClient.Report();
         // OTD filters receive a range-loss report; they decide how to reset.
         // A fresh boxed struct and raw array keep retained loss reports stable.
         byte[] ownedRaw = new byte[raw.Length];

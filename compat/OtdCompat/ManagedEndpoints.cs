@@ -197,6 +197,7 @@ abstract class EndpointInstance : IDisposable
     }
     public void Tick()
     {
+        using var reportScope = ServiceClient.Report();
         CheckThread(); long now = Stopwatch.GetTimestamp(); int count = timers.Count;
         for (int index = 0; index < count; index++) timers[index].FireIfDue(now);
     }
@@ -218,16 +219,17 @@ sealed class BindingInstance(JObject config) : EndpointInstance(config, typeof(I
     public void SetReport(IDeviceReport value) { CheckThread(); report = value; }
     public void Set(bool down, uint owner)
     {
+        using var reportScope = ServiceClient.Report();
         CheckThread(); Queue.Owner = owner;
         var current = SynchronousGraph.CurrentReport ?? report ?? throw new InvalidOperationException("Binding has no source report.");
         report = current;
         uint? previousOwner = ServiceClient.BindingOwner;
         string? previousTablet = ServiceClient.BindingTablet;
-        ServiceClient.BindingOwner = owner; ServiceClient.BindingTablet = Tablet.Properties.Name; ServiceClient.ReportDepth++;
+        ServiceClient.BindingOwner = owner; ServiceClient.BindingTablet = Tablet.Properties.Name;
         try {
             if (down) { pressed = true; ((IStateBinding)Value).Press(Tablet, current); }
             else { try { ((IStateBinding)Value).Release(Tablet, current); } finally { pressed = false; } }
-        } finally { ServiceClient.ReportDepth--; ServiceClient.BindingOwner = previousOwner; ServiceClient.BindingTablet = previousTablet; }
+        } finally { ServiceClient.BindingOwner = previousOwner; ServiceClient.BindingTablet = previousTablet; }
     }
     public void Release() { if (pressed) Set(false, Queue.Owner); }
     public override void Dispose() { try { Release(); } finally { base.Dispose(); } }

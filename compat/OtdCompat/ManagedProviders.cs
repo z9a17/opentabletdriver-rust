@@ -241,7 +241,7 @@ sealed class ProviderParser : IReportParser<IDeviceReport>, IDisposable
             services.Inject(selected.Type, value); parser = (IReportParser<IDeviceReport>)value; }
         catch { try { HostServices.DisposePlugin(value); } finally { services.Dispose(); if (generation != null) InstalledRegistry.Release(generation); } throw; }
     }
-    public IDeviceReport Parse(byte[] data) { lock (gate) { ObjectDisposedException.ThrowIf(disposed, this); return parser.Parse(data); } }
+    public IDeviceReport Parse(byte[] data) { using var reportScope = ServiceClient.Report(); lock (gate) { ObjectDisposedException.ThrowIf(disposed, this); return parser.Parse(data); } }
     public void Dispose() { lock (gate) { if (disposed) return; disposed = true;
         try { HostServices.DisposePlugin(parser); }
         finally { services.Dispose(); if (generation != null) InstalledRegistry.Release(generation); }

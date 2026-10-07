@@ -218,6 +218,7 @@ sealed class ParserSession : IDisposable
     }
     internal unsafe int Decode(byte* raw, uint length)
     {
+        using var reportScope = ServiceClient.Report();
         Check(); Pending = null;
         if (raw == null || length == 0 || length > 65535) throw new ArgumentException("Debug parser raw length must be 1..65535.");
         // Exact upstream DebugReportData constructor: actual concrete Path and
@@ -231,6 +232,7 @@ sealed class ParserSession : IDisposable
     }
     internal unsafe int Project(byte* raw, uint length, ParsedSourceReport* output)
     {
+        using var reportScope = ServiceClient.Report();
         Check(); sourceReport = null; sourceConsumed = true;
         if (raw == null || length == 0 || length > 65535 || output == null) throw new ArgumentException("Invalid managed source packet.");
         if (sourceSequence == ulong.MaxValue) throw new InvalidOperationException("Managed source sequence exhausted.");

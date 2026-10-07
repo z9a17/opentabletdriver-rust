@@ -135,6 +135,16 @@ static class ServiceClient
         public void Dispose() { SetupDepth--; }
     }
     internal static SetupScope Setup() => new();
+    // Covers the whole managed callback, including filters, parser properties,
+    // output modes and due timers. CurrentReport only surrounds native
+    // continuations, so it cannot guard the plugin code on either side of them.
+    // A using-local calls Dispose directly without boxing or report allocation;
+    // nested callbacks restore the previous depth even when a plugin throws.
+    internal readonly struct ReportScope : IDisposable {
+        public ReportScope() { ReportDepth++; }
+        public void Dispose() { ReportDepth--; }
+    }
+    internal static ReportScope Report() => new();
 }
 
 public static unsafe partial class EntryPoints
