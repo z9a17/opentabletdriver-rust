@@ -5,7 +5,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use crate::control::{self, Command, Reply, WorkerIdentity};
-use crate::managed_services::{Backend, Host, Operation, Publisher, Request, Snapshot};
+use crate::managed_services::{Backend, Host, Operation, Publisher, Request, Snapshot, SourceSession};
 
 static CURRENT: OnceLock<Mutex<Weak<NativeBackend>>> = OnceLock::new();
 struct Published {
@@ -105,6 +105,10 @@ impl NativeBackend {
         let status = match call(Command::Status)? { Reply::Status { status } => status, _ => return Err("Unexpected managed status reply".into()) };
         let sessions = match call(Command::ListDeviceSessions)? { Reply::DeviceSessions { sessions, .. } => sessions, _ => return Err("Unexpected managed device reply".into()) };
         let session_generations: Vec<_> = sessions.iter().map(|session| (session.id.clone(), session.device_generation, session.pending_generation)).collect();
+        state.snapshot.source_sessions = sessions.iter().map(|session| SourceSession {
+            id: session.id.clone(), tablet: session.tablet.clone(), device_generation: session.device_generation,
+            pending_generation: session.pending_generation, connected: session.connected, state: session.state,
+        }).collect();
         let retained = crate::upstream_rpc::cached_original_settings();
         let retained_changed = match (&state.retained, &retained) {
             (Some(old), Some(new)) => !Arc::ptr_eq(old, new), (None, None) => false, _ => true,
@@ -151,7 +155,8 @@ impl NativeBackend {
                         owner.as_u64().and_then(|owner| u32::try_from(owner).ok()).ok_or("Invalid source binding owner")?)),
                     _ => return Err("Managed preset source needs both tablet name and binding owner".into()),
                 };
-                crate::upstream_rpc::set_original_settings_expected_with_source(settings, expected, source)?;
+                crate::upstream_rpc::set_original_settings_expected_with_source_generation(settings, expected, source,
+                    request.expected_source.clone())?;
                 Ok(Value::Null)
             }
             "SetTabletDebug" => Err("Managed IDriverDaemon.DeviceReport subscriptions are not supplied yet; use the native/full-rate RPC recording endpoint".into()),

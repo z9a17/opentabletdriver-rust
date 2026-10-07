@@ -6,21 +6,21 @@ Windows is the current priority. The owner deferred native Linux/macOS work
 because those machines are unavailable. The independent catalog snapshot and
 historical evidence are unchanged.
 
-This is a source/workflow checkpoint for 0.17.0, not a full-parity certificate.
-See [Windows workflows](../WINDOWS_COMPATIBILITY_0.17.0.md), the
+This is a source/workflow checkpoint for 0.17.1, not a full-parity certificate.
+See [Windows workflows](../WINDOWS_COMPATIBILITY_0.17.1.md), the
 [acceptance backlog](WORK_ITEMS.md) and [evidence ledger](EVIDENCE_LEDGER.md).
 
 ## Source delivered
 
 | Area / stable task IDs | Implemented source | Qualification |
 | --- | --- | --- |
-| Bindings B01-B04, output O03/O05, UI U02/U03 | Pen/mouse/auxiliary/wheel/scroll editors, percentage contact and pen policies, separate Tools tab, typed unchanged managed output/binding selectors | Complete toggle/preset bindings and per-binary/device-specific behavior remain open |
+| Bindings B01-B04, output O03/O05, UI U02/U03 | Pen/mouse/auxiliary/wheel/scroll editors, contact/pen policies, native toggle and guarded per-device preset actions, unchanged original JSON PresetBinding | Held-input/self-apply and unchanged-binary/device-specific runtime acceptance remain open; foreground native preset switching is unavailable |
 | Devices D05/D09, settings C02 | Independent physical sessions, guarded profiles, per-device CLI/panel controls, HID and cancel-safe WinUSB transport | Multi-device, firmware, unplug/reconnect, transport and input-release hardware checks remain unrun |
-| Plugins P06/P07 | Unchanged IOutputMode/IBinding/IStateBinding host, actual opened identifiers, retained registry generations, installed store resolution, original Configurations and custom parser reports driving the managed graph | Original Desktop/core/device-provider services and unchanged binary corpus remain open |
-| Daemon S03/S04 | Opt-in persistent upstream framing, 19 method dispatches, four event paths, multi-device settings/defaults/discovery, typed logs, registry and checked update ownership | Original clients unrun; bounded logs, per-client debug enable, idle settings storage and nonrepresentable native settings retain explicit limits |
+| Plugins P06/P07 | Actual original Desktop/Core/Native helper assemblies, IDriver/config/parser/device metadata and asynchronous IDriverDaemon services, scoped lifetime/generation guards and callback wait rejection | Concrete Driver/RootHub/readers, custom hub attachment, shared streams/feature I/O, managed DeviceReport and native-hosted DiagnosticInfo remain gaps; original binary corpus unrun |
+| Daemon S03/S04, settings C03-C05 | Original RPC framing/events, retained idle Settings collections, unknown/disconnected rows, explicit guarded Load/Save and setup/reconnect selection, actual bounded logs | Original clients unrun; enabled idle global tools, same-model differing physical profiles and nonrepresentable native extensions retain explicit limits; group Apply is not atomic |
 | Diagnostics S05/U05 | Full-rate raw recording, independent all-session subscriptions, stateful endpoint decoding, sequence/gap/loss reporting | Visualizer sampled; losses before the tap unmeasured; decoded history begins at capture start |
 | Native filters P02/P04 | PR80 atomic whole-chain RadialFollow substitution eligibility and tablet-report interface gating; puck reports do not change native pen history | Native substitution is separate from unchanged-DLL evidence; new fixtures remain unrun |
-| Packaging R02-R04 | Original Plugin/Configurations dependencies and notices, guarded manual copy, complete four-platform packaging workflow | Architecture/checksum/source inspection does not prove runtime behavior |
+| Packaging R02-R04 | Complete locked Windows managed DLL/resource/license closure, guarded manual copy, complete four-platform packaging workflow | Architecture/checksum/source inspection does not prove runtime behavior |
 
 ## Required continuation work
 
@@ -28,15 +28,15 @@ The broad GitHub issues #2-#13 are consolidated at the owner's request.
 Administrative closure does not close these acceptance criteria or certify
 an implementation as tested. Stable task IDs remain the continuation backlog:
 
-1. **P01/P03/P07/P09 and V03:** supply actual original Desktop/core/device/control
-   provider types/services required by unchanged binaries. Finish per-assembly
+1. **P01/P03/P07/P09 and V03:** finish concrete Core/device reader and shared-I/O
+   services required by unchanged binaries. Finish per-assembly
    class/dependency inventory and execute the exact unchanged DLL corpus.
    Registry metadata and replacement Rust algorithms are separate evidence.
-2. **B04, O05 and D04/D06-D09:** finish remaining toggle/preset binding semantics,
+2. **B04, O05 and D04/D06-D09:** qualify delivered native/original preset semantics,
    device-specific analog/touch/output behavior and qualify Bluetooth/wireless
    and WinUSB variants. Catalog parser coverage does not prove every tablet works.
 3. **C03-C05, S03-S05 and U01-U06:** complete original-client/provider fidelity,
-   idle upstream settings collections and nonrepresentable native extensions.
+   idle enabled global-tool ownership and nonrepresentable native extensions.
    Verify editing, save/import/presets, theme/high contrast/DPI, device selection
    and async lifetime guards. Logs are bounded; update cancellation cannot
    interrupt synchronous Windows proxy discovery.
@@ -64,6 +64,13 @@ identifiers, external unsaved Apply origin, authored/native-execution separation
 dynamic managed pen storage,
 parser/graph reload identity and original-import gaps. The new
 registry compilation error was fixed before any package was copied.
+
+The 0.17.1 source pass additionally corrected managed detection result types,
+log delivery after ring rollover, subscription baselines, finalizer exception
+containment, synchronous service waits from parser/report/timer callbacks,
+scope retirement admission and physical source generation checks. Managed
+metadata snapshots do not probe another input reader. Original Desktop cleanup
+paths use dedicated native data folders rather than the system temporary root.
 
 Fixtures were written but not executed. CI, format/Clippy/test/build-check
 suites were not run under the owner's policy. No driver, GUI, plugin, daemon,
