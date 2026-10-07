@@ -151,7 +151,7 @@ abstract class EndpointInstance : IDisposable
         }
         services = new HostServices(() => { CheckThread(); var timer = new SessionTimer(); timers.Add(timer); return timer; },
             type => type == typeof(IVirtualKeyboard) ? keyboard :
-                actualPointer != null && IsPointerService(type) && type.IsInstanceOfType(actualPointer) ? actualPointer : Pointer.Resolve(type));
+                actualPointer != null && IsPointerService(type) && type.IsInstanceOfType(actualPointer) ? actualPointer : Pointer.Resolve(type), authoritativeInput: true);
         object? value = null;
         try
         {

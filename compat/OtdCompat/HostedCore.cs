@@ -159,7 +159,7 @@ sealed class HostedCore : IDisposable, IServiceProvider
     {
         lock (gate) {
             if (disposed) return; disposed = true;
-            originalInputs.Dispose();
+            try { originalInputs.Dispose(); } catch (Exception error) { Log.Exception(error); }
             foreach (var item in trees.Values) {
                 var payload = (JObject)item.Identity.DeepClone(); payload.Remove("members"); payload["managed_output"] = false;
                 // Scope retirement must not synchronously await its own native apply.
@@ -177,8 +177,10 @@ sealed class HostedCore : IDisposable, IServiceProvider
     {
         // Drain the shadow callback independently of the native apply thread.
         // Its output ownership stays delegated until this drain completes.
-        var mode = tree.OutputMode;
-        await Task.Run(tree.HostedRetire).ConfigureAwait(false);
+        var mode = await Task.Run(() => {
+            var previous = tree.OutputMode;
+            tree.HostedRetire(); return previous;
+        }).ConfigureAwait(false);
         if (mode != null) RestorePointer(mode);
         await ReleaseOutput(payload).ConfigureAwait(false);
     }

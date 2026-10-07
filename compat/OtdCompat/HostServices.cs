@@ -13,7 +13,7 @@ namespace OtdCompat;
 // Exact-Type lookup matches Desktop/Reflection/ServiceManager at 736003ed.
 // Missing services return null; they must never become fabricated devices,
 // drivers or no-op input providers. Each plugin owns its service scope.
-sealed class HostServices(Func<ITimer>? timer = null, Func<Type, object?>? input = null) : IServiceProvider, IDisposable
+sealed class HostServices(Func<ITimer>? timer = null, Func<Type, object?>? input = null, bool authoritativeInput = false) : IServiceProvider, IDisposable
 {
     IVirtualScreen? display;
     OriginalInputServices? originalInputs;
@@ -32,7 +32,7 @@ sealed class HostServices(Func<ITimer>? timer = null, Func<Type, object?>? input
         if (input?.Invoke(serviceType) is { } value) return value;
         // Bound output/binding scopes already own typed native input queues.
         // Global tools and concrete Core construction use real pinned providers.
-        if (input == null && (originalInputs ??= new OriginalInputServices()).Get(serviceType) is { } original) return original;
+        if (!authoritativeInput && (originalInputs ??= new OriginalInputServices()).Get(serviceType) is { } original) return original;
         return (providers ??= new ManagedProviders(sourceSession)).Get(serviceType);
     }
 
