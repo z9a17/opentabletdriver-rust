@@ -20,7 +20,7 @@ The Windows build offers:
 - **Command line and background service** for scripting: profiles, presets, diagnostics and area conversion all work headless.
 - **Pen side buttons** click or press keys and shortcuts, with right and middle click defaults. The Windows CLI can inspect defaults, edit individual buttons into a new profile and export supported edits back to OTD settings. See [pen side buttons](docs/PEN_BUTTONS.md).
 
-The Windows panel includes pen, mouse, express-key, wheel and scroll binding editors. See [express keys and wheels](docs/EXPRESS_KEYS_AND_WHEELS.md) and [Windows compatibility workflows](docs/WINDOWS_COMPATIBILITY_0.17.0.md) for supported actions and remaining checks. Complete toggle and preset-switch binding compatibility remains open.
+The Windows panel includes pen, mouse, express-key, wheel and scroll binding editors, native held-action toggles and guarded preset switching. The original Desktop assembly supplies managed preset bindings and driver services. See [the 0.17.1 workflows and limits](docs/WINDOWS_COMPATIBILITY_0.17.1.md) and [express keys and wheels](docs/EXPRESS_KEYS_AND_WHEELS.md). Runtime validation and the remaining concrete device-service compatibility are open.
 
 ## Installation
 
@@ -173,7 +173,7 @@ To build the Windows .NET bridge and ZIP, install the .NET 8+ SDK and run `pwsh 
 
 ## Learn more
 
-- [Windows compatibility workflows, 0.17.0](docs/WINDOWS_COMPATIBILITY_0.17.0.md): independent device profiles, managed selectors and upstream RPC
+- [Windows compatibility workflows, 0.17.1](docs/WINDOWS_COMPATIBILITY_0.17.1.md): toggles, native/original presets, managed services and retained idle settings
 - [Current parity audit](docs/parity/PARITY_AUDIT_2026-10-07.md): implemented source, remaining gaps and validation boundaries
 - [Update and packaging reliability, 0.15.4](docs/RELIABILITY_0.15.4.md): update lifecycle guards, clipboard preparation and Unix archive permissions
 - [Release 0.15.1](docs/RELEASE_0.15.1.md): pen side buttons, startup update prompts and all-platform packages

@@ -350,6 +350,11 @@ sealed class HostPluginManager : DesktopPluginManager
     {
         // Caller owns plugin IDisposable; this lease keeps its real dependencies
         // loaded until the returned object itself is no longer reachable.
-        ~ConstructedLease() { try { services.Dispose(); } finally { InstalledRegistry.Release(generation); } }
+        ~ConstructedLease() {
+            // Third-party IDisposable errors remain visible during explicit
+            // cleanup, but must never escape the CLR finalizer thread.
+            try { services.Dispose(); } catch (Exception) { }
+            try { InstalledRegistry.Release(generation); } catch (Exception) { }
+        }
     }
 }
