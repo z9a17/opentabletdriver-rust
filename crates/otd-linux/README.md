@@ -1,6 +1,6 @@
 # Linux runtime and original desktop frontend
 
-`opentabletdriver-rust-linux` reads a USB tablet through hidraw and uses the
+`opentabletdriver-rust-linux` reads USB/Bluetooth HID tablets through hidraw and uses the
 portable Rust core, pinned upstream device database and report parsers. It
 creates a uinput pointer for mouse output or a virtual tablet for Artist Mode.
 The Linux package includes the native multi-device daemon, original Gtk frontend,
@@ -103,6 +103,8 @@ files are preserved.
 ./opentabletdriver-rust-linux run --profile ~/profile.toml --tablet "Wacom PTH-660"
 ./opentabletdriver-rust-linux ui
 ./opentabletdriver-rust-linux original-console --help
+./opentabletdriver-rust-linux update --check
+./opentabletdriver-rust-linux plugins installed
 ```
 
 `ui` launches the adjacent original Gtk assembly. Its watchdog launches the
@@ -114,6 +116,14 @@ selects a custom endpoint for clients that support it. Plain `run` owns the nati
 daemon services without enabling that original listener. Native `status`,
 `start`, `stop`, `shutdown`, `detect`, `request` and `console` commands use the
 separate native control channel. Start only one driver owner at a time.
+
+`otd` is an alias for `original-console`; both forward arguments to the packaged
+original Console assembly and need .NET 8. Original operations need the running
+original listener or the frontend's watchdog. Native installation commands are
+`update [--check | check | install]` and
+`plugins catalog|installed|install NAME|install-file PATH|remove NAME`.
+Plugin ZIP extraction also uses a packaged .NET 8 helper. Registered type
+discovery, default-store construction and original RPC hosting need .NET 8.
 
 Capture is bounded to 1 through 60 seconds and 100,000 reports. It initializes
 the tablet according to its configuration, then logs decoded/raw report
@@ -129,8 +139,8 @@ including output scaling and rotation. Sway provides its logical rectangles.
 Xwayland's monitor list is not used for a Wayland session. Other Wayland
 compositors use the original display-provider fallback, which needs .NET 8.
 If discovery fails, supply `--screen WIDTHxHEIGHT`; there is no assumed desktop
-size. Explicit
-`--screen` describes a single rectangle at the origin. Restart after changing
+size. Explicit `--screen` bypasses display discovery and describes a single
+rectangle at the origin. Restart after changing
 display topology, scale or rotation. Compositor device-to-output assignment can
 still affect how a virtual tablet maps; validate mapping in your desktop.
 

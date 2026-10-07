@@ -24,6 +24,25 @@ unchanged plugin corpus validation remain deferred at the owner's request.
   daemon after the successful original RPC response has finished writing.
 
 See [implementation scope, commands and boundaries](https://github.com/z9a17/opentabletdriver-rust/blob/v0.18.0/docs/parity/IMPLEMENTATION_0.18.md).
+
+Windows CLI migration: original Console names now use the live original JSON
+collection: `save`, `save-defaults`, `stdio`, `preset`, `savepreset`,
+`listpresets`, `log`, `detect`, `getstring`, original `get*`/`list*` commands,
+`hasupdate`, `installupdate` and non-TOML `load`. Native scripts retain
+`native-save`, `native-save-defaults`, `native-stdio`, and the existing
+`profiles`/`presets`/`devices` subcommands; explicit `.toml` load/save stays
+native. See the [migration table](https://github.com/z9a17/opentabletdriver-rust/blob/v0.18.0/docs/REFERENCE.md#windows-console-migration-in-018).
+
+The default explicitly enabled `--upstream-rpc` listener is now
+`OpenTabletDriver.Daemon` on Windows and Unix. To retain the earlier custom
+endpoint, pass `--upstream-pipe OpenTabletDriverRust.Compat` (on Windows also
+pass `--upstream-rpc`). Unchanged original clients use the fixed default name.
+Original fixed RPC hosting, registered types/default constructors, Unix
+Console/frontends and managed plugins require .NET 8; native-only profiles/UI
+remain CLR-free unless a managed feature is requested. Generic Wayland display
+discovery uses the original managed provider; native Hyprland/Sway/X11 or
+explicit `--screen` bypasses it. Source builds require a real Git checkout.
+
 Four archives are built from one clean merged commit: Windows x64, Linux x64,
 macOS Intel x64 and macOS Apple Silicon arm64. Their hashes, binary architecture,
 managed dependency/resource/license closure and source provenance are checked.

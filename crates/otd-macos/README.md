@@ -2,7 +2,7 @@
 
 This crate provides native multi-device ownership using IOKit USB/Bluetooth HID input and CoreGraphics mouse/keyboard output, the shared tablet database, native/original parsers, profiles, mapping and session engine. Packages also include the original Eto frontend, original Console, native daemon watchdog forwarder and shared managed host. macOS runtime, frontend and physical tablet validation remain deferred on Intel and Apple Silicon.
 
-The binaries require macOS 11 or later on Intel and Apple Silicon. Release binaries are unsigned and are not notarized. Native input links Apple's IOKit, CoreFoundation, CoreGraphics and ApplicationServices frameworks and needs no .NET runtime. Original frontend, Console and managed plugins need the CPU-matching .NET 8 runtime; plugins retain their platform and external-driver prerequisites. Explicit network operations need system curl. A native build requires Xcode Command Line Tools or an equivalent Apple SDK and linker. Keep the adjacent frontend/launcher assemblies and `data/compat` intact.
+The binaries require macOS 11 or later on Intel and Apple Silicon. Release binaries are unsigned and are not notarized. Native input links Apple's IOKit, CoreFoundation, CoreGraphics, ApplicationServices and AppKit frameworks plus libobjc, and needs no .NET runtime. Original frontend, Console, fixed RPC hosting, registered type discovery/default-store construction and managed plugins need the CPU-matching .NET 8 runtime; plugins retain their platform and external-driver prerequisites. Explicit network operations need system curl. A native build requires a Git checkout with its metadata, Xcode Command Line Tools or an equivalent Apple SDK and linker. Keep the adjacent frontend/launcher assemblies and `data/compat` intact.
 
 ## Use
 
@@ -18,9 +18,13 @@ Extract the archive for your architecture, open Terminal in the extracted direct
 ./opentabletdriver-rust-macos run --profile /path/to/profile.toml --tablet "Wacom PTH-660"
 ./opentabletdriver-rust-macos ui
 ./opentabletdriver-rust-macos original-console --help
+./opentabletdriver-rust-macos update --check
+./opentabletdriver-rust-macos plugins installed
 ```
 
 `ui` starts the adjacent original Eto apphost. Its watchdog launches the packaged native daemon forwarder and owns that daemon's lifetime. Without the frontend, start `./opentabletdriver-rust-macos daemon --upstream-rpc` in another terminal before original Console operations. The default original listener is `OpenTabletDriver.Daemon`; `--upstream-pipe NAME` selects a custom endpoint for configurable clients. Plain `run` supplies native daemon services without enabling that original listener. Native `status`, `start`, `stop`, `shutdown`, `detect`, `request` and `console` use the separate native control channel. Start only one driver owner at a time.
+
+`otd` aliases `original-console` and forwards the same arguments. Native installation commands are `update [--check | check | install]` and `plugins catalog|installed|install NAME|install-file PATH|remove NAME`. Plugin ZIP extraction uses the packaged .NET 8 helper. These are explicit operations; discovery does not install plugins or updates.
 
 Grant Input Monitoring to Terminal, or the application responsible for launching the CLI, under System Settings > Privacy & Security > Input Monitoring. Quit and restart that application after changing permissions. `run` also requires Accessibility permission in the same settings area. `capture` does not create or post mouse events. It may send the selected tablet's required feature/output initialization reports.
 
@@ -34,7 +38,7 @@ Display mapping uses the CoreGraphics global desktop coordinate space, including
 
 ## Implemented behavior and limits
 
-- USB HID service enumeration and matching on VID/PID, normalized report lengths and USB interface number where the registry provides it.
+- USB/Bluetooth HID service enumeration and matching on VID/PID, normalized report lengths and USB interface number where the registry provides it.
 - Indexed USB descriptor predicates and initialization string requests use Apple's IOUSBDeviceInterface245. Discovery requests only indices declared by plausible matching tablet configurations. Strings use a language advertised by the device, preferring English (US), and checked UTF-16 decoding. Each native descriptor request has a one-second timeout; cancellation and capture deadlines are checked before endpoints and each matching/initialization descriptor request. A request already in flight may finish up to one second after cancellation or the deadline. USB handles and plugin references are released on every success/error path. `device-strings` reads explicitly requested indices from each matching physical USB device without initializing it or injecting input.
 - Shared decoder support, absolute and relative mouse movement, tip/eraser contact as the left mouse button, and physical keyboard modifiers sampled when a mouse event is posted.
 - Pen side buttons use the shared profile bindings. Defaults click right and middle; explicit bindings support all five mouse buttons and ordinary physical keys/chords through CoreGraphics. Pointer movement uses the appropriate left/right/other drag event while a button is held. Tip contact and a side-button left binding share ownership, so releasing either preserves the other's press.

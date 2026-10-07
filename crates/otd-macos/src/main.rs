@@ -22,9 +22,15 @@ Usage: opentabletdriver-rust-macos list\n\
        opentabletdriver-rust-macos displays\n\
        opentabletdriver-rust-macos run [--profile FILE] [--tablet NAME] [--screen WIDTHxHEIGHT]\n\
        opentabletdriver-rust-macos capture [--profile FILE] [--tablet NAME] [--seconds N] [--limit N]\n\
+       opentabletdriver-rust-macos update [--check | check | install]\n\
+       opentabletdriver-rust-macos plugins catalog|installed|install NAME|install-file PATH|remove NAME\n\
+       opentabletdriver-rust-macos original-console [ARGS ...] (alias: otd)\n\
        opentabletdriver-rust-macos --version\n\n\
 Daemon: daemon [--upstream-rpc | --upstream-pipe NAME]\n\
+Default original endpoint: OpenTabletDriver.Daemon\n\
 Original frontend: ui; native control: status/start/stop/shutdown/detect/request/console\n\
+Original Console needs its listener or the frontend watchdog.\n\
+Original frontend/Console/RPC, registered types and managed plugins need the matching .NET 8 runtime.\n\
 macOS 11+; grant Input Monitoring and Accessibility to your terminal.\n\
 USB/Bluetooth HID and absolute/relative tablet mouse output; macOS hardware validation pending.";
 

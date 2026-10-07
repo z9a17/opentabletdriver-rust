@@ -3,13 +3,39 @@
 The full command-line, profile, daemon and build reference. For a short introduction, see the [README](../README.md).
 
 
-A USB tablet driver written in Rust, with Windows x64, Linux x64, Intel Mac and Apple Silicon release packages. The native Windows panel accompanies the Windows driver; Linux and macOS use CLI backends. The embedded catalog contains 357 configurations and native implementations of all 53 referenced parsers. Parser coverage does not establish working hardware transport, initialization or output for every tablet. Only the Wacom PTH-660 has been confirmed on real hardware on Windows; `opentabletdriver-rust.exe tablets --list` shows the catalog. It supports absolute/relative cursor movement, tip clicks, a native Windows control panel, native filter DLLs, and unchanged OpenTabletDriver .NET synchronous filters before and after mapping. Managed filters can suppress reports or emit several reports; PostTransform sees desktop pixels in Absolute Mode and motion deltas in Relative Mode. Absolute Mode can also drive a Windows Ink pen with pressure, tilt, eraser and hover ([pen output](PEN_OUTPUT.md)); it has not yet been used with a tablet and a drawing application. Pen side buttons can click mouse buttons, press keys/chords or drive barrel buttons on pen output; see [pen side buttons](PEN_BUTTONS.md). Live side-button validation is pending. See [plugin/UI support and compatibility limits](PLUGINS_AND_UI.md) and the [porting status](PORTING_STATUS.md).
+A USB/Bluetooth HID tablet driver written in Rust, with Windows x64, Linux x64, Intel Mac and Apple Silicon release packages. The native Windows panel accompanies the Windows driver; Linux and macOS include native CLI backends and the original Gtk/Eto frontends. The embedded catalog contains 357 configurations and native implementations of all 53 referenced parsers. Parser coverage does not establish working hardware transport, initialization or output for every tablet. Only the Wacom PTH-660 has been confirmed on real hardware on Windows; `opentabletdriver-rust.exe tablets --list` shows the catalog. It supports absolute/relative cursor movement, tip clicks, a native Windows control panel, native filter DLLs, and unchanged OpenTabletDriver .NET synchronous filters before and after mapping. Managed filters can suppress reports or emit several reports; PostTransform sees desktop pixels in Absolute Mode and motion deltas in Relative Mode. Absolute Mode can also drive a Windows Ink pen with pressure, tilt, eraser and hover ([pen output](PEN_OUTPUT.md)); it has not yet been used with a tablet and a drawing application. Pen side buttons can click mouse buttons, press keys/chords or drive barrel buttons on pen output; see [pen side buttons](PEN_BUTTONS.md). Live side-button validation is pending. See [plugin/UI support and compatibility limits](PLUGINS_AND_UI.md) and the [porting status](PORTING_STATUS.md).
 
-For the path to full parity, use the [roadmap](FULL_PARITY_PLAN.md), [65 stable tasks](parity/WORK_ITEMS.md), [current source audit](parity/PARITY_AUDIT_2026-10-07.md) and [agent handoff](parity/AGENT_HANDOFF.md). Broad [GitHub trackers](parity/GITHUB_TRACKING.md) retain historical claims after consolidation. Delivered source does not close unrun acceptance criteria or remaining provider/platform implementation gaps.
+For the path to full parity, use the [roadmap](FULL_PARITY_PLAN.md), [65 stable tasks](parity/WORK_ITEMS.md), [current source audit](parity/PARITY_AUDIT_2026-10-07.md) and [agent handoff](parity/AGENT_HANDOFF.md). Broad [GitHub trackers](parity/GITHUB_TRACKING.md) retain historical claims after consolidation. Delivered source does not close unrun acceptance criteria; see the [0.18 implementation scope](parity/IMPLEMENTATION_0.18.md) for current boundaries.
 
 The combined executable is licensed under GPL-3.0-only because its built-in Radial Follow filter is a Rust port of [AbstractQbit's RadialFollow 0.3.0](https://github.com/AbstractQbit/AbstractOTDPlugins/tree/0.3.0/RadialFollow), which is GPL-3.0-only. The earlier driver source retains its LGPL-3.0-only terms in [LICENSE.LGPL-3.0](../LICENSE.LGPL-3.0); the combined executable uses [LICENSE](../LICENSE). The PTH-660 USB identification and report layout were researched from [OpenTabletDriver 0.6.x](https://github.com/OpenTabletDriver/OpenTabletDriver/tree/fdeaa7b0c6d6f5260f511f19fb693ed33524af4e). The [implementation plan](IMPLEMENTATION_PLAN.md) records source links and acceptance criteria.
 
-Release packages also include a [Linux CLI](../crates/otd-linux/README.md) with hidraw/uinput and a [macOS CLI](../crates/otd-macos/README.md) with IOKit/CoreGraphics. Both share the core pen-button mouse/key bindings. Linux capture and device discovery have run on the connected PTH-660; live cursor/drawing behavior remains pending. macOS native hardware validation remains pending. The Windows panel, daemon and external plugin host are not included in these CLI packages.
+Release packages also include a [Linux runtime](../crates/otd-linux/README.md) with USB/Bluetooth hidraw/uinput and a [macOS runtime](../crates/otd-macos/README.md) with IOKit/CoreGraphics. Both include native multi-device daemons, managed hosting, the original Gtk/Eto frontend, original Console and a watchdog launcher. They share the core bindings and original platform key names. The native Windows panel is Windows-only. Earlier Linux capture/discovery observations do not qualify the new multi-device, managed or desktop workflows; native application/hardware validation remains deferred on both Unix platforms.
+
+## Windows Console migration in 0.18
+
+Original Console names now address the running daemon's original JSON settings
+collection through a persistent native Console connection. They do not implicitly
+launch a daemon. Update scripts that previously used these names for native TOML
+or native protocol operations:
+
+| Original name/behavior in 0.18 | Native workflow retained |
+| --- | --- |
+| `load FILE`, `save FILE`, `save-defaults`: original JSON collection | Explicit `.toml` load/save paths stay native; `native-save FILE [--replace]`, `native-save-defaults`, and `profiles` handle native files. |
+| `stdio`: quoted original text commands | `native-stdio`: native protocol JSON lines. |
+| `preset NAME`, `savepreset NAME`, `listpresets`: original `.json` presets | `presets apply NAME`, `presets save-active NAME [--replace]`, `presets list` and other `presets` subcommands use native `.toml` presets. |
+| `log`, `detect`: original logs and tablet detection | `status` gives native state; `restart` performs native reconfiguration. |
+| `getstring VID PID INDEX`: original indexed string request | `device-strings VID PID [INDEX ...]` retains native string discovery. |
+| Original `get*` settings and `list*` registered type commands | `configuration` retrieves active native TOML; `profiles get FILE --section SECTION` reads an offline native profile. `list`, `displays`, `tablets` and `plugins` keep their native inventories. |
+| `hasupdate`, `installupdate`: daemon Console update workflow | `update --check` and `update` retain native update commands. |
+
+Per-tablet original getters (`getoutputmode`, `getareas`, `getsensitivity`,
+`getbindings`, `getmiscsettings`, `getfilters`) require `TABLET`.
+`getallsettings`, `getallsettingsjson` and `gettools` do not. Registered type
+listing/default construction uses actual original assemblies and needs .NET 8;
+native collection reads/representable edits remain native. Original fixed RPC
+hosting also needs .NET 8. `daemon --upstream-rpc` now enables
+`OpenTabletDriver.Daemon`; the earlier custom name remains selectable with
+`--upstream-rpc --upstream-pipe OpenTabletDriverRust.Compat`.
 
 ## Open the driver
 
@@ -58,7 +84,7 @@ Use `--legacy-force-radial-follow` on OTD preview/import only when that earlier 
 
 `profiles get` prints one settings section (`all`, `output`, `areas`, `sensitivity`, `bindings`, `filters` or `misc`) as JSON. The bindings section includes contact settings and pen side buttons, including defaults. `profiles set` edits individual pen buttons or relative sensitivity, rotation and reset time, then writes a new profile. See [pen-button editing and export](PEN_BUTTONS.md#offline-command-line-editing). Applying the result uses a separate `restart --config`. The [command matrix](parity/CLI_COMMAND_MATRIX.md) maps every upstream console command to its Rust equivalent or open task.
 
-Offline named presets support `presets list`, `presets show NAME`, `presets save NAME --config FILE` and `presets export NAME --output NEWFILE`. Save creates a new name; explicit `--replace` uses a loaded-byte conflict guard and retains a backup. Names preserve spelling and reject unsafe paths or case-only aliases. These commands do not select/apply runtime settings. See [named presets](NAMED_PRESETS.md).
+Offline named presets support `presets list`, `presets show NAME`, `presets save NAME --config FILE` and `presets export NAME --output NEWFILE`. Save creates a new name; explicit `--replace` uses a loaded-byte conflict guard and retains a backup. Names preserve spelling and reject unsafe paths or case-only aliases. These commands do not select/apply runtime settings. Native `presets apply NAME` applies a named TOML profile through the guarded daemon transaction, and `presets save-active NAME [--replace]` saves its active native profile. The original `preset`, `savepreset` and `listpresets` commands instead use JSON collections. See [named presets](NAMED_PRESETS.md).
 
 The default Rust settings directory is `%LOCALAPPDATA%\OpenTabletDriverRust`. Set `OTD_RUST_PORTABLE_DIR` to an absolute directory for portable profiles/preferences. Saves stage and flush a sibling file, retain the previous bytes in the reserved `.bak` sidecar, and reject changes made since the editor loaded the destination. Save As requires a new name. Recovery validates the backup and writes a new file. Relative plugin locations within the destination/portable tree are retained; other locations stay absolute. See [persistence limits](parity/BEHAVIOR_CONTRACTS.md#profile-persistence).
 
@@ -105,14 +131,13 @@ Inspected .NET filters show declared properties and default information on hover
 
 Unknown keys and structured values are preserved in the profile. Scalar native/settings-without-metadata values can use normal fields; unsupported custom, structured, decimal and untyped-null settings are read-only. Invalid edits block Save/Apply. Matching daemon responses after Save/Apply keep the selected filter, page and list position. Dynamic validation and full plugin compatibility remain open. See [0.14.2 fixes and native/.NET feel comparison](DEBUGGER_AND_UI_0.14.2.md).
 
-Use the stable Rust MSVC toolchain on Windows 11:
+Build from a real Git checkout with its `.git` metadata and Git available on PATH: build scripts read the source commit date and references, so an extracted source archive alone is insufficient. Use the stable Rust MSVC toolchain and Windows SDK resource compiler on Windows 11:
 
     cargo build --locked --workspace --release
-    cargo test --locked --workspace
 
 To build the optional .NET bridge and package the full release, use a .NET 8+ SDK and run `pwsh -File scripts/package.ps1`. The native UI executable is `target\release\opentabletdriver-rust-ui.exe`.
 
-The executable is `target\release\opentabletdriver-rust.exe`. Read-only commands are:
+The executable is `target\release\opentabletdriver-rust.exe`. Inspection and bounded capture commands are:
 
     opentabletdriver-rust.exe settings
     opentabletdriver-rust.exe list
