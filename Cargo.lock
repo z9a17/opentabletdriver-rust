@@ -177,6 +177,7 @@ dependencies = [
  "libc",
  "otd-core",
  "otd-platform",
+ "serde_json",
 ]
 
 [[package]]

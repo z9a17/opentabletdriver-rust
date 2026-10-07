@@ -14,7 +14,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use crate::control::pipe::CompatPipe;
 
-pub const DEFAULT_PIPE: &str = "OpenTabletDriverRust.Compat";
+pub const DEFAULT_PIPE: &str = "OpenTabletDriver.Daemon";
 /// Private original-console connection; never takes the original daemon name.
 pub const CONSOLE_PIPE: &str = "OpenTabletDriverRust.Console";
 const MAX_CLIENTS: u32 = 4;
@@ -27,6 +27,25 @@ fn shared() -> Arc<service::Shared> {
 }
 fn provider_connection() -> service::Connection {
     service::Connection::new(shared(), Arc::new(AtomicBool::new(false)))
+}
+static HOSTED_UPDATE:std::sync::Mutex<Option<String>>=std::sync::Mutex::new(None);
+/// Retain update ownership until the original RpcHost confirms response flush.
+pub fn install_hosted_update(params:&serde_json::Value)->Result<serde_json::Value,String>{
+    use protocol::Service;
+    let mut connection=provider_connection();
+    let result=connection.invoke("InstallUpdate",params).map_err(|error|error.message)?;
+    let token=connection.detach_installed_update().ok_or("Installed update has no retirement token")?;
+    *HOSTED_UPDATE.lock().map_err(|_|"Hosted update ownership poisoned")?=Some(token);
+    Ok(result)
+}
+pub fn finish_hosted_update()->Result<serde_json::Value,String>{
+    let mut update=HOSTED_UPDATE.lock().map_err(|_|"Hosted update ownership poisoned")?;
+    let token=update.as_ref().ok_or("No installed original RPC update is pending")?;
+    let response=crate::control::request_owned(&crate::control::Request::new(1,crate::control::Command::FinishUpdate{token:token.clone(),success:true}),Duration::from_secs(5),std::process::id()).map_err(|error|error.to_string())?;
+    match response.reply{
+        crate::control::Reply::ShutdownAccepted=>{*update=None;Ok(serde_json::Value::Null)},
+        crate::control::Reply::Error{error}=>Err(error.message),_=>Err("Unexpected original update retirement receipt".into())
+    }
 }
 /// Background/control worker only; active settings projection uses native IPC.
 pub fn get_original_settings() -> Result<serde_json::Value, String> {

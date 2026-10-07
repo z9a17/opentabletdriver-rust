@@ -166,6 +166,8 @@ impl NativeBackend {
         let params = request.payload.get("params").cloned().unwrap_or_else(|| json!([]));
         if let Some(result) = crate::plugin_manager::invoke(method, &params, Some(&self.stopped))? { return Ok(result); }
         match method {
+            "InstallUpdate"=>crate::upstream_rpc::install_hosted_update(&params),
+            "FinishUpdate"=>crate::upstream_rpc::finish_hosted_update(),
             "ForceResynchronize" if request.expected_source.is_some()=>{
                 let (id,generation)=request.expected_source.as_ref().unwrap();
                 if !request.payload.get("source_session").is_some_and(crate::shared_devices::live_source){

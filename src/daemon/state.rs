@@ -126,6 +126,8 @@ pub(super) struct Daemon {
     tool_resume: Option<crate::tool_host::Completion>,
     next_update: u64,
     foreground_profile: Option<Profile>,
+    hosted_pipe:Option<String>,
+    hosted_rpc:Option<crate::dotnet::HostedRpc>,
 }
 
 impl Daemon {
@@ -164,6 +166,8 @@ impl Daemon {
             tool_resume: None,
             next_update: 0,
             foreground_profile: None,
+            hosted_pipe:None,
+            hosted_rpc:None,
         }
     }
     fn log(&mut self, mut line: String) {
@@ -203,6 +207,11 @@ impl Daemon {
     }
     pub(super) fn foreground(&mut self, profile: Profile) {
         self.foreground_profile=Some(profile);
+    }
+    pub(super) fn host_rpc(&mut self,pipe:&str){self.hosted_pipe=Some(pipe.to_owned());}
+    pub(super) fn stop_hosted_rpc(&mut self)->Result<(),String>{
+        if let Some(rpc)=&mut self.hosted_rpc {rpc.stop()?;}
+        self.hosted_rpc=None;Ok(())
     }
     pub(crate) fn device_sessions(&self) -> Option<crate::device_sessions::Handle> {
         self.devices.as_ref().map(crate::companions::Supervisor::handle)
@@ -1041,6 +1050,10 @@ mod upstream_log_tests {
 
 impl ControlHandler for Daemon {
     fn ready(&mut self)->std::io::Result<()>{
+        if let Some(pipe)=self.hosted_pipe.take(){
+            crate::original_driver::ensure_stopped()?;
+            self.hosted_rpc=Some(crate::dotnet::HostedRpc::start(&pipe).map_err(std::io::Error::other)?);
+        }
         if let Some(profile)=self.foreground_profile.take(){
             crate::plugins::validate_runtime_profile(&profile).map_err(std::io::Error::other)?;
             profile.validate_filter_execution().map_err(std::io::Error::other)?;

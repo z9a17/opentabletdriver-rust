@@ -30,6 +30,10 @@ pub struct Connection {
 }
 struct UpdateOwnership { token: String, exit: bool }
 impl Connection {
+    pub(super) fn detach_installed_update(&mut self)->Option<String>{
+        if !self.update.as_ref().is_some_and(|update|update.exit){return None;}
+        self.update.take().map(|update|update.token)
+    }
     pub fn new(shared: Arc<Shared>, stop: Arc<AtomicBool>) -> Self {
         let resync_cursor = shared.resynchronize.load(Ordering::Acquire);
         let mut connection = Self { shared, stop, next_poll: Instant::now(), log_cursor: None,
