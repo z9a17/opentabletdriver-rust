@@ -282,12 +282,27 @@ pub fn install(release: &Release, install: &Path, progress: &dyn Fn(&str)) -> Re
             },
         }
     })();
-    let cleanup = match call(ControlCommand::FinishUpdate { token, success: exit }) {
-        Ok(Reply::ShutdownAccepted) if exit => Ok(()),
-        Ok(Reply::UpdateCancelled) if !exit => Ok(()),
-        Ok(_) => Err("unexpected update ownership completion reply".to_owned()),
-        Err(error) => Err(format!("update ownership cleanup failed: {error}; the daemon may still be reserved; inspect its status before restarting")),
-    };
+    let cleanup = (|| -> Result<(), String> {
+        // Cancellation completes only after the daemon's tool dispatcher has
+        // restored the exact pre-update configuration. Busy is an ownership
+        // receipt still pending, not permission to repeat any installation.
+        let deadline = Instant::now() + Duration::from_secs(40);
+        loop {
+            let response = control::request_owned(&Request::new(1, ControlCommand::FinishUpdate {
+                token: token.clone(), success: exit,
+            }), Duration::from_secs(5), process).map_err(|error| error.to_string())?;
+            match response.reply {
+                Reply::ShutdownAccepted if exit => return Ok(()),
+                Reply::UpdateCancelled if !exit => return Ok(()),
+                Reply::Error { error } if !exit && matches!(error.code, control::ErrorCode::Busy) => {
+                    if Instant::now() >= deadline { return Err(format!("global tool restoration timed out: {}", error.message)); }
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                Reply::Error { error } => return Err(error.message),
+                _ => return Err("unexpected update ownership completion reply".to_owned()),
+            }
+        }
+    })().map_err(|error|format!("update ownership cleanup failed: {error}; the daemon may still be reserved; inspect its status before restarting"));
     match (result, cleanup) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
