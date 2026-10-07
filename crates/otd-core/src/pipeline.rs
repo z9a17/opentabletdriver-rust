@@ -36,6 +36,8 @@ pub struct ReportPipeline {
     profile_buttons: Vec<crate::output::buttons::ButtonAction>,
     aux_buttons: Vec<crate::output::buttons::ButtonAction>,
     mouse_buttons: Vec<crate::output::buttons::ButtonAction>,
+    mouse_scroll_up: crate::output::buttons::ButtonAction,
+    mouse_scroll_down: crate::output::buttons::ButtonAction,
     wheels: Vec<crate::output::buttons::WheelBinding>,
     controls: crate::spec::Controls,
     /// The profile asks for pen output; the platform supplies the device.
@@ -52,6 +54,7 @@ impl ReportPipeline {
     pub fn new(profile: &Profile) -> Result<Self, String> {
         profile.validate_filter_execution()?;
         profile.contact.validate_percentages()?;
+        profile.validate_actions()?;
         let pen_requested = profile.output == OutputKind::Pen;
         if pen_requested && profile.relative.is_some() {
             return Err("pen output is absolute; choose mouse output for relative mode".into());
@@ -86,6 +89,8 @@ impl ReportPipeline {
             profile_buttons: profile.pen_buttons.clone(),
             aux_buttons: profile.aux_buttons.clone(),
             mouse_buttons: profile.mouse_buttons.clone(),
+            mouse_scroll_up: profile.mouse_scroll_up.clone(),
+            mouse_scroll_down: profile.mouse_scroll_down.clone(),
             wheels: profile.wheels.clone(),
             controls: profile.tablet.controls,
             pen_requested,
@@ -133,6 +138,7 @@ impl ReportPipeline {
             self.controls.wheels(),
         ));
         rejected.extend(buttons.set_mouse(&self.mouse_buttons));
+        rejected.extend(buttons.set_mouse_scroll(&self.mouse_scroll_up, &self.mouse_scroll_down));
         self.buttons = buttons;
         rejected
     }
@@ -343,6 +349,16 @@ impl ReportPipeline {
         Ok(stats)
     }
 
+    pub fn next_binding_tick(&self, now: Instant) -> Option<std::time::Duration> {
+        self.buttons.next_tick(now)
+    }
+
+    pub fn process_binding_tick(&mut self, now: Instant) -> io::Result<()> {
+        let result = self.buttons.tick(now);
+        if result.is_err() { self.faulted = true; }
+        result
+    }
+
     /// Fires due timers of timer-driven filters (upstream's
     /// `AsyncPositionedPipelineElement`). Their emissions take the same
     /// transform, contact and output path as any plugin emission.
@@ -477,6 +493,7 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
         if self.timer && !self.pipeline.physical_present && kind != ReportKind::OutOfRange {
             return Ok(());
         }
+        self.pipeline.buttons.set_time(self.now);
         self.stats.reports += 1;
         // Keep transport cleanup independent of the interfaces filters see.
         // A positional loss packet must not reacquire held actions or pen contact.

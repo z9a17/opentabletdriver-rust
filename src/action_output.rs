@@ -18,13 +18,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use otd_core::actions::{
     Action, ActionOwner, ActionState, ActionTransition, KeyboardUsage, MouseButton,
 };
-use otd_core::output::buttons::ActionSink;
+use otd_core::output::buttons::{ActionSink, ScrollAxis, ScrollPulse};
 use windows_sys::Win32::Foundation::SetLastError;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
     KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
     MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
-    MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT, SendInput,
+    MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEEVENTF_WHEEL, MOUSEEVENTF_HWHEEL, MOUSEINPUT, SendInput,
 };
 
 /// Check support before adding a configured action to the ownership state.
@@ -91,6 +91,29 @@ pub fn encode_transition(transition: ActionTransition) -> io::Result<INPUT> {
             })
         }
     }
+}
+
+/// Encode one upstream pointer scroll call without injecting input.
+pub fn encode_scroll(pulse: ScrollPulse) -> INPUT {
+    INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 { mi: MOUSEINPUT {
+            dx: 0, dy: 0, mouseData: pulse.delta as u32,
+            dwFlags: match pulse.axis { ScrollAxis::Vertical => MOUSEEVENTF_WHEEL, ScrollAxis::Horizontal => MOUSEEVENTF_HWHEEL },
+            time: 0, dwExtraInfo: 0,
+        } },
+    }
+}
+
+fn send_scroll(pulse: ScrollPulse) -> io::Result<()> {
+    let input = encode_scroll(pulse);
+    unsafe { SetLastError(0) };
+    if unsafe { SendInput(1, &input, size_of::<INPUT>() as i32) } != 1 {
+        let error = io::Error::last_os_error();
+        return Err(if error.raw_os_error().is_some_and(|code| code != 0) { error }
+            else { io::Error::other("SendInput accepted no scroll event; input may be blocked") });
+    }
+    Ok(())
 }
 
 /// Emit exactly one transition. A successful return means SendInput accepted
@@ -265,6 +288,15 @@ impl SessionActions {
 }
 
 impl ActionSink for SessionActions {
+    fn supports_scroll(&self) -> bool { true }
+    fn scroll(&mut self, pulse: ScrollPulse) -> io::Result<()> {
+        // Serialize with this application's held events. Scroll is a pulse;
+        // one owner must never suppress another owner's independent wheel tick.
+        let mut state = held()?;
+        flush_pending(&mut state)?;
+        send_scroll(pulse)
+    }
+
     fn supports(&self, action: Action) -> bool {
         supports(action)
     }
@@ -302,6 +334,22 @@ impl Drop for SessionActions {
         if let Ok(mut state) = HELD.lock() {
             state.release_device(self.device);
             let _ = flush_pending(&mut state);
+        }
+    }
+}
+
+#[cfg(test)]
+mod scroll_tests {
+    use super::*;
+    #[test]
+    fn wheel_encoding_preserves_signed_amount_and_axis_without_injection() {
+        for (axis, delta, flags) in [(ScrollAxis::Vertical, 120, MOUSEEVENTF_WHEEL), (ScrollAxis::Vertical, -120, MOUSEEVENTF_WHEEL), (ScrollAxis::Horizontal, -240, MOUSEEVENTF_HWHEEL)] {
+            let input = encode_scroll(ScrollPulse { axis, delta });
+            assert_eq!(input.r#type, INPUT_MOUSE);
+            let mouse = unsafe { input.Anonymous.mi };
+            assert_eq!(mouse.mouseData as i32, delta);
+            assert_eq!(mouse.dwFlags, flags);
+            assert_eq!((mouse.dx, mouse.dy), (0, 0));
         }
     }
 }

@@ -444,13 +444,15 @@ pub fn run_gated_with_endpoints(
     let outcome = (|| -> io::Result<()> {
         loop {
             // Timer-driven filters tick on this thread, between reads.
-            let mut tick = match mode {
+            let filter_tick = match mode {
                 Mode::Driver if pipeline.is_relative() || layout.mapper.is_some() => {
                     filters.next_tick()
                 }
                 Mode::Driver => None,
                 Mode::Capture { .. } => None,
             };
+            let binding_tick = if matches!(mode, Mode::Driver) { pipeline.next_binding_tick(source.now()) } else { None };
+            let mut tick = filter_tick.into_iter().chain(binding_tick).min();
             if pipeline.needs_cleanup() || tick.is_some_and(|wait| wait.is_zero()) {
                 let mut output = |packet| {
                     send(packet)?;
@@ -460,9 +462,15 @@ pub fn run_gated_with_endpoints(
                 let ticked = if pipeline.needs_cleanup() {
                     pipeline.release_all(&mut output).map(|_| ())
                 } else {
-                    pipeline
-                        .process_tick(source.now(), layout.mapper, filters, output)
-                        .map(|_| ())
+                    let now = source.now();
+                    let filtered = if filter_tick.is_some_and(|wait| wait.is_zero()) {
+                        pipeline.process_tick(now, layout.mapper, filters, output).map(|_| ())
+                    } else { Ok(()) };
+                    filtered.and_then(|()| {
+                        if binding_tick.is_some_and(|wait| wait.is_zero()) {
+                            pipeline.process_binding_tick(now)
+                        } else { Ok(()) }
+                    })
                 };
                 if let Some(name) = filters.take_failure() {
                     status(&format!(
@@ -479,10 +487,12 @@ pub fn run_gated_with_endpoints(
                 }
                 // Always reach the input/stop poll after one tick, even if a
                 // slow or failed timer still reports an overdue deadline.
-                tick = match mode {
+                let filter_tick = match mode {
                     Mode::Driver if pipeline.is_relative() || layout.mapper.is_some() => filters.next_tick(),
                     _ => None,
                 };
+                let binding_tick = if matches!(mode, Mode::Driver) { pipeline.next_binding_tick(source.now()) } else { None };
+                tick = filter_tick.into_iter().chain(binding_tick).min();
             }
             let timeout = match mode {
                 Mode::Capture { deadline, limit } => {

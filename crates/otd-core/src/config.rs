@@ -128,6 +128,7 @@ pub(crate) const ADAPTIVE_BINDING: &str = "OpenTabletDriver.Desktop.Binding.Adap
 const MOUSE_BINDING: &str = "OpenTabletDriver.Desktop.Binding.MouseBinding";
 const KEY_BINDING: &str = "OpenTabletDriver.Desktop.Binding.KeyBinding";
 const MULTI_KEY_BINDING: &str = "OpenTabletDriver.Desktop.Binding.MultiKeyBinding";
+const MOUSE_SCROLL_BINDING: &str = "OpenTabletDriver.Desktop.Binding.MouseScrollBinding";
 /// Most pen buttons a profile can bind; a report's button set holds 64.
 pub const MAX_PEN_BUTTONS: usize = 64;
 
@@ -155,6 +156,8 @@ pub struct Profile {
     pub aux_buttons: Vec<ButtonAction>,
     /// Tablet mouse/puck buttons, independent of pen and auxiliary input.
     pub mouse_buttons: Vec<ButtonAction>,
+    pub mouse_scroll_up: ButtonAction,
+    pub mouse_scroll_down: ButtonAction,
     /// What each wheel, ring or dial does, by wheel index.
     pub wheels: Vec<WheelBinding>,
     /// Absolute output only; relative output always moves the mouse.
@@ -194,6 +197,8 @@ impl Default for Profile {
             pen_buttons: default_pen_buttons(),
             aux_buttons: Vec::new(),
             mouse_buttons: Vec::new(),
+            mouse_scroll_up: ButtonAction::None,
+            mouse_scroll_down: ButtonAction::None,
             wheels: Vec::new(),
             output: OutputKind::Mouse,
             radial_follow: Vec::new(),
@@ -243,6 +248,10 @@ struct RawProfile {
     aux_buttons: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     mouse_buttons: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mouse_scroll_up: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mouse_scroll_down: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     wheels: Vec<RawWheel>,
     #[serde(default, skip_serializing_if = "OutputKind::is_mouse")]
@@ -458,6 +467,10 @@ struct OtdBindings {
     #[serde(default)]
     mouse_buttons: serde_json::Value,
     #[serde(default)]
+    mouse_scroll_up: serde_json::Value,
+    #[serde(default)]
+    mouse_scroll_down: serde_json::Value,
+    #[serde(default)]
     enable_drag_bindings: bool,
     #[serde(default)]
     disable_pressure: bool,
@@ -480,6 +493,8 @@ impl Default for OtdBindings {
             aux_buttons: serde_json::Value::Null,
             wheel_bindings: serde_json::Value::Null,
             mouse_buttons: serde_json::Value::Null,
+            mouse_scroll_up: serde_json::Value::Null,
+            mouse_scroll_down: serde_json::Value::Null,
             enable_drag_bindings: false,
             disable_pressure: false,
             disable_tilt: false,
@@ -601,6 +616,22 @@ fn pen_button_action(store: Option<&OtdStore>, pen: bool) -> Result<ButtonAction
             None => Ok(ButtonAction::None),
             Some(names) => keys::parse_chord(names).map(ButtonAction::Keys),
         },
+        MOUSE_SCROLL_BINDING => {
+            use crate::output::buttons::{ScrollAction, ScrollAxis};
+            let integer = |name: &str, default: i32| -> Result<i32, String> {
+                match store.settings.iter().rev().find(|setting| setting.property == name).map(|setting| &setting.value) {
+                    None => Ok(default),
+                    Some(value) => value.as_i64().and_then(|value| i32::try_from(value).ok())
+                        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+                        .ok_or_else(|| format!("scroll {name} must be a signed 32-bit integer")),
+                }
+            };
+            let axis = if property("Direction") == Some("Horizontal") { ScrollAxis::Horizontal } else { ScrollAxis::Vertical };
+            let amount = integer("Amount", 120)?;
+            let amount = if amount == 0 { 1 } else { amount };
+            let interval_ms = integer("Interval", 300)?.max(1) as u32;
+            Ok(ButtonAction::Scroll(ScrollAction { axis, amount, interval_ms }))
+        }
         path => Err(format!("unsupported pen button binding: {path}")),
     }
 }
@@ -1122,6 +1153,8 @@ impl Profile {
             &mut diagnostics,
         );
         let mouse_buttons = import_buttons(&selected.bindings.mouse_buttons, false, "Bindings.MouseButtons", "mouse button", &mut diagnostics);
+        let mouse_scroll_up = import_store(&selected.bindings.mouse_scroll_up, false, "Bindings.MouseScrollUp".into(), "mouse scroll up", &mut diagnostics);
+        let mouse_scroll_down = import_store(&selected.bindings.mouse_scroll_down, false, "Bindings.MouseScrollDown".into(), "mouse scroll down", &mut diagnostics);
         let wheels = import_wheels(&selected.bindings.wheel_bindings, pen, &mut diagnostics);
         let mut radial_follow = Vec::new();
         let mut auto_enabled_radial_follow = 0;
@@ -1207,6 +1240,8 @@ impl Profile {
             pen_buttons,
             aux_buttons,
             mouse_buttons,
+            mouse_scroll_up,
+            mouse_scroll_down,
             wheels,
             output: if pen {
                 OutputKind::Pen
@@ -1331,6 +1366,8 @@ impl Profile {
         };
         let aux_buttons = parse_actions(&raw.aux_buttons, "aux_buttons")?;
         let mouse_buttons = parse_actions(&raw.mouse_buttons, "mouse_buttons")?;
+        let mouse_scroll_up = raw.mouse_scroll_up.as_deref().unwrap_or("none").parse::<ButtonAction>()?;
+        let mouse_scroll_down = raw.mouse_scroll_down.as_deref().unwrap_or("none").parse::<ButtonAction>()?;
         if raw.wheels.len() > crate::reports::MAX_WHEELS {
             return Err(format!(
                 "at most {} wheels are supported",
@@ -1353,6 +1390,8 @@ impl Profile {
             pen_buttons,
             aux_buttons,
             mouse_buttons,
+            mouse_scroll_up,
+            mouse_scroll_down,
             wheels,
             output: raw.output,
             radial_follow: raw.radial_follow,
@@ -1387,6 +1426,16 @@ impl Profile {
         }
         profile.validate_filter_execution()?;
         Ok(profile)
+    }
+
+    pub fn validate_actions(&self) -> Result<(), String> {
+        let actions = self.pen_buttons.iter().chain(&self.aux_buttons).chain(&self.mouse_buttons)
+            .chain([&self.mouse_scroll_up, &self.mouse_scroll_down])
+            .chain(self.wheels.iter().flat_map(|wheel| [&wheel.clockwise, &wheel.counter_clockwise].into_iter().chain(&wheel.buttons)));
+        for action in actions {
+            if let ButtonAction::Scroll(scroll) = action { scroll.validate()?; }
+        }
+        Ok(())
     }
 
     /// Reject double execution after migrating a native filter to a managed DLL.
@@ -1507,6 +1556,7 @@ impl Profile {
 
     pub fn to_toml(&self) -> Result<String, String> {
         self.contact.validate_percentages()?;
+        self.validate_actions()?;
         self.validate_filter_execution()?;
         if self.relative.is_some() && self.output == OutputKind::Pen {
             return Err("pen output is absolute; choose mouse output for relative mode".into());
@@ -1539,6 +1589,8 @@ impl Profile {
                 .then(|| self.pen_buttons.iter().map(ToString::to_string).collect()),
             aux_buttons: self.aux_buttons.iter().map(ToString::to_string).collect(),
             mouse_buttons: self.mouse_buttons.iter().map(ToString::to_string).collect(),
+            mouse_scroll_up: (self.mouse_scroll_up != ButtonAction::None).then(|| self.mouse_scroll_up.to_string()),
+            mouse_scroll_down: (self.mouse_scroll_down != ButtonAction::None).then(|| self.mouse_scroll_down.to_string()),
             wheels: {
                 // Trailing wheels that do nothing need no entry.
                 let used = self
@@ -2630,6 +2682,42 @@ mod tests {
         }
         let mut profile = Profile::default();
         profile.contact.tip_threshold_percent = Some(f32::NAN);
+        assert!(profile.to_toml().is_err());
+        assert!(crate::pipeline::ReportPipeline::new(&profile).is_err());
+    }
+
+    #[test]
+    fn mouse_scroll_actions_round_trip_with_upstream_amount_and_interval() {
+        let binding = serde_json::json!({ "Path": MOUSE_SCROLL_BINDING, "Enable": true, "Settings": [
+            {"Property":"Direction", "Value":"Horizontal"}, {"Property":"Amount", "Value":-240}, {"Property":"Interval", "Value":25},
+            {"Property":"Retain", "Value":"custom"}
+        ] });
+        let mut profile = import_bindings(serde_json::json!({"MouseScrollUp": binding}));
+        assert_eq!(profile.mouse_scroll_up.to_string(), "scroll:horizontal:-240:25");
+        assert_eq!(profile.mouse_scroll_down, ButtonAction::None);
+        assert!(!profile.diagnostics.iter().any(|diagnostic| diagnostic.location.contains("MouseScroll")));
+        let text = profile.to_toml().unwrap();
+        let copy = Profile::from_toml_text(&text, Path::new("scroll.toml")).unwrap();
+        assert_eq!(copy.mouse_scroll_up, profile.mouse_scroll_up);
+        profile.mouse_scroll_up = "scroll:vertical:-120:300".parse().unwrap();
+        profile.mouse_scroll_down = "scroll:down".parse().unwrap();
+        let exported: serde_json::Value = serde_json::from_str(&profile.to_otd_json().unwrap()).unwrap();
+        let settings = exported["Profiles"][0]["Bindings"]["MouseScrollUp"]["Settings"].as_array().unwrap();
+        assert!(settings.iter().any(|property| property["Property"] == "Retain" && property["Value"] == "custom"));
+        let imported = Profile::from_otd_text(&exported.to_string(), Path::new("export.json")).unwrap();
+        assert_eq!(imported.mouse_scroll_up, profile.mouse_scroll_up);
+        assert_eq!(imported.mouse_scroll_down, profile.mouse_scroll_down);
+        profile.mouse_scroll_up = "keys:Escape".parse().unwrap();
+        assert!(profile.to_otd_json().unwrap_err().contains("unknown source properties"));
+    }
+
+    #[test]
+    fn invalid_native_scroll_settings_are_rejected_without_a_named_tablet() {
+        for text in ["mouse_scroll_up = \"scroll:vertical:0\"", "mouse_scroll_down = \"scroll:vertical:120:0\"", "pen_buttons = [\"scroll:horizontal:1:2147483648\"]"] {
+            assert!(Profile::from_toml_text(text, Path::new("unnamed.toml")).is_err());
+        }
+        let mut profile = Profile::default();
+        profile.mouse_scroll_up = ButtonAction::Scroll(crate::output::buttons::ScrollAction { axis: crate::output::buttons::ScrollAxis::Vertical, amount: 0, interval_ms: 1 });
         assert!(profile.to_toml().is_err());
         assert!(crate::pipeline::ReportPipeline::new(&profile).is_err());
     }

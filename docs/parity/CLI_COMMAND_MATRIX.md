@@ -55,8 +55,8 @@ Upstream setters change one tablet profile in the running daemon. `profiles set`
 | `settabletarea TABLET W H X Y [ROTATION]` | `profiles set FILE --output NEW --tablet-area W,H,X,Y[,ROTATION]` | Covered | Offline centered millimeters/degrees; preserves existing display area. Simple profiles require both areas. |
 | `setsensitivity TABLET X Y [ROTATION]` | `profiles set FILE --output NEW --sensitivity X,Y [--relative-rotation DEG]` | Covered | Offline, relative profiles only; values pass the same validation as a loaded profile. No tablet argument; the file is one profile. |
 | `settipbinding TABLET NAME THRESHOLD` | `profiles set FILE --output NEW --tip-enabled BOOL --tip-threshold PERCENT` | Partial | Native contact and exact percentage. Arbitrary/toggle/preset/managed bindings remain B04/P06. |
-| `setpenbinding TABLET NAME INDEX` | `profiles set FILE --output NEW --pen-button NUMBER=ACTION` | Partial | Offline, absolute or relative profiles; button numbers start at 1. Mouse, barrel, key/chord and none actions; unsupported bindings remain open under B02/B04. [Editing and export](../PEN_BUTTONS.md#offline-command-line-editing). |
-| `setauxbinding TABLET NAME INDEX` | `profiles set FILE --output NEW --aux-button NUMBER=ACTION` | Partial | One-based native mouse/barrel/key/chord/none express-key actions. Managed bindings remain B04/P06. |
+| `setpenbinding TABLET NAME INDEX` | `profiles set FILE --output NEW --pen-button NUMBER=ACTION` | Partial | Offline, absolute or relative profiles; button numbers start at 1. Mouse, barrel, key/chord, repeating scroll and none actions; unsupported bindings remain open under B02/B04. [Editing and export](../PEN_BUTTONS.md#offline-command-line-editing). |
+| `setauxbinding TABLET NAME INDEX` | `profiles set FILE --output NEW --aux-button NUMBER=ACTION` | Partial | One-based native mouse/barrel/key/chord/scroll/none express-key actions. Managed bindings remain B04/P06. |
 | `setresettime TABLET MS` | `profiles set FILE --output NEW --reset-time MS` | Covered | Offline, relative profiles only. Whole milliseconds, as upstream. |
 | `setenableclipping TABLET BOOL` | `profiles set FILE --output NEW --clipping BOOL` | Covered | Offline explicit absolute mappings; simple profiles require both areas. |
 | `setenablearealimiting TABLET BOOL` | `profiles set FILE --output NEW --limiting BOOL` | Covered | Offline explicit absolute mappings; relative edits rejected. |
@@ -73,7 +73,7 @@ Upstream getters print text for the running daemon's settings. `profiles get` pr
 | `getoutputmode TABLET` | `getoutputmode / profiles get INPUT --section output` | Partial | Native active getters take no tablet argument; arbitrary managed output remains P06. |
 | `getareas TABLET` | `getareas / profiles get INPUT --section areas` | Covered | Active/offline native profile inspection; active getter takes no tablet argument. |
 | `getsensitivity TABLET` | `getsensitivity / profiles get INPUT --section sensitivity` | Covered | Active/offline native profile inspection. |
-| `getbindings TABLET` | `getbindings / profiles get INPUT --section bindings` | Partial | Contact/drag/pressure/tilt, pen/aux/mouse and wheels. Scroll/toggle/preset/managed bindings remain open. |
+| `getbindings TABLET` | `getbindings / profiles get INPUT --section bindings` | Partial | Contact/drag/pressure/tilt, pen/aux/mouse, mouse scroll directions and wheels. Toggle/preset/managed bindings remain open. |
 | `getmiscsettings TABLET` | `getmiscsettings / profiles get INPUT --section misc` | Partial | Device path/schema/revision. Clipping/limiting live in absolute areas; lock aspect metadata remains open. |
 | `getfilters TABLET` | `getfilters / profiles get INPUT --section filters` | Covered | Active/offline native filters, disabled retained values and plugin entries; inspection does not execute them. |
 | `gettools` | `gettools / profiles get INPUT --section tools` | Covered | Active/offline configured dotnet_tool entries filtered from other plugins; no code execution. |
@@ -113,13 +113,23 @@ Upstream getters print text for the running daemon's settings. `profiles get` pr
 
 47 upstream commands: 19 covered, 26 partial, 2 open. Mappings do not establish full live-protocol or unchanged-plugin parity.
 
-Additional native setters: `--mouse-button NUMBER=ACTION`, wheel directions/thresholds,
+Additional native setters: `--mouse-button NUMBER=ACTION`, `--mouse-scroll-up ACTION`,
+`--mouse-scroll-down ACTION`, wheel directions/thresholds,
 `--eraser-enabled`, `--eraser-threshold`, `--drag-only`, `--disable-pressure` and
 `--disable-tilt`. Drag-only applies the pinned threshold remap before gating its
 rising edge. Imported float percentages are retained; raw-only native thresholds
 use the midpoint percent representation used by OTD export. Existing native output
 pressure math remains unchanged. Losing pressure does not release an already held
-pen button. Mouse scroll, toggle and binding-triggered preset actions remain open.
+pen button. Toggle and binding-triggered preset actions remain open.
+
+Scroll actions accept `scroll:up|down|left|right` or
+`scroll:vertical|horizontal:AMOUNT[:INTERVAL_MS]`. Amount follows the upstream
+MouseScrollBinding property: the pointer receives its signed negation. Interval
+defaults to 300 milliseconds. Mouse scroll bindings press on Scroll.Y sign
+transitions, repeat while held and stop on release or session cleanup. Wheel
+rotation taps produce one pulse. Missed repeat periods produce one pulse before
+polling input again. These are native actions; the original binding DLL is not
+hosted. Successful dispatch and repeat ticks allocate nothing after setup.
 
 Active getters take no tablet argument because the native daemon exposes one
 active worker configuration. Preset apply uses guarded restart and reports

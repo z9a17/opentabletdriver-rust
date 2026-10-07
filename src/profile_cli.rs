@@ -23,7 +23,8 @@ pub fn usage() -> &'static str {
       [--relative-rotation DEGREES] [--reset-time MS] [--pen-button NUMBER=ACTION]
       [--aux-button NUMBER=ACTION] [--wheel-clockwise WHEEL=ACTION]
       [--wheel-counter-clockwise WHEEL=ACTION] [--wheel-threshold WHEEL=DEGREES]
-      [--mouse-button NUMBER=ACTION] [--output-mode absolute|relative|pen]
+      [--mouse-button NUMBER=ACTION] [--mouse-scroll-up ACTION] [--mouse-scroll-down ACTION]
+      [--output-mode absolute|relative|pen]
       [--monitor all|INDEX] [--display-area W,H,X,Y] [--tablet-area W,H,X,Y[,ROTATION]]
       [--clipping BOOL] [--limiting BOOL] [--tip-enabled BOOL] [--eraser-enabled BOOL]
       [--tip-threshold PERCENT] [--eraser-threshold PERCENT] [--drag-only BOOL]
@@ -47,7 +48,12 @@ the daemon nor applies the result. Relative options require relative output.
 Pen button and express key numbers start at 1 (maximum 64). Repeat
 --pen-button or --aux-button for distinct buttons. Actions: none, barrel:1..3,
 mouse:left|right|middle|backward|forward, or keys:Control+Shift+Z. Quote key
-chords when required by your shell. Wheel numbers start at 1 (maximum 8); each
+chords when required by your shell. Scroll actions: scroll:up|down|left|right or
+scroll:vertical|horizontal:AMOUNT[:INTERVAL_MS]. Amount is the upstream signed
+amount, emitted with its sign inverted; interval defaults to 300 ms. Scroll
+presses once then repeats while held; release cancels repetition. Mouse scroll
+up/down use the report Y sign as an edge-triggered binding, as upstream does.
+Wheel numbers start at 1 (maximum 8); each
 rotation threshold step presses and releases the wheel's action once, and
 --wheel-threshold sets both directions in degrees (default: one wheel step).
 OTD_RUST_PORTABLE_DIR selects an explicit absolute portable settings directory."
@@ -60,7 +66,7 @@ const SECTIONS: [(&str, &[&str]); 6] = [
     ("areas", &["monitor", "rotation", "crop", "absolute"]),
     ("sensitivity", &["relative"]),
     ("tools", &["plugins"]),
-    ("bindings", &["bindings", "pen_buttons", "aux_buttons", "mouse_buttons", "wheels"]),
+    ("bindings", &["bindings", "pen_buttons", "aux_buttons", "mouse_buttons", "mouse_scroll_up", "mouse_scroll_down", "wheels"]),
     ("filters", &["radial_follow", "disabled_radial_follow", "plugins"]),
     (
         "misc",
@@ -84,6 +90,8 @@ struct Options {
     wheel_counter_clockwise: Vec<(usize, ButtonAction)>,
     wheel_thresholds: Vec<(usize, f32)>,
     mouse_buttons: Vec<(usize, ButtonAction)>,
+    mouse_scroll_up: Option<ButtonAction>,
+    mouse_scroll_down: Option<ButtonAction>,
     mode: Option<String>,
     monitor: Option<Option<usize>>,
     display_area: Option<otd_core::mapping::OtdArea>,
@@ -111,7 +119,9 @@ impl Options {
             || !self.plugin_states.is_empty() || self.radial_state.is_some()
     }
     fn sets_bindings(&self) -> bool {
-        !(self.mouse_buttons.is_empty()
+        !(self.mouse_scroll_up.is_none()
+            && self.mouse_scroll_down.is_none()
+            && self.mouse_buttons.is_empty()
             && self.pen_buttons.is_empty()
             && self.aux_buttons.is_empty()
             && self.wheel_clockwise.is_empty()
@@ -286,6 +296,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 }
                 profile.relative = Some(relative.validate_for(profile.tablet)?);
             }
+            if let Some(action) = &options.mouse_scroll_up { profile.mouse_scroll_up = action.clone(); }
+            if let Some(action) = &options.mouse_scroll_down { profile.mouse_scroll_down = action.clone(); }
             for (list, edits) in [
                 (&mut profile.pen_buttons, &options.pen_buttons),
                 (&mut profile.aux_buttons, &options.aux_buttons),
@@ -531,6 +543,11 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> 
                 if !matches!(value.as_str(), "enable" | "disable" | "reset") { return Err("--radial-follow requires enable, disable or reset".into()); }
                 options.radial_state = Some(value);
             }
+            "--mouse-scroll-up" | "--mouse-scroll-down" => {
+                let action = option_value(&mut args, &flag)?.parse::<ButtonAction>()?;
+                let target = if flag == "--mouse-scroll-up" { &mut options.mouse_scroll_up } else { &mut options.mouse_scroll_down };
+                if target.replace(action).is_some() { return Err(format!("{flag} was specified more than once")); }
+            }
             "--mouse-button" => {
                 let value = option_value(&mut args, &flag)?;
                 let (index, action) = numbered(&value, &flag, MAX_PEN_BUTTONS)?;
@@ -763,7 +780,7 @@ pub fn active_section(section: &str) -> Result<(), String> {
 }
 
 pub fn binding_actions() -> Result<(), String> {
-    print_json(&json!({"native": ["none", "barrel:1", "barrel:2", "barrel:3", "mouse:left", "mouse:right", "mouse:middle", "mouse:backward", "mouse:forward", "keys:KEY[+KEY...]"],
+    print_json(&json!({"native": ["none", "barrel:1", "barrel:2", "barrel:3", "mouse:left", "mouse:right", "mouse:middle", "mouse:backward", "mouse:forward", "keys:KEY[+KEY...]", "scroll:up", "scroll:down", "scroll:left", "scroll:right", "scroll:vertical|horizontal:AMOUNT[:INTERVAL_MS]"],
         "managed_bindings": "not hosted", "preset_bindings": "not hosted"}))
 }
 
@@ -809,6 +826,8 @@ fn profile_section(profile: &Profile, section: &str) -> Result<Value, String> {
         json!(profile.aux_buttons.iter().map(ToString::to_string).collect::<Vec<_>>()),
     );
     settings.insert("mouse_buttons".into(), json!(profile.mouse_buttons.iter().map(ToString::to_string).collect::<Vec<_>>()));
+    settings.insert("mouse_scroll_up".into(), json!(profile.mouse_scroll_up.to_string()));
+    settings.insert("mouse_scroll_down".into(), json!(profile.mouse_scroll_down.to_string()));
     // Every wheel with every field; an absent threshold is one wheel step.
     settings.insert(
         "wheels".into(),
