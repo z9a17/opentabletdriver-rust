@@ -348,6 +348,7 @@ sealed class HostPluginManager : DesktopPluginManager
     }
     internal void RefreshTypes(RegistryGeneration registry) {
         pluginTypes = new ConcurrentBag<TypeInfo>(builtinTypes.Concat(registry.Entries.Select(entry => entry.Type.GetTypeInfo())).Distinct());
+        Plugins.Clear(); Plugins.AddRange(registry.Contexts);
     }
     public override void ResetServices() {
         // Clear the actual pinned ServiceManager dictionary; a base call would

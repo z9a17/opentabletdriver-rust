@@ -40,7 +40,7 @@ public unsafe struct FilterApi
 
 // Share the official OTD interface assembly with plugins, but resolve each
 // plugin's other managed/native dependencies from its own directory.
-sealed class PluginContext(string path, bool inspect = false) : AssemblyLoadContext(isCollectible: true)
+sealed class PluginContext(string path, bool inspect = false) : OpenTabletDriver.Desktop.Reflection.DesktopPluginContext(new DirectoryInfo(Path.GetDirectoryName(Path.GetFullPath(path))!), hosted: true)
 {
     readonly AssemblyDependencyResolver resolver = new(path);
     readonly string directory = Path.GetDirectoryName(path)!;
@@ -52,8 +52,8 @@ sealed class PluginContext(string path, bool inspect = false) : AssemblyLoadCont
             return typeof(OpenTabletDriver.Configurations.ReportParserProvider).Assembly;
         if (name.Name == typeof(OpenTabletDriver.Driver).Assembly.GetName().Name)
             return typeof(OpenTabletDriver.Driver).Assembly;
-        if (name.Name == typeof(OpenTabletDriver.Interop.SystemInterop).Assembly.GetName().Name)
-            return typeof(OpenTabletDriver.Interop.SystemInterop).Assembly;
+        if (name.Name == typeof(OpenTabletDriver.Native.Windows.Windows).Assembly.GetName().Name)
+            return typeof(OpenTabletDriver.Native.Windows.Windows).Assembly;
         if (name.Name == typeof(OpenTabletDriver.Desktop.Contracts.IDriverDaemon).Assembly.GetName().Name)
             return typeof(OpenTabletDriver.Desktop.Contracts.IDriverDaemon).Assembly;
         string? dependency = resolver.ResolveAssemblyToPath(name);
@@ -69,7 +69,7 @@ sealed class PluginContext(string path, bool inspect = false) : AssemblyLoadCont
         string? identity = AssemblyName.GetAssemblyName(file).FullName;
         foreach (Assembly shared in new[] { typeof(ITabletReport).Assembly,
             typeof(OpenTabletDriver.Configurations.ReportParserProvider).Assembly,
-            typeof(OpenTabletDriver.Driver).Assembly, typeof(OpenTabletDriver.Interop.SystemInterop).Assembly,
+            typeof(OpenTabletDriver.Driver).Assembly, typeof(OpenTabletDriver.Native.Windows.Windows).Assembly,
             typeof(OpenTabletDriver.Desktop.Contracts.IDriverDaemon).Assembly })
             if (shared.FullName == identity) return shared;
         var loaded = Assemblies.FirstOrDefault(assembly => assembly.FullName == identity);

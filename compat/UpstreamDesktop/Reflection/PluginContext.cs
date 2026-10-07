@@ -6,6 +6,9 @@ namespace OpenTabletDriver.Desktop.Reflection
 {
     public class PluginContext : AssemblyLoadContext
     {
+        public PluginContext() { }
+        internal PluginContext(string name, bool collectible) : base(name, collectible) { }
+
         protected const string PLUGIN_ASSEMBLY_NAMESPACE = nameof(OpenTabletDriver.Plugin);
         protected static readonly Assembly PluginAssembly = Default.Assemblies.FirstOrDefault(asm => asm.GetName().FullName == PLUGIN_ASSEMBLY_NAMESPACE);
 

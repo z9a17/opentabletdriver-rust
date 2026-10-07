@@ -10,6 +10,9 @@ Configurations through their exact original NuGet 0.6.7 packages. All other pack
 Internal host patches: DiagnosticInfo accepts actual native version/build
 provenance only when managed assembly metadata is absent. RpcHost.Run owns and
 drains client tasks during cancellation; connected pipe disposal is guaranteed.
+Internal PluginContext/DesktopPluginContext constructors attach the real loaded
+collectible registry contexts without loading DLLs twice. GetLoadedPlugins then
+returns actual context objects with actual Assemblies/Directory/GetMetadata.
 Public type/member/assembly identities remain pinned; helper bytes are modified.
 
 Original concrete Core readers consume host-owned tee streams; no duplicate

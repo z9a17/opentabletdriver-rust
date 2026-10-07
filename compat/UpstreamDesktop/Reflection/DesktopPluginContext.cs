@@ -11,6 +11,14 @@ namespace OpenTabletDriver.Desktop.Reflection
 {
     public class DesktopPluginContext : PluginContext
     {
+        internal DesktopPluginContext(DirectoryInfo directory, bool hosted)
+            : base(directory.FullName, collectible: true)
+        {
+            Directory = directory;
+            FriendlyName = directory.Name;
+            // Host registry loads the actual assemblies once into this context.
+        }
+
         public DesktopPluginContext(DirectoryInfo directory)
         {
             Directory = directory;
