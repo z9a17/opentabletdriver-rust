@@ -32,6 +32,7 @@ sealed class CommandQueue : IDisposable
     string? failure;
     public uint Owner { get; set; }
     public bool Pending { get { lock (gate) return count != 0 || failure != null; } }
+    public int PendingCount { get { lock (gate) return failure != null ? Math.Max(1, count) : count; } }
     public void Add(ManagedCommand command)
     {
         lock (gate)
@@ -47,7 +48,11 @@ sealed class CommandQueue : IDisposable
     {
         lock (gate)
         {
-            if (failure != null) throw new InvalidOperationException(failure);
+            if (failure != null)
+            {
+                string error = failure; failure = null; count = 0; closed = true;
+                throw new InvalidOperationException(error);
+            }
             if (count == 0) { command = default; return false; }
             command = entries[head]; head = (head + 1) % entries.Length; count--; return true;
         }

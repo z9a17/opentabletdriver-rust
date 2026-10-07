@@ -54,6 +54,15 @@ sealed class TouchSnapshot : ITouchReport
 
 sealed class GraphAbort : Exception { }
 
+static class GraphRetirement
+{
+    internal static async Task ReleaseAfterSnapshots(Task snapshots, RegistryGeneration generation)
+    {
+        await snapshots.ConfigureAwait(false);
+        InstalledRegistry.Release(generation);
+    }
+}
+
 unsafe sealed class SynchronousGraph : IDisposable
 {
     internal const uint Position = 1, Tablet = 2, Eraser = 4, Tilt = 8, Proximity = 16,
@@ -77,14 +86,21 @@ unsafe sealed class SynchronousGraph : IDisposable
     public void Dispose() {
         if (disposed) return;
         if (running || Environment.CurrentManagedThreadId != ownerThread) throw new InvalidOperationException("Invalid graph disposal lifecycle.");
+        Task snapshots;
         lock (asyncGate)
         {
             disposed = true;
+            snapshots = inFlightCompletion?.Task ?? Task.CompletedTask;
             ClearPending();
             asyncFailure = null; asyncError = null;
         }
         foreach (Node node in pre.Concat(post)) node.Filter?.AttachAsyncSink(null);
-        if (sourceGeneration != null) { InstalledRegistry.Release(sourceGeneration); sourceGeneration = null; }
+        if (sourceGeneration is { } generation)
+        {
+            sourceGeneration = null;
+            ManagedRetirements.Track(GraphRetirement.ReleaseAfterSnapshots(snapshots, generation));
+        }
+        else ManagedRetirements.Track(snapshots);
     }
     readonly Node[] pre, post, timed;
     readonly Action<IDeviceReport> transform, output;
@@ -92,12 +108,14 @@ unsafe sealed class SynchronousGraph : IDisposable
     delegate* unmanaged[Cdecl]<nint, uint, uint, GraphReport*, int> callback;
     nint scope;
     bool running, failed;
-    int foreignOutputEmission;
+    string? outputFailure;
+    readonly Node modeSource = new(new GraphNode { Index = uint.MaxValue }, _ => { });
     const int MaxPending = 1024, MaxNodePending = 64, MaxPendingBytes = 4 * 1024 * 1024;
     sealed class PendingEmission
     {
         internal Node? Node;
         internal IDeviceReport? Report;
+        internal Action<IDeviceReport>? Resume;
         internal ulong Reservation;
         internal int Bytes;
         internal bool Ready;
@@ -107,6 +125,7 @@ unsafe sealed class SynchronousGraph : IDisposable
     // report values; the native-only graph and synchronous Emit do no queue work.
     readonly PendingEmission[] pending = Enumerable.Range(0, MaxPending).Select(_ => new PendingEmission()).ToArray();
     int pendingHead, pendingCount, pendingBytes, inFlightBytes;
+    TaskCompletionSource? inFlightCompletion;
     ulong reservation;
     Node? asyncFailure;
     string? asyncError;
@@ -119,7 +138,7 @@ unsafe sealed class SynchronousGraph : IDisposable
         {
             PendingEmission item = pending[pendingHead];
             if (item.Node != null) item.Node.Pending--;
-            item.Node = null; item.Report = null; item.Ready = false; item.Reservation = 0; item.Bytes = 0;
+            item.Node = null; item.Report = null; item.Resume = null; item.Ready = false; item.Reservation = 0; item.Bytes = 0;
             pendingHead = (pendingHead + 1) % MaxPending; pendingCount--;
         }
         pendingBytes = 0;
@@ -130,41 +149,51 @@ unsafe sealed class SynchronousGraph : IDisposable
     {
         if (asyncFailure == null) { asyncFailure = node; asyncError = message; }
     }
-    void Enqueue(Node node, IDeviceReport? report)
+    void Enqueue(Node node, IDeviceReport? report, Action<IDeviceReport>? resume = null)
     {
         PendingEmission item;
         ulong ticket;
         lock (asyncGate)
         {
-            if (disposed || node.Disabled || asyncFailure != null) return;
+            if (disposed || outputFailure != null || node.Disabled || asyncFailure != null) return;
             // Reserve worst-case bytes before copying. Concurrent snapshots are
             // included in the same budget, and FIFO order is admission order.
             if (pendingCount == MaxPending || node.Pending == MaxNodePending
                 || pendingBytes + inFlightBytes > MaxPendingBytes - OwnedReportSnapshot.MaxBytes || reservation == ulong.MaxValue)
             {
-                AsyncError(node, "Asynchronous filter emission queue overflow; pending outputs were discarded and the emitting filter was disabled.");
+                AsyncError(node, ReferenceEquals(node, modeSource)
+                    ? "Asynchronous output pipeline queue overflow; pending outputs were discarded and the mode must be restarted."
+                    : "Asynchronous filter emission queue overflow; pending outputs were discarded and the emitting filter was disabled.");
                 return;
             }
             item = pending[(pendingHead + pendingCount) % MaxPending];
             ticket = ++reservation; item.Reservation = ticket; item.Node = node;
-            item.Report = null; item.Ready = false; item.Bytes = 0;
+            item.Report = null; item.Resume = resume; item.Ready = false; item.Bytes = 0;
+            if (inFlightBytes == 0) inFlightCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
             pendingCount++; node.Pending++; inFlightBytes += OwnedReportSnapshot.MaxBytes;
         }
         IDeviceReport? copy = null;
         int bytes = 0;
         string? error = null;
         try { copy = OwnedReportSnapshot.Capture(report, out bytes); }
-        catch (Exception failure) { error = "Cannot own asynchronous filter report: " + failure.GetBaseException().Message; }
-        lock (asyncGate)
+        catch (Exception failure) { error = "Cannot own asynchronous pipeline report: " + failure.GetBaseException().Message; }
+        TaskCompletionSource? completed = null;
+        try
         {
-            // Retirement/error can discard a reservation while its bounded copy
-            // is in flight. Never fill a slot since reused by another emission.
-            inFlightBytes -= OwnedReportSnapshot.MaxBytes;
-            if (disposed || item.Reservation != ticket) return;
-            if (error != null) { AsyncError(node, error); return; }
-            pendingBytes += bytes;
-            item.Bytes = bytes; item.Report = copy; item.Ready = true;
+            lock (asyncGate)
+            {
+                // Retirement/error can discard a reservation while its bounded
+                // copy is in flight. Never fill a since-reused slot.
+                inFlightBytes -= OwnedReportSnapshot.MaxBytes;
+                if (inFlightBytes == 0) completed = inFlightCompletion;
+                if (disposed || item.Reservation != ticket) return;
+                if (error != null) { AsyncError(node, error); return; }
+                pendingBytes += bytes;
+                item.Bytes = bytes; item.Report = copy; item.Ready = true;
+            }
         }
+        finally { completed?.TrySetResult(); }
+
     }
     void DrainPending()
     {
@@ -175,11 +204,14 @@ unsafe sealed class SynchronousGraph : IDisposable
         {
             Node node;
             IDeviceReport? report;
+            Action<IDeviceReport>? resume;
             lock (asyncGate)
             {
                 if (asyncFailure is { } invalid)
                 {
-                    invalid.Disabled = true; FailedIndex = checked((int)invalid.Index);
+                    invalid.Disabled = true;
+                    FailedIndex = ReferenceEquals(invalid, modeSource) ? -1 : checked((int)invalid.Index);
+                    if (ReferenceEquals(invalid, modeSource)) outputFailure = asyncError;
                     Error = asyncError; failed = true;
                     asyncFailure = null; asyncError = null; ClearPending();
                     throw new GraphAbort();
@@ -187,19 +219,21 @@ unsafe sealed class SynchronousGraph : IDisposable
                 if (i == limit || pendingCount == 0) return;
                 PendingEmission item = pending[pendingHead];
                 if (!item.Ready) return; // Earlier admitted copy must finish first.
-                node = item.Node!; report = item.Report;
+                node = item.Node!; report = item.Report; resume = item.Resume;
                 pendingBytes -= item.Bytes; pendingCount--; node.Pending--;
-                item.Node = null; item.Report = null; item.Reservation = 0; item.Bytes = 0; item.Ready = false;
+                item.Node = null; item.Report = null; item.Resume = null; item.Reservation = 0; item.Bytes = 0; item.Ready = false;
                 pendingHead = (pendingHead + 1) % MaxPending;
             }
             if (node.Disabled) continue;
-            int previous = currentEmitter; currentEmitter = checked((int)node.Index);
-            try { (node.ModeEmit ?? node.Emit)(report!); if (failed) throw new GraphAbort(); }
+            int previous = currentEmitter; currentEmitter = ReferenceEquals(node, modeSource) ? -1 : checked((int)node.Index);
+            try { (resume ?? node.ModeEmit ?? node.Emit)(report!); if (failed) throw new GraphAbort(); }
             catch (GraphAbort) { throw; }
             catch (Exception error)
             {
-                node.Disabled = true; FailedIndex = checked((int)node.Index);
-                Error = error.GetBaseException().Message; failed = true;
+                node.Disabled = true; FailedIndex = ReferenceEquals(node, modeSource) ? -1 : checked((int)node.Index);
+                Error = error.GetBaseException().Message;
+                if (ReferenceEquals(node, modeSource)) outputFailure = Error;
+                failed = true;
                 throw new GraphAbort();
             }
             finally { currentEmitter = previous; }
@@ -266,12 +300,12 @@ unsafe sealed class SynchronousGraph : IDisposable
         ObjectDisposedException.ThrowIf(disposed, this);
         if (running || Environment.CurrentManagedThreadId != ownerThread)
             throw new InvalidOperationException("The synchronous graph must run on its owning thread.");
-        if (Volatile.Read(ref foreignOutputEmission) != 0) throw new InvalidOperationException("Managed output emitted outside its owning dispatch; the mode must be restarted.");
+        if (outputFailure != null) throw new InvalidOperationException(outputFailure);
         running = true; failed = false; FailedIndex = -1; currentEmitter = -1; Error = null;
         callback = native; scope = nativeScope; fused = fusedContinuations;
         try
         {
-            if (hasManagedFilters) DrainPending();
+            if (hasManagedFilters || managedOutput != null) DrainPending();
             IDeviceReport report = originalReport ?? Import(input);
             // Host built-ins can modify position before the graph dispatch. The
             // concrete original report object remains the downstream identity.
@@ -293,8 +327,8 @@ unsafe sealed class SynchronousGraph : IDisposable
     public long NextTickMicros()
     {
         ObjectDisposedException.ThrowIf(disposed, this);
-        if (Volatile.Read(ref foreignOutputEmission) != 0) return 0;
-        if (hasManagedFilters)
+        if (outputFailure != null) return -1;
+        if (hasManagedFilters || managedOutput != null)
             lock (asyncGate)
             {
                 if (asyncFailure != null || pendingCount != 0 && pending[pendingHead].Ready) return 0;
@@ -322,12 +356,12 @@ unsafe sealed class SynchronousGraph : IDisposable
         ObjectDisposedException.ThrowIf(disposed, this);
         if (running || Environment.CurrentManagedThreadId != ownerThread)
             throw new InvalidOperationException("The synchronous graph must run on its owning thread.");
-        if (Volatile.Read(ref foreignOutputEmission) != 0) throw new InvalidOperationException("Managed output emitted outside its owning dispatch; the mode must be restarted.");
+        if (outputFailure != null) throw new InvalidOperationException(outputFailure);
         running = true; failed = false; FailedIndex = -1; currentEmitter = -1; Error = null;
         callback = native; scope = nativeScope; fused = fusedContinuations;
         try
         {
-            if (hasManagedFilters) DrainPending();
+            if (hasManagedFilters || managedOutput != null) DrainPending();
             long now = Stopwatch.GetTimestamp();
             TickStage(pre, now);
             TickStage(post, now);
@@ -365,14 +399,28 @@ unsafe sealed class SynchronousGraph : IDisposable
         }
     }
 
-    sealed class ModeElement(SynchronousGraph graph, Node? node, PipelinePosition position) : IPositionedPipelineElement<IDeviceReport>
+    sealed class ModeElement : IPositionedPipelineElement<IDeviceReport>
     {
-        public PipelinePosition Position => position;
+        readonly SynchronousGraph graph;
+        readonly Node? node;
+        readonly Action<IDeviceReport> queuedConsume;
+        public PipelinePosition Position { get; }
+        public ModeElement(SynchronousGraph graph, Node? node, PipelinePosition position)
+        {
+            this.graph = graph; this.node = node; Position = position;
+            queuedConsume = Consume;
+        }
         public event Action<IDeviceReport> Emit = delegate { };
         public void Continue(IDeviceReport report) => Emit(report);
         public void Consume(IDeviceReport report)
         {
-            if (!graph.running || Environment.CurrentManagedThreadId != graph.ownerThread) { Interlocked.Exchange(ref graph.foreignOutputEmission, 1); return; }
+            if (!graph.running || Environment.CurrentManagedThreadId != graph.ownerThread)
+            {
+                // This is an output mode's own pipeline handoff, before this
+                // element (distinct from filter Emit continuing after a node).
+                graph.Enqueue(graph.modeSource, report, queuedConsume);
+                return;
+            }
             if (graph.failed) throw new GraphAbort();
             if (node == null)
             {
@@ -399,8 +447,19 @@ unsafe sealed class SynchronousGraph : IDisposable
     void DrainOutput()
     {
         if (managedOutput is not { } endpoint) return;
-        while (endpoint.Queue.Take(out ManagedCommand command))
+        // Foreign producers cannot keep one native callback draining forever.
+        int limit = endpoint.Queue.PendingCount;
+        for (int index = 0; index < limit; index++)
         {
+            ManagedCommand command;
+            try { if (!endpoint.Queue.Take(out command)) return; }
+            catch (Exception error)
+            {
+                outputFailure = Error = error.GetBaseException().Message;
+                modeSource.Disabled = true; failed = true;
+                lock (asyncGate) ClearPending();
+                throw new GraphAbort();
+            }
             GraphReport frame = new() { Version = 2, Size = (uint)sizeof(GraphReport), Kind = command.Kind, Reserved = command.Owner,
                 X = command.X, Y = command.Y, Pressure = command.Value, Flags = command.Flags, TiltX = command.TiltX, TiltY = command.TiltY };
             if (callback(scope, 6, 0, &frame) != 0) { failed = true; throw new GraphAbort(); }
