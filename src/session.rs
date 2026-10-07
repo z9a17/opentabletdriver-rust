@@ -515,7 +515,7 @@ pub fn run(
         None
     };
     let pen = pen_device(&profile, mode)?;
-    let actions = action_sink(mode)?.map(|sink| plugins.wrap_action_sink(&profile, selected.configuration, sink))
+    let actions = action_sink(mode)?.map(|sink| plugins.wrap_action_sink(&profile, &selected.configuration, sink))
         .transpose().map_err(io::Error::other)?;
     let result = otd_core::session::run_gated_with_endpoints(
         &mut source,
@@ -705,7 +705,7 @@ impl<'a> PreparedSession<'a> {
         let _priority = ReaderPriority::for_driver(crate::experimental::mmcss_enabled(), status);
         let mut output = SessionOutput::new()?;
         let pen = pen_device(&profile, Mode::Driver)?;
-        let actions = action_sink(Mode::Driver)?.map(|sink| plugins.wrap_action_sink(&profile, self.selected.configuration, sink))
+        let actions = action_sink(Mode::Driver)?.map(|sink| plugins.wrap_action_sink(&profile, &self.selected.configuration, sink))
             .transpose().map_err(io::Error::other)?;
         let result = otd_core::session::run_gated_with_endpoints(
             &mut source,

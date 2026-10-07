@@ -57,7 +57,7 @@ pub struct GraphReport {
     tilt_y: f32,
     scroll_x: f32,
     scroll_y: f32,
-    pressure: u32,
+    pub(crate) pressure: u32,
     eraser: u32,
     near: u32,
     distance: u32,
