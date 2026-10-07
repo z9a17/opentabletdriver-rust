@@ -16,7 +16,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use otd_core::actions::{
-    Action, ActionOwner, ActionState, ActionTransition, KeyboardUsage, MouseButton,
+    Action, ActionOwner, ActionState, ActionTransition, ConsumerKey, KeyboardUsage, MouseButton,
 };
 use otd_core::output::buttons::{ActionSink, ScrollAxis, ScrollPulse};
 use windows_sys::Win32::Foundation::SetLastError;
@@ -32,7 +32,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 pub fn supports(action: Action) -> bool {
     match action {
         Action::Mouse(_) => true,
-        Action::Key(key) => keyboard_scan_code(key).is_some(),
+        Action::Key(key) => keyboard_scan_code(key).is_some() || keyboard_virtual_code(key).is_some(),
     }
 }
 
@@ -64,6 +64,13 @@ pub fn encode_transition(transition: ActionTransition) -> io::Result<INPUT> {
             })
         }
         Action::Key(key) => {
+            if let Some(vk) = keyboard_virtual_code(key) {
+                return Ok(INPUT { r#type: INPUT_KEYBOARD, Anonymous: INPUT_0 {
+                    ki: KEYBDINPUT { wVk: vk, wScan: 0,
+                        dwFlags: if transition.pressed { 0 } else { KEYEVENTF_KEYUP },
+                        time: 0, dwExtraInfo: 0 },
+                } });
+            }
             let (scan, extended) = keyboard_scan_code(key).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::Unsupported,
@@ -170,10 +177,9 @@ pub fn flush_pending<const ACTIONS: usize, const HOLDS: usize>(
 
 /// USB page 0x07 to PC Set 1 scan code, plus the E0 extended flag.
 ///
-/// This bounded subset covers ordinary alphanumeric/punctuation positions,
-/// F1-F12, navigation, keypad and all eight modifiers. Pause (E1 sequence),
-/// consumer/media usages, power, and uncommon international keys are explicit
-/// unsupported cases. Usage 0x32 is omitted because Windows aliases it to 0x31;
+/// Ordinary alphanumeric/punctuation positions, F1-F12, navigation, keypad
+/// and all eight modifiers use scan codes. The other pinned names use their
+/// original virtual keys below. Usage 0x32 is omitted because Windows aliases it to 0x31;
 /// accepting both as different held actions would break shared ownership.
 /// Scan-code facts cross-referenced against Chromium's platform code table:
 /// https://github.com/chromium/chromium/blob/main/ui/events/keycodes/dom/dom_code_data.inc
@@ -245,6 +251,34 @@ fn keyboard_scan_code(key: KeyboardUsage) -> Option<(u16, bool)> {
         _ => return None,
     };
     Some((code & 0xff, code & 0xff00 == 0xe000))
+}
+
+/// Exact pinned WindowsVirtualKeyboard virtual keys for names whose keyboard
+/// scan encoding is absent, and consumer controls from the synthetic domain.
+fn keyboard_virtual_code(key: KeyboardUsage) -> Option<u16> {
+    if let Some(consumer) = key.consumer_key() {
+        return Some(match consumer {
+            ConsumerKey::Mute => 0xad, ConsumerKey::VolumeDown => 0xae,
+            ConsumerKey::VolumeUp => 0xaf, ConsumerKey::NextSong => 0xb0,
+            ConsumerKey::PreviousSong => 0xb1, ConsumerKey::StopSong => 0xb2,
+            ConsumerKey::PlayPause => 0xb3,
+        });
+    }
+    Some(match key.usage() {
+        0x48 => 0x13, // VK_PAUSE (the E1 sequence is not one scan INPUT)
+        0x67 => 0x92, // VK_OEM_NEC_EQUAL
+        0x68..=0x73 => 0x7c + key.usage() - 0x68, // VK_F13..VK_F24
+        0x75 => 0x2f, // VK_HELP
+        0x9c => 0x0c, // VK_CLEAR
+        _ => return None,
+    })
+}
+
+/// Canonical ownership for original VK-only keys, including media. Call before
+/// scan-code conversion so original and native holders share the same action.
+pub fn usage_for_virtual_key(code: u32) -> Option<KeyboardUsage> {
+    otd_core::keys::names().map(|(_, key)| key)
+        .find(|key| keyboard_virtual_code(*key).is_some_and(|vk| u32::from(vk) == code))
 }
 
 /// The key at a physical position, from a keyboard message's scan code and
@@ -341,6 +375,26 @@ impl Drop for SessionActions {
 #[cfg(test)]
 mod scroll_tests {
     use super::*;
+    #[test]
+    fn pinned_windows_names_and_consumer_vk_encoding_are_available() {
+        for (name, key) in otd_core::keys::names() {
+            assert!(supports(Action::Key(key)), "{name}");
+        }
+        // Numeric constants from the pinned original VirtualKey dictionary.
+        for (name, vk) in [("Mute",0xad), ("VolumeDown",0xae), ("VolumeUp",0xaf),
+            ("NextSong",0xb0), ("PreviousSong",0xb1), ("StopSong",0xb2), ("PlayPause",0xb3),
+            ("Clear",0x0c), ("Pause",0x13), ("F24",0x87)] {
+            let key = otd_core::keys::usage_from_name(name).unwrap();
+            assert_eq!(usage_for_virtual_key(vk as u32), Some(key));
+            for pressed in [true, false] {
+                let encoded = encode_transition(ActionTransition { action: Action::Key(key), pressed }).unwrap();
+                let keyboard = unsafe { encoded.Anonymous.ki };
+                assert_eq!(keyboard.wVk, vk);
+                assert_eq!(keyboard.wScan, 0);
+                assert_eq!(keyboard.dwFlags, if pressed { 0 } else { KEYEVENTF_KEYUP });
+            }
+        }
+    }
     #[test]
     fn wheel_encoding_preserves_signed_amount_and_axis_without_injection() {
         for (axis, delta, flags) in [(ScrollAxis::Vertical, 120, MOUSEEVENTF_WHEEL), (ScrollAxis::Vertical, -120, MOUSEEVENTF_WHEEL), (ScrollAxis::Horizontal, -240, MOUSEEVENTF_HWHEEL)] {

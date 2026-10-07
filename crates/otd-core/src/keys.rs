@@ -9,7 +9,8 @@
 //! Upstream's generic modifiers (`Shift`, `Control`, `Alt`, `Application`)
 //! press the left key. `Menu` is Windows' `VK_MENU`, which is Alt.
 //! `Equal`/`Plus` and `Slash`/`ForwardSlash` are aliases of one key.
-//! Media keys are on another HID usage page and are not supported.
+//! Media keys retain consumer-page identities in the synthetic u16 domain
+//! described by `actions::ConsumerKey`, preserving the managed command ABI.
 
 use crate::actions::KeyboardUsage;
 
@@ -127,6 +128,14 @@ const KEYS: &[(&str, u16)] = &[
     ("F23", 0x72),
     ("F24", 0x73),
     ("Help", 0x75),
+    ("Clear", 0x9c),
+    ("Mute", 0x10e2),
+    ("VolumeDown", 0x10ea),
+    ("VolumeUp", 0x10e9),
+    ("PlayPause", 0x10cd),
+    ("PreviousSong", 0x10b6),
+    ("NextSong", 0x10b5),
+    ("StopSong", 0x10b7),
     ("LeftControl", 0xe0),
     ("Control", 0xe0),
     ("LeftShift", 0xe1),
@@ -142,9 +151,9 @@ const KEYS: &[(&str, u16)] = &[
     ("RightApplication", 0xe7),
 ];
 
-/// The key an upstream name stands for. `None` for names this driver does not
-/// implement, including upstream's `None` (which presses nothing) and the
-/// media keys, and for unknown spellings.
+/// The key an upstream name stands for. Returns `None` for unknown spellings
+/// and upstream's `None` (which presses nothing). Platform adapters reject
+/// unavailable identities.
 pub fn usage_from_name(name: &str) -> Option<KeyboardUsage> {
     KEYS.iter()
         .find(|(candidate, _)| *candidate == name)
@@ -229,7 +238,7 @@ mod tests {
 
     #[test]
     fn unsupported_and_unknown_names_are_rejected() {
-        for name in ["None", "Mute", "VolumeUp", "PlayPause", "a", "control", ""] {
+        for name in ["None", "a", "control", ""] {
             assert!(usage_from_name(name).is_none(), "{name}");
         }
     }
@@ -262,10 +271,34 @@ mod tests {
 
     #[test]
     fn a_bad_chord_is_rejected_whole() {
-        assert!(parse_chord("Control+Mute").is_err());
+        assert!(parse_chord("Control+UnknownMedia").is_err());
         assert!(parse_chord("Control+").is_err());
         assert!(parse_chord("").is_err());
         assert!(parse_chord("A+B+C+D+E+F+G+H+I").is_err());
+    }
+
+    #[test]
+    fn consumer_chord_roundtrips_and_retains_another_sessions_hold() {
+        use crate::actions::{Action, ActionOwner, ActionState, ConsumerKey};
+        let chord = parse_chord("Control+VolumeUp").unwrap();
+        assert_eq!(chord_text(&chord), "LeftControl+VolumeUp");
+        assert_eq!(chord[1], ConsumerKey::VolumeUp.keyboard_usage());
+        assert_eq!(chord[1].consumer_key(), Some(ConsumerKey::VolumeUp));
+        assert!(!chord[1].is_modifier());
+        let action = Action::Key(chord[1]);
+        let first = ActionOwner { device: 1, binding: 1 };
+        let second = ActionOwner { device: 2, binding: 1 };
+        let mut state = ActionState::<2, 2>::new();
+        state.set_held(first, action, true).unwrap();
+        state.next_pending().unwrap().acknowledge();
+        state.set_held(second, action, true).unwrap();
+        state.release_device(first.device);
+        assert!(state.next_pending().is_none());
+        state.release_device(second.device);
+        let pending = state.next_pending().unwrap();
+        assert!(!pending.transition().pressed);
+        assert_eq!(pending.transition().action, action);
+        pending.acknowledge();
     }
 }
 

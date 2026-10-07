@@ -26,6 +26,8 @@ pub struct ActionOwner {
 }
 
 /// Keyboard/Keypad usage ID from USB HID usage page 0x07, not an OS key code.
+/// The seven pinned media controls use `0x1000 | consumer_usage` as a synthetic
+/// domain within the existing u16 command ABI; they are not page-0x07 usages.
 ///
 /// Values 0..=3 are reserved/no-key/error reports and cannot be held. Other IDs
 /// retain their portable identity; an adapter must reject unsupported usages.
@@ -44,6 +46,37 @@ impl KeyboardUsage {
     pub const fn is_modifier(self) -> bool {
         self.0 >= 0xe0 && self.0 <= 0xe7
     }
+
+    pub const fn consumer_key(self) -> Option<ConsumerKey> {
+        match self.0 {
+            0x10e2 => Some(ConsumerKey::Mute),
+            0x10e9 => Some(ConsumerKey::VolumeUp),
+            0x10ea => Some(ConsumerKey::VolumeDown),
+            0x10cd => Some(ConsumerKey::PlayPause),
+            0x10b6 => Some(ConsumerKey::PreviousSong),
+            0x10b5 => Some(ConsumerKey::NextSong),
+            0x10b7 => Some(ConsumerKey::StopSong),
+            _ => None,
+        }
+    }
+}
+
+/// The consumer controls exposed by the pinned original Windows keyboard.
+/// Adapters retain this identity for shared holds and select their actual
+/// platform key code; platforms may reject controls absent from their API.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u16)]
+pub enum ConsumerKey {
+    Mute = 0xe2,
+    VolumeUp = 0xe9,
+    VolumeDown = 0xea,
+    PlayPause = 0xcd,
+    PreviousSong = 0xb6,
+    NextSong = 0xb5,
+    StopSong = 0xb7,
+}
+impl ConsumerKey {
+    pub const fn keyboard_usage(self) -> KeyboardUsage { KeyboardUsage(0x1000 | self as u16) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
