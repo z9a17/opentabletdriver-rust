@@ -34,6 +34,12 @@ impl Handle {
 }
 pub struct Owner {pub handle:Handle,join:Option<JoinHandle<()>>}
 impl Owner {
+    /// Teardown can need daemon/device callbacks. The caller keeps those lanes
+    /// alive and pumps its control dispatcher until this join is completed.
+    pub fn retire(&mut self)->Result<Option<JoinHandle<()>>,String>{
+        if self.join.is_none(){return Ok(None);}
+        self.handle.tx.send(Work::Stop).map_err(|_|"Global tool owner stopped before retirement")?;Ok(self.join.take())
+    }
     pub fn start(log:impl Fn(&str)+Send+'static)->Result<Self,String>{
         let (tx,rx)=mpsc::sync_channel(8);let state=Arc::new(Mutex::new(State::default()));let next=Arc::new(Mutex::new(0));
         let worker_state=state.clone();
@@ -74,5 +80,5 @@ impl Owner {
 }
 impl Drop for Owner {fn drop(&mut self){
     // Owner teardown must happen outside a handler that tool disposal needs.
-    let _=self.handle.tx.send(Work::Stop);if let Some(join)=self.join.take(){let _=join.join();}
+    if self.join.is_some(){let _=self.handle.tx.send(Work::Stop);if let Some(join)=self.join.take(){let _=join.join();}}
 }}

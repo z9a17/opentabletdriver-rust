@@ -189,6 +189,7 @@ fn tool_configs(settings:&Value)->Result<Vec<otd_core::plugins::PluginConfig>,St
 #[derive(Clone,Debug,Serialize,Deserialize)]
 pub enum Command {
     Status, Detect, Start, Stop, Shutdown,
+    SuspendTools,StopReaders{shutdown:bool},
     Select { expected:WorkerIdentity,id:String },
     GetProfile { id:String,generation:u64 },
     Apply { expected:WorkerIdentity,id:String,generation:u64,profile_toml:String,binding_inhibit:Option<u32> },
@@ -202,6 +203,8 @@ struct Call { command:Command, reply:SyncSender<Result<Completion,String>> }
 pub struct Handle { tx:SyncSender<Call> }
 impl Handle {
     pub fn call(&self,command:Command) -> Result<Value,String> {
+        if matches!(&command,Command::Stop|Command::Shutdown){let shutdown=matches!(&command,Command::Shutdown);
+            self.call(Command::SuspendTools)?;return self.call(Command::StopReaders{shutdown});}
         let (reply,rx) = mpsc::sync_channel(1);
         self.tx.try_send(Call { command,reply }).map_err(|_| "Native control queue is full or owner stopped".to_owned())?;
         let completion=rx.recv_timeout(Duration::from_secs(60)).map_err(|_| "Native control timeout; query state before retrying mutation".to_owned())??;
@@ -211,7 +214,7 @@ impl Handle {
 }
 struct State {
     identity:WorkerIdentity, slots:BTreeMap<String,Slot>, next_id:u64,next_reader:u64,
-    selected:Option<String>, enabled:bool, shutdown:bool,
+    selected:Option<String>, enabled:bool, shutdown:bool,retiring:bool,
     settings:Value, logs:VecDeque<Value>, log_sequence:u64,resynchronize:u64,
     tools:crate::global_tools::Handle,pending_tools:Option<crate::global_tools::Receipt>,tools_configured:bool,
     bindings:SyncSender<(u64,crate::binding_presets::Request)>,
@@ -278,6 +281,7 @@ impl State {
         Ok(())
     }
     fn replace(&mut self,platform:&Arc<dyn Platform>,id:&str,expected:u64,profile:Profile) -> Result<(),String> {
+        if self.retiring{return Err("Daemon retirement owns the transaction; device replacement is blocked".into());}
         let slot=self.slots.get_mut(id).ok_or("Device session does not exist")?;
         if slot.session.device_generation!=expected { return Err("Stale device generation".into()); }
         let profile=profile.for_tablet(otd_core::spec::TabletSpec::from_configuration(&slot.device.configuration)?)?;
@@ -314,12 +318,18 @@ impl State {
         self.changed()
     }
     fn stop_device(&mut self,id:&str,generation:u64) -> Result<(),String> {
+        if self.retiring{return Err("Daemon retirement owns the transaction; individual stop is blocked".into());}
         let slot=self.slots.get_mut(id).ok_or("Device session does not exist")?;
         if slot.session.device_generation!=generation { return Err("Stale device generation".into()); }
         if let Some(mut worker)=slot.worker.take() { worker.retire()?; }
         slot.explicitly_stopped=true;slot.session.state=SessionState::Stopped;
         slot.session.device_generation=generation.checked_add(1).ok_or("Device generation exhausted")?;
         self.changed()
+    }
+    fn stop_readers(&mut self)->Result<(),String>{
+        self.enabled=false;let mut errors=Vec::new();
+        for slot in self.slots.values_mut(){if let Some(mut worker)=slot.worker.take(){if let Err(error)=worker.retire(){slot.session.last_error=Some(error.clone());errors.push(error);slot.session.state=SessionState::Failed;continue;}}slot.session.state=SessionState::Stopped;}
+        if errors.is_empty(){Ok(())}else{Err(format!("Output cleanup failed: {}",errors.join("; ")))}
     }
     fn tablets(&self) -> Vec<Value> {
         let owned=crate::shared_devices::owned_metadata();
@@ -342,6 +352,7 @@ impl State {
         Ok(value)
     }
     fn apply_settings(&mut self,platform:&Arc<dyn Platform>,settings:Value,source:Option<(String,u64)>,owner:Option<u32>) -> Result<(),String> {
+        if self.retiring{return Err("Daemon retirement owns the transaction; settings replacement is blocked".into());}
         if self.tools.pending()?{return Err("Global tools are still changing; refresh before applying settings".into());}
         let profiles=settings["Profiles"].as_array().ok_or("Settings require Profiles array")?;
         if profiles.len()>512 { return Err("Settings exceed 512 profiles".into()); }
@@ -379,16 +390,19 @@ impl State {
         self.settings=settings;self.changed()
     }
     fn command(&mut self,platform:&Arc<dyn Platform>,command:Command) -> Result<Value,String> {
+        if self.retiring&&matches!(&command,Command::Start|Command::StartDevice{..}|Command::Select{..}){return Err("Daemon retirement owns the transaction; start/selection is blocked".into());}
         if self.tools.pending()?&&matches!(&command,Command::Start|Command::Stop|Command::Shutdown){return Err("Global tools are still changing; refresh before changing daemon lifetime".into());}
         match command {
             Command::Status=>Ok(json!({"identity":self.identity,"sessions":self.slots.values().map(|slot|&slot.session).collect::<Vec<_>>(),"selected_id":self.selected,"enabled":self.enabled})),
             Command::Detect=>{self.scan(platform)?;Ok(json!(self.tablets()))},
             Command::Start=>{platform.prepare_start()?;self.enabled=true;if !self.tools_configured{let generation=self.tools.snapshot()?.generation;self.pending_tools=Some(self.tools.set(generation,match platform.startup_tools(){Some(configs)=>configs,None=>tool_configs(&self.settings)?})?);self.tools_configured=true;}for slot in self.slots.values_mut(){slot.explicitly_stopped=false;if slot.session.state==SessionState::Failed{slot.session.state=SessionState::Detected;}}self.scan(platform)?;self.changed()?;Ok(Value::Null)},
-            Command::Stop|Command::Shutdown=>{
-                self.enabled=false;if self.tools_configured{let generation=self.tools.snapshot()?.generation;self.pending_tools=Some(self.tools.drain(generation)?);self.tools_configured=false;}let mut errors=Vec::new();
-                for slot in self.slots.values_mut(){if let Some(mut worker)=slot.worker.take(){if let Err(error)=worker.retire(){errors.push(error);slot.session.state=SessionState::Failed;continue;}}slot.session.state=SessionState::Stopped;}
-                if !errors.is_empty(){return Err(format!("Output cleanup failed: {}",errors.join("; ")));}
-                if matches!(command,Command::Shutdown){self.shutdown=true;}self.changed()?;Ok(Value::Null)
+            Command::SuspendTools=>{if self.tools.pending()?{return Err("Global tools are still changing; refresh before stopping".into());}self.retiring=true;self.enabled=false;
+                if self.tools_configured{let generation=self.tools.snapshot()?.generation;self.pending_tools=Some(self.tools.drain(generation)?);self.tools_configured=false;}self.changed()?;Ok(Value::Null)},
+            Command::Stop|Command::Shutdown|Command::StopReaders{..}=>{
+                let shutdown=matches!(&command,Command::Shutdown|Command::StopReaders{shutdown:true});
+                if self.tools_configured||self.tools.pending()?{return Err("Global tools have not completed disposal".into());}
+                self.stop_readers()?;
+                self.retiring=false;if shutdown{self.shutdown=true;}self.changed()?;Ok(Value::Null)
             },
             Command::Select{expected,id}=>{self.expected(&expected)?;if !self.slots.contains_key(&id){return Err("Unknown device session".into());}self.selected=Some(id);self.changed()?;Ok(Value::Null)},
             Command::GetProfile{id,generation}=>{let slot=self.slots.get(&id).ok_or("Unknown device session")?;if slot.session.device_generation!=generation{return Err("Stale device generation".into());}Ok(json!(slot.profile.to_toml()?))},
@@ -480,9 +494,9 @@ impl Owner {
             let document:Value=serde_json::from_str(&text).map_err(|error|error.to_string())?;
             if !document["Profiles"].is_array(){return Err("Original settings require Profiles array".into());}document
         },_=>crate::upstream_settings::collection::empty()};
-        let tools=crate::global_tools::Owner::start(|line|eprintln!("{line}"))?;
+        let mut tools=crate::global_tools::Owner::start(|line|eprintln!("{line}"))?;
         let(bindings,binding_rx)=mpsc::sync_channel(64);
-        let state=State { identity:WorkerIdentity {instance,generation:1},slots:BTreeMap::new(),next_id:0,next_reader:0,selected:None,enabled:false,shutdown:false,
+        let state=State { identity:WorkerIdentity {instance,generation:1},slots:BTreeMap::new(),next_id:0,next_reader:0,selected:None,enabled:false,shutdown:false,retiring:false,
             settings,logs:VecDeque::new(),log_sequence:0,resynchronize:0,tools:tools.handle.clone(),pending_tools:None,tools_configured:false,bindings };
         let (tx,rx)=mpsc::sync_channel::<Call>(64);let handle=Handle {tx};
         let services=Arc::new(Services {handle:handle.clone(),platform:platform.clone()});
@@ -514,17 +528,23 @@ impl Owner {
                     let result=result.and_then(|value|published.map(|_|Completion{value,tools:state.pending_tools.take()}));let _=call.reply.send(result);
                 }
             }
-            // Pending providers fail first; reader cleanup retains exact ownership.
-            // Closing queued native replies releases an executing backend
-            // before Host joins its lanes. Reader handles remain owned until
-            // their mandatory cleanup below.
-            drop(rx);
-            drop(host);
-            crate::managed_host::clear();
-            drop(tools);state.tools_configured=false;
-            let result=state.command(&platform,Command::Stop);
+            // Dispose global tools first, keeping actual readers, service lanes
+            // and read-only daemon callbacks live until their teardown joins.
+            state.retiring=true;state.enabled=false;
+            let tool_retirement=match tools.retire(){Ok(Some(join))=>{while !join.is_finished(){
+                if let Ok(call)=rx.recv_timeout(Duration::from_millis(50)){
+                    let result=state.command(&platform,call.command);let _=call.reply.send(result.map(|value|Completion{value,tools:None}));
+                }
+            }join.join().map_err(|_|"Global tool owner panicked during disposal".to_owned())},Ok(None)=>Ok(()),Err(error)=>Err(error)};
+            state.tools_configured=false;
+            // Mandatory physical cleanup proceeds even if a failed tool worker
+            // left its generation reservation pending. The error is retained.
+            let result=state.stop_readers();
+            let retired=crate::dotnet::drain_managed_retirements(Duration::from_secs(15));
+            // No report owner remains when the input lane performs final retry.
+            drop(rx);drop(host);crate::managed_host::clear();
             owner_stop.store(true,Ordering::Release);
-            result?;if let Some(error)=discovery_error{eprintln!("Last discovery error: {error}");}Ok(())
+            tool_retirement?;result?;retired?;if let Some(error)=discovery_error{eprintln!("Last discovery error: {error}");}Ok(())
         }).map_err(|error|error.to_string())?;
         Ok(Self {handle,stop,join:Some(join)})
     }
