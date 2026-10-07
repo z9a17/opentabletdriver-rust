@@ -149,6 +149,10 @@ pub(super) fn legacy_service_present() -> io::Result<bool> {
 }
 
 fn create_server(sid: &str) -> io::Result<Handle> {
+    create_named_server(sid, &name_for_sid(sid), true, 1)
+}
+
+fn create_named_server(sid: &str, endpoint: &str, first: bool, instances: u32) -> io::Result<Handle> {
     // Protected DACL: current user and SYSTEM only. The user receives full access
     // so the server can create its endpoint; clients request the narrower mask.
     let sddl = wide(&format!("D:P(A;;GA;;;SY)(A;;GA;;;{sid})"));
@@ -170,13 +174,13 @@ fn create_server(sid: &str) -> io::Result<Handle> {
         lpSecurityDescriptor: descriptor.0,
         bInheritHandle: 0,
     };
-    let name = wide(&name_for_sid(sid));
+    let name = wide(endpoint);
     let handle = unsafe {
         CreateNamedPipeW(
             name.as_ptr(),
-            PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | if first { FILE_FLAG_FIRST_PIPE_INSTANCE } else { 0 },
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-            1,
+            instances,
             65536,
             65536,
             1000,
@@ -200,6 +204,7 @@ struct Operation {
     event: Handle,
     overlapped: Box<OVERLAPPED>,
     pending: bool,
+    wake_control: bool,
 }
 impl Operation {
     fn new(pipe: HANDLE) -> io::Result<Self> {
@@ -211,6 +216,7 @@ impl Operation {
             event,
             overlapped,
             pending: false,
+            wake_control: true,
         })
     }
 
@@ -222,7 +228,7 @@ impl Operation {
     ) -> io::Result<u32> {
         // Sleep until the operation completes or the handler has work; a
         // timer here would wake an idle daemon many times a second.
-        let wake = super::wake_event();
+        let wake = self.wake_control.then(super::wake_event).flatten();
         let handles = [self.event.0, wake.unwrap_or(null_mut())];
         let count = if wake.is_some() { 2 } else { 1 };
         loop {
@@ -301,12 +307,80 @@ enum Buffer<'a> {
     Read(&'a mut [u8]),
     Write(&'a [u8]),
 }
-fn transfer(
+/// Exclusive per-worker compatibility connection. Reuses native cancellation
+/// draining and ACL construction, but never consumes the daemon owner's wake.
+pub(crate) struct CompatPipe { pipe: Handle }
+// Each instance is moved once to its dedicated worker and never shared.
+unsafe impl Send for CompatPipe {}
+impl CompatPipe {
+    pub(crate) fn instances(name: &str, count: u32) -> io::Result<Vec<Self>> {
+        if name.is_empty() || name.len() > 200 || name.bytes().any(|byte| byte < 32 || matches!(byte, b'\\' | b'/' | b':'))
+            || !(1..=4).contains(&count) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid compatibility pipe name or client limit"));
+        }
+        let sid = current_sid()?;
+        let endpoint = format!(r"\\.\pipe\{name}");
+        let mut pipes = Vec::new();
+        // Keep the first instance alive while creating all others. First-instance
+        // ownership failure leaves an existing original or Rust daemon untouched.
+        for index in 0..count {
+            pipes.push(Self { pipe: create_named_server(&sid, &endpoint, index == 0, count)? });
+        }
+        Ok(pipes)
+    }
+    /// Read-only readiness ownership check. Closing this temporary connection
+    /// dispatches no RPC request and cannot start a tablet worker.
+    pub(crate) fn server_process_id(endpoint: &str) -> io::Result<u32> {
+        let name = wide(endpoint);
+        let pipe = Handle::new(unsafe { CreateFileW(name.as_ptr(), 0, 0, null(), OPEN_EXISTING,
+            SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, null_mut()) })?;
+        let mut pid = 0;
+        if unsafe { GetNamedPipeServerProcessId(pipe.0, &mut pid) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(pid)
+    }
+    pub(crate) fn connect(&self, stop: &AtomicBool) -> io::Result<()> {
+        let mut op = Operation::new(self.pipe.0)?;
+        op.wake_control = false;
+        if unsafe { ConnectNamedPipe(self.pipe.0, &mut *op.overlapped) } == 0 {
+            let error = io::Error::last_os_error();
+            match error.raw_os_error().map(|value| value as u32) {
+                Some(ERROR_PIPE_CONNECTED) => {},
+                Some(ERROR_IO_PENDING) => { op.pending = true; op.wait(None, stop, &mut || {})?; },
+                _ => return Err(error),
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn disconnect(&self) {
+        unsafe { DisconnectNamedPipe(self.pipe.0); }
+    }
+    pub(crate) fn cancel_pending(&self) {
+        // The owning worker drains its OVERLAPPED before freeing the buffer.
+        unsafe { CancelIoEx(self.pipe.0, null()); }
+    }
+    pub(crate) fn read(&self, buffer: &mut [u8], deadline: Instant, stop: &AtomicBool,
+        tick: &mut impl FnMut()) -> io::Result<usize> {
+        transfer_with_wake(self.pipe.0, Buffer::Read(buffer), deadline, stop, tick, false)
+    }
+    pub(crate) fn write(&self, mut buffer: &[u8], deadline: Instant, stop: &AtomicBool) -> io::Result<()> {
+        while !buffer.is_empty() {
+            let bytes = transfer_with_wake(self.pipe.0, Buffer::Write(buffer), deadline, stop, &mut || {}, false)?;
+            if bytes == 0 { return Err(io::Error::new(io::ErrorKind::WriteZero, "compatibility pipe closed")); }
+            buffer = &buffer[bytes..];
+        }
+        Ok(())
+    }
+}
+
+fn transfer_with_wake(
     pipe: HANDLE,
     buffer: Buffer<'_>,
     deadline: Instant,
     stop: &AtomicBool,
     tick: &mut impl FnMut(),
+    wake_control: bool,
 ) -> io::Result<usize> {
     if stop.load(Ordering::Acquire) {
         return Err(io::Error::new(
@@ -321,6 +395,7 @@ fn transfer(
         ));
     }
     let mut op = Operation::new(pipe)?;
+    op.wake_control = wake_control;
     let mut bytes = 0;
     let ok = unsafe {
         match buffer {
@@ -354,13 +429,17 @@ fn transfer(
 
 fn read_exact(
     pipe: HANDLE,
-    mut buffer: &mut [u8],
+    buffer: &mut [u8],
     deadline: Instant,
     stop: &AtomicBool,
     tick: &mut impl FnMut(),
 ) -> io::Result<()> {
+    read_exact_with_wake(pipe, buffer, deadline, stop, tick, true)
+}
+fn read_exact_with_wake(pipe: HANDLE, mut buffer: &mut [u8], deadline: Instant,
+    stop: &AtomicBool, tick: &mut impl FnMut(), wake_control: bool) -> io::Result<()> {
     while !buffer.is_empty() {
-        let bytes = transfer(pipe, Buffer::Read(buffer), deadline, stop, tick)?;
+        let bytes = transfer_with_wake(pipe, Buffer::Read(buffer), deadline, stop, tick, wake_control)?;
         if bytes == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -371,15 +450,10 @@ fn read_exact(
     }
     Ok(())
 }
-fn write_all(
-    pipe: HANDLE,
-    mut buffer: &[u8],
-    deadline: Instant,
-    stop: &AtomicBool,
-    tick: &mut impl FnMut(),
-) -> io::Result<()> {
+fn write_all_with_wake(pipe: HANDLE, mut buffer: &[u8], deadline: Instant,
+    stop: &AtomicBool, tick: &mut impl FnMut(), wake_control: bool) -> io::Result<()> {
     while !buffer.is_empty() {
-        let bytes = transfer(pipe, Buffer::Write(buffer), deadline, stop, tick)?;
+        let bytes = transfer_with_wake(pipe, Buffer::Write(buffer), deadline, stop, tick, wake_control)?;
         if bytes == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::WriteZero,
@@ -396,8 +470,12 @@ fn read_frame(
     stop: &AtomicBool,
     tick: &mut impl FnMut(),
 ) -> io::Result<Vec<u8>> {
+    read_frame_with_wake(pipe, deadline, stop, tick, true)
+}
+fn read_frame_with_wake(pipe: HANDLE, deadline: Instant, stop: &AtomicBool,
+    tick: &mut impl FnMut(), wake_control: bool) -> io::Result<Vec<u8>> {
     let mut prefix = [0u8; 4];
-    read_exact(pipe, &mut prefix, deadline, stop, tick)?;
+    read_exact_with_wake(pipe, &mut prefix, deadline, stop, tick, wake_control)?;
     let size = u32::from_le_bytes(prefix) as usize;
     if size == 0 || size > MAX_FRAME_BYTES {
         return Err(io::Error::new(
@@ -406,7 +484,7 @@ fn read_frame(
         ));
     }
     let mut frame = vec![0; size];
-    read_exact(pipe, &mut frame, deadline, stop, tick)?;
+    read_exact_with_wake(pipe, &mut frame, deadline, stop, tick, wake_control)?;
     Ok(frame)
 }
 fn write_frame(
@@ -416,20 +494,25 @@ fn write_frame(
     stop: &AtomicBool,
     tick: &mut impl FnMut(),
 ) -> io::Result<()> {
+    write_frame_with_wake(pipe, frame, deadline, stop, tick, true)
+}
+fn write_frame_with_wake(pipe: HANDLE, frame: &[u8], deadline: Instant,
+    stop: &AtomicBool, tick: &mut impl FnMut(), wake_control: bool) -> io::Result<()> {
     if frame.is_empty() || frame.len() > MAX_FRAME_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "control frame must be 1..=256 KiB",
         ));
     }
-    write_all(
+    write_all_with_wake(
         pipe,
         &(frame.len() as u32).to_le_bytes(),
         deadline,
         stop,
         tick,
+        wake_control,
     )?;
-    write_all(pipe, frame, deadline, stop, tick)
+    write_all_with_wake(pipe, frame, deadline, stop, tick, wake_control)
 }
 
 pub(super) fn serve(handler: &mut impl ControlHandler, stop: &AtomicBool) -> io::Result<()> {
@@ -569,8 +652,9 @@ pub(super) fn request(request: &Request, timeout: Duration) -> io::Result<Respon
     }
     let pipe = connect_client(&sid, deadline)?;
     let stop = AtomicBool::new(false);
-    write_frame(pipe.0, &bytes, deadline, &stop, &mut || {})?;
-    let frame = read_frame(pipe.0, deadline, &stop, &mut || {})?;
+    // A client in this daemon process must not steal the control owner's wake.
+    write_frame_with_wake(pipe.0, &bytes, deadline, &stop, &mut || {}, false)?;
+    let frame = read_frame_with_wake(pipe.0, deadline, &stop, &mut || {}, false)?;
     let response: Response = serde_json::from_slice(&frame)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     if response.version != PROTOCOL_VERSION || response.id != request.id {
@@ -579,7 +663,7 @@ pub(super) fn request(request: &Request, timeout: Duration) -> io::Result<Respon
             "daemon response version or request ID does not match",
         ));
     }
-    write_all(pipe.0, &[ACK], deadline, &stop, &mut || {})?;
+    write_all_with_wake(pipe.0, &[ACK], deadline, &stop, &mut || {}, false)?;
     Ok(response)
 }
 

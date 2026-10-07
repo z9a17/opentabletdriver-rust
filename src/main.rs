@@ -3,6 +3,7 @@ mod area_cli;
 mod companions;
 mod control;
 mod daemon;
+mod device_sessions;
 mod decode_cli;
 mod diagnostics;
 mod device_sessions;
@@ -24,6 +25,7 @@ mod session;
 mod ui;
 mod update;
 mod winusb;
+mod upstream_rpc;
 
 // The portable core, at the crate paths the Windows modules use.
 use otd_core::tablets::{self, Database, Origin, ParserSupport, Role, Severity};
@@ -47,7 +49,7 @@ fn usage() -> &'static str {
   opentabletdriver-rust.exe ui [--tray]     Open the same control panel (--tray: in the tray)
   opentabletdriver-rust.exe                 Start the visible cursor daemon
   opentabletdriver-rust.exe run [--config driver.toml | --otd-settings settings.json]
-  opentabletdriver-rust.exe daemon [--background]
+  opentabletdriver-rust.exe daemon [--background] [--upstream-rpc] [--upstream-pipe NAME]
   opentabletdriver-rust.exe start [--config driver.toml | --otd-settings settings.json]
   opentabletdriver-rust.exe restart [--config driver.toml | --otd-settings settings.json]
   opentabletdriver-rust.exe configuration
@@ -86,6 +88,7 @@ enum Command {
     Presets(Vec<String>),
     Daemon {
         background: bool,
+        upstream_pipe: Option<String>,
     },
     Control(control::Command),
     Configuration,
@@ -190,15 +193,17 @@ fn parse_args() -> Result<Command, String> {
         "profiles" => Ok(Command::Profiles(args.collect())),
         "presets" => Ok(Command::Presets(args.collect())),
         "daemon" => {
-            let background = match args.next().as_deref() {
-                None => false,
-                Some("--background") => true,
-                _ => return Err(usage().into()),
-            };
-            if args.next().is_some() {
-                return Err(usage().into());
+            let (mut background, mut upstream, mut pipe) = (false, false, None);
+            while let Some(argument) = args.next() {
+                match argument.as_str() {
+                    "--background" if !background => background = true,
+                    "--upstream-rpc" if !upstream => upstream = true,
+                    "--upstream-pipe" if pipe.is_none() => pipe = Some(args.next().ok_or("--upstream-pipe requires NAME")?),
+                    _ => return Err(usage().into()),
+                }
             }
-            Ok(Command::Daemon { background })
+            if pipe.is_some() && !upstream { return Err("--upstream-pipe requires --upstream-rpc".into()); }
+            Ok(Command::Daemon { background, upstream_pipe: upstream.then(|| pipe.unwrap_or_else(|| upstream_rpc::DEFAULT_PIPE.to_owned())) })
         }
         "status" | "stop" | "shutdown" | "debug" => {
             if args.next().is_some() {
@@ -817,7 +822,7 @@ fn main() {
     // The daemon and the panel have no console; their panics and fatal
     // errors go to crash.log, where the panel reads the daemon's back.
     let role = match &command {
-        Ok(Command::Daemon { background: false }) => "daemon",
+        Ok(Command::Daemon { background: false, .. }) => "daemon",
         Ok(Command::Ui) => "panel",
         Ok(Command::Run { .. } | Command::Capture { .. }) => "driver",
         _ => "cli",
@@ -835,11 +840,11 @@ fn main() {
         Ok(Command::Area(args)) => area_cli::run(args),
         Ok(Command::Profiles(args)) => profile_cli::run(args),
         Ok(Command::Presets(args)) => preset_cli::run(args),
-        Ok(Command::Daemon { background }) => {
+        Ok(Command::Daemon { background, upstream_pipe }) => {
             if background {
-                daemon::background()
+                daemon::background_with_rpc(upstream_pipe.as_deref())
             } else {
-                daemon::serve()
+                daemon::serve_with_rpc(upstream_pipe.as_deref())
             }
         }
         Ok(Command::Control(command)) => daemon::call(command).and_then(|mut reply| {

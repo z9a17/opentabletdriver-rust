@@ -6,7 +6,7 @@
 //! IDs correlate replies; they are not deduplication tokens. After a connection
 //! failure a command may already have taken effect: query status before retrying.
 
-mod pipe;
+pub(crate) mod pipe;
 
 use serde::{Deserialize, Serialize};
 use std::io;
@@ -59,6 +59,7 @@ impl Request {
             Command::StartIf { profile_toml, .. } | Command::Restart { profile_toml, .. } => {
                 Some(profile_toml)
             }
+            Command::ApplyDeviceProfile { profile_toml, .. } => Some(profile_toml),
             _ => None,
         };
         if profile.is_some_and(|profile| profile.len() > MAX_PROFILE_BYTES) {
@@ -68,6 +69,22 @@ impl Request {
             ));
         }
         match &self.command {
+            Command::WriteMessage { message } => {
+                if message.message.len() > MAX_LOG_LINE_BYTES || message.group.len() > 128
+                    || message.time.len() > 64 || message.stack_trace.as_ref().is_some_and(|value| value.len() > 4096)
+                    || !(0..=4).contains(&message.level) {
+                    return Err(ControlError::new(ErrorCode::InvalidRequest, "log message exceeds limits or has an unknown level"));
+                }
+            }
+            Command::SelectDeviceSession { id, .. }
+            | Command::GetDeviceProfile { id, .. }
+            | Command::ApplyDeviceProfile { id, .. }
+            | Command::StopDevice { id, .. }
+            | Command::StartDevice { id, .. } => {
+                if id.is_empty() || id.len() > 128 || id.chars().any(char::is_control) {
+                    return Err(ControlError::new(ErrorCode::InvalidRequest, "invalid device session ID"));
+                }
+            }
             Command::DebugCaptureStart { start_id, capacity_bytes, lease_ms, .. } => {
                 if *start_id == 0 {
                     return Err(ControlError::new(ErrorCode::InvalidRequest, "start ID must be nonzero"));
@@ -93,6 +110,15 @@ impl Request {
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
     Status,
+    ListDeviceSessions,
+    SelectDeviceSession { expected: WorkerIdentity, id: String },
+    GetDeviceProfile { expected: WorkerIdentity, id: String, device_generation: u64 },
+    ApplyDeviceProfile { expected: WorkerIdentity, id: String, device_generation: u64, profile_toml: String },
+    StopDevice { expected: WorkerIdentity, id: String, device_generation: u64 },
+    StartDevice { expected: WorkerIdentity, id: String, device_generation: u64 },
+    /// The supplied OTD log is validated at the RPC boundary. The daemon owner
+    /// appends it to its actual recent log; no input thread handles RPC traffic.
+    WriteMessage { message: UpstreamLogMessage },
     SetExperimental {
         expected: WorkerIdentity,
         settings: crate::experimental::Settings,
@@ -241,6 +267,11 @@ pub struct Response {
 #[serde(tag = "result", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Reply {
     ExperimentalSaved,
+    MessageWritten,
+    DeviceSessions { sessions: Vec<crate::device_sessions::SessionSnapshot>, selected_id: Option<String> },
+    DeviceSessionSelected { id: String },
+    DeviceProfile { identity: WorkerIdentity, id: String, device_generation: u64, profile_toml: String },
+    DeviceOperationAccepted { receipt: crate::device_sessions::SessionReceipt },
     Status {
         status: ControlStatus,
     },
@@ -271,6 +302,19 @@ pub enum Reply {
     Error {
         error: ControlError,
     },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase", deny_unknown_fields)]
+pub struct UpstreamLogMessage {
+    pub time: String,
+    pub group: String,
+    pub message: String,
+    #[serde(default)]
+    pub stack_trace: Option<String>,
+    pub level: i32,
+    #[serde(default)]
+    pub notification: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

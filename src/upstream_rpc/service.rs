@@ -1,0 +1,346 @@
+//! Pinned IDriverDaemon methods. Missing providers return errors, never a
+//! successful empty/default result. This executes only on compatibility workers.
+use std::path::Path;
+use std::sync::{Arc, atomic::{AtomicBool, AtomicU64, Ordering}};
+use std::time::{Duration, Instant};
+use serde_json::{Value, json};
+use crate::control::{self, Command, ControlStatus, DriverState, Reply, Request, UpstreamLogMessage};
+use super::protocol::{self, Error, Service};
+
+pub const METHODS: &[&str] = &[
+    "WriteMessage", "LoadPlugins", "InstallPlugin", "UninstallPlugin", "DownloadPlugin",
+    "GetDevices", "GetTablets", "DetectTablets", "SetSettings", "GetSettings", "ResetSettings",
+    "GetApplicationInfo", "SetTabletDebug", "RequestDeviceString", "GetCurrentLog",
+    "GetDiagnosticInfo", "CheckForUpdates", "InstallUpdate", "ForceResynchronize",
+];
+pub struct Shared { pub resynchronize: AtomicU64 }
+impl Default for Shared { fn default() -> Self { Self { resynchronize: AtomicU64::new(0) } } }
+pub struct Connection {
+    shared: Arc<Shared>,
+    stop: Arc<AtomicBool>,
+    next_poll: Instant,
+    log_cursor: Option<(String, u64)>,
+    tablet_cursor: Option<Value>,
+    resync_cursor: u64,
+}
+impl Connection {
+    pub fn new(shared: Arc<Shared>, stop: Arc<AtomicBool>) -> Self {
+        let resync_cursor = shared.resynchronize.load(Ordering::Acquire);
+        Self { shared, stop, next_poll: Instant::now(), log_cursor: None,
+            tablet_cursor: None, resync_cursor }
+    }
+    fn call(&self, command: Command) -> Result<Reply, Error> {
+        if self.stop.load(Ordering::Acquire) { return Err(Error::failed("daemon is shutting down")); }
+        let response = control::request(&Request::new(1, command), Duration::from_secs(5))
+            .map_err(|error| Error::failed(format!("native control: {error}; query state before retrying a mutation")))?;
+        match response.reply {
+            Reply::Error { error } => Err(Error::failed(format!("{:?}: {}", error.code, error.message))),
+            reply => Ok(reply),
+        }
+    }
+    fn status(&self) -> Result<ControlStatus, Error> {
+        match self.call(Command::Status)? { Reply::Status { status } => Ok(status), _ => Err(Error::failed("unexpected native status")) }
+    }
+    fn tablets(&self) -> Result<Value, Error> {
+        match self.call(Command::ListDeviceSessions)? {
+            Reply::DeviceSessions { sessions, .. } => {
+                let values: Vec<_> = sessions.iter().filter(|session| session.connected).map(|session| {
+                    let mut identifiers = vec![session.digitizer.clone()];
+                    if let Some(auxiliary) = &session.auxiliary { identifiers.push(auxiliary.clone()); }
+                    json!({"Properties":session.properties,"Identifiers":identifiers})
+                }).collect();
+                Ok(json!(values))
+            }
+            _ => Err(Error::failed("unexpected device session snapshot")),
+        }
+    }
+    fn settings(&self) -> Result<Value, Error> {
+        let expected = self.status()?.identity();
+        let text = match self.call(Command::GetConfiguration { expected: expected.clone() })? {
+            Reply::Configuration { identity, profile_toml: Some(text) } if identity == expected => text,
+            Reply::Configuration { profile_toml: None, .. } => return Err(Error::failed("daemon has no settings configuration")),
+            _ => return Err(Error::failed("configuration changed while reading settings")),
+        };
+        let path = otd_core::storage::data_directory()?.join("driver.toml");
+        let profile = crate::config::Profile::from_toml_text(&text, &path)?;
+        // Strict export retains original store identities. Standalone native
+        // profiles/unreconciled DLL paths explicitly fail instead of inventing
+        // OTD stores or returning stale archived settings as active settings.
+        let exported = export_settings(&profile)?;
+        serde_json::from_str(&exported).map_err(|error| Error::failed(error.to_string()))
+    }
+    fn set_settings(&self, settings: &Value) -> Result<Value, Error> {
+        let profiles = settings.get("Profiles").and_then(Value::as_array)
+            .ok_or_else(|| Error::invalid("settings must contain Profiles"))?;
+        if profiles.len() != 1 || self.tablets()?.as_array().is_some_and(|tablets| tablets.len() > 1) {
+            return Err(Error::unsupported("SetSettings", "an atomic multi-device settings transaction is not implemented"));
+        }
+        let text = serde_json::to_string(settings).map_err(|error| Error::invalid(error.to_string()))?;
+        if text.len() > control::MAX_PROFILE_BYTES { return Err(Error::invalid("settings exceed 128 KiB")); }
+        let path = otd_core::storage::data_directory()?.join("upstream-rpc-settings.json");
+        let profile = crate::config::Profile::from_otd_profile_text(&text, &path, 0, Default::default())?;
+        if let Some(diagnostic) = profile.diagnostics.iter().find(|diagnostic| diagnostic.kind == "unsupported_active") {
+            return Err(Error::unsupported("SetSettings", &diagnostic.message));
+        }
+        profile.validate_runtime_tablet()?;
+        let replacement = profile.to_toml()?;
+        let before = self.status()?;
+        if before.state != DriverState::Running { return Err(Error::unsupported("SetSettings", "requires an active worker; inactive/multi-device settings storage is not implemented")); }
+        match self.call(Command::Restart { expected: before.identity(), profile_toml: replacement.clone() })? {
+            Reply::RestartAccepted { .. } => {},
+            _ => return Err(Error::failed("unexpected settings apply response")),
+        }
+        // RestartAccepted retains the old generation during preparation. A
+        // completion reply requires a committed new identity AND matching text.
+        // Timeout reports uncertainty; it never retries or rolls back a newer
+        // client's operation. No original settings file is written here.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if self.stop.load(Ordering::Acquire) { return Err(Error::failed("settings apply interrupted; query active settings before retrying")); }
+            let current = self.status()?;
+            if current.instance != before.instance { return Err(Error::failed("daemon identity changed during settings apply")); }
+            if current.state == DriverState::Failed || (current.last_error.is_some() && current.last_error != before.last_error) {
+                return Err(Error::failed(current.last_error.unwrap_or_else(|| "settings worker failed".into())));
+            }
+            if current.generation > before.generation && current.state == DriverState::Running {
+                match self.call(Command::GetConfiguration { expected: current.identity() })? {
+                    Reply::Configuration { profile_toml: Some(active), .. } if active == replacement => return Ok(Value::Null),
+                    _ => return Err(Error::failed("another configuration committed while applying settings")),
+                }
+            }
+            if Instant::now() >= deadline { return Err(Error::failed("settings apply is still pending; query settings/status before retrying")); }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+    pub fn events(&mut self) -> Vec<Value> {
+        if Instant::now() < self.next_poll || self.stop.load(Ordering::Acquire) { return Vec::new(); }
+        self.next_poll = Instant::now() + Duration::from_millis(250);
+        let mut events = Vec::new();
+        if let Ok(status) = self.status() {
+            if let Some((instance, sequence)) = &self.log_cursor {
+                if instance == &status.instance {
+                    let available_start = status.log_sequence.saturating_sub(status.logs.len() as u64);
+                    let start = sequence.saturating_sub(available_start).min(status.logs.len() as u64) as usize;
+                    // A lagging reader sees retained logs only. Retention is
+                    // bounded and timestamps below are observation timestamps.
+                    for line in &status.logs[start..] {
+                        events.push(protocol::event("Message", native_log(line)));
+                    }
+                }
+            }
+            self.log_cursor = Some((status.instance, status.log_sequence));
+        }
+        if let Ok(tablets) = self.tablets() {
+            if self.tablet_cursor.as_ref().is_some_and(|previous| previous != &tablets) {
+                events.push(protocol::event("TabletsChanged", tablets.clone()));
+            }
+            self.tablet_cursor = Some(tablets);
+        }
+        let resync = self.shared.resynchronize.load(Ordering::Acquire);
+        if self.resync_cursor != resync {
+            self.resync_cursor = resync;
+            events.push(protocol::event("Resynchronize", json!({})));
+        }
+        events
+    }
+}
+/// Resolved Windows DLL paths are host details, not OTD store identities. Only
+/// reconcile an existing one-to-one store in the same group/order. Extra DLLs,
+/// native ABI entries, mixed native/managed Radial Follow or ambiguous stores
+/// fail rather than returning stale source filters as if they were active.
+fn export_settings(profile: &crate::config::Profile) -> Result<String, Error> {
+    if profile.plugins.is_empty() { return Ok(profile.to_otd_json()?); }
+    use otd_core::plugins::PluginKind;
+    let mut copy = profile.clone();
+    let imported = copy.imported_otd.as_mut().ok_or_else(|| Error::unsupported("GetSettings", "native DLL entries have no original OTD stores"))?;
+    let mut document: Value = serde_json::from_str(&imported.settings_json).map_err(|error| Error::failed(error.to_string()))?;
+    let filters: Vec<_> = profile.plugins.iter().filter(|plugin| plugin.kind != PluginKind::DotnetTool).collect();
+    if filters.iter().any(|plugin| plugin.kind != PluginKind::Dotnet) {
+        return Err(Error::unsupported("GetSettings", "native ABI DLL filters cannot be represented as unchanged OTD stores"));
+    }
+    if !profile.radial_follow.is_empty() && filters.iter().any(|plugin| plugin.type_name == otd_core::radial_follow::FILTER_PATH) {
+        return Err(Error::unsupported("GetSettings", "mixed native/managed Radial Follow source reconciliation is ambiguous"));
+    }
+    fn reconcile(stores: &mut Value, plugins: &[&otd_core::plugins::PluginConfig], native_radial: bool) -> Result<(), Error> {
+        let stores = stores.as_array_mut().ok_or_else(|| Error::unsupported("GetSettings", "original plugin collection is missing"))?;
+        let relevant: Vec<_> = stores.iter().enumerate().filter(|(_, store)| !(native_radial && store["Path"] == otd_core::radial_follow::FILTER_PATH)).map(|(index, _)| index).collect();
+        if relevant.len() != plugins.len() { return Err(Error::unsupported("GetSettings", "original and runtime plugin collections differ in length")); }
+        for (index, plugin) in relevant.into_iter().zip(plugins) {
+            let store = &mut stores[index];
+            if store["Path"] != plugin.type_name { return Err(Error::unsupported("GetSettings", "original and runtime plugin order/type differs")); }
+            let settings: serde_json::Map<String, Value> = serde_json::from_str(&plugin.settings_json)
+                .map_err(|error| Error::failed(error.to_string()))?;
+            store["Enable"] = json!(plugin.enabled);
+            store["Settings"] = json!(settings.into_iter().map(|(property,value)| json!({"Property":property,"Value":value})).collect::<Vec<_>>());
+        }
+        Ok(())
+    }
+    let selected = document.get_mut("Profiles").and_then(Value::as_array_mut)
+        .and_then(|profiles| profiles.get_mut(imported.selected_profile))
+        .ok_or_else(|| Error::failed("original selected OTD profile is missing"))?;
+    reconcile(&mut selected["Filters"], &filters, !profile.radial_follow.is_empty())?;
+    let tools: Vec<_> = profile.plugins.iter().filter(|plugin| plugin.kind == PluginKind::DotnetTool).collect();
+    // Missing Tools is a legitimate empty collection in older imported documents.
+    if document.get("Tools").is_none() && tools.is_empty() { document["Tools"] = json!([]); }
+    reconcile(&mut document["Tools"], &tools, false)?;
+    imported.settings_json = serde_json::to_string(&document).map_err(|error| Error::failed(error.to_string()))?;
+    // Strict core export interprets a source RF store as its native import.
+    // For a managed RF store, mirror that import only in the disposable export
+    // copy so export retains the reconciled source store, including Enable.
+    // The live profile/filter chain is never changed by this projection.
+    if profile.radial_follow.is_empty() && filters.iter().any(|plugin| plugin.type_name == otd_core::radial_follow::FILTER_PATH) {
+        copy.radial_follow = crate::config::Profile::from_otd_profile_text(&imported.settings_json,
+            Path::new(&imported.source_path), imported.selected_profile, Default::default())?.radial_follow;
+    }
+    copy.plugins.clear();
+    Ok(copy.to_otd_json()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn active_managed_stores_export_without_runtime_paths_or_dropping_settings() {
+        let source = json!({"Profiles":[{"Tablet":"Wacom PTH-660",
+            "OutputMode":{"Path":"OpenTabletDriver.Desktop.Output.AbsoluteMode","Enable":true},
+            "AbsoluteModeSettings":{"Display":{"Width":2560,"Height":1440,"X":1280,"Y":720,"Rotation":0},
+                "Tablet":{"Width":224,"Height":148,"X":112,"Y":74,"Rotation":0},"EnableClipping":true},
+            "Filters":[{"Path":"Example.Filter","Enable":true,"Settings":[{"Property":"Amount","Value":1}]}],
+            "Bindings":{}}],"Tools":[]});
+        let mut profile = crate::config::Profile::from_otd_text(&source.to_string(), Path::new("source.json")).unwrap();
+        profile.plugins.push(otd_core::plugins::PluginConfig {
+            path: Path::new("E:/resolved/Example.dll").into(),
+            kind: otd_core::plugins::PluginKind::Dotnet, enabled: true,
+            type_name: "Example.Filter".into(), settings_json: r#"{"Amount":2,"Extra":null}"#.into(),
+        });
+        let original = profile.to_toml().unwrap();
+        let exported: Value = serde_json::from_str(&export_settings(&profile).unwrap()).unwrap();
+        assert_eq!(exported["Profiles"][0]["Filters"][0]["Path"], "Example.Filter");
+        assert_eq!(exported["Profiles"][0]["Filters"][0]["Settings"], json!([
+            {"Property":"Amount","Value":2},{"Property":"Extra","Value":null}]));
+        assert!(!exported.to_string().contains("resolved"));
+        assert_eq!(profile.to_toml().unwrap(), original);
+        profile.plugins[0].type_name = "Another.Filter".into();
+        assert!(export_settings(&profile).is_err());
+    }
+}
+fn native_log(line: &str) -> Value {
+    let mut now: windows_sys::Win32::Foundation::SYSTEMTIME = unsafe { std::mem::zeroed() };
+    unsafe { windows_sys::Win32::System::SystemInformation::GetSystemTime(&mut now); }
+    json!({"Time":format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",now.wYear,now.wMonth,now.wDay,now.wHour,now.wMinute,now.wSecond,now.wMilliseconds),
+        "Group":"RustDaemon (observed)","Message":line,"StackTrace":null,"Level":1,"Notification":false})
+}
+fn text_argument<'a>(params: &'a Value, name: &str) -> Result<&'a str, Error> {
+    protocol::argument(params, name)?.as_str().ok_or_else(|| Error::invalid(format!("{name} must be a string")))
+}
+fn aliased_argument<'a>(params: &'a Value, name: &str, implementation_name: &str) -> Result<&'a Value, Error> {
+    if let Value::Object(values) = params {
+        if values.len() == 1 && values.contains_key(implementation_name) {
+            return protocol::argument(params, implementation_name);
+        }
+    }
+    protocol::argument(params, name)
+}
+fn operating_system() -> Result<Value, Error> {
+    use windows_sys::Win32::System::SystemInformation::{GetVersionExW, OSVERSIONINFOW};
+    let mut version: OSVERSIONINFOW = unsafe { std::mem::zeroed() };
+    version.dwOSVersionInfoSize = std::mem::size_of::<OSVERSIONINFOW>() as u32;
+    if unsafe { GetVersionExW(&mut version) } == 0 {
+        return Err(Error::failed(format!("Windows version: {}", std::io::Error::last_os_error())));
+    }
+    let end = version.szCSDVersion.iter().position(|value| *value == 0).unwrap_or(version.szCSDVersion.len());
+    Ok(json!({"Name":"Win32NT","Version":format!("{}.{}.{}",version.dwMajorVersion,version.dwMinorVersion,version.dwBuildNumber),
+        "Attributes":{"ServicePack":String::from_utf16_lossy(&version.szCSDVersion[..end]),
+            "Architecture":std::env::consts::ARCH,"VersionProvider":"GetVersionExW (manifest-dependent)"}}))
+}
+impl Service for Connection {
+    fn invoke(&mut self, method: &str, params: &Value) -> Result<Value, Error> {
+        match method {
+            "GetTablets" => { protocol::no_arguments(params)?; self.tablets() },
+            "GetSettings" => { protocol::no_arguments(params)?; self.settings() },
+            "SetSettings" => self.set_settings(protocol::argument(params, "settings")?),
+            "GetCurrentLog" => {
+                protocol::no_arguments(params)?;
+                Ok(json!(self.status()?.logs.iter().map(|line| native_log(line)).collect::<Vec<_>>()))
+            }
+            "WriteMessage" => {
+                let message: UpstreamLogMessage = serde_json::from_value(protocol::argument(params, "message")?.clone())
+                    .map_err(|error| Error::invalid(error.to_string()))?;
+                match self.call(Command::WriteMessage { message })? {
+                    Reply::MessageWritten => Ok(Value::Null), _ => Err(Error::failed("unexpected log-write response")),
+                }
+            }
+            "InstallPlugin" => {
+                crate::plugin_catalog::install_file(Path::new(text_argument(params, "filePath")?))?;
+                Ok(json!(true))
+            }
+            "UninstallPlugin" => {
+                // Pinned implementation actually accepts a directory path,
+                // while IDriverDaemon names it friendlyName. Accept either only
+                // after matching one real installed identity; never arbitrary rm.
+                let name = aliased_argument(params, "friendlyName", "directoryPath")?.as_str()
+                    .ok_or_else(|| Error::invalid("friendlyName/directoryPath must be a string"))?;
+                let matches: Vec<_> = crate::plugin_catalog::installed()?.into_iter()
+                    .filter(|(folder, metadata)| folder.to_string_lossy().eq_ignore_ascii_case(name) || metadata.name == name).collect();
+                if matches.len() != 1 { return Err(Error::invalid("plugin must uniquely identify an installed name or directory")); }
+                crate::plugin_catalog::uninstall(&matches[0].0)?; Ok(json!(true))
+            }
+            "DownloadPlugin" => {
+                let metadata: crate::plugin_catalog::PluginMetadata = serde_json::from_value(protocol::argument(params, "metadata")?.clone())
+                    .map_err(|error| Error::invalid(error.to_string()))?;
+                if !metadata.supports_driver() { return Err(Error::invalid("plugin does not support pinned OpenTabletDriver 0.6.7")); }
+                crate::plugin_catalog::install(&metadata)?; Ok(json!(true))
+            }
+            "RequestDeviceString" => {
+                let values = match params {
+                    Value::Array(values) if values.len() == 3 => [values[0].as_i64(),values[1].as_i64(),values[2].as_i64()],
+                    Value::Object(values) if values.len() == 3 => [values.get("vendorID").or_else(|| values.get("vid")).and_then(Value::as_i64),values.get("productID").or_else(|| values.get("pid")).and_then(Value::as_i64),values.get("index").and_then(Value::as_i64)],
+                    _ => return Err(Error::invalid("expected vendorID, productID, index")),
+                };
+                let vendor = values[0].and_then(|value| u16::try_from(value).ok()).ok_or_else(|| Error::invalid("vendorID must be 0..65535"))?;
+                let product = values[1].and_then(|value| u16::try_from(value).ok()).ok_or_else(|| Error::invalid("productID must be 0..65535"))?;
+                let index = values[2].and_then(|value| u8::try_from(value).ok()).ok_or_else(|| Error::invalid("index must be 0..255"))?;
+                let devices = crate::hid::read_strings(vendor, product, &[index]).map_err(|error| Error::failed(error.to_string()))?;
+                let (_, strings) = devices.into_iter().next().ok_or_else(|| Error::failed("device not found"))?;
+                let (_, value) = strings.into_iter().next().ok_or_else(|| Error::failed("device string unavailable"))?;
+                Ok(json!(value?))
+            }
+            "GetApplicationInfo" => {
+                protocol::no_arguments(params)?;
+                let data = otd_core::storage::data_directory()?;
+                Ok(json!({"AppDataDirectory":data,"SettingsFile":data.join("driver.toml"),"PluginDirectory":crate::plugin_catalog::plugins_directory()?,
+                    "PresetDirectory":otd_core::presets::PresetStore::user()?.directory(),"LogDirectory":data,
+                    "TemporaryDirectory":std::env::temp_dir(),"CacheDirectory":null,"BackupDirectory":null,"TrashDirectory":null,
+                    "ConfigurationDirectory":otd_core::config::configurations_directory()}))
+            }
+            "ForceResynchronize" => {
+                protocol::no_arguments(params)?;
+                self.shared.resynchronize.fetch_add(1, Ordering::AcqRel); Ok(Value::Null)
+            }
+            "DetectTablets" => { protocol::no_arguments(params)?; Err(Error::unsupported(method, "explicit D05 rediscovery transaction is not implemented")) },
+            "LoadPlugins" => { protocol::no_arguments(params)?; Err(Error::unsupported(method, "dynamic plugin-manager reload is not implemented; installing a DLL does not imply loading it")) },
+            "ResetSettings" => { protocol::no_arguments(params)?; Err(Error::unsupported(method, "OTD defaults across detected tablets are not yet implemented")) },
+            "SetTabletDebug" => {
+                if !aliased_argument(params, "isEnabled", "enabled")?.is_boolean() { return Err(Error::invalid("isEnabled must be bool")); }
+                Err(Error::unsupported(method, "full-rate multi-tablet DeviceReport events are not implemented; use native bounded capture explicitly"))
+            }
+            "GetDevices" => {
+                protocol::no_arguments(params)?;
+                Ok(json!(crate::hid::enumerate_rpc_devices().map_err(|error| Error::failed(error.to_string()))?))
+            }
+            "GetDiagnosticInfo" => {
+                protocol::no_arguments(params)?;
+                let status = self.status()?;
+                let devices = crate::hid::enumerate_rpc_devices().map_err(|error| Error::failed(error.to_string()))?;
+                Ok(json!({"App Version":format!("OpenTabletDriver Rust v{}",env!("CARGO_PKG_VERSION")),
+                    "Build Date":null,"Operating System":operating_system()?,
+                    "Environment Variables":std::env::vars().collect::<std::collections::BTreeMap<_,_>>(),
+                    "HID Devices":devices,"Console Log":status.logs.iter().map(|line| native_log(line)).collect::<Vec<_>>(),
+                    "Rust Native State":{"instance":status.instance,"generation":status.generation,"state":status.state,"profile":status.profile}}))
+            }
+            "CheckForUpdates" => { protocol::no_arguments(params)?; Err(Error::unsupported(method, "upstream serialized updater contract is not implemented; use Rust update command")) },
+            "InstallUpdate" => { protocol::no_arguments(params)?; Err(Error::unsupported(method, "daemon/updater ownership and exit transaction must be coordinated by the Rust updater")) },
+            _ => Err(Error { code: -32601, message: format!("Method not found: {method}") }),
+        }
+    }
+}
