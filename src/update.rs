@@ -224,6 +224,78 @@ fn files(root: &Path, directory: &Path, found: &mut Vec<PathBuf>) -> io::Result<
 /// Downloads, verifies and installs `release` into `install`, reporting each
 /// step. Failures attempt rollback; blocked recovery preserves the journal
 /// and its backups for the next startup.
+#[cfg(windows)]
+pub fn install(release: &Release, install: &Path, progress: &dyn Fn(&str)) -> Result<(), String> {
+    // The global managed tool owner outlives tablet sessions. Every native
+    // installer must reserve the same daemon drain used by the original RPC
+    // updater before touching DLLs; a missing daemon never starts implicitly.
+    use crate::control::{self, Command as ControlCommand, Reply, Request};
+    use std::time::{Duration, Instant};
+    let endpoint = control::endpoint_name().map_err(|error| error.to_string())?;
+    let process = control::pipe::CompatPipe::server_process_id(&endpoint)
+        .map_err(|error| format!("Update installation requires the existing native daemon: {error}. Check for updates remains available offline."))?;
+    let call = |command| -> Result<Reply, String> {
+        let response = control::request_owned(&Request::new(1, command), Duration::from_secs(5), process)
+            .map_err(|error| error.to_string())?;
+        match response.reply {
+            Reply::Error { error } => Err(error.message),
+            reply => Ok(reply),
+        }
+    };
+    let expected = match call(ControlCommand::Status)? {
+        Reply::Status { status } => status.identity(),
+        _ => return Err("unexpected daemon status before update".into()),
+    };
+    let token = match call(ControlCommand::BeginUpdate { expected })? {
+        Reply::UpdateAccepted { token } => token,
+        _ => return Err("unexpected update reservation reply".into()),
+    };
+    let mut exit = false;
+    let result = (|| -> Result<(), String> {
+        progress("Waiting for tablet sessions and global tools to release their resources...");
+        let deadline = Instant::now() + Duration::from_secs(45);
+        loop {
+            match call(ControlCommand::UpdateStatus { token: token.clone() })? {
+                Reply::UpdateState { token: actual, ready, error } if actual == token => {
+                    if let Some(error) = error { return Err(error); }
+                    if ready { break; }
+                }
+                _ => return Err("unexpected update reservation state".into()),
+            }
+            if Instant::now() >= deadline { return Err("update resource drain timed out".into()); }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        match install_with_cancel(release, install, progress, None) {
+            Ok(()) => { exit = true; Ok(()) }
+            Err(error) => match recover_for_daemon(install) {
+                // A download/preflight failure never replaced installed files.
+                // Cancellation releases the reservation and restores tools.
+                Ok(false) => Err(error),
+                Ok(true) => {
+                    exit = true;
+                    Err(format!("{error}; interrupted update recovered; daemon will exit before restored files are used"))
+                }
+                Err(recovery) => {
+                    exit = true;
+                    Err(format!("{error}; update recovery failed: {recovery}; daemon will exit and preserve recovery files"))
+                }
+            },
+        }
+    })();
+    let cleanup = match call(ControlCommand::FinishUpdate { token, success: exit }) {
+        Ok(Reply::ShutdownAccepted) if exit => Ok(()),
+        Ok(Reply::UpdateCancelled) if !exit => Ok(()),
+        Ok(_) => Err("unexpected update ownership completion reply".to_owned()),
+        Err(error) => Err(format!("update ownership cleanup failed: {error}; the daemon may still be reserved; inspect its status before restarting")),
+    };
+    match (result, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(error), Err(cleanup)) => Err(format!("{error}; {cleanup}")),
+    }
+}
+// Portable services own their reservation around this shared installer.
+#[cfg(unix)]
 pub fn install(release: &Release, install: &Path, progress: &dyn Fn(&str)) -> Result<(), String> {
     install_with_cancel(release, install, progress, None)
 }
