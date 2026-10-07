@@ -27,7 +27,7 @@ not initialize .NET. JSON-RPC batch messages are rejected.
 | --- | --- |
 | GetDevices | Actual HID/WinUSB endpoint inventory, strings, lengths and openability. |
 | GetTablets | Connected device-session snapshots, actual configurations and identifiers. |
-| GetSettings | Strict original OTD export from the active configuration. Resolved managed DLL paths are reconciled only with matching original store identities/order; missing or ambiguous source returns an error. |
+| GetSettings | Actual connected device profiles reconciled into the original OTD document. Representable standalone explicit-area/relative profiles receive canonical known stores. Resolved managed DLL paths require matching original identities/order. Different tools across devices, differing profiles for same-model physical tablets, native pixel-span crops/hardware-tip contact and ambiguous stores return errors. |
 | SetSettings | One running tablet only. Rejects unsupported active import settings, validates before guarded restart, and waits for a committed generation and matching configuration. Timeout/failure does not pretend completion or retry a mutation. |
 | GetCurrentLog, WriteMessage | Bounded native log snapshot and native log append. |
 | InstallPlugin, UninstallPlugin, DownloadPlugin | Existing catalog installation/removal/download transactions; removal must uniquely identify an installed name or folder. Network traffic uses `src/download.rs`. Installation does not imply live DLL reload. |
@@ -35,11 +35,12 @@ not initialize .NET. JSON-RPC batch messages are rejected.
 | GetApplicationInfo | Actual native data/settings/plugin/preset/temp paths and configured external tablet directory. Cache/backup/trash directory fields are null because Rust has no corresponding provider. LogDirectory is the data folder containing crash records; normal recent logs remain in memory. |
 | GetDiagnosticInfo | Actual version, Windows version API result, environment, endpoint inventory, native log snapshot and current profile/state. Build Date is null because no build timestamp is recorded. |
 | ForceResynchronize | Broadcasts the resynchronization event to compatibility clients. |
-| DetectTablets | Explicit unsupported error pending an owned rediscovery transaction. |
+| DetectTablets | Owned D05 refresh waits for an actual discovery pass and returns its snapshot. Without an existing supervisor, returns an error; new sessions may still be preparing/starting. |
 | LoadPlugins | Explicit unsupported error pending live plugin-manager reload. |
-| ResetSettings | Explicit unsupported error pending actual OTD defaults across detected tablets. |
+| ResetSettings | True pinned OTD defaults for one connected running tablet, with actual digitizer/button/wheel specifications and guarded apply completion. Uses upstream 1% contact thresholds, no filters, clipping, default adaptive bindings and 100 ms relative reset. Multi-device atomic reset remains unsupported. |
 | SetTabletDebug | Explicit unsupported error; latest native samples are not full-rate multi-tablet DeviceReport events. |
-| CheckForUpdates, InstallUpdate | Explicit unsupported error pending updater DTO/daemon exit ownership integration. Existing native update commands remain available. |
+| CheckForUpdates | Actual Rust release service/version comparison, returning the pinned Version-string DTO or null when current. The checked release is retained in bounded daemon state. |
+| InstallUpdate | Explicit unsupported error pending daemon exit/updater ownership integration. Existing native update commands remain available. |
 
 All methods accept positional parameters. Single parameters also accept named
 parameters; aliases cover pinned interface/implementation name differences for

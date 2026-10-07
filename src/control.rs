@@ -111,6 +111,7 @@ impl Request {
 pub enum Command {
     Status,
     ListDeviceSessions,
+    DetectDeviceSessions,
     SelectDeviceSession { expected: WorkerIdentity, id: String },
     GetDeviceProfile { expected: WorkerIdentity, id: String, device_generation: u64 },
     ApplyDeviceProfile { expected: WorkerIdentity, id: String, device_generation: u64, profile_toml: String },

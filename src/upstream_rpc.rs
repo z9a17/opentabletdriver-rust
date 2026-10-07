@@ -2,6 +2,7 @@
 //! separate. Never start the original daemon, a tablet worker, or .NET for RPC.
 mod protocol;
 mod service;
+mod settings;
 
 use std::io;
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};

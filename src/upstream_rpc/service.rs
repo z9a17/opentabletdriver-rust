@@ -13,8 +13,8 @@ pub const METHODS: &[&str] = &[
     "GetApplicationInfo", "SetTabletDebug", "RequestDeviceString", "GetCurrentLog",
     "GetDiagnosticInfo", "CheckForUpdates", "InstallUpdate", "ForceResynchronize",
 ];
-pub struct Shared { pub resynchronize: AtomicU64 }
-impl Default for Shared { fn default() -> Self { Self { resynchronize: AtomicU64::new(0) } } }
+pub struct Shared { pub resynchronize: AtomicU64, pub update: std::sync::Mutex<Option<crate::update::Release>> }
+impl Default for Shared { fn default() -> Self { Self { resynchronize: AtomicU64::new(0), update: std::sync::Mutex::new(None) } } }
 pub struct Connection {
     shared: Arc<Shared>,
     stop: Arc<AtomicBool>,
@@ -42,7 +42,10 @@ impl Connection {
         match self.call(Command::Status)? { Reply::Status { status } => Ok(status), _ => Err(Error::failed("unexpected native status")) }
     }
     fn tablets(&self) -> Result<Value, Error> {
-        match self.call(Command::ListDeviceSessions)? {
+        self.tablet_reply(Command::ListDeviceSessions)
+    }
+    fn tablet_reply(&self, command: Command) -> Result<Value, Error> {
+        match self.call(command)? {
             Reply::DeviceSessions { sessions, .. } => {
                 let values: Vec<_> = sessions.iter().filter(|session| session.connected).map(|session| {
                     let mut identifiers = vec![session.digitizer.clone()];
@@ -66,8 +69,51 @@ impl Connection {
         // Strict export retains original store identities. Standalone native
         // profiles/unreconciled DLL paths explicitly fail instead of inventing
         // OTD stores or returning stale archived settings as active settings.
+        let sessions = match self.call(Command::ListDeviceSessions)? {
+            Reply::DeviceSessions { sessions, .. } => sessions,
+            _ => return Err(Error::failed("unexpected device session snapshot")),
+        };
+        let screen = crate::display::read_snapshot()?.virtual_screen;
+        let profile = if profile.imported_otd.is_none() {
+            let tablet = sessions.iter().find(|session| session.primary && session.connected)
+                .ok_or_else(|| Error::failed("native settings export needs the actual primary tablet"))?;
+            super::settings::canonical_copy(&profile, &tablet.properties, screen)?
+        } else { profile };
         let exported = export_settings(&profile)?;
-        serde_json::from_str(&exported).map_err(|error| Error::failed(error.to_string()))
+        let mut document: Value = serde_json::from_str(&exported).map_err(|error| Error::failed(error.to_string()))?;
+        let mut active = std::collections::BTreeMap::<String,Value>::new();
+        for session in sessions.iter().filter(|session| session.connected) {
+            let per_device = if session.primary { profile.clone() } else {
+                let text = match self.call(Command::GetDeviceProfile { expected:expected.clone(), id:session.id.clone(),
+                    device_generation:session.device_generation })? {
+                    Reply::DeviceProfile { identity, id, device_generation, profile_toml }
+                        if identity == expected && id == session.id && device_generation == session.device_generation => profile_toml,
+                    _ => return Err(Error::failed("device configuration changed while reading settings")),
+                };
+                let device_profile = crate::config::Profile::from_toml_text(&text,&path)?;
+                super::settings::canonical_copy(&device_profile,&session.properties,screen)?
+            };
+            let device_document: Value = serde_json::from_str(&export_settings(&per_device)?).map_err(|error| Error::failed(error.to_string()))?;
+            if device_document["Tools"] != document["Tools"] {
+                return Err(Error::unsupported("GetSettings", "per-device tool collections cannot be represented by one upstream global Tools collection"));
+            }
+            let index = per_device.imported_otd.as_ref().ok_or_else(|| Error::failed("export projection has no selected profile"))?.selected_profile;
+            let selected = device_document["Profiles"].get(index).ok_or_else(|| Error::failed("selected exported profile is missing"))?.clone();
+            if let Some(previous) = active.insert(session.tablet.clone(),selected.clone()) {
+                if previous != selected { return Err(Error::unsupported("GetSettings", "same-model physical tablets have differing native profiles; upstream profiles are keyed by tablet name")); }
+            }
+        }
+        let profiles = document["Profiles"].as_array_mut().ok_or_else(|| Error::failed("exported settings have no Profiles collection"))?;
+        for (name,selected) in active {
+            let matches: Vec<_> = profiles.iter().enumerate().filter(|(_,profile)| profile["Tablet"] == name).map(|(index,_)| index).collect();
+            match matches.as_slice() {
+                [] => profiles.push(selected),
+                [index] => profiles[*index] = selected,
+                _ => return Err(Error::unsupported("GetSettings", "duplicate archived tablet profiles cannot be reconciled unambiguously")),
+            }
+        }
+        if self.status()?.identity() != expected { return Err(Error::failed("daemon configuration changed while reading settings")); }
+        Ok(document)
     }
     fn set_settings(&self, settings: &Value) -> Result<Value, Error> {
         let profiles = settings.get("Profiles").and_then(Value::as_array)
@@ -317,9 +363,18 @@ impl Service for Connection {
                 protocol::no_arguments(params)?;
                 self.shared.resynchronize.fetch_add(1, Ordering::AcqRel); Ok(Value::Null)
             }
-            "DetectTablets" => { protocol::no_arguments(params)?; Err(Error::unsupported(method, "explicit D05 rediscovery transaction is not implemented")) },
+            "DetectTablets" => { protocol::no_arguments(params)?; self.tablet_reply(Command::DetectDeviceSessions) },
             "LoadPlugins" => { protocol::no_arguments(params)?; Err(Error::unsupported(method, "dynamic plugin-manager reload is not implemented; installing a DLL does not imply loading it")) },
-            "ResetSettings" => { protocol::no_arguments(params)?; Err(Error::unsupported(method, "OTD defaults across detected tablets are not yet implemented")) },
+            "ResetSettings" => {
+                protocol::no_arguments(params)?;
+                let sessions = match self.call(Command::ListDeviceSessions)? {
+                    Reply::DeviceSessions { sessions, .. } => sessions,
+                    _ => return Err(Error::failed("unexpected device session snapshot")),
+                };
+                let tablets: Vec<_> = sessions.into_iter().filter(|session| session.connected).map(|session| session.properties).collect();
+                if tablets.len() != 1 { return Err(Error::unsupported(method, "atomic default reset requires exactly one connected running tablet")); }
+                self.set_settings(&super::settings::defaults(&tablets,crate::display::read_snapshot()?.virtual_screen)?)
+            },
             "SetTabletDebug" => {
                 if !aliased_argument(params, "isEnabled", "enabled")?.is_boolean() { return Err(Error::invalid("isEnabled must be bool")); }
                 Err(Error::unsupported(method, "full-rate multi-tablet DeviceReport events are not implemented; use native bounded capture explicitly"))
@@ -338,7 +393,14 @@ impl Service for Connection {
                     "HID Devices":devices,"Console Log":status.logs.iter().map(|line| native_log(line)).collect::<Vec<_>>(),
                     "Rust Native State":{"instance":status.instance,"generation":status.generation,"state":status.state,"profile":status.profile}}))
             }
-            "CheckForUpdates" => { protocol::no_arguments(params)?; Err(Error::unsupported(method, "upstream serialized updater contract is not implemented; use Rust update command")) },
+            "CheckForUpdates" => {
+                protocol::no_arguments(params)?;
+                let release = crate::update::latest()?;
+                let available = release.version > crate::update::current_version();
+                let result = if available { json!({"Version":format!("{}.{}.{}",release.version.0,release.version.1,release.version.2)}) } else { Value::Null };
+                *self.shared.update.lock().map_err(|_| Error::failed("update state lock poisoned"))? = available.then_some(release);
+                Ok(result)
+            },
             "InstallUpdate" => { protocol::no_arguments(params)?; Err(Error::unsupported(method, "daemon/updater ownership and exit transaction must be coordinated by the Rust updater")) },
             _ => Err(Error { code: -32601, message: format!("Method not found: {method}") }),
         }
