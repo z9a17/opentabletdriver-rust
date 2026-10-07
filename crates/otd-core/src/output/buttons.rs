@@ -234,7 +234,7 @@ pub trait ActionSink {
 pub struct LocalActions<F> {
     state: Box<ActionState>,
     send: F,
-    supports: fn(Action) -> bool,
+    supports: Box<dyn Fn(Action) -> bool>,
     scroll: Option<Box<dyn FnMut(ScrollPulse) -> io::Result<()>>>,
 }
 
@@ -243,11 +243,11 @@ impl<F: FnMut(ActionTransition) -> io::Result<()>> LocalActions<F> {
         self.scroll = Some(Box::new(scroll));
         self
     }
-    pub fn new(send: F, supports: fn(Action) -> bool) -> Self {
+    pub fn new(send: F, supports: impl Fn(Action) -> bool + 'static) -> Self {
         Self {
             state: Box::default(),
             send,
-            supports,
+            supports: Box::new(supports),
             scroll: None,
         }
     }
