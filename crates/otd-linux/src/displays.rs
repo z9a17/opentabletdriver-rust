@@ -1,5 +1,5 @@
 //! Desktop geometry at startup. Compositor commands stay outside the report
-//! loop; users restart the driver after changing the monitor layout.
+//! loop. The pinned Linux providers retain construction-time monitor lists.
 
 use std::process::Command;
 
@@ -34,8 +34,25 @@ pub fn discover() -> Result<DisplaySnapshot, String> {
             Err(error) => errors.push(error),
         }
     }
+    // The actual pinned Wayland provider handles wl_output/xdg_output on
+    // desktops with no compositor-specific CLI (GNOME/KDE, for example).
+    // Only this cold fallback initializes the original managed display code;
+    // successful native backends above never initialize CoreCLR.
+    if std::env::var_os("WAYLAND_DISPLAY").is_some(){
+        match original_wayland(){Ok(snapshot)=>return Ok(snapshot),Err(error)=>errors.push(format!("original Wayland provider: {error}"))}
+    }
     Err(format!("could not discover the desktop; pass --screen WIDTHxHEIGHT in desktop coordinates{}",
         if errors.is_empty() { String::new() } else { format!(" ({})", errors.join("; ")) }))
+}
+
+fn original_wayland()->Result<DisplaySnapshot,String>{
+    static SNAPSHOT:std::sync::OnceLock<std::sync::Mutex<Option<DisplaySnapshot>>>=std::sync::OnceLock::new();
+    let mut snapshot=SNAPSHOT.get_or_init(||std::sync::Mutex::new(None)).lock().map_err(|_|"Original display snapshot poisoned")?;
+    if let Some(snapshot)=snapshot.as_ref(){return Ok(snapshot.clone());}
+    let actual=otd_platform::dotnet::original_display_snapshot()?;
+    if !actual.virtual_screen.valid()||actual.monitors.is_empty()||actual.monitors.len()>256
+        ||actual.monitors.iter().any(|monitor|!monitor.valid()) {return Err("Original Wayland provider returned invalid or excessive geometry".into());}
+    *snapshot=Some(actual.clone());Ok(actual)
 }
 
 fn command(program: &str, arguments: &[&str]) -> Result<String, String> {

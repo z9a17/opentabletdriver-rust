@@ -119,7 +119,10 @@ impl Debug {
                             if size<=128*1024{let mut out=output.lock().map_err(|_|"Debug output poisoned")?;while out.len()>=16{out.pop_front();}out.push_back(report);}
                         },Ok(None)=>{},Err(error)=>{parser.reset()?;eprintln!("Native debug parser failed and reset: {error}");}}
                     }
-                    let active=crate::shared_devices::owned_metadata();parsers.retain(|(epoch,_),_|active.iter().any(|e|e["reader_generation"].as_u64()==Some(*epoch)));Ok::<(),String>(())
+                    // Closed streams can retain several final batches. Keep
+                    // their parser state through the bounded debug scope; dropping
+                    // it merely because discovery retired the source loses state.
+                    Ok::<(),String>(())
                 })();
                 if let Err(error)=result{eprintln!("Native tablet debug failed: {error}");break;}
                 std::thread::sleep(Duration::from_millis(50));

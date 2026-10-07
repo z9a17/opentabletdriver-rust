@@ -70,8 +70,10 @@ disposes its connection; XScreen snapshots its monitor list/position and contain
 no XRandR event-dispatch refresh path. Linux native uinput axes and display layout
 therefore retain startup geometry. macOS NativeDisplays additionally checks a
 fixed 32-monitor layout during native report refresh. Generic Wayland discovery
-fallback to the actual read-only original display provider is a coordinated
-follow-up; Hyprland/Sway/X11 native backends remain CLR-free.
+falls back to the actual pinned read-only Desktop display provider when native
+discovery cannot supply a layout. This cold snapshot creates no Driver, input
+provider, physical reader or output owner and is retained with fixed native uinput
+axes. Hyprland/Sway/X11 native backends remain CLR-free.
 
 No tests, format/Clippy/check suites, driver, daemon, UI, managed/native plugin,
 hardware, game or OBS execution occurred in this workstream. Fixtures were
