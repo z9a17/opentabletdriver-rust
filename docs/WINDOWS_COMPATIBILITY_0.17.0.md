@@ -18,6 +18,8 @@ When another client applies changed settings that are not saved, the panel
 adopts them as a runtime draft requiring Save. Recoverable startup defaults
 stay clean. An unchanged runtime draft can become clean only after an owned
 saved match; intervening local edits remain intact.
+Native filter substitution uses a separate execution profile, so applying a
+saved DLL profile does not publish substitution as an unsaved settings change.
 
 Physical profiles live under the Rust data directory's `devices` folder. Paths
 use a hash of the normalized device key. Saved revision and file digest guards
