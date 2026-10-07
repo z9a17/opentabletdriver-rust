@@ -167,13 +167,20 @@ sealed class ManagedProviders : IDriver, IDeviceConfigurationProvider, IReportPa
             payload["source_binding_owner"] = owner;
             payload["source_tablet_name"] = ServiceClient.BindingTablet;
         }
-        lifetime.Token.ThrowIfCancellationRequested();
         // An intentional self-apply replaces and disposes the binding that
         // requested it. Its Task still owns the completion through that change;
         // native generation guards protect queued stale applies.
-        var cancellation = method is "SetSettings" or "ResetSettings" or "ForceResynchronize"
-            ? CancellationToken.None : lifetime.Token;
-        JToken result = await ServiceClient.Request(1, scope, payload, cancellation).ConfigureAwait(false);
+        Task<JToken> completion;
+        lock (gate) {
+            // Linearize admission with scope disposal. Detaching a self-apply's
+            // completion must never let a retired scope admit a new mutation.
+            ObjectDisposedException.ThrowIf(disposed, this);
+            lifetime.Token.ThrowIfCancellationRequested();
+            var cancellation = method is "SetSettings" or "ResetSettings" or "ForceResynchronize"
+                ? CancellationToken.None : lifetime.Token;
+            completion = ServiceClient.Request(1, scope, payload, cancellation);
+        }
+        JToken result = await completion.ConfigureAwait(false);
         ServiceClient.RefreshAfterCommit();
         return result;
     }
