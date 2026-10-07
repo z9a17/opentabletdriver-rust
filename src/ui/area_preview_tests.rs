@@ -272,18 +272,23 @@ fn binding_pages_follow_the_detected_tablet_and_edit_the_profile() {
     let targets: Vec<BindingTarget> = app.binding_rows.iter().map(|row| row.target).collect();
     let mut expected = vec![BindingTarget::Pen(0), BindingTarget::Pen(1)];
     expected.extend((0..8).map(BindingTarget::Aux));
+    expected.extend([BindingTarget::MouseScrollUp, BindingTarget::MouseScrollDown]);
     expected.extend([BindingTarget::Clockwise(0), BindingTarget::CounterClockwise(0), BindingTarget::WheelButton(0, 0)]);
     assert_eq!(targets, expected, "two side buttons, eight express keys and the ring");
     assert_eq!(app.wheel_fields.len(), 2);
 
     for (tab, shown_rows) in [(Tab::Pen, 2), (Tab::Aux, 11)] {
         app.select_tab(tab);
+        let on_page = |target| match tab {
+            Tab::Pen => matches!(target, BindingTarget::Pen(_)),
+            Tab::Aux => matches!(target, BindingTarget::Aux(_) | BindingTarget::Clockwise(_)
+                | BindingTarget::CounterClockwise(_) | BindingTarget::WheelButton(_, _)),
+            _ => false,
+        };
         let rows: Vec<HWND> = app.binding_rows.iter()
-            .filter(|row| matches!(row.target, BindingTarget::Pen(_)) == (tab == Tab::Pen))
-            .flat_map(|row| [row.hwnd, row.label]).collect();
+            .filter(|row| on_page(row.target)).flat_map(|row| [row.hwnd, row.label]).collect();
         let others: Vec<HWND> = app.binding_rows.iter()
-            .filter(|row| matches!(row.target, BindingTarget::Pen(_)) != (tab == Tab::Pen))
-            .map(|row| row.hwnd).collect();
+            .filter(|row| !on_page(row.target)).map(|row| row.hwnd).collect();
         let mut controls = rows.clone();
         if tab == Tab::Aux {
             controls.extend(app.wheel_fields.iter().map(|field| field.hwnd));
@@ -334,6 +339,7 @@ fn binding_pages_follow_the_detected_tablet_and_edit_the_profile() {
     assert_eq!(targets, [
         BindingTarget::Pen(0), BindingTarget::Pen(1), BindingTarget::Pen(2),
         BindingTarget::Aux(0), BindingTarget::Aux(1), BindingTarget::Aux(2),
+        BindingTarget::MouseScrollUp, BindingTarget::MouseScrollDown,
         BindingTarget::Clockwise(0), BindingTarget::CounterClockwise(0),
     ]);
     assert!(!app.bindings_detected);
@@ -388,6 +394,18 @@ fn tool_mouse_and_pen_policy_editors_preserve_other_settings() {
     let mouse: Vec<_> = app.binding_rows.iter().filter(|row| matches!(row.target, BindingTarget::Mouse(_)))
         .map(|row| row.hwnd).collect();
     assert_eq!(placed(&app, &mouse).len(), 5);
+    app.set_binding_action(BindingTarget::MouseScrollUp, "scroll:up".parse().unwrap());
+    app.set_binding_action(BindingTarget::MouseScrollDown, "keys:PageDown".parse().unwrap());
+    let scrolls: Vec<_> = app.binding_rows.iter().filter(|row| matches!(row.target,
+        BindingTarget::MouseScrollUp | BindingTarget::MouseScrollDown)).map(|row| row.hwnd).collect();
+    assert_eq!(placed(&app, &scrolls).len(), 2);
+    assert_eq!(text(scrolls[0]), "Scroll Up");
+    let roundtrip = Profile::from_toml_text(&app.editor.profile.to_toml().unwrap(), Path::new("desktop.toml")).unwrap();
+    assert_eq!(roundtrip.mouse_scroll_up, app.editor.profile.mouse_scroll_up);
+    assert_eq!(roundtrip.mouse_scroll_down, app.editor.profile.mouse_scroll_down);
+    assert_eq!(roundtrip.mouse_buttons, app.editor.profile.mouse_buttons);
+    app.set_binding_action(BindingTarget::MouseScrollDown, ButtonAction::None);
+    assert_eq!(text(scrolls[1]), "None");
     app.select_tab(Tab::Pen);
     for index in 0..3 {
         unsafe { SendMessageW(app.c.pen_policy[index], BM_SETCHECK, BST_CHECKED as usize, 0); }
@@ -410,6 +428,25 @@ fn tool_mouse_and_pen_policy_editors_preserve_other_settings() {
                     assert!(bounds.left >= 0 && bounds.right <= client.right);
                 }
                 render_page(&app, &format!("desktop-{tab:?}-{name}-{dpi}"));
+                if tab == Tab::Mouse {
+                    app.editor.profile.mouse_buttons.resize(32, ButtonAction::None);
+                    app.sync_bindings();
+                    let mut seen = HashSet::new();
+                    for page in 0..32 {
+                        app.property_page = page;
+                        app.layout();
+                        let current = app.property_page;
+                        for row in &app.binding_rows {
+                            if let BindingTarget::Mouse(index) = row.target {
+                                if !placed(&app, &[row.hwnd]).is_empty() { seen.insert(index); }
+                            } else if matches!(row.target, BindingTarget::MouseScrollUp | BindingTarget::MouseScrollDown) {
+                                assert_eq!(placed(&app, &[row.hwnd]).len(), 1);
+                            }
+                        }
+                        if current < page { break; }
+                    }
+                    assert_eq!(seen.len(), 32, "every mouse button is reachable at {dpi} DPI");
+                }
             }
         }
     }

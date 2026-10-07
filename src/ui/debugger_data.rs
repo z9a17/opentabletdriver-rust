@@ -80,7 +80,7 @@ impl Recorder {
             let result = (|| -> std::io::Result<()> {
                 let mut writer = BufWriter::new(file);
                 writeln!(writer, "{}", json!({"format":"otd-rust-sampled-reports", "version":1,
-                    "poll_ms":33, "complete_hid_stream":false}))?;
+                    "poll_ms":33, "complete_hid_stream":false, "tap_losses_measured":false}))?;
                 let mut statistics = Statistics::default();
                 for (elapsed_us, report) in receive {
                     if !statistics.observe(&report) { continue; }

@@ -588,6 +588,7 @@ impl Editor {
     }
 
     /// The list row of a filter, as `filters` orders them.
+    #[cfg(test)]
     pub fn list_index(&self, target: FilterRef) -> Option<usize> {
         self.filters().iter().position(|item| item.target == target)
     }

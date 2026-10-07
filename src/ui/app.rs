@@ -1913,6 +1913,7 @@ impl App {
         self.tab = tab;
         self.drag = None;
         update_look(|look| look.tab = tab);
+        if tab == Tab::Mouse { self.property_page = 0; }
         if matches!(tab, Tab::Filters | Tab::Tools) {
             self.selected_filter = 0;
             self.property_page = 0;
