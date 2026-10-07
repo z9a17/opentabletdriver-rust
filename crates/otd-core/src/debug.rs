@@ -1,6 +1,7 @@
 //! Nonblocking debugger tap for one selected session. Metadata and packet
 //! bytes are read under the same lock; other sessions cannot overwrite them.
 use std::cell::Cell;
+pub mod stream;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::sync::{
     Mutex,
@@ -66,6 +67,8 @@ impl Registration {
     pub fn with_selection_key(device: Device, report_length: usize, auxiliary_parser: Option<String>, key: Option<String>) -> Self {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let previous = SESSION.replace(id);
+        stream::register(stream::SessionMetadata { session: id, name: device.name.clone(), parser: device.parser.clone(),
+            auxiliary_parser: auxiliary_parser.clone(), key: key.clone(), active: true });
         if let Ok(mut capture) = CAPTURE.lock() {
             capture.devices.push((id, device, report_length, auxiliary_parser));
             let wanted = key.as_ref().is_some_and(|key| capture.selected_key.as_ref() == Some(key));
@@ -86,6 +89,7 @@ impl Registration {
 impl Drop for Registration {
     fn drop(&mut self) {
         SESSION.set(self.previous);
+        stream::unregister(self.id);
         if let Ok(mut capture) = CAPTURE.lock() {
             capture.devices.retain(|(id, _, _, _)| *id != self.id);
             capture.keys.retain(|(id, _)| *id != self.id);
@@ -106,6 +110,7 @@ impl Drop for Registration {
 
 #[inline]
 pub fn record(bytes: &[u8]) {
+    stream::record(SESSION.get(), bytes, false);
     record_sample(bytes);
     if FULL.state.load(Ordering::Relaxed) & ACTIVE != 0 {
         FULL.record(SESSION.get(), bytes, Instant::now(), false);
@@ -115,6 +120,7 @@ pub fn record(bytes: &[u8]) {
 /// The source's read completion time, before decoding and IPC coalescing.
 #[inline]
 pub fn record_at(bytes: &[u8], ready: Instant, auxiliary: bool) {
+    stream::record(SESSION.get(), bytes, auxiliary);
     record_sample(bytes);
     if FULL.state.load(Ordering::Relaxed) & ACTIVE != 0 {
         FULL.record(SESSION.get(), bytes, ready, auxiliary);
