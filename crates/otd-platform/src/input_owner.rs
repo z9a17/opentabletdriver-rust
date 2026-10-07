@@ -86,5 +86,36 @@ pub fn execute(operation:Operation,scope:u64,payload:&Value)->Result<Value,Strin
     }
     let lease=payload["lease_ms"].as_u64().unwrap_or(15000).clamp(1000,60000);state.leases.insert(scope,Instant::now()+Duration::from_millis(lease));Ok(Value::Null)
 }
-pub fn maintain(){if let Ok(mut state)=state().lock(){let now=Instant::now();let expired=state.leases.iter().filter_map(|(scope,expires)|(*expires<=now).then_some(*scope)).collect::<Vec<_>>();for scope in expired{match state.release(Owner::Managed(scope)){Ok(())=>{state.leases.remove(&scope);},Err(error)=>{state.leases.insert(scope,now+Duration::from_secs(1));eprintln!("Original input lease cleanup failed: {error}");}}}}}
-pub fn shutdown(){if let Ok(mut state)=state().lock(){let scopes=state.leases.keys().copied().collect::<Vec<_>>();for scope in scopes{match state.release(Owner::Managed(scope)){Ok(())=>{state.leases.remove(&scope);},Err(error)=>eprintln!("Original input shutdown cleanup failed: {error}")}}}}
+pub fn maintain(){if let Ok(mut state)=state().lock(){let now=Instant::now();let expired=state.leases.iter().filter_map(|(scope,expires)|(*expires<=now).then_some(*scope)).collect::<Vec<_>>();for scope in expired{match state.release(Owner::Managed(scope)){Ok(())=>{state.leases.remove(&scope);},Err(error)=>{state.leases.insert(scope,now+Duration::from_secs(1));eprintln!("Original input lease cleanup failed: {error}");}}}
+    // A retired native reader has no lease or future report to trigger retry.
+    // The independent lane remains the cleanup owner even with no scopes.
+    let _=state.flush();
+}}
+pub fn shutdown(){if let Ok(mut state)=state().lock(){let scopes=state.leases.keys().copied().collect::<Vec<_>>();for scope in scopes{match state.release(Owner::Managed(scope)){Ok(())=>{state.leases.remove(&scope);},Err(error)=>eprintln!("Original input shutdown cleanup failed: {error}")}}
+    for _ in 0..3{if state.flush().is_ok(){return;}std::thread::sleep(Duration::from_millis(50));}
+    eprintln!("Shared input shutdown retains unacknowledged cleanup; actual output owner cannot be claimed clean");
+}}
+#[cfg(test)]
+mod fixtures {
+    use super::*;
+    fn owner(writer:Writer)->State{State{holds:[None;4096],desired:[0;773],emitted:[false;773],positions:[None;773],writer:Some(writer),leases:BTreeMap::new()}}
+    #[test]
+    fn distinct_portable_aliases_and_managed_scope_require_the_last_release(){
+        let events=std::sync::Arc::new(Mutex::new(Vec::new()));let captured=events.clone();
+        let mut state=owner(Box::new(move|code,held,_|{captured.lock().unwrap().push((code,held));Ok(())}));
+        state.hold(Owner::Native(1,0x53),Code::Key(47),true,None).unwrap();
+        state.hold(Owner::Native(1,0x9c),Code::Key(47),true,None).unwrap();
+        state.hold(Owner::Managed(2),Code::Key(47),true,None).unwrap();
+        state.hold(Owner::Native(1,0x53),Code::Key(47),false,None).unwrap();
+        state.release_native(1).unwrap();assert_eq!(*events.lock().unwrap(),vec![(Code::Key(47),true)]);
+        state.release(Owner::Managed(2)).unwrap();assert_eq!(*events.lock().unwrap(),vec![(Code::Key(47),true),(Code::Key(47),false)]);
+    }
+    #[test]
+    fn retired_native_pending_release_remains_retryable_without_any_lease(){
+        let failures=std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1));let output=failures.clone();
+        let mut state=owner(Box::new(move|_,held,_|{if !held&&output.swap(0,Ordering::Relaxed)!=0{Err(io::Error::from(io::ErrorKind::WouldBlock))}else{Ok(())}}));
+        state.hold(Owner::Native(1,4),Code::Key(30),true,None).unwrap();assert!(state.release_native(1).is_err());
+        assert!(state.leases.is_empty());assert!(state.emitted[30]);assert_eq!(state.desired[30],0);
+        state.flush().unwrap();assert!(!state.emitted[30]);
+    }
+}
