@@ -28,6 +28,10 @@ pub fn observed_profile_snapshot(device: &SessionSnapshot) -> Result<otd_core::s
         Ok(snapshot)
     }
 }
+fn runtime_edit_pending(previous: bool, explicitly_applied: bool, persisted_match: bool) -> bool {
+    !persisted_match && (previous || explicitly_applied)
+}
+
 pub type SessionId = String;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -49,6 +53,10 @@ pub struct SessionSnapshot {
     pub properties: TabletConfiguration,
     pub digitizer: DeviceIdentifier,
     pub auxiliary: Option<DeviceIdentifier>,
+    /// Discovery metadata above can outlive open handles. Only this list
+    /// describes endpoints owned by a current activated session.
+    #[serde(default)]
+    pub opened_identifiers: Option<Vec<DeviceIdentifier>>,
     pub profile_source: Option<String>,
     pub profile_path: String,
     pub persisted_revision: Option<u64>,
@@ -56,6 +64,10 @@ pub struct SessionSnapshot {
     /// The active profile equals its observed file, including revision. A UI
     /// verifies the digest before treating a fresh disk capture as clean.
     pub profile_saved: bool,
+    /// Initial defaults/imports are intentionally clean in the panel. Only a
+    /// committed explicit Apply that differs from disk sets this flag.
+    #[serde(default)]
+    pub has_unsaved_runtime_edits: bool,
     pub last_error: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -94,6 +106,8 @@ pub(crate) struct Entry {
     pub profile: Option<Profile>,
     pub enabled: bool,
     file: ProfileFile,
+    pending_edit_generation: Option<u64>,
+    opened_epoch: u64,
 }
 #[derive(Default)]
 pub(crate) struct Registry {
@@ -101,6 +115,7 @@ pub(crate) struct Registry {
     pub primary: Option<SessionId>,
     pub selected: Option<SessionId>,
     next: u64,
+    next_opened_epoch: u64,
     pub shutting_down: bool,
 }
 pub(crate) enum Request {
@@ -168,12 +183,13 @@ impl Handle {
         entry.snapshot.persisted_revision = entry.file.revision();
         entry.snapshot.persisted_digest = entry.file.digest.clone();
         entry.snapshot.profile_saved = entry.profile.as_ref().is_some_and(|active| entry.file.matches(active));
+        if entry.snapshot.profile_saved { entry.snapshot.has_unsaved_runtime_edits = false; }
         Ok(SavedDeviceProfile { id: id.to_owned(), device_generation: generation,
             profile_path: entry.file.path.to_string_lossy().into_owned(), settings_revision: saved.settings_revision,
             persisted_digest: entry.file.digest.clone().unwrap(), profile_toml: saved.to_toml()? })
     }
     pub fn apply(&self, id: &str, generation: u64, profile: Profile) -> Result<SessionReceipt, String> {
-        profile.validate_runtime_tablet()?;
+        crate::plugins::validate_runtime_profile(&profile)?;
         profile.validate_filter_execution()?;
         let text = profile.to_toml()?;
         if text.len() > crate::control::MAX_PROFILE_BYTES || serde_json::to_vec(&text).map_err(|error| error.to_string())?.len() > crate::control::MAX_FRAME_BYTES - 1024 {
@@ -202,8 +218,12 @@ impl Handle {
         if entry.snapshot.primary { return Err("primary device lifecycle requires the daemon transaction".into()); }
         if entry.snapshot.pending_generation.is_some() { return Err("device session is transitioning".into()); }
         let next = generation.checked_add(1).ok_or("device generation exhausted")?;
-        self.requests.try_send(request(next)).map_err(|error| format!("device command was not accepted: {error}"))?;
-        registry.entries.get_mut(id).unwrap().snapshot.pending_generation = Some(next);
+        let request = request(next);
+        let explicit_edit = matches!(&request, Request::Apply { .. });
+        self.requests.try_send(request).map_err(|error| format!("device command was not accepted: {error}"))?;
+        let entry = registry.entries.get_mut(id).unwrap();
+        entry.snapshot.pending_generation = Some(next);
+        entry.pending_edit_generation = explicit_edit.then_some(next);
         // Acceptance is durable in the bounded command queue. A failed wake is
         // harmless: the supervisor polls it within 20ms and never duplicates it.
         if let Ok(wake) = self.wake.lock() { let _ = wake.signal(); }
@@ -233,9 +253,9 @@ impl Handle {
                 tablet: selected.configuration.name.clone(), state: if file_error.is_some() { SessionState::Failed } else { SessionState::Detected }, primary: false, selected: false,
                 connected: true, identity_stability: if key.fallback { IdentityStability::PathFallback } else { IdentityStability::PhysicalParent },
                 properties: selected.configuration.clone(), digitizer: selected.identifier.clone(),
-                auxiliary: selected.auxiliary.as_ref().map(|(_, identifier)| identifier.clone()), profile_source: None,
-                profile_path, persisted_revision: file.revision(), persisted_digest: file.digest.clone(), profile_saved: false,
-                last_error: file_error }, file });
+                auxiliary: selected.auxiliary.as_ref().map(|(_, identifier)| identifier.clone()), opened_identifiers: None, profile_source: None,
+                profile_path, persisted_revision: file.revision(), persisted_digest: file.digest.clone(), profile_saved: false, has_unsaved_runtime_edits: false,
+                last_error: file_error }, file, pending_edit_generation: None, opened_epoch: 0 });
         Ok(id)
     }
     pub(crate) fn primary_id(&self) -> Result<Option<SessionId>, String> {
@@ -276,14 +296,24 @@ impl Handle {
     }
     pub(crate) fn state(&self, id: &str, state: SessionState, error: Option<String>) {
         if let Ok(mut registry) = self.registry.lock() {
-            if let Some(entry) = registry.entries.get_mut(id) { entry.snapshot.state = state; entry.snapshot.last_error = error.map(bounded); }
+            if let Some(entry) = registry.entries.get_mut(id) { entry.snapshot.state = state; entry.snapshot.last_error = error.map(bounded);
+                if matches!(state, SessionState::Stopped | SessionState::Failed | SessionState::Waiting) { entry.snapshot.opened_identifiers = None; } }
         }
     }
     pub(crate) fn commit(&self, id: &str, generation: u64, profile: Profile) {
+        self.commit_origin(id, generation, profile, false);
+    }
+    pub(crate) fn commit_applied(&self, id: &str, generation: u64, profile: Profile) {
+        self.commit_origin(id, generation, profile, true);
+    }
+    fn commit_origin(&self, id: &str, generation: u64, profile: Profile, explicitly_applied: bool) {
         if let Ok(mut registry) = self.registry.lock() {
             if let Some(entry) = registry.entries.get_mut(id) {
-                // Save can use the panel's exact-byte writer. Observe its new
-                // file on Apply, and never treat a different file as active.
+                // Ignore an older transaction's completion after a new owner.
+                if generation < entry.snapshot.device_generation
+                    || entry.snapshot.pending_generation.is_some_and(|target| target != generation) { return; }
+                let changed = entry.profile.as_ref().and_then(|previous| previous.to_toml().ok()) != profile.to_toml().ok();
+                let explicit_edit = changed && (explicitly_applied || entry.pending_edit_generation == Some(generation));
                 if let Ok(file) = ProfileFile::read(entry.file.path.clone()) { entry.file = file; }
                 entry.snapshot.device_generation = generation;
                 entry.snapshot.pending_generation = None;
@@ -291,6 +321,9 @@ impl Handle {
                 entry.snapshot.persisted_revision = entry.file.revision();
                 entry.snapshot.persisted_digest = entry.file.digest.clone();
                 entry.snapshot.profile_saved = entry.file.matches(&profile);
+                entry.snapshot.has_unsaved_runtime_edits = runtime_edit_pending(
+                    entry.snapshot.has_unsaved_runtime_edits, explicit_edit, entry.snapshot.profile_saved);
+                entry.pending_edit_generation = None;
                 entry.snapshot.last_error = None;
                 entry.profile = Some(profile);
                 entry.enabled = true;
@@ -299,13 +332,16 @@ impl Handle {
     }
     pub(crate) fn reject(&self, id: &str, error: String) {
         if let Ok(mut registry) = self.registry.lock() {
-            if let Some(entry) = registry.entries.get_mut(id) { entry.snapshot.pending_generation = None; entry.snapshot.last_error = Some(bounded(error)); }
+            if let Some(entry) = registry.entries.get_mut(id) { entry.snapshot.pending_generation = None; entry.pending_edit_generation = None; entry.snapshot.last_error = Some(bounded(error)); }
         }
     }
     pub(crate) fn primary_commit(&self, profile: Profile) -> Result<(), String> {
+        self.primary_commit_with_origin(profile, false)
+    }
+    pub(crate) fn primary_commit_with_origin(&self, profile: Profile, explicitly_applied: bool) -> Result<(), String> {
         let Some(id) = self.primary_id()? else { return Err("primary device is not yet detected".into()); };
         let generation = self.registry.lock().map_err(|_| "device registry poisoned")?.entries[&id].snapshot.device_generation.checked_add(1).ok_or("device generation exhausted")?;
-        self.commit(&id, generation, profile);
+        self.commit_origin(&id, generation, profile, explicitly_applied);
         Ok(())
     }
     pub(crate) fn primary_state(&self, state: SessionState, error: Option<String>) {
@@ -317,6 +353,34 @@ impl Handle {
                 entry.snapshot.properties = selected.configuration.clone();
                 entry.snapshot.digitizer = selected.identifier.clone();
                 entry.snapshot.auxiliary = selected.auxiliary.as_ref().map(|(_, identifier)| identifier.clone());
+            }
+        }
+    }
+    /// Setup-only epoch prevents old session cleanup from erasing a replacement's
+    /// live identifiers. The caller clears its exact epoch after read/output cleanup.
+    pub(crate) fn activated_with_identifiers(&self, id: &str, selected: &SelectedDevice<'_>,
+        identifiers: &[DeviceIdentifier]) -> u64 {
+        if identifiers.is_empty() || identifiers.len() > 2 || identifiers.first() != Some(&selected.identifier)
+            || identifiers.get(1).is_some_and(|auxiliary| selected.auxiliary.as_ref().map(|(_, id)| id) != Some(auxiliary)) {
+            return 0;
+        }
+        let Ok(mut registry) = self.registry.lock() else { return 0; };
+        if !registry.entries.contains_key(id) { return 0; }
+        let Some(epoch) = registry.next_opened_epoch.checked_add(1) else { return 0; };
+        registry.next_opened_epoch = epoch;
+        let entry = registry.entries.get_mut(id).unwrap();
+        entry.snapshot.properties = selected.configuration.clone();
+        entry.snapshot.digitizer = selected.identifier.clone();
+        entry.snapshot.auxiliary = selected.auxiliary.as_ref().map(|(_, identifier)| identifier.clone());
+        entry.snapshot.opened_identifiers = Some(identifiers.to_vec());
+        entry.opened_epoch = epoch;
+        epoch
+    }
+    pub(crate) fn clear_opened_identifiers(&self, id: &str, epoch: u64) {
+        if epoch == 0 { return; }
+        if let Ok(mut registry) = self.registry.lock() {
+            if let Some(entry) = registry.entries.get_mut(id) {
+                if entry.opened_epoch == epoch { entry.snapshot.opened_identifiers = None; }
             }
         }
     }
@@ -366,6 +430,7 @@ impl Handle {
             if let Some(id) = registry.primary.clone() {
                 let entry = registry.entries.get_mut(&id).unwrap();
                 entry.snapshot.pending_generation = Some(generation);
+                entry.pending_edit_generation = None;
                 entry.snapshot.state = state;
             }
         }
@@ -376,6 +441,8 @@ impl Handle {
                 let entry = registry.entries.get_mut(&id).unwrap();
                 entry.snapshot.device_generation = generation;
                 entry.snapshot.pending_generation = None;
+                entry.pending_edit_generation = None;
+                entry.snapshot.opened_identifiers = None;
                 entry.snapshot.last_error = error.map(bounded);
                 entry.snapshot.state = if entry.snapshot.last_error.is_some() { SessionState::Failed } else { SessionState::Stopped };
                 entry.enabled = false;
@@ -447,5 +514,36 @@ pub(crate) mod tests {
         let b = candidate("path-b", "");
         assert_ne!(handle.discover(&selected(&a)).unwrap(), handle.discover(&selected(&b)).unwrap());
         assert!(handle.snapshot().unwrap().sessions.iter().all(|entry| entry.identity_stability == IdentityStability::PathFallback));
+    }
+}
+
+#[cfg(test)]
+mod runtime_origin_and_opened_tests {
+    use super::*;
+    #[test]
+    fn defaults_noop_apply_edits_and_old_activation_cleanup_remain_distinct() {
+        let (handle, _requests) = Handle::channel(Event::create(true).unwrap());
+        let candidate = tests::candidate("origin-only-fixture", "origin-only-parent");
+        let selected = tests::selected(&candidate);
+        let id = handle.discover(&selected).unwrap();
+        let initial = Profile::default();
+        handle.commit(&id, 1, initial.clone());
+        assert!(!handle.snapshot().unwrap().sessions[0].has_unsaved_runtime_edits);
+        handle.commit_applied(&id, 2, initial.clone());
+        assert!(!handle.snapshot().unwrap().sessions[0].has_unsaved_runtime_edits, "no-op Apply is not an edit");
+        handle.commit_applied(&id, 3, Profile { rotation: 90, ..initial.clone() });
+        assert!(handle.snapshot().unwrap().sessions[0].has_unsaved_runtime_edits);
+        handle.commit(&id, 2, initial);
+        assert_eq!(handle.snapshot().unwrap().sessions[0].device_generation, 3, "stale commit cannot erase edit origin");
+        assert!(runtime_edit_pending(true, false, false));
+        assert!(!runtime_edit_pending(true, false, true), "an actual persisted match clears origin");
+        let first = handle.activated_with_identifiers(&id, &selected, &[selected.identifier.clone()]);
+        let replacement = handle.activated_with_identifiers(&id, &selected, &[selected.identifier.clone()]);
+        assert!(replacement > first && first > 0);
+        handle.clear_opened_identifiers(&id, first);
+        assert!(handle.snapshot().unwrap().sessions[0].opened_identifiers.is_some(), "retired cleanup cannot clear replacement");
+        handle.clear_opened_identifiers(&id, replacement);
+        assert!(handle.snapshot().unwrap().sessions[0].opened_identifiers.is_none());
+        assert!(handle.snapshot().unwrap().sessions[0].connected, "discovery survives closed handles");
     }
 }

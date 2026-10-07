@@ -140,10 +140,11 @@ impl Connection {
     fn tablet_reply(&self, command: Command) -> Result<Value, Error> {
         match self.call(command)? {
             Reply::DeviceSessions { sessions, .. } => {
-                let values: Vec<_> = sessions.iter().filter(|session| session.connected).map(|session| {
-                    let mut identifiers = vec![session.digitizer.clone()];
-                    if let Some(auxiliary) = &session.auxiliary { identifiers.push(auxiliary.clone()); }
-                    json!({"Properties":session.properties,"Identifiers":identifiers})
+                let values: Vec<_> = sessions.iter().filter(|session| session.connected).filter_map(|session| {
+                    // Original TabletReference describes an open InputDeviceTree,
+                    // not every candidate discovered by the native registry.
+                    let identifiers = session.opened_identifiers.as_ref()?;
+                    Some(json!({"Properties":session.properties,"Identifiers":identifiers}))
                 }).collect();
                 Ok(json!(values))
             }

@@ -205,6 +205,7 @@ impl App {
             profile_revision_floor: 0,
             recovered_backup: false,
             dirty: false,
+            runtime_dirty_origin: None,
             selected_filter: 0,
             properties: Vec::new(),
             plugin_metadata: HashMap::new(),
@@ -2075,6 +2076,7 @@ impl App {
             self.recovered_backup = false;
         }
         self.dirty = dirty;
+        self.runtime_dirty_origin = None;
         self.selected_filter = 0;
         self.property_page = 0;
         self.drag = None;
@@ -2135,6 +2137,51 @@ impl App {
         let count = self.page_plugins().len();
         unsafe { SendMessageW(self.c.filter_list, LB_SETTOPINDEX, top.min(count.saturating_sub(1)), 0); }
         self.update_title();
+    }
+
+    fn owns_runtime_draft(&self, instance: &str, device: Option<&crate::device_sessions::SessionSnapshot>) -> bool {
+        self.runtime_dirty_origin.as_ref().zip(device).is_some_and(|((origin_instance, id, generation, revision), device)| {
+            origin_instance == instance && id == &device.id && device.device_generation >= *generation
+                && device.pending_generation.is_none() && self.edit_revision == *revision
+        })
+    }
+    fn can_adopt_runtime_profile(&self, instance: &str, device: Option<&crate::device_sessions::SessionSnapshot>) -> bool {
+        self.invalid.is_empty() && (!self.dirty || self.owns_runtime_draft(instance, device))
+    }
+    fn refresh_runtime_saved_origin(&mut self, instance: &str, device: &crate::device_sessions::SessionSnapshot) {
+        if !device.profile_saved || device.has_unsaved_runtime_edits
+            || !self.owns_runtime_draft(instance, Some(device))
+            || self.runtime_dirty_origin.as_ref().is_none_or(|(_, _, generation, _)| *generation != device.device_generation) {
+            return;
+        }
+        // Persistence can change without a device-generation/profile reply.
+        // Verify the exact disk bytes before clearing this runtime-only draft.
+        match crate::device_sessions::observed_profile_snapshot(device) {
+            Ok(snapshot) => {
+                self.profile_snapshot = Some(snapshot);
+                self.profile_revision_floor = device.persisted_revision.unwrap_or(0);
+                self.dirty = false;
+                self.runtime_dirty_origin = None;
+                self.update_title();
+                self.update_save_tip();
+            }
+            Err(error) => self.log(Level::Warning, "Settings", error),
+        }
+    }
+    fn adopt_runtime_profile(&mut self, profile: Profile, instance: &str,
+        device: Option<&crate::device_sessions::SessionSnapshot>) {
+        self.load_active_profile(profile);
+        if let Some(device) = device.filter(|device| device.has_unsaved_runtime_edits && !device.profile_saved) {
+            self.mark_dirty();
+            self.runtime_dirty_origin = Some((instance.to_owned(), device.id.clone(), device.device_generation, self.edit_revision));
+        } else {
+            // Callers only adopt a clean editor or an unchanged owned runtime
+            // draft. Actual user edits never reach this branch.
+            self.dirty = false;
+            self.runtime_dirty_origin = None;
+            self.update_title();
+        }
+        self.update_save_tip();
     }
 
     /// The profile exactly as Save and Start will use it.
@@ -2264,6 +2311,7 @@ impl App {
                 self.profile_revision_floor = profile.settings_revision;
                 self.recovered_backup = false;
                 self.dirty = false;
+                self.runtime_dirty_origin = None;
                 self.update_title();
                 self.update_save_tip();
                 self.log(
@@ -2522,8 +2570,13 @@ impl App {
                         != self.selected_device.as_ref().map(|device| &device.id);
                     self.device_sessions = sessions.sessions;
                     self.selected_device = next_device;
+                    if profile.is_none() && !self.closing {
+                        if let Some(device) = self.selected_device.clone() {
+                            self.refresh_runtime_saved_origin(&status.instance, &device);
+                        }
+                    }
                     if let Some(profile) = profile.filter(|_| !self.closing) {
-                        if self.dirty || !self.invalid.is_empty() {
+                        if !self.can_adopt_runtime_profile(&status.instance, self.selected_device.as_ref()) {
                             self.log(Level::Warning, "Settings", "Daemon configuration changed. Unsaved local edits were kept; Apply deliberately replaces the active configuration.");
                         } else {
                             if let Some(device) = self.selected_device.clone()
@@ -2536,7 +2589,8 @@ impl App {
                                     Err(error) => { self.profile_snapshot = None; self.log(Level::Warning, "Settings", error); }
                                 }
                             }
-                            self.load_active_profile(*profile);
+                            let device = self.selected_device.clone();
+                            self.adopt_runtime_profile(*profile, &status.instance, device.as_ref());
                             self.log(Level::Info, "Settings", "Loaded the daemon's active configuration. Save writes it to the local profile file.");
                         }
                     }

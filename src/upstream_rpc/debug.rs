@@ -8,6 +8,20 @@ use crate::device_sessions::SessionSnapshot;
 use crate::dotnet::ManagedDebugDecoder;
 use super::protocol;
 
+fn source_tablet_reference(session: &SessionSnapshot, parser: &str, auxiliary_parser: Option<&str>) -> Result<Value, String> {
+    // Retired packets may arrive after live handles close. Their immutable tap
+    // metadata decides membership; never add a discovered-but-unopened auxiliary.
+    let primary = session.opened_identifiers.as_ref().and_then(|ids| ids.first()).unwrap_or(&session.digitizer);
+    if primary.parser() != parser { return Err("debug digitizer identifier changed since this source was opened".into()); }
+    let mut identifiers = vec![primary.clone()];
+    if let Some(parser) = auxiliary_parser {
+        let auxiliary = session.opened_identifiers.as_ref().and_then(|ids| ids.get(1)).or(session.auxiliary.as_ref())
+            .filter(|identifier| identifier.parser() == parser).ok_or("debug auxiliary identifier changed since this source was opened")?;
+        identifiers.push(auxiliary.clone());
+    }
+    Ok(json!({"Properties":session.properties,"Identifiers":identifiers}))
+}
+
 struct Endpoint {
     metadata: SessionMetadata,
     tablet: Value,
@@ -44,9 +58,7 @@ impl Capture {
         let id = metadata.key.as_deref().ok_or("debug source lacks an owned device session ID")?;
         let session = sessions.iter().find(|session| session.id == id && session.tablet == metadata.name)
             .ok_or("debug source has no exact device session/configuration match")?;
-        let mut identifiers = vec![session.digitizer.clone()];
-        if let Some(auxiliary) = &session.auxiliary { identifiers.push(auxiliary.clone()); }
-        let tablet = json!({"Properties":session.properties,"Identifiers":identifiers});
+        let tablet = source_tablet_reference(session, &metadata.parser, metadata.auxiliary_parser.as_deref())?;
         let digitizer = ManagedDebugDecoder::new(&metadata.parser)?;
         let auxiliary = metadata.auxiliary_parser.as_deref().map(ManagedDebugDecoder::new).transpose()?;
         self.endpoints.insert(metadata.session, Endpoint { metadata, tablet, digitizer, auxiliary });
@@ -120,5 +132,25 @@ mod tests {
         assert!(!boundary.advance(103, 8));
         assert!(boundary.advance(111, 8));
         assert!(!boundary.advance(112, 8));
+    }
+}
+
+#[cfg(test)]
+mod reference_tests {
+    use super::*;
+    #[test]
+    fn discovered_auxiliary_is_included_only_for_an_actual_source_parser() {
+        let (handle, _requests) = crate::device_sessions::Handle::channel(crate::hid::Event::create(true).unwrap());
+        let candidate = crate::device_sessions::tests::candidate("debug-reference-fixture", "debug-reference-parent");
+        let selected = crate::device_sessions::tests::selected(&candidate);
+        handle.discover(&selected).unwrap();
+        let mut session = handle.snapshot().unwrap().sessions.remove(0);
+        let primary_parser = session.digitizer.parser().to_owned();
+        session.auxiliary = Some(otd_core::tablets::DeviceIdentifier { report_parser: Some("Fixture.Auxiliary".into()), ..Default::default() });
+        let primary_only = source_tablet_reference(&session, &primary_parser, None).unwrap();
+        assert_eq!(primary_only["Identifiers"].as_array().unwrap().len(), 1);
+        let both = source_tablet_reference(&session, &primary_parser, Some("Fixture.Auxiliary")).unwrap();
+        assert_eq!(both["Identifiers"].as_array().unwrap().len(), 2);
+        assert!(source_tablet_reference(&session, &primary_parser, Some("Fixture.Changed")).is_err());
     }
 }

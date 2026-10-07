@@ -761,6 +761,9 @@ struct App {
     profile_revision_floor: u64,
     recovered_backup: bool,
     dirty: bool,
+    /// A runtime-origin draft may become clean on its owned persisted echo,
+    /// but only while no intervening user edit changed edit_revision.
+    runtime_dirty_origin: Option<(String, String, u64, u64)>,
     selected_filter: usize,
     properties: Vec<PropertyRow>,
     /// Discovery results are UI-only; they are never written into profiles.
