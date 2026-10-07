@@ -663,6 +663,9 @@ impl PluginChain {
     pub fn source_decoder(&self, name: &str, spec: otd_core::spec::TabletSpec) -> Result<crate::dotnet::RuntimeDecoder, String> {
         crate::dotnet::RuntimeDecoder::for_pipeline(name, spec, self.graph.as_ref())
     }
+    pub fn source_decoder_for_endpoint(&self,name:&str,spec:otd_core::spec::TabletSpec,auxiliary:bool)->Result<crate::dotnet::RuntimeDecoder,String>{
+        crate::dotnet::RuntimeDecoder::for_pipeline_source(name,spec,self.graph.as_ref(),auxiliary)
+    }
     pub fn prepare_managed_decoder(&mut self) -> Result<(), String> {
         if self.graph.is_none() { self.graph = graph::create_if(&self.plugins, self.builtin_slot, true)?; }
         Ok(())

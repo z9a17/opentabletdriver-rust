@@ -200,9 +200,12 @@ impl NativeBackend {
     }
 }
 impl Backend for NativeBackend {
+    fn maintain(&self,lane:usize){if lane==4{crate::managed_inputs::maintain();}}
+    fn shutdown(&self,lane:usize){if lane==4{crate::managed_inputs::shutdown();}}
     fn execute(&self, request: Request) -> Result<Value, String> {
         if self.stopped.load(Ordering::Acquire) { return Err("Managed native owner is stopping".into()); }
         let result = match request.operation {
+            Operation::InputHold|Operation::InputRelease=>return crate::managed_inputs::execute(request.operation,request.scope,&request.payload),
             Operation::Daemon => self.daemon(&request),
             Operation::Detect => crate::upstream_rpc::invoke_original("DetectTablets", &json!([])).and_then(|tablets| {
                 let tablets = tablets.as_array().ok_or("Native detection did not return a tablet collection")?;

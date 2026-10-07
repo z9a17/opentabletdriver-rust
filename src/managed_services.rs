@@ -50,13 +50,13 @@ pub struct Snapshot {
 #[repr(u32)]
 pub enum Operation { Snapshot = 0, Daemon = 1, Detect = 2, DeviceString = 3,
     OpenStream = 4, ReadStream = 5, WriteStream = 6, GetFeature = 7,
-    SetFeature = 8, CloseStream = 9, DeviceReports = 10, OutputOwner = 11 }
+    SetFeature = 8, CloseStream = 9, DeviceReports = 10, OutputOwner = 11, InputHold = 12, InputRelease = 13 }
 impl Operation {
     fn parse(value: u32) -> Option<Self> { Some(match value {
         0 => Self::Snapshot, 1 => Self::Daemon, 2 => Self::Detect, 3 => Self::DeviceString,
         4 => Self::OpenStream, 5 => Self::ReadStream, 6 => Self::WriteStream,
         7 => Self::GetFeature, 8 => Self::SetFeature, 9 => Self::CloseStream,
-        10 => Self::DeviceReports, 11 => Self::OutputOwner, _ => return None,
+        10 => Self::DeviceReports, 11 => Self::OutputOwner, 12=>Self::InputHold,13=>Self::InputRelease,_ => return None,
     }) }
 }
 #[derive(Clone, Debug)]
@@ -71,6 +71,8 @@ pub struct Request { pub operation: Operation, pub scope: u64, pub payload: Valu
 /// mutations here before their transaction completed.
 pub trait Backend: Send + Sync + 'static {
     fn execute(&self, request: Request) -> Result<Value, String>;
+    fn maintain(&self,_lane:usize) {}
+    fn shutdown(&self,_lane:usize) {}
 }
 struct Ticket { deadline: Instant, reply: Option<Vec<u8>> }
 struct State {
@@ -113,10 +115,11 @@ impl Host {
             source_sessions: snapshot.source_sessions,
             queue: VecDeque::new(), queued_bytes: 0 }), ready: Condvar::new() });
         let mut workers = Vec::new();
-        for lane in 0..4 {
+        for lane in 0..5 {
         let worker = engine.clone();
         let backend = Arc::clone(&backend);
-        let join = std::thread::Builder::new().name(["managed-services","managed-device-io","managed-output-owner","managed-device-detect"][lane].into()).spawn(move || loop {
+        let join = std::thread::Builder::new().name(["managed-services","managed-device-io","managed-output-owner","managed-device-detect","managed-input-owner"][lane].into()).spawn(move || loop {
+            backend.maintain(lane);
             let work = {
                 let Ok(mut state) = worker.state.lock() else { return };
                 // A real plugin constructor can ask for shared endpoint I/O
@@ -124,13 +127,15 @@ impl Host {
                 // requests their own serial owner rather than waiting behind
                 // the constructor's occupied daemon lane.
                 let index = loop {
-                    if state.stopped { return; }
+                    if state.stopped {drop(state);backend.shutdown(lane);return;}
                     if let Some(index) = state.queue.iter().position(|(_, _, request)| {
-                        let operation_lane=match request.operation {Operation::Daemon=>0,Operation::Detect=>3,Operation::OutputOwner=>2,_=>1};
+                        let operation_lane=match request.operation {Operation::Daemon=>0,Operation::Detect=>3,Operation::OutputOwner=>2,Operation::InputHold|Operation::InputRelease=>4,_=>1};
                         operation_lane==lane
-                    }) { break index; }
-                    let Ok(next) = worker.ready.wait(state) else { return }; state = next;
+                    }) { break Some(index); }
+                    let Ok((next,timeout)) = worker.ready.wait_timeout(state,Duration::from_millis(50)) else { return }; state = next;
+                    if lane==4&&timeout.timed_out(){break None;}
                 };
+                let Some(index)=index else{continue};
                 let (id, size, request) = state.queue.remove(index).unwrap();
                 state.queued_bytes -= size;
                 if !state.tickets.get(&id).is_some_and(|ticket| Instant::now() < ticket.deadline) {

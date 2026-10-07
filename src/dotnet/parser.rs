@@ -33,9 +33,14 @@ pub struct ManagedReportParser {
 }
 impl ManagedReportParser {
     pub fn for_graph(name: &str, spec: TabletSpec, graph: &Graph) -> Result<Self, String> {
+        Self::for_source(name,spec,Some(graph),false)
+    }
+    fn for_source(name:&str,spec:TabletSpec,graph:Option<&Graph>,auxiliary:bool)->Result<Self,String>{
         if name.is_empty() || name.len() > 4096 { return Err("Managed parser name length must be 1..4096".into()); }
-        let json=serde_json::json!({"parser":name,"source_session":super::source_session_json()}).to_string();
-        let context = unsafe { (api()?.create)(graph.context_handle(), json.as_ptr(), json.len() as u32) };
+        let mut source=super::source_session_json();
+        if let Some(source)=source.as_mut().and_then(serde_json::Value::as_object_mut){source.insert("auxiliary".into(),serde_json::json!(auxiliary));}
+        let json=serde_json::json!({"parser":name,"source_session":source}).to_string();
+        let context = unsafe { (api()?.create)(graph.map_or(std::ptr::null_mut(),Graph::context_handle), json.as_ptr(), json.len() as u32) };
         if context.is_null() { return Err(last_error()); }
         Ok(Self { context, spec, reset_failure: None, _owner_thread: PhantomData })
     }
@@ -85,9 +90,12 @@ impl RuntimeDecoder {
         ManagedReportParser::new(name, spec).map(Self::Managed)
     }
     pub fn for_pipeline(name: &str, spec: TabletSpec, graph: Option<&Graph>) -> Result<Self, String> {
+        Self::for_pipeline_source(name,spec,graph,false)
+    }
+    pub fn for_pipeline_source(name:&str,spec:TabletSpec,graph:Option<&Graph>,auxiliary:bool)->Result<Self,String>{
         match graph {
-            Some(graph) => ManagedReportParser::for_graph(name, spec, graph).map(Self::Managed),
-            None => Self::for_parser(name, spec),
+            Some(graph) => ManagedReportParser::for_source(name, spec, Some(graph),auxiliary).map(Self::Managed),
+            None => match TabletDecoder::for_parser(name,spec){Some(native)=>Ok(Self::Native(native)),None=>ManagedReportParser::for_source(name,spec,None,auxiliary).map(Self::Managed)},
         }
     }
     pub fn is_managed(&self) -> bool { matches!(self, Self::Managed(_)) }

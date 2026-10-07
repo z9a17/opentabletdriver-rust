@@ -379,7 +379,7 @@ impl<'a> HidSource<'a> {
         if !hid::parser_supported(identifier.parser()) && plugins.is_none() {
             crate::plugins::load_parser_registry().map_err(io::Error::other)?;
         }
-        match plugins { Some(plugins) => plugins.source_decoder(identifier.parser(), selected.spec),
+        match plugins { Some(plugins) => plugins.source_decoder_for_endpoint(identifier.parser(), selected.spec,true),
             None => RuntimeDecoder::for_parser(identifier.parser(), selected.spec) }.map(Some).map_err(io::Error::other)
     }
 

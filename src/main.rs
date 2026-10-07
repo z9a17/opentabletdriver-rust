@@ -15,6 +15,8 @@ mod experimental;
 mod dotnet;
 mod managed_host;
 mod managed_services;
+mod managed_inputs;
+mod plugin_manager;
 mod shared_devices;
 mod custom_devices;
 mod global_tools;
