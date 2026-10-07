@@ -620,13 +620,23 @@ fn pen_button_action(store: Option<&OtdStore>, pen: bool) -> Result<ButtonAction
             use crate::output::buttons::{ScrollAction, ScrollAxis};
             let integer = |name: &str, default: i32| -> Result<i32, String> {
                 match store.settings.iter().rev().find(|setting| setting.property == name).map(|setting| &setting.value) {
-                    None => Ok(default),
+                    None | Some(serde_json::Value::Null) => Ok(default),
                     Some(value) => value.as_i64().and_then(|value| i32::try_from(value).ok())
                         .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
                         .ok_or_else(|| format!("scroll {name} must be a signed 32-bit integer")),
                 }
             };
-            let axis = if property("Direction") == Some("Horizontal") { ScrollAxis::Horizontal } else { ScrollAxis::Vertical };
+            // Direction's upstream string setter uses Enum.TryParse, which
+            // also accepts numeric strings. Scroll() treats any nonzero enum
+            // value as horizontal; an invalid name keeps the initial vertical.
+            let direction = store.settings.iter().rev().find(|setting| setting.property == "Direction").map(|setting| &setting.value);
+            let horizontal = match direction {
+                Some(serde_json::Value::String(value)) => value.trim() == "Horizontal"
+                    || value.trim().parse::<i32>().is_ok_and(|value| value != 0),
+                Some(value) => value.as_i64().and_then(|value| i32::try_from(value).ok()).is_some_and(|value| value != 0),
+                None => false,
+            };
+            let axis = if horizontal { ScrollAxis::Horizontal } else { ScrollAxis::Vertical };
             let amount = integer("Amount", 120)?;
             let amount = if amount == 0 { 1 } else { amount };
             let interval_ms = integer("Interval", 300)?.max(1) as u32;
@@ -2720,6 +2730,23 @@ mod tests {
         profile.mouse_scroll_up = ButtonAction::Scroll(crate::output::buttons::ScrollAction { axis: crate::output::buttons::ScrollAxis::Vertical, amount: 0, interval_ms: 1 });
         assert!(profile.to_toml().is_err());
         assert!(crate::pipeline::ReportPipeline::new(&profile).is_err());
+    }
+
+    #[test]
+    fn imported_scroll_defaults_and_upstream_setter_normalization_are_retained() {
+        for (direction, amount, interval, expected) in [
+            (serde_json::Value::Null, serde_json::Value::Null, serde_json::Value::Null, "scroll:vertical:120:300"),
+            (serde_json::json!("invalid"), serde_json::json!(0), serde_json::json!(-20), "scroll:vertical:1:1"),
+            (serde_json::json!("1"), serde_json::json!("-120"), serde_json::json!("25"), "scroll:horizontal:-120:25"),
+            (serde_json::json!(2), serde_json::json!(120), serde_json::json!(1), "scroll:horizontal:120:1"),
+        ] {
+            let profile = import_bindings(serde_json::json!({"MouseScrollDown": {
+                "Path": MOUSE_SCROLL_BINDING, "Enable": true, "Settings": [
+                    {"Property":"Direction", "Value":direction}, {"Property":"Amount", "Value":amount}, {"Property":"Interval", "Value":interval},
+                ]
+            }}));
+            assert_eq!(profile.mouse_scroll_down.to_string(), expected);
+        }
     }
 
 }
