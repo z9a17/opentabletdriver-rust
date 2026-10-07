@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::{Arc, atomic::{AtomicBool, AtomicU64, Ordering}};
 use std::time::{Duration, Instant};
 use serde_json::{Value, json};
-use crate::control::{self, Command, ControlStatus, DriverState, Reply, Request, UpstreamLogMessage};
+use crate::control::{self, Command, ControlStatus, Reply, Request, UpstreamLogMessage};
 use super::protocol::{self, Error, Service};
 
 pub const METHODS: &[&str] = &[
@@ -182,55 +182,74 @@ impl Connection {
             let matches: Vec<_> = profiles.iter().enumerate().filter(|(_,profile)| profile["Tablet"] == name).map(|(index,_)| index).collect();
             match matches.as_slice() {
                 [] => profiles.push(selected),
-                [index] => profiles[*index] = selected,
-                _ => return Err(Error::unsupported("GetSettings", "duplicate archived tablet profiles cannot be reconciled unambiguously")),
+                [index,..] => profiles[*index] = selected,
             }
         }
         if self.status()?.identity() != expected { return Err(Error::failed("daemon configuration changed while reading settings")); }
         Ok(document)
     }
-    fn set_settings(&self, settings: &Value) -> Result<Value, Error> {
-        let profiles = settings.get("Profiles").and_then(Value::as_array)
-            .ok_or_else(|| Error::invalid("settings must contain Profiles"))?;
-        if profiles.len() != 1 || self.tablets()?.as_array().is_some_and(|tablets| tablets.len() > 1) {
-            return Err(Error::unsupported("SetSettings", "an atomic multi-device settings transaction is not implemented"));
+    fn session_snapshots(&self) -> Result<Vec<crate::device_sessions::SessionSnapshot>,Error> {
+        match self.call(Command::ListDeviceSessions)? {
+            Reply::DeviceSessions { sessions,.. } => Ok(sessions),
+            _ => Err(Error::failed("unexpected device session snapshot")),
         }
-        let text = serde_json::to_string(settings).map_err(|error| Error::invalid(error.to_string()))?;
+    }
+    fn device_profile(&self,id:&str,generation:u64,instance:&str) -> Result<String,Error> {
+        let status = self.status()?;
+        if status.instance != instance { return Err(Error::failed("daemon identity changed during settings operation")); }
+        let expected = status.identity();
+        match self.call(Command::GetDeviceProfile { expected:expected.clone(),id:id.into(),device_generation:generation })? {
+            Reply::DeviceProfile { identity,id:reply_id,device_generation,profile_toml }
+                if identity == expected && reply_id == id && device_generation == generation => Ok(profile_toml),
+            _ => Err(Error::failed("unexpected guarded device profile reply")),
+        }
+    }
+    fn set_settings(&mut self,settings:&Value) -> Result<Value,Error> {
+        let status = self.status()?;
+        let sessions = self.session_snapshots()?;
+        let sessions:Vec<_> = sessions.into_iter().filter(|session| session.connected).collect();
+        if sessions.is_empty() { return Err(Error::unsupported("SetSettings","idle settings collection storage without detected sessions is not implemented")); }
+        if sessions.iter().any(|session| session.pending_generation.is_some()
+            || !matches!(session.state,crate::device_sessions::SessionState::Running | crate::device_sessions::SessionState::Stopped)) {
+            return Err(Error::failed("device sessions are transitioning/unavailable; refresh and retry without replacing pending operations"));
+        }
+        let tablets:Vec<_> = sessions.iter().map(|session| session.properties.clone()).collect();
+        let displays = crate::display::read_snapshot()?;
+        let settings = super::settings::for_detected(settings,&tablets,displays.virtual_screen)?;
+        let profiles = settings["Profiles"].as_array().ok_or_else(|| Error::invalid("settings must contain Profiles"))?;
+        let text = serde_json::to_string(&settings).map_err(|error| Error::invalid(error.to_string()))?;
         if text.len() > control::MAX_PROFILE_BYTES { return Err(Error::invalid("settings exceed 128 KiB")); }
         let path = otd_core::storage::data_directory()?.join("upstream-rpc-settings.json");
-        let profile = crate::config::Profile::from_otd_profile_text(&text, &path, 0, Default::default())?;
-        if let Some(diagnostic) = profile.diagnostics.iter().find(|diagnostic| diagnostic.kind == "unsupported_active") {
-            return Err(Error::unsupported("SetSettings", &diagnostic.message));
-        }
-        profile.validate_runtime_tablet()?;
-        let replacement = profile.to_toml()?;
-        let before = self.status()?;
-        if before.state != DriverState::Running { return Err(Error::unsupported("SetSettings", "requires an active worker; inactive/multi-device settings storage is not implemented")); }
-        match self.call(Command::Restart { expected: before.identity(), profile_toml: replacement.clone() })? {
-            Reply::RestartAccepted { .. } => {},
-            _ => return Err(Error::failed("unexpected settings apply response")),
-        }
-        // RestartAccepted retains the old generation during preparation. A
-        // completion reply requires a committed new identity AND matching text.
-        // Timeout reports uncertainty; it never retries or rolls back a newer
-        // client's operation. No original settings file is written here.
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            if self.stop.load(Ordering::Acquire) { return Err(Error::failed("settings apply interrupted; query active settings before retrying")); }
-            let current = self.status()?;
-            if current.instance != before.instance { return Err(Error::failed("daemon identity changed during settings apply")); }
-            if current.state == DriverState::Failed || (current.last_error.is_some() && current.last_error != before.last_error) {
-                return Err(Error::failed(current.last_error.unwrap_or_else(|| "settings worker failed".into())));
+        let mut plans = Vec::new();
+        // Validate every applicable profile and capture every guarded prior
+        // configuration before accepting the first mutation.
+        for session in &sessions {
+            let index = profiles.iter().position(|profile| profile["Tablet"] == session.tablet)
+                .ok_or_else(|| Error::invalid("detected tablet profile is missing"))?;
+            let profile = crate::config::Profile::from_otd_profile_text(&text,&path,index,Default::default())?;
+            if let Some(diagnostic) = profile.diagnostics.iter().find(|diagnostic| diagnostic.kind == "unsupported_active") {
+                return Err(Error::unsupported("SetSettings",&diagnostic.message));
             }
-            if current.generation > before.generation && current.state == DriverState::Running {
-                match self.call(Command::GetConfiguration { expected: current.identity() })? {
-                    Reply::Configuration { profile_toml: Some(active), .. } if active == replacement => return Ok(Value::Null),
-                    _ => return Err(Error::failed("another configuration committed while applying settings")),
-                }
+            let profile = profile.for_tablet(otd_core::spec::TabletSpec::from_configuration(&session.properties)?)?;
+            profile.validate_runtime_tablet()?;
+            if profile.relative.is_none() { displays.mapper(&profile)?; }
+            let replacement = profile.to_toml()?;
+            let encoded = serde_json::to_vec(&replacement).map_err(|error| Error::invalid(error.to_string()))?;
+            if replacement.len() > control::MAX_PROFILE_BYTES || encoded.len() > control::MAX_FRAME_BYTES - 1024 {
+                return Err(Error::invalid("imported profile exceeds native control limits"));
             }
-            if Instant::now() >= deadline { return Err(Error::failed("settings apply is still pending; query settings/status before retrying")); }
-            std::thread::sleep(Duration::from_millis(25));
+            let before = self.device_profile(&session.id,session.device_generation,&status.instance)?;
+            plans.push(super::apply::Plan { id:session.id.clone(),generation:session.device_generation,before,replacement });
         }
+        if self.status()?.identity() != status.identity() { return Err(Error::failed("daemon configuration changed during settings preflight")); }
+        let mut backend = DeviceApply { connection:self,instance:status.instance };
+        let result = super::apply::run(&plans,&mut backend,Instant::now()+Duration::from_secs(40),
+            || Instant::now()+Duration::from_secs(40));
+        if let Err(error) = result {
+            self.shared.resynchronize.fetch_add(1,Ordering::AcqRel);
+            return Err(error);
+        }
+        Ok(Value::Null)
     }
     pub fn events(&mut self) -> Vec<Value> {
         if Instant::now() < self.next_poll || self.stop.load(Ordering::Acquire) { return Vec::new(); }
@@ -269,6 +288,63 @@ impl Drop for Connection {
         // A failed response write still exits after committed replacement;
         // an abandoned uncommitted reservation is cancelled, never forgotten.
         let _ = self.finish_update();
+    }
+}
+struct DeviceApply<'a> { connection:&'a mut Connection,instance:String }
+impl super::apply::Backend for DeviceApply<'_> {
+    fn apply(&mut self,id:&str,generation:u64,text:&str) -> Result<crate::device_sessions::SessionReceipt,Error> {
+        let status = self.connection.status()?;
+        if status.instance != self.instance { return Err(Error::failed("daemon identity changed during device apply")); }
+        match self.connection.call(Command::ApplyDeviceProfile { expected:status.identity(),id:id.into(),
+            device_generation:generation,profile_toml:text.into() })? {
+            Reply::DeviceOperationAccepted { receipt } => Ok(receipt),
+            _ => Err(Error::failed("unexpected device operation receipt")),
+        }
+    }
+    fn wait(&mut self,receipt:&crate::device_sessions::SessionReceipt,_text:&str,deadline:Instant) -> Result<(),Error> {
+        loop {
+            let status = self.connection.status()?;
+            if status.instance != self.instance { return Err(Error::failed("daemon identity changed during device apply")); }
+            let sessions = self.connection.session_snapshots()?;
+            let session = sessions.iter().find(|session| session.id == receipt.id)
+                .ok_or_else(|| Error::failed("device session disappeared during settings apply"))?;
+            if session.device_generation > receipt.target_generation
+                || session.pending_generation.is_some_and(|generation| generation != receipt.target_generation) {
+                return Err(Error::failed("another client replaced this device operation"));
+            }
+            if session.device_generation == receipt.target_generation && session.pending_generation.is_none() {
+                if matches!(session.state,crate::device_sessions::SessionState::Running
+                    | crate::device_sessions::SessionState::Stopped | crate::device_sessions::SessionState::Waiting) {
+                    // This generation is committed only after actual Run or an
+                    // explicit stopped-profile commit. Verified native ports
+                    // may rewrite runtime TOML, so byte identity is not the
+                    // operation receipt's completion contract.
+                    let _ = self.connection.device_profile(&receipt.id,receipt.target_generation,&self.instance)?;
+                    return Ok(());
+                }
+            }
+            if session.pending_generation.is_none() || session.state == crate::device_sessions::SessionState::Failed {
+                return Err(Error::failed(session.last_error.clone().unwrap_or_else(|| "device settings apply failed".into())));
+            }
+            if Instant::now() >= deadline { return Err(Error::failed("device settings apply remains pending; query sessions/settings before retrying")); }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+    fn restore(&mut self,plan:&super::apply::Plan,receipt:&crate::device_sessions::SessionReceipt,deadline:Instant) -> Result<(),Error> {
+        let sessions = self.connection.session_snapshots()?;
+        let session = sessions.iter().find(|session| session.id == plan.id).ok_or_else(|| Error::failed("device session disappeared"))?;
+        if session.pending_generation.is_some() { return Err(Error::failed("device operation is still pending; it was not replaced")); }
+        if session.device_generation == plan.generation {
+            let retained = self.connection.device_profile(&plan.id,plan.generation,&self.instance)?;
+            if retained == plan.before { return Ok(()); }
+            return Err(Error::failed("prior device generation has unexpected settings"));
+        }
+        if session.device_generation != receipt.target_generation {
+            return Err(Error::failed("newer device generation preserved"));
+        }
+        if Instant::now() >= deadline { return Err(Error::failed("settings rollback deadline expired")); }
+        let restored = self.apply(&plan.id,receipt.target_generation,&plan.before)?;
+        self.wait(&restored,&plan.before,deadline)
     }
 }
 /// Resolved Windows DLL paths are host details, not OTD store identities. Only
@@ -453,7 +529,6 @@ impl Service for Connection {
                     _ => return Err(Error::failed("unexpected device session snapshot")),
                 };
                 let tablets: Vec<_> = sessions.into_iter().filter(|session| session.connected).map(|session| session.properties).collect();
-                if tablets.len() != 1 { return Err(Error::unsupported(method, "atomic default reset requires exactly one connected running tablet")); }
                 self.set_settings(&super::settings::defaults(&tablets,crate::display::read_snapshot()?.virtual_screen)?)
             },
             "SetTabletDebug" => {

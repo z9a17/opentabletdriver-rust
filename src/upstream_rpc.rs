@@ -3,6 +3,7 @@
 mod protocol;
 mod service;
 mod settings;
+mod apply;
 
 use std::io;
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};

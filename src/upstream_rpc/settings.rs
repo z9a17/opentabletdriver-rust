@@ -11,6 +11,20 @@ fn adaptive(action: &str) -> Value {
     json!({"Path":"OpenTabletDriver.Desktop.Binding.AdaptiveBinding","Enable":true,
         "Settings":[{"Property":"Binding","Value":action}]})
 }
+/// ProfileCollection.GetProfile creates defaults for a detected tablet whose
+/// name is missing. Existing profile order/unknown inactive rows are retained.
+pub fn for_detected(settings:&Value,tablets:&[TabletConfiguration],screen:Rect) -> Result<Value,Error> {
+    if settings.is_null() { return defaults(tablets,screen); }
+    let mut document = settings.clone();
+    let profiles = document.get_mut("Profiles").and_then(Value::as_array_mut)
+        .ok_or_else(|| Error::invalid("settings must contain Profiles"))?;
+    for tablet in tablets {
+        if profiles.iter().any(|profile| profile["Tablet"] == tablet.name) { continue; }
+        let generated = defaults(std::slice::from_ref(tablet),screen)?;
+        profiles.push(generated["Profiles"][0].clone());
+    }
+    Ok(document)
+}
 
 pub fn defaults(tablets: &[TabletConfiguration], screen: Rect) -> Result<Value, Error> {
     if !screen.valid() { return Err(Error::failed("default settings need a valid virtual screen")); }
@@ -116,6 +130,18 @@ mod tests {
         let imported = Profile::from_otd_text(&settings.to_string(),std::path::Path::new("defaults.json")).unwrap();
         assert!(imported.radial_follow.is_empty());
         assert_eq!(imported.contact.tip_threshold_percent,Some(1.0));
+    }
+    #[test]
+    fn missing_detected_profiles_generate_defaults_without_dropping_unknown_rows() {
+        let tablet = tablet();
+        let screen = Rect { left:0,top:0,right:2560,bottom:1440 };
+        let original = json!({"Profiles":[{"Tablet":"Disconnected model","Opaque":[null,17]}],"Tools":[],"Extra":"keep"});
+        let generated = for_detected(&original,std::slice::from_ref(&tablet),screen).unwrap();
+        assert_eq!(generated["Profiles"][0],original["Profiles"][0]);
+        assert_eq!(generated["Extra"],"keep");
+        assert_eq!(generated["Profiles"][1]["Tablet"],tablet.name);
+        assert_eq!(for_detected(&generated,std::slice::from_ref(&tablet),screen).unwrap(),generated);
+        assert_eq!(for_detected(&Value::Null,std::slice::from_ref(&tablet),screen).unwrap(),defaults(&[tablet],screen).unwrap());
     }
     #[test]
     fn standalone_explicit_areas_export_through_strict_serializer_and_refuse_native_extensions() {

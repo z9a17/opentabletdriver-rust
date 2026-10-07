@@ -31,7 +31,7 @@ JSON-RPC batch messages are rejected.
 | GetDevices | Actual HID/WinUSB endpoint inventory, strings, lengths and openability. |
 | GetTablets | Connected device-session snapshots, actual configurations and identifiers. |
 | GetSettings | Actual connected device profiles reconciled into the original OTD document. Representable standalone explicit-area/relative profiles receive canonical known stores. Resolved managed DLL paths require matching original identities/order. Different tools across devices, differing profiles for same-model physical tablets, native pixel-span crops/hardware-tip contact and ambiguous stores return errors. |
-| SetSettings | One running tablet only. Rejects unsupported active import settings, validates before guarded restart, and waits for a committed generation and matching configuration. Timeout/failure does not pretend completion or retry a mutation. |
+| SetSettings | Preflights all detected named profiles, preserves inactive rows and generates pinned defaults for missing detected names. Applies through guarded per-device receipts, waits committed generations, and rolls back only accepted generations it still owns on failure. Newer/pending peer operations are preserved and reported as partial/uncertain failure with Resynchronize. Group atomicity is not claimed. Unsupported active stores and idle collection storage remain explicit errors. |
 | GetCurrentLog, WriteMessage | Bounded native log snapshot and native log append. |
 | InstallPlugin, UninstallPlugin, DownloadPlugin | Existing catalog installation/removal/download transactions; removal must uniquely identify an installed name or folder. Network traffic uses `src/download.rs`. Installation does not imply live DLL reload. |
 | RequestDeviceString | Explicit VID/PID/index HID string request. |
@@ -40,7 +40,7 @@ JSON-RPC batch messages are rejected.
 | ForceResynchronize | Broadcasts the resynchronization event to compatibility clients. |
 | DetectTablets | Owned D05 refresh waits for an actual discovery pass and returns its snapshot. Without an existing supervisor, returns an error; new sessions may still be preparing/starting. |
 | LoadPlugins | Explicit unsupported error pending live plugin-manager reload. |
-| ResetSettings | True pinned OTD defaults for one connected running tablet, with actual digitizer/button/wheel specifications and guarded apply completion. Uses upstream 1% contact thresholds, no filters, clipping, default adaptive bindings and 100 ms relative reset. Multi-device atomic reset remains unsupported. |
+| ResetSettings | True pinned OTD defaults across connected running/stopped sessions, with actual digitizer/button/wheel specifications and guarded per-device apply/recovery. Uses upstream 1% contact thresholds, no filters, clipping, default adaptive bindings and 100 ms relative reset. Stopped devices remain stopped. |
 | SetTabletDebug | Explicit unsupported error; latest native samples are not full-rate multi-tablet DeviceReport events. |
 | CheckForUpdates | Actual Rust release service/version comparison, returning the pinned Version-string DTO or null when current. The checked release is retained in bounded daemon state. |
 | InstallUpdate | Requires a checked update and a daemon reservation that drains all devices/tools and blocks competing starts/applies. Uses the existing checksum-verified update transaction, writes the RPC result before requesting owned shutdown, and recovers failed replacement before releasing the reservation. Successful replacement or uncertain recovery exits the old daemon. |
