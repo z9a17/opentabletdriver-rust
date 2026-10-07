@@ -31,7 +31,7 @@ COMPAT_FILES = ['OtdCompat.dll', 'OtdCompat.runtimeconfig.json', 'OtdCompat.deps
                 'Microsoft.NET.StringTools.dll', 'Microsoft.VisualStudio.Threading.dll',
                 'Microsoft.VisualStudio.Validation.dll', 'Nerdbank.Streams.dll', 'Octokit.dll',
                 'ICSharpCode.SharpZipLib.dll', 'StreamJsonRpc.dll', 'System.CommandLine.dll',
-                'System.ComponentModel.Annotations.dll', 'System.IO.Pipelines.dll',
+                'System.IO.Pipelines.dll',
                 'WaylandNET.dll', 'nethost.dll']
 # Preserve the original dependency satellites, not only their English fallback.
 COMPAT_FILES += [f'{locale}/{assembly}.resources.dll'
@@ -41,6 +41,8 @@ COMPAT_FILES += [f'{locale}/{assembly}.resources.dll'
                                   'StreamJsonRpc', 'System.CommandLine']]
 # Exact runtime DLL closure from the net8.0 restored projects, pinned by both
 # packages.lock.json files. This remains an allowlist, not an arbitrary-output glob.
+# System.ComponentModel.Annotations resolves from the shared net8.0 framework;
+# it is not a copy-local runtime dependency in OtdCompat.deps.json.
 BRIDGE_LICENSES = {'DOTNET-BRIDGE-NOTICES.txt': 'compat/THIRD_PARTY_NOTICES.txt',
                   'OTD-DESKTOP-LICENSE.txt': 'compat/UpstreamDesktop/LICENSE',
                   'OTD-DESKTOP-SOURCE.txt': 'compat/UpstreamDesktop/PROVENANCE.md'}
