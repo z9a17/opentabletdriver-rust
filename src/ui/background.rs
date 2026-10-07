@@ -1,6 +1,17 @@
 //! Background inspection and device discovery, with UI-owned completions.
 use super::*;
 
+/// Explicit import prefers the device currently being edited. Original settings
+/// contain one profile per model, so physical peers of that model share this
+/// import source but still keep independent native destination profiles.
+pub(super) fn import_tablet_order(mut names: Vec<String>, selected: Option<&str>) -> Vec<String> {
+    if let Some(selected) = selected {
+        names.retain(|name| name != selected);
+        names.insert(0, selected.to_owned());
+    }
+    names
+}
+
 #[derive(Default)]
 pub(super) enum DeviceScan {
     #[default]
@@ -586,5 +597,17 @@ mod managed_category_tests {
             assert!(auto_add_metadata(&FilterMetadata { category: category.into(), ..Default::default() }));
             assert!(!auto_add_metadata(&FilterMetadata { category: category.into(), supported: false, ..Default::default() }));
         }
+    }
+}
+
+#[cfg(test)]
+mod import_tests {
+    use super::import_tablet_order;
+    #[test]
+    fn selected_profile_is_imported_before_another_connected_model() {
+        let names = vec!["Tablet A".into(), "Tablet B".into(), "Tablet B".into()];
+        assert_eq!(import_tablet_order(names.clone(), Some("Tablet B")), ["Tablet B", "Tablet A"]);
+        assert_eq!(import_tablet_order(names.clone(), None), names);
+        assert_eq!(import_tablet_order(Vec::new(), Some("Stopped tablet")), ["Stopped tablet"]);
     }
 }

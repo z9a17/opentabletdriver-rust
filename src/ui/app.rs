@@ -2209,32 +2209,21 @@ impl App {
     }
 
     pub(super) fn import_otd(&mut self) {
-        let exists = std::env::var_os("LOCALAPPDATA")
-            .map(|dir| {
-                PathBuf::from(dir)
-                    .join("OpenTabletDriver")
-                    .join("settings.json")
-            })
-            .is_some_and(|path| path.exists());
-        if !exists {
-            self.log(
-                Level::Warning,
-                "Settings",
-                "No OpenTabletDriver settings.json was found.",
-            );
-            return;
-        }
         if self.import_pending {
             return;
         }
         let generation = self.metadata_generation;
         let edit_revision = self.edit_revision;
+        let selected_tablet = self.selected_device.as_ref().map(|device| device.tablet.clone());
         self.import_pending =
             self.background("settings-import", move || BackgroundResult::Import {
                 generation,
                 edit_revision,
                 result: crate::hid::connected_tablets()
-                    .and_then(|names| Profile::load_connected(None, &names))
+                    .and_then(|names| {
+                        let names = background::import_tablet_order(names, selected_tablet.as_deref());
+                        crate::plugins::load_original_profile(&names)
+                    })
                     .map(Box::new),
             });
     }
