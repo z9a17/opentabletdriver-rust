@@ -86,3 +86,13 @@ synchronous WinHTTP provider and cannot be interrupted by the cancellation flag.
 Cancellation is checked before transactional file replacement; replacement and
 rollback finish before daemon ownership is released. Cancellation fixtures are
 written but unrun.
+
+The shared core OTD exporter now reconciles loaded managed filter/tool stores
+against their actual original class slots and group order. It keeps unchanged
+source text, store extensions, duplicate property entries, missing/null settings
+and disabled stores; only changed properties or Enable values are written.
+An active managed Radial Follow occupies its original store without manufacturing
+a native duplicate. Native ABI entries, mixed native/managed Radial Follow,
+duplicate-count ambiguity and unmatched active source slots remain errors.
+Runtime DLL paths are omitted from OTD exports. These roundtrip fixtures are
+written but unrun; this is source support, not unchanged-DLL execution evidence.

@@ -401,51 +401,7 @@ fn import_profile(text:&str,path:&Path,index:usize,registry:Option<&crate::dotne
 /// native ABI entries, mixed native/managed Radial Follow or ambiguous stores
 /// fail rather than returning stale source filters as if they were active.
 fn export_settings(profile: &crate::config::Profile) -> Result<String, Error> {
-    if profile.plugins.is_empty() { return Ok(profile.to_otd_json()?); }
-    use otd_core::plugins::PluginKind;
-    let mut copy = profile.clone();
-    let imported = copy.imported_otd.as_mut().ok_or_else(|| Error::unsupported("GetSettings", "native DLL entries have no original OTD stores"))?;
-    let mut document: Value = serde_json::from_str(&imported.settings_json).map_err(|error| Error::failed(error.to_string()))?;
-    let filters: Vec<_> = profile.plugins.iter().filter(|plugin| plugin.kind != PluginKind::DotnetTool).collect();
-    if filters.iter().any(|plugin| plugin.kind != PluginKind::Dotnet) {
-        return Err(Error::unsupported("GetSettings", "native ABI DLL filters cannot be represented as unchanged OTD stores"));
-    }
-    if !profile.radial_follow.is_empty() && filters.iter().any(|plugin| plugin.type_name == otd_core::radial_follow::FILTER_PATH) {
-        return Err(Error::unsupported("GetSettings", "mixed native/managed Radial Follow source reconciliation is ambiguous"));
-    }
-    fn reconcile(stores: &mut Value, plugins: &[&otd_core::plugins::PluginConfig], native_radial: bool) -> Result<(), Error> {
-        let stores = stores.as_array_mut().ok_or_else(|| Error::unsupported("GetSettings", "original plugin collection is missing"))?;
-        let relevant: Vec<_> = stores.iter().enumerate().filter(|(_, store)| !(native_radial && store["Path"] == otd_core::radial_follow::FILTER_PATH)).map(|(index, _)| index).collect();
-        if relevant.len() != plugins.len() { return Err(Error::unsupported("GetSettings", "original and runtime plugin collections differ in length")); }
-        for (index, plugin) in relevant.into_iter().zip(plugins) {
-            let store = &mut stores[index];
-            if store["Path"] != plugin.type_name { return Err(Error::unsupported("GetSettings", "original and runtime plugin order/type differs")); }
-            let settings: serde_json::Map<String, Value> = serde_json::from_str(&plugin.settings_json)
-                .map_err(|error| Error::failed(error.to_string()))?;
-            store["Enable"] = json!(plugin.enabled);
-            store["Settings"] = json!(settings.into_iter().map(|(property,value)| json!({"Property":property,"Value":value})).collect::<Vec<_>>());
-        }
-        Ok(())
-    }
-    let selected = document.get_mut("Profiles").and_then(Value::as_array_mut)
-        .and_then(|profiles| profiles.get_mut(imported.selected_profile))
-        .ok_or_else(|| Error::failed("original selected OTD profile is missing"))?;
-    reconcile(&mut selected["Filters"], &filters, !profile.radial_follow.is_empty())?;
-    let tools: Vec<_> = profile.plugins.iter().filter(|plugin| plugin.kind == PluginKind::DotnetTool).collect();
-    // Missing Tools is a legitimate empty collection in older imported documents.
-    if document.get("Tools").is_none() && tools.is_empty() { document["Tools"] = json!([]); }
-    reconcile(&mut document["Tools"], &tools, false)?;
-    imported.settings_json = serde_json::to_string(&document).map_err(|error| Error::failed(error.to_string()))?;
-    // Strict core export interprets a source RF store as its native import.
-    // For a managed RF store, mirror that import only in the disposable export
-    // copy so export retains the reconciled source store, including Enable.
-    // The live profile/filter chain is never changed by this projection.
-    if profile.radial_follow.is_empty() && filters.iter().any(|plugin| plugin.type_name == otd_core::radial_follow::FILTER_PATH) {
-        copy.radial_follow = crate::config::Profile::from_otd_profile_text(&imported.settings_json,
-            Path::new(&imported.source_path), imported.selected_profile, Default::default())?.radial_follow;
-    }
-    copy.plugins.clear();
-    Ok(copy.to_otd_json()?)
+    Ok(profile.to_otd_json()?)
 }
 
 #[cfg(test)]
