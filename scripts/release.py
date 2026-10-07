@@ -56,7 +56,10 @@ UX_PROJECT = {'linux-x64':('compat/UpstreamUX.Gtk/OpenTabletDriver.UX.Gtk.csproj
               'macos-x64':('compat/UpstreamUX.MacOS/OpenTabletDriver.UX.MacOS.csproj','OpenTabletDriver.UX.MacOS'),
               'macos-arm64':('compat/UpstreamUX.MacOS/OpenTabletDriver.UX.MacOS.csproj','OpenTabletDriver.UX.MacOS')}
 UX_LICENSES = {'OTD-UX-LICENSE.txt':'compat/UpstreamUX/LICENSE','OTD-UX-SOURCE.txt':'compat/UpstreamUX/PROVENANCE.md',
+               'OTD-CONSOLE-LICENSE.txt':'compat/UpstreamConsole/LICENSE',
+               'OTD-CONSOLE-SOURCE.txt':'compat/UpstreamConsole/PROVENANCE.md',
                **{name:'packaging/licenses/'+name for name in ['ETO-LICENSE.txt','MONOMAC-LICENSE.txt','GTKSHARP-LICENSE.txt','UX-SOURCE-NOTICES.txt']}}
+CONSOLE_PROJECT = ('compat/UpstreamConsole/OpenTabletDriver.Console.csproj','OpenTabletDriver.Console',False)
 
 
 def safe_component(name):
@@ -120,7 +123,7 @@ def build_managed(binaries,platform):
     if platform!='win-x64':
         destination=binaries/'desktop';destination.mkdir(exist_ok=True)
         projects=[(*UX_PROJECT[platform],True),('compat/NativeDaemonLauncher/OpenTabletDriver.Daemon.csproj','OpenTabletDriver.Daemon',True),
-                  ('compat/ArchiveTools/OtdArchiveTools.csproj','OtdArchiveTools',False)]
+                  ('compat/ArchiveTools/OtdArchiveTools.csproj','OtdArchiveTools',False),CONSOLE_PROJECT]
         for project,assembly,apphost in projects:
             output=binaries/('publish-'+assembly)
             publish_managed(dotnet,project,platform,output,apphost)
@@ -141,7 +144,7 @@ def validate_managed_inventory(platform,compat,desktop,read):
         if desktop:raise ValueError('Windows has unexpected Unix frontend payload')
     else:
         expected=set()
-        for assembly,apphost in [(UX_PROJECT[platform][1],True),('OpenTabletDriver.Daemon',True),('OtdArchiveTools',False)]:
+        for assembly,apphost in [(UX_PROJECT[platform][1],True),('OpenTabletDriver.Daemon',True),('OtdArchiveTools',False),CONSOLE_PROJECT[1:]]:
             expected|=managed_assets_from_reader(read,'',assembly,platform,apphost)
         if set(desktop)!=expected:raise ValueError('desktop inventory differs from actual published dependency graphs')
     for prefix,inventory in [('data/compat/',compat),('',desktop)]:
@@ -167,7 +170,11 @@ def managed_assets_from_reader(read,prefix,assembly,platform,apphost):
                 asset=safe_component(asset)
                 if asset.name=='_._' or (group=='runtimeTargets' and info.get('rid') not in fallback):continue
                 names.add(str(safe_component((info.get('locale') or asset.parent.name)+'/'+asset.name)) if group=='resources' else asset.name)
-    if apphost:names.add(assembly)
+    if apphost:
+        names.add(assembly)
+        # Apply the same target-architecture fence to folder and archive graph
+        # readers, including future apphosts added to the desktop payload.
+        check_binary(platform,assembly,read(prefix+assembly))
     return names
 
 

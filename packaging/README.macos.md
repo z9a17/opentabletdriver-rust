@@ -17,6 +17,17 @@ For foreground operation without the frontend:
 ./opentabletdriver-rust-macos run
 ```
 
+The pinned original Console client is included beside the native executable:
+
+```sh
+./opentabletdriver-rust-macos original-console --help
+```
+
+Its commands connect to the original compatibility service on the daemon; use
+the original client only with that listener enabled. It runs through .NET 8 and
+retains the original command names and API overloads. This does not establish
+runtime compatibility of every managed plugin or original client operation.
+
 Stop other tablet drivers before using this driver. Keep the adjacent original
 frontend, Rust daemon watchdog launcher and managed assemblies beside the native
 executable. The binaries are unsigned and not notarized. The shipped apphosts

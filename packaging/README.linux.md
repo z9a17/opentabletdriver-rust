@@ -21,6 +21,17 @@ For foreground operation without the frontend:
 ./opentabletdriver-rust-linux run
 ```
 
+The pinned original Console client is included beside the native executable:
+
+```sh
+./opentabletdriver-rust-linux original-console --help
+```
+
+Its commands connect to the original compatibility service on the daemon; use
+the original client only with that listener enabled. It runs through .NET 8 and
+retains the original command names and API overloads. This does not establish
+runtime compatibility of every managed plugin or original client operation.
+
 Stop other tablet drivers before using this driver. Keep the `setup` and `data`
 folders and all adjacent managed/frontend files. Setup changes require sudo;
 the driver runs without it. The frontend watchdog owns a separate native daemon.
