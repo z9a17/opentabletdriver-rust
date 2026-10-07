@@ -13,13 +13,19 @@
 //! and update packages are still checked against their published SHA-256.
 
 use std::fs;
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
+#[cfg(unix)]
+use crate::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+#[cfg(windows)]
 use std::ptr::null;
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{GetLastError, GlobalFree};
+#[cfg(windows)]
 use windows_sys::Win32::Networking::WinHttp::{
     ERROR_WINHTTP_AUTO_PROXY_SERVICE_ERROR, WINHTTP_ACCESS_TYPE_NAMED_PROXY,
     WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_AUTO_DETECT_TYPE_DHCP, WINHTTP_AUTO_DETECT_TYPE_DNS_A,
@@ -27,10 +33,14 @@ use windows_sys::Win32::Networking::WinHttp::{
     WINHTTP_AUTOPROXY_RUN_INPROCESS, WINHTTP_CURRENT_USER_IE_PROXY_CONFIG, WINHTTP_PROXY_INFO,
     WinHttpCloseHandle, WinHttpGetIEProxyConfigForCurrentUser, WinHttpGetProxyForUrl, WinHttpOpen,
 };
+#[cfg(windows)]
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+#[cfg(windows)]
 use windows_sys::core::PWSTR;
 
 const USER_AGENT: &str = concat!("opentabletdriver-rust/", env!("CARGO_PKG_VERSION"));
+#[cfg(unix)]
+const CREATE_NO_WINDOW:u32=0;
 const MAX_REDIRECTS: usize = 10;
 
 /// Holds a GitHub token in a temporary header file, so it never appears on a
@@ -44,8 +54,18 @@ impl TokenFile {
             std::process::id(),
             std::thread::current().id()
         ));
+        #[cfg(windows)]
         fs::write(&path, format!("Authorization: Bearer {token}\n"))
             .map_err(|error| format!("cannot prepare the request: {error}"))?;
+        #[cfg(unix)] {
+            use std::os::unix::fs::OpenOptionsExt;
+            use std::io::Write;
+            let mut file=fs::OpenOptions::new().create_new(true).write(true).mode(0o600).custom_flags(libc::O_NOFOLLOW|libc::O_CLOEXEC)
+                .open(&path).map_err(|error|format!("cannot prepare private request header: {error}"))?;
+            let guard=Self(path);
+            file.write_all(format!("Authorization: Bearer {token}\n").as_bytes()).map_err(|error|error.to_string())?;
+            return Ok(guard);
+        }
         Ok(Self(path))
     }
 }
@@ -142,12 +162,13 @@ pub(crate) fn to_file_with_cancel(
             "--show-error",
             "--fail",
             "--globoff",
-            "--ssl-no-revoke",
             "--max-time",
             "180",
             "--user-agent",
             USER_AGENT,
         ]);
+        #[cfg(windows)]
+        command.arg("--ssl-no-revoke");
         if let Some(proxy) = &proxy {
             command.arg("--proxy").arg(proxy);
         }
@@ -234,6 +255,7 @@ fn host(url: &str) -> Option<String> {
 /// The proxy the current user's Windows settings give `url`, found as .NET's
 /// HttpClient finds it: automatic detection or a setup script first, then
 /// the manual proxy unless its exceptions cover the host. None is direct.
+#[cfg(windows)]
 fn system_proxy(url: &str, host: &str) -> Option<String> {
     let mut config = WINHTTP_CURRENT_USER_IE_PROXY_CONFIG::default();
     if unsafe { WinHttpGetIEProxyConfigForCurrentUser(&mut config) } == 0 {
@@ -260,6 +282,7 @@ fn system_proxy(url: &str, host: &str) -> Option<String> {
 
 /// The proxy from automatic detection or a setup script: `Some(None)` to
 /// connect directly, None when neither gave an answer.
+#[cfg(windows)]
 fn automatic_proxy(url: &str, detect: bool, script: Option<&str>) -> Option<Option<String>> {
     let agent = wide(USER_AGENT);
     let session = unsafe {
@@ -331,11 +354,15 @@ unsafe fn take(text: PWSTR) -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
 }
 
+#[cfg(windows)]
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(Some(0)).collect()
 }
 
 /// Entries of a Windows proxy or exception list.
+#[cfg(unix)]
+fn system_proxy(_url:&str,_host:&str)->Option<String>{None}
+
 fn entries(list: &str) -> impl Iterator<Item = &str> {
     list.split([';', ' ', '\t', '\r', '\n'])
         .filter(|entry| !entry.is_empty())

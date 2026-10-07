@@ -56,6 +56,7 @@ unsafe extern "C" {
     pub fn IOHIDDeviceScheduleWithRunLoop(device: Hid, run_loop: Ref, mode: Ref);
     pub fn IOHIDDeviceUnscheduleFromRunLoop(device: Hid, run_loop: Ref, mode: Ref);
     pub fn IOHIDDeviceSetReportWithCallback(device: Hid, kind: u32, id: isize, report: *const u8, length: isize, timeout: f64, callback: Option<ReportCallback>, context: *mut c_void) -> i32;
+    pub fn IOHIDDeviceGetReportWithCallback(device: Hid, kind: u32, id: isize, report: *mut u8, length: *mut isize, timeout: f64, callback: Option<ReportCallback>, context: *mut c_void) -> i32;
     pub fn IOHIDCheckAccess(request: u32) -> u32;
     pub fn IOHIDRequestAccess(request: u32) -> bool;
 }

@@ -1,0 +1,84 @@
+//! Platform CLI and original desktop launcher. Only explicit invocation starts
+//! a native owner or GUI. Metadata/help/version do not initialize CoreCLR.
+use std::io::{self,BufRead,Read};
+use std::sync::{Arc,atomic::{AtomicBool,Ordering}};
+use std::time::Duration;
+use crate::daemon::{Command,Platform};
+
+#[derive(Default)]
+pub struct Options { pub upstream_pipe:Option<String>,pub owner_stdin:bool }
+impl Options {
+    pub fn parse(arguments:impl IntoIterator<Item=String>) -> Result<Self,String> {
+        let mut args=arguments.into_iter();let mut options=Self::default();
+        while let Some(argument)=args.next(){match argument.as_str(){
+            "--upstream-rpc"=>options.upstream_pipe=Some("OpenTabletDriverRust.Compat".into()),
+            "--upstream-pipe"=>{
+                let name=args.next().ok_or("--upstream-pipe requires a name")?;
+                if name.is_empty()||name.len()>128||!name.bytes().all(|byte|byte.is_ascii_alphanumeric()||b"._-".contains(&byte)){return Err("Upstream pipe requires a safe 1..128 byte name".into());}
+                options.upstream_pipe=Some(name);
+            },
+            "--owner-stdin"=>options.owner_stdin=true,
+            _=>return Err(format!("Unknown daemon option {argument}")),
+        }}Ok(options)
+    }
+}
+pub fn daemon(platform:Arc<dyn Platform>,options:Options,signal:&'static AtomicBool) -> Result<(),String> {
+    let stop=Arc::new(AtomicBool::new(false));
+    let monitor_stop=stop.clone();
+    let monitor=std::thread::Builder::new().name("unix-stop-signals".into()).spawn(move||{
+        while !monitor_stop.load(Ordering::Acquire){if signal.load(Ordering::Acquire){monitor_stop.store(true,Ordering::Release);break;}std::thread::sleep(Duration::from_millis(100));}
+    }).map_err(|error|error.to_string())?;
+    if options.owner_stdin {
+        let input_stop=stop.clone();std::thread::Builder::new().name("unix-launcher-lifetime".into()).spawn(move||{
+            let mut input=io::stdin().lock();let mut buffer=[0u8;64];
+            loop{match input.read(&mut buffer){Ok(0)|Err(_)=>break,Ok(_)=>{}}}input_stop.store(true,Ordering::Release);
+        }).map_err(|error|error.to_string())?;
+    }
+    let result=(||{
+        let owner=crate::daemon::Owner::start(platform,stop.clone())?;
+        // Admission/listener ownership precedes Start: another daemon can never
+        // fail its lease after this instance has started injecting input.
+        let server=crate::local_control::Server::start(owner.handle.clone(),stop.clone())?;
+        let rpc=options.upstream_pipe.as_deref().map(crate::dotnet::HostedRpc::start).transpose()?;
+        owner.handle.call(Command::Start)?;
+        while !stop.load(Ordering::Acquire){std::thread::sleep(Duration::from_millis(100));}
+        // Stop original responder tasks before retiring the callback service.
+        drop(rpc);drop(server);owner.join()
+    })();
+    stop.store(true,Ordering::Release);let _=monitor.join();result
+}
+pub fn control(command:&str,arguments:Vec<String>) -> Result<(),String> {
+    let value=match command {
+        "status"=>{if !arguments.is_empty(){return Err("status takes no arguments".into());}crate::local_control::request(Command::Status)?},
+        "start"=>crate::local_control::request(Command::Start)?,
+        "stop"=>crate::local_control::request(Command::Stop)?,
+        "shutdown"=>crate::local_control::request(Command::Shutdown)?,
+        "detect"=>crate::local_control::request(Command::Detect)?,
+        "request"=>{if arguments.len()!=1{return Err("request requires one JSON Command".into());}
+            crate::local_control::request(serde_json::from_str(&arguments[0]).map_err(|error|error.to_string())?)?},
+        "console"=>{
+            if !arguments.is_empty(){return Err("console takes JSON commands on stdin".into());}
+            let mut input=io::stdin().lock();let mut line=String::new();
+            loop{line.clear();let mut bounded=Read::by_ref(&mut input).take(256*1024+2);let read=bounded.read_line(&mut line).map_err(|error|error.to_string())?;
+                if read==0{break;}if read>256*1024||!line.ends_with('\n'){return Err("Console command exceeds 256 KiB or is unterminated".into());}
+                let result=serde_json::from_str::<Command>(&line).map_err(|error|error.to_string()).and_then(crate::local_control::request);
+                println!("{}",match result{Ok(value)=>serde_json::json!({"ok":true,"result":value}),Err(error)=>serde_json::json!({"ok":false,"error":error})});
+            }return Ok(());
+        },
+        _=>return Err(format!("Unknown native control command {command}")),
+    };println!("{}",serde_json::to_string_pretty(&value).map_err(|error|error.to_string())?);Ok(())
+}
+pub fn ui(arguments:Vec<String>) -> Result<(),String> {
+    let base=std::env::current_exe().map_err(|error|error.to_string())?.parent().ok_or("Executable directory unavailable")?.to_owned();
+    let mut command=if cfg!(target_os="linux") {
+        let path=base.join("OpenTabletDriver.UX.Gtk.dll");
+        if !path.is_file(){return Err("Original GTK frontend is absent; install the complete GUI distribution".into());}
+        let mut command=std::process::Command::new("dotnet");command.arg(path);command
+    } else {
+        let path=base.join("OpenTabletDriver.UX.MacOS");
+        if !path.is_file(){return Err("Original macOS frontend apphost is absent; install the complete GUI distribution".into());}
+        std::process::Command::new(path)
+    };
+    let status=command.current_dir(base).args(arguments).status().map_err(|error|error.to_string())?;
+    if status.success(){Ok(())}else{Err(format!("Original frontend exited with {status}"))}
+}

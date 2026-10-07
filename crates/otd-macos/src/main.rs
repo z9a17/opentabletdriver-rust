@@ -1,4 +1,5 @@
-//! Bounded native macOS CLI slice. Hardware validation is still pending.
+//! Native macOS runtime, multi-device control and optional original Eto services.
+//! Hardware validation remains deferred.
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod descriptor;
@@ -20,6 +21,8 @@ Usage: opentabletdriver-rust-macos list\n\
        opentabletdriver-rust-macos run [--profile FILE] [--tablet NAME] [--screen WIDTHxHEIGHT]\n\
        opentabletdriver-rust-macos capture [--profile FILE] [--tablet NAME] [--seconds N] [--limit N]\n\
        opentabletdriver-rust-macos --version\n\n\
+Daemon: daemon [--upstream-rpc | --upstream-pipe NAME]\n\
+Original frontend: ui; native control: status/start/stop/shutdown/detect/request/console\n\
 macOS 11+; grant Input Monitoring and Accessibility to your terminal.\n\
 USB HID and absolute/relative mouse only; macOS hardware validation pending.";
 
@@ -71,6 +74,15 @@ mod app {
         if command == "list" || command == "displays" {
             if args.next().is_some() { return Err(crate::USAGE.into()); }
             return if command == "list" { list() } else { display_list() };
+        }
+        if command == "daemon" {
+            install_signals()?;
+            let options = otd_platform::cli::Options::parse(args)?;
+            return otd_platform::cli::daemon(std::sync::Arc::new(NativePlatform), options, &STOP);
+        }
+        if command == "ui" { return otd_platform::cli::ui(args.collect()); }
+        if matches!(command.as_str(), "status" | "start" | "stop" | "shutdown" | "detect" | "request" | "console") {
+            return otd_platform::cli::control(&command, args.collect());
         }
         if command == "device-strings" { return device_strings(args.collect()); }
         if command != "run" && command != "capture" { return Err(crate::USAGE.into()); }
@@ -227,7 +239,7 @@ mod app {
             let _ = otd_core::pipeline::ReportPipeline::new(&profile)?;
             if profile.relative.is_none() { displays.snapshot()?.mapper(&profile)?; }
             let mode = deadline.map_or(Mode::Driver, |deadline| Mode::Capture { deadline, limit: options.limit });
-            match run_session(&selected, &profile, &mut displays, mode) {
+            match run_session(&selected, &profile, &mut displays, mode, &STOP, None) {
                 Ok(()) if capture => return Ok(()),
                 Ok(()) => {}
                 Err(error) if STOP.load(Ordering::Acquire) => { let _ = error; break; }
@@ -244,34 +256,80 @@ mod app {
         Ok(())
     }
 
-    fn run_session(selected: &Selected<'_>, profile: &Profile, displays: &mut NativeDisplays, mode: Mode) -> io::Result<()> {
+    fn run_session(selected: &Selected<'_>, profile: &Profile, displays: &mut NativeDisplays, mode: Mode, stop: &AtomicBool, context: Option<&otd_platform::daemon::WorkerContext>) -> io::Result<()> {
         otd_platform::display::set_snapshot(displays.snapshot().map_err(io::Error::other)?);
         otd_platform::action_output::set_supports(|action| match action {
             otd_core::actions::Action::Mouse(_) => true,
             otd_core::actions::Action::Key(key) => crate::keymap::key_code(key).is_some(),
         });
-        let mut plugins = if matches!(mode, Mode::Driver) {
-            PluginChain::load_for_profile_with_identifiers(profile, &selected.configuration, std::slice::from_ref(&selected.identifier))
-        } else { PluginChain::load_with_tablet(&[], &selected.configuration) }.map_err(io::Error::other)?;
-        let mut decoder = plugins.source_decoder(selected.identifier.parser(), selected.spec).map_err(io::Error::other)?;
-        let mut source = HidSource::open(selected.device, format!("{} ({})", selected.configuration.name, selected.device.endpoint.path), &STOP)?;
         // Establish output permission/resources before any hardware init writes.
         let mouse = if matches!(mode, Mode::Driver) {
             Some(std::rc::Rc::new(std::cell::RefCell::new(Mouse::new(displays.geometry.clone())?)))
         } else { None };
+        if let Some(context) = context { context.activate().map_err(io::Error::other)?; }
+        let mut source = HidSource::open(selected.device, format!("{} ({})", selected.configuration.name, selected.device.endpoint.path), stop)?;
+        let gate=otd_platform::shared_devices::OutputGate::new()?;
+        source.attach(&selected.configuration,&selected.identifier,false,gate,context.map(|context|context.reader_generation))?;
+        otd_platform::managed_host::publish_owned_devices();
+        let mut plugins = if matches!(mode, Mode::Driver) {
+            PluginChain::load_for_profile_with_identifiers(profile, &selected.configuration, std::slice::from_ref(&selected.identifier))
+        } else { PluginChain::load_with_tablet(&[], &selected.configuration) }.map_err(io::Error::other)?;
+        let mut decoder = plugins.source_decoder(selected.identifier.parser(), selected.spec).map_err(io::Error::other)?;
+
         let actions = mouse.as_ref().map(|mouse| plugins.wrap_action_sink(profile, &selected.configuration,
             crate::macos::action_sink(std::rc::Rc::clone(mouse)))).transpose().map_err(io::Error::other)?;
         source.initialize(&selected.identifier, &selected.configuration,
             match mode { Mode::Capture { deadline, .. } => Some(deadline), Mode::Driver => None })?;
+        let _debug = otd_core::debug::Registration::with_selection_key(
+            otd_core::debug::Device { name: selected.configuration.name.clone(), parser: selected.identifier.parser().into() },
+            selected.device.endpoint.input_length as usize, None, context.map(|context| context.id.clone()));
+        source.initialized();
+        let mut source=otd_platform::daemon::LifecycleSource::new(source,context);
         if let ParserSupport::Partial(reason) = parser_support(selected.identifier.parser()) {
             eprintln!("Partial parser support: {reason}");
         }
         eprintln!("macOS native CLI: hardware validation pending; Ctrl+C stops and releases contact.");
         let _realtime = matches!(mode, Mode::Driver).then(crate::realtime::TimeConstraint::raise);
-        let _tools = matches!(mode, Mode::Driver).then(|| otd_platform::plugins::Tools::start(&profile.plugins, |line| eprintln!("{line}")));
+        let _tools = (matches!(mode, Mode::Driver) && context.is_none()).then(|| otd_platform::plugins::Tools::start(&profile.plugins, |line| eprintln!("{line}")));
         session::run_gated_with_devices(&mut source, displays, profile, mode, &mut decoder, &mut plugins,
             |packet| match &mouse { Some(mouse) => mouse.borrow_mut().send(packet), None => Ok(()) },
             None, actions, &|line| eprintln!("{line}"), || Ok(true))
+    }
+
+    struct NativePlatform;
+    impl otd_platform::daemon::Platform for NativePlatform {
+        fn prepare_start(&self) -> Result<(),String> {
+            let database=otd_core::config::configured_tablets()?;
+            let endpoints=macos::enumerate(&database,None,None).map_err(|error|error.to_string())?.into_iter().map(|device|device.endpoint.clone()).collect::<Vec<_>>();
+            otd_platform::daemon::prepare_connected(&database,&endpoints)
+        }
+        fn discover(&self) -> Result<Vec<otd_platform::daemon::Device>,String> {
+            let database=otd_core::config::configured_tablets()?;
+            let endpoints=macos::enumerate(&database,None,None).map_err(|error|error.to_string())?.into_iter().map(|device|device.endpoint.clone()).collect::<Vec<_>>();
+            otd_platform::daemon::discover(&database,&endpoints)
+        }
+        fn screen(&self) -> Result<Rect,String> {
+            let mut displays=NativeDisplays::new(None).map_err(|error|error.to_string())?;
+            Ok(displays.snapshot()?.virtual_screen)
+        }
+        fn inventory(&self) -> Result<serde_json::Value,String> {
+            let database=otd_core::config::configured_tablets()?;
+            let endpoints=macos::enumerate(&database,None,None).map_err(|error|error.to_string())?.into_iter().map(|device|device.endpoint.clone()).collect::<Vec<_>>();
+            Ok(otd_platform::daemon::inventory(&endpoints))
+        }
+        fn run(&self,device:otd_platform::daemon::Device,profile:Profile,context:otd_platform::daemon::WorkerContext) -> Result<(),String> {
+            if profile.output==OutputKind::Pen{return Err("Pinned macOS output is mouse/keyboard; Artist Mode/Ink output is unavailable".into());}
+            let database=otd_core::config::configured_tablets()?;
+            let devices=macos::enumerate(&database,Some(&context.stop),None).map_err(|error|error.to_string())?;
+            let actual=devices.iter().find(|actual|actual.endpoint.path==device.endpoint.path&&actual.endpoint.physical_id==device.endpoint.physical_id)
+                .ok_or("Exact physical endpoint disconnected before preparation")?;
+            let selected=Selected {device:actual,spec:TabletSpec::from_configuration(&device.configuration)?,configuration:device.configuration,identifier:device.identifier};
+            let mut displays=NativeDisplays::new(None).map_err(|error|error.to_string())?;
+            run_session(&selected,&profile,&mut displays,Mode::Driver,&context.stop,Some(&context)).map_err(|error|error.to_string())
+        }
+        fn service_io(&self,request:otd_platform::managed_services::Request) -> Result<serde_json::Value,String> {
+            otd_platform::shared_devices::execute(request.operation,request.scope,&request.payload)
+        }
     }
 
     fn pause(deadline: Option<Instant>) {

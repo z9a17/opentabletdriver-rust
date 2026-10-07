@@ -1,8 +1,6 @@
-//! Linux backend slice (X02/X03): runs a tablet through the portable core
-//! with hidraw input and a uinput pointer, or with pen output a virtual
-//! Artist Mode tablet. Desktop geometry is discovered at startup or supplied
-//! with `--screen`. Capture mode initializes and reads the tablet without
-//! creating an output device. There is no daemon, UI or plugin host yet.
+//! Linux native hidraw/uinput runtime with multi-device control and optional
+//! original Eto/StreamJsonRpc services. Artist Mode stays in the portable core.
+//! Runtime and hardware validation remain deferred to the owner.
 
 // Portable parsing and event framing, unit-tested on every platform.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -70,7 +68,7 @@ mod app {
 
     static STOP: AtomicBool = AtomicBool::new(false);
 
-    const USAGE: &str = "Usage: opentabletdriver-rust-linux list\n       opentabletdriver-rust-linux run [--profile FILE] [--screen WIDTHxHEIGHT] [--tablet NAME]\n       opentabletdriver-rust-linux capture [--seconds 1..60] [--tablet NAME]\n       opentabletdriver-rust-linux --version\n\nRun discovers Hyprland, Sway or X11 monitors at startup. Other desktops need --screen.\nCapture reads reports for up to 10 seconds by default and never creates uinput output.\nBoth commands may send the tablet's configured initialization reports.\nLinux release setup: sudo ./setup/install.sh install\nSource checkout setup: sudo ./packaging/linux/install.sh install";
+    const USAGE: &str = "Usage: opentabletdriver-rust-linux list\n       opentabletdriver-rust-linux run [--profile FILE] [--screen WIDTHxHEIGHT] [--tablet NAME]\n       opentabletdriver-rust-linux capture [--seconds 1..60] [--tablet NAME]\n       opentabletdriver-rust-linux --version\n\nRun discovers Hyprland, Sway or X11 monitors at startup. Other desktops need --screen.\nCapture reads reports for up to 10 seconds by default and never creates uinput output.\nBoth commands may send the tablet's configured initialization reports.\nDaemon: daemon [--upstream-rpc | --upstream-pipe NAME]\nOriginal frontend: ui\nNative control: status/start/stop/shutdown/detect/request/console\nLinux release setup: sudo ./setup/install.sh install\nSource checkout setup: sudo ./packaging/linux/install.sh install";
 
     struct StaticDisplays(DisplaySnapshot);
 
@@ -97,6 +95,14 @@ mod app {
                 if arguments.next().is_some() { return Err(USAGE.into()); }
                 list()
             }
+            Some("daemon") => {
+                install_stop_handler()?;
+                let options = otd_platform::cli::Options::parse(arguments)?;
+                otd_platform::cli::daemon(std::sync::Arc::new(NativePlatform), options, &STOP)
+            }
+            Some("ui") => otd_platform::cli::ui(arguments.collect()),
+            Some("status" | "start" | "stop" | "shutdown" | "detect" | "request" | "console") =>
+                otd_platform::cli::control(command.as_deref().unwrap(), arguments.collect()),
             Some("run" | "capture") => {
                 let capture = command.as_deref() == Some("capture");
                 let (mut profile_path, mut screen, mut tablet, mut seconds) = (None, None, None, 10);
@@ -285,7 +291,7 @@ mod app {
             // writes, and do not repeatedly reinitialize on an unchanged fault.
             let _ = otd_core::pipeline::ReportPipeline::new(&profile)?;
             if profile.relative.is_none() { displays.0.mapper(&profile)?; }
-            if let Err(error) = run_session(&selected, &profile, &mut displays) {
+            if let Err(error) = run_session(&selected, &profile, &mut displays, &STOP, None) {
                 if STOP.load(Ordering::Acquire) { break; }
                 match error {
                     SessionError::Fatal(error) => {
@@ -352,23 +358,20 @@ mod app {
         selected: &Selected<'_>,
         profile: &Profile,
         displays: &mut StaticDisplays,
+        stop: &AtomicBool,
+        context: Option<&otd_platform::daemon::WorkerContext>,
     ) -> Result<(), SessionError> {
         otd_platform::display::set_snapshot(displays.0.clone());
         otd_platform::action_output::set_supports(|action| match action {
             otd_core::actions::Action::Mouse(_) => true,
             otd_core::actions::Action::Key(key) => crate::keymap::key_code(key).is_some(),
         });
-        let mut plugins = PluginChain::load_for_profile_with_identifiers(profile, &selected.configuration,
-            std::slice::from_ref(&selected.identifier)).map_err(|error| SessionError::Fatal(std::io::Error::other(error)))?;
-        let mut decoder = plugins.source_decoder(selected.identifier.parser(), selected.spec)
-            .map_err(|error| SessionError::Fatal(std::io::Error::other(error)))?;
         let label = format!(
             "{} ({})",
             selected.configuration.name,
             selected.device.node.display()
         );
-        let mut source = Hidraw::open(selected.device, label, &STOP)
-            .map_err(SessionError::hardware)?;
+
         // Establish every output resource before initialization writes. Permission
         // failures are fatal; reconnect only retries actual hardware loss.
         // Resource discovery covers every binding group, including Artist Mode
@@ -392,14 +395,28 @@ mod app {
         let pointer = if pen.is_none() || clicks {
             Some(std::rc::Rc::new(Uinput::create(pen.is_some() || profile.relative.is_some()).map_err(SessionError::Fatal)?))
         } else { None };
+        if let Some(context) = context { context.activate().map_err(|error| SessionError::Fatal(std::io::Error::other(error)))?; }
+        let mut source = Hidraw::open(selected.device, label, stop).map_err(SessionError::hardware)?;
+        let gate=otd_platform::shared_devices::OutputGate::new().map_err(SessionError::Fatal)?;
+        source.attach(selected.device,&selected.configuration,&selected.identifier,false,gate,context.map(|context|context.reader_generation)).map_err(SessionError::Fatal)?;
+        otd_platform::managed_host::publish_owned_devices();
+        let mut plugins = PluginChain::load_for_profile_with_identifiers(profile, &selected.configuration,
+            std::slice::from_ref(&selected.identifier)).map_err(|error| SessionError::Fatal(std::io::Error::other(error)))?;
+        let mut decoder = plugins.source_decoder(selected.identifier.parser(), selected.spec)
+            .map_err(|error| SessionError::Fatal(std::io::Error::other(error)))?;
         let actions = plugins.wrap_action_sink(profile, &selected.configuration, linux::action_sink(pointer.clone(), keyboard))
             .map_err(|error| SessionError::Fatal(std::io::Error::other(error)))?;
         linux::initialize(
             selected.device, source.file(), &selected.identifier,
-            &selected.configuration, &STOP,
+            &selected.configuration, stop,
         ).map_err(SessionError::hardware)?;
+        source.initialized();
+        let _debug = otd_core::debug::Registration::with_selection_key(
+            otd_core::debug::Device { name: selected.configuration.name.clone(), parser: selected.identifier.parser().into() },
+            selected.device.endpoint.input_length as usize, None, context.map(|context| context.id.clone()));
+        let mut source=otd_platform::daemon::LifecycleSource::new(source,context);
         let _realtime = crate::realtime::RealtimePriority::raise();
-        let _tools = otd_platform::plugins::Tools::start(&profile.plugins, |line| eprintln!("{line}"));
+        let _tools = context.is_none().then(|| otd_platform::plugins::Tools::start(&profile.plugins, |line| eprintln!("{line}")));
         if let Some(tablet) = pen {
             return session::run_gated_with_devices(
                 &mut source, displays, profile, Mode::Driver,
@@ -415,6 +432,38 @@ mod app {
             Some(actions),
             &|line| eprintln!("{line}"), || Ok(true),
         ).map_err(SessionError::hardware)
+    }
+
+    struct NativePlatform;
+    impl otd_platform::daemon::Platform for NativePlatform {
+        fn prepare_start(&self) -> Result<(),String> {
+            let database=otd_core::config::configured_tablets()?;
+            let endpoints=linux::enumerate(&database).map_err(|error|error.to_string())?.into_iter().map(|device|device.endpoint).collect::<Vec<_>>();
+            otd_platform::daemon::prepare_connected(&database,&endpoints)
+        }
+        fn discover(&self) -> Result<Vec<otd_platform::daemon::Device>,String> {
+            let database=otd_core::config::configured_tablets()?;
+            let endpoints=linux::enumerate(&database).map_err(|error|error.to_string())?.into_iter().map(|device|device.endpoint).collect::<Vec<_>>();
+            otd_platform::daemon::discover(&database,&endpoints)
+        }
+        fn screen(&self) -> Result<otd_core::mapping::Rect,String> { Ok(crate::displays::discover()?.virtual_screen) }
+        fn inventory(&self) -> Result<serde_json::Value,String> {
+            let database=otd_core::config::configured_tablets()?;
+            let endpoints=linux::enumerate(&database).map_err(|error|error.to_string())?.into_iter().map(|device|device.endpoint).collect::<Vec<_>>();
+            Ok(otd_platform::daemon::inventory(&endpoints))
+        }
+        fn run(&self,device:otd_platform::daemon::Device,profile:Profile,context:otd_platform::daemon::WorkerContext) -> Result<(),String> {
+            let database=otd_core::config::configured_tablets()?;
+            let devices=linux::enumerate(&database).map_err(|error|error.to_string())?;
+            let actual=devices.iter().find(|actual|actual.endpoint.path==device.endpoint.path&&actual.endpoint.physical_id==device.endpoint.physical_id)
+                .ok_or("Exact physical endpoint disconnected before preparation")?;
+            let selected=Selected {device:actual,spec:TabletSpec::from_configuration(&device.configuration)?,configuration:device.configuration,identifier:device.identifier};
+            let mut displays=StaticDisplays(crate::displays::discover()?);
+            run_session(&selected,&profile,&mut displays,&context.stop,Some(&context)).map_err(|error|match error{SessionError::Fatal(error)|SessionError::Retry(error)=>error.to_string()})
+        }
+        fn service_io(&self,request:otd_platform::managed_services::Request) -> Result<serde_json::Value,String> {
+            otd_platform::shared_devices::execute(request.operation,request.scope,&request.payload)
+        }
     }
 
     /// Waits two seconds between device scans. A stop signal ends the wait:

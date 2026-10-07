@@ -298,6 +298,9 @@ pub struct Hidraw<'a> {
     /// so parsers see the Windows layout.
     offset: usize,
     stop: &'a AtomicBool,
+    services: Option<otd_platform::shared_device_io::ReaderServices>,
+    registration: Option<otd_platform::shared_devices::Registration>,
+    usb: Option<PathBuf>,
 }
 
 impl<'a> Hidraw<'a> {
@@ -314,11 +317,38 @@ impl<'a> Hidraw<'a> {
             buffer: vec![0; (device.endpoint.input_length as usize).max(64) + 1].into(),
             offset: usize::from(!device.uses_report_ids),
             stop,
+            services: None, registration: None, usb: device.usb.clone(),
         })
     }
 
     pub fn file(&self) -> &File {
         &self.file
+    }
+    pub fn attach(&mut self,device:&Device,configuration:&TabletConfiguration,identifier:&DeviceIdentifier,auxiliary:bool,
+        gate:std::sync::Arc<otd_platform::shared_devices::OutputGate>,epoch:Option<u64>)->io::Result<()> {
+        let(io,services)=otd_platform::shared_device_io::SharedIo::new(device.endpoint.output_length,device.endpoint.feature_length)?;
+        let registration=otd_platform::shared_devices::Registration::new(device.endpoint.path.clone(),identifier.parser().into(),auxiliary,io,gate,
+            self.buffer.len(),serde_json::json!({"Properties":configuration,"Identifiers":[identifier]}),serde_json::json!(identifier),serde_json::json!(configuration),epoch).map_err(io::Error::other)?;
+        self.services=Some(services);self.registration=Some(registration);Ok(())
+    }
+    pub fn initialized(&self){if let Some(registration)=&self.registration{registration.endpoint.initialized.store(true,Ordering::Release);}}
+    fn services(&mut self){
+        if let Some(mut services)=self.services.take(){let file=&self.file;let usb=&self.usb;
+            services.drain(|kind,data|match kind{
+                otd_platform::shared_device_io::RequestKind::String(index)=>{*data=usb_string(usb.as_deref().ok_or_else(||io::Error::new(io::ErrorKind::Unsupported,"USB string descriptors are unavailable for this transport"))?,index)?.into_bytes();Ok(())},
+                otd_platform::shared_device_io::RequestKind::Report(operation)=>{
+                    use otd_platform::managed_services::Operation;
+                    match operation{
+                        Operation::WriteStream=>{(&*file).write_all(data)},
+                        Operation::GetFeature|Operation::SetFeature=>{
+                            let request=ioc(READ_WRITE,b'H',if operation==Operation::GetFeature{0x07}else{0x06},data.len());
+                            let result=unsafe{libc::ioctl(file.as_raw_fd(),request as _,data.as_mut_ptr())};
+                            if result<0{Err(io::Error::last_os_error())}else{if operation==Operation::GetFeature{data.truncate(result as usize);}Ok(())}
+                        },_=>Err(io::Error::new(io::ErrorKind::InvalidInput,"Unsupported device report operation")),
+                    }
+                },
+            });self.services=Some(services);
+        }
     }
 }
 
@@ -332,6 +362,9 @@ fn access_error(node: &str, error: io::Error) -> io::Error {
 }
 
 impl ReportSource for Hidraw<'_> {
+    fn native_output_enabled(&self)->bool{self.registration.as_ref().is_none_or(|registration|registration.endpoint.output.native_enabled())}
+    fn output_started(&self){if let Some(registration)=&self.registration{registration.endpoint.output.start();}}
+    fn output_acknowledged(&self,enabled:bool){if let Some(registration)=&self.registration{registration.endpoint.output.acknowledge(enabled);}}
     fn label(&self) -> &str {
         &self.label
     }
@@ -341,16 +374,15 @@ impl ReportSource for Hidraw<'_> {
     }
 
     fn next(&mut self, timeout: Duration) -> io::Result<Read<'_>> {
+        self.services();
         if self.stop.load(Ordering::Acquire) {
             return Ok(Read::Ended);
         }
-        let mut poll = libc::pollfd {
-            fd: self.file.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
+        let mut waits=[libc::pollfd{fd:self.file.as_raw_fd(),events:libc::POLLIN,revents:0},
+            libc::pollfd{fd:self.services.as_ref().map_or(-1,|services|services.wake().raw()),events:libc::POLLIN,revents:0},
+            libc::pollfd{fd:self.registration.as_ref().map_or(-1,|registration|registration.endpoint.output.reader_wake().raw()),events:libc::POLLIN,revents:0}];
         // SAFETY: one valid pollfd.
-        let queued = unsafe { libc::poll(&mut poll, 1, 0) } > 0;
+        let queued = unsafe { libc::poll(waits.as_mut_ptr(), 3, 0) } > 0;
         if !queued {
             // SIGINT and SIGTERM end the wait: the driver has one thread, and
             // poll is never restarted after a signal handler (signal(7)). The
@@ -362,7 +394,7 @@ impl ReportSource for Hidraw<'_> {
                 .as_micros()
                 .div_ceil(1000) as i32;
             // SAFETY: one valid pollfd.
-            match unsafe { libc::poll(&mut poll, 1, wait) } {
+            match unsafe { libc::poll(waits.as_mut_ptr(), 3, wait) } {
                 0 => return Ok(Read::Idle),
                 n if n < 0 => {
                     let error = io::Error::last_os_error();
@@ -375,6 +407,10 @@ impl ReportSource for Hidraw<'_> {
                 _ => {}
             }
         }
+        if waits[1].revents!=0{self.services();}
+        if waits[2].revents!=0{if let Some(registration)=&self.registration{registration.endpoint.output.reader_wake().drain();}return Ok(Read::Idle);}
+        let poll=waits[0];
+        if poll.revents==0{return Ok(Read::Idle);}
         if poll.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
             return Ok(Read::Ended);
         }
@@ -396,6 +432,7 @@ impl ReportSource for Hidraw<'_> {
         if self.offset == 1 {
             self.buffer[0] = 0;
         }
+        if let Some(registration)=&self.registration{registration.publish(&self.buffer[..self.offset+read as usize]);}
         Ok(Read::Report {
             bytes: &self.buffer[..self.offset + read as usize],
             ready,

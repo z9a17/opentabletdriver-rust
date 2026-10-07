@@ -15,6 +15,16 @@ pub mod control {
 pub mod device_sessions {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
     pub enum SessionState { Detected, Preparing, Starting, Running, Stopping, Stopped, Waiting, Failed }
+    thread_local! { static SOURCE: std::cell::RefCell<Option<serde_json::Value>> = const { std::cell::RefCell::new(None) }; }
+    pub struct SourceGuard(Option<serde_json::Value>);
+    pub fn source_scope(id: &str, generation: u64, reader_generation: u64) -> SourceGuard {
+        let value = serde_json::json!({"id":id,"device_generation":generation,"reader_generation":reader_generation});
+        SourceGuard(SOURCE.with(|slot| slot.replace(Some(value))))
+    }
+    pub fn source_session_json() -> Option<serde_json::Value> { SOURCE.with(|slot| slot.borrow().clone()) }
+    pub fn source_generation() -> u64 { SOURCE.with(|slot|slot.borrow().as_ref().and_then(|value|value["device_generation"].as_u64()).unwrap_or(0)) }
+    pub fn debug_key() -> Option<String> { SOURCE.with(|slot|slot.borrow().as_ref().and_then(|value|value["id"].as_str()).map(str::to_owned)) }
+    impl Drop for SourceGuard { fn drop(&mut self) { SOURCE.with(|slot| { slot.replace(self.0.take()); }); } }
 }
 pub mod display {
     thread_local! { static SNAPSHOT: std::cell::RefCell<Option<otd_core::display::DisplaySnapshot>> = const { std::cell::RefCell::new(None) }; }
@@ -31,19 +41,40 @@ pub mod action_output {
     pub fn supports(action: otd_core::actions::Action) -> bool { SUPPORTS.with(|slot| slot.get().is_some_and(|supports| supports(action))) }
 }
 pub mod managed_host {
-    // The shared native owner publishes its metadata before any CLR constructor.
-    // This bootstrap hook therefore performs no I/O or recursive control call.
-    pub fn prime() {}
-}
-pub mod plugin_catalog {
-    pub fn plugins_directory() -> Result<std::path::PathBuf, String> { Ok(otd_core::storage::data_directory()?.join("plugins")) }
-    pub fn recover_installations() -> Result<bool, String> {
-        // Portable mutations acquire the owner transaction; never initialize a
-        // plugin while a Windows-shipped catalog transaction is being staged.
-        Ok(!plugins_directory()?.join(".install.lock").exists())
+    use std::sync::{Mutex,OnceLock};
+    use super::managed_services::{Publisher,Snapshot};
+    struct Cached {publisher:Publisher,snapshot:Snapshot}
+    static CURRENT:OnceLock<Mutex<Option<Cached>>>=OnceLock::new();
+    pub fn install(publisher:Publisher,snapshot:Snapshot)->Result<(),String>{
+        let mut current=CURRENT.get_or_init(||Mutex::new(None)).lock().map_err(|_|"Managed publication poisoned")?;
+        if current.is_some(){return Err("Managed publication owner already installed".into());}*current=Some(Cached{publisher,snapshot});Ok(())
     }
+    pub fn publish(mut snapshot:Snapshot)->Result<(),String>{
+        let mut current=CURRENT.get_or_init(||Mutex::new(None)).lock().map_err(|_|"Managed publication poisoned")?;
+        let current=current.as_mut().ok_or("Managed native publication owner unavailable")?;
+        snapshot.version=current.snapshot.version.checked_add(1).ok_or("Managed snapshot generation exhausted")?;
+        current.publisher.publish(snapshot.clone())?;current.snapshot=snapshot;Ok(())
+    }
+    pub fn clear(){if let Ok(mut current)=CURRENT.get_or_init(||Mutex::new(None)).lock(){*current=None;}}
+    pub fn publish_owned_devices(){
+        if let Ok(mut current)=CURRENT.get_or_init(||Mutex::new(None)).lock(){if let Some(current)=current.as_mut(){
+            if let Some(devices)=current.snapshot.devices.as_mut().and_then(serde_json::Value::as_array_mut){
+                for owned in crate::shared_devices::owned_metadata(){
+                    if let Some(device)=devices.iter_mut().find(|device|device["DevicePath"]==owned["DevicePath"]){
+                        if let (Some(device),Some(owned))=(device.as_object_mut(),owned.as_object()){device.extend(owned.clone());}
+                    }
+                }
+            }
+            if let Some(version)=current.snapshot.version.checked_add(1){current.snapshot.version=version;let _=current.publisher.publish(current.snapshot.clone());}
+        }}
+    }
+    // Cold setup publishes exact prepared reader metadata without sending a
+    // recursive control call to the transaction waiting for this constructor.
+    pub fn prime(){publish_owned_devices();}
 }
 pub mod upstream_rpc {
+    pub use crate::original_rpc_protocol as protocol;
+    pub mod collection { pub fn empty() -> serde_json::Value { serde_json::json!({"Revision":"0.6.7.0","Profiles":[],"Tools":[],"LockUsableAreaDisplay":true,"LockUsableAreaTablet":true}) } }
     pub fn original_application_info() -> Result<serde_json::Value, String> {
         let data = otd_core::storage::data_directory()?;
         Ok(serde_json::json!({"AppDataDirectory":data,"SettingsFile":data.join("settings.json"),

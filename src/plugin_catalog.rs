@@ -8,10 +8,16 @@
 //! PluginMetadataCollection}.cs and DesktopPluginManager.cs at 736003e.
 
 use std::fs;
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
+#[cfg(unix)]
+use crate::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+#[cfg(windows)]
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+#[cfg(unix)]
+const CREATE_NO_WINDOW:u32=0;
 
 use serde::{Deserialize, Serialize};
 
@@ -112,10 +118,14 @@ impl PluginMetadata {
     }
 }
 
+#[cfg(windows)]
 fn system_tool(name: &str) -> PathBuf {
     let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
     PathBuf::from(root).join("System32").join(name)
 }
+
+#[cfg(unix)]
+fn system_tool(name:&str)->PathBuf{crate::update::system_tool(name)}
 
 fn extract(archive: &Path, into: &Path) -> Result<(), String> {
     fs::create_dir_all(into).map_err(|error| error.to_string())?;
@@ -140,6 +150,7 @@ fn extract(archive: &Path, into: &Path) -> Result<(), String> {
 fn extract_plugin(archive: &Path, into: &Path) -> Result<(), String> {
     extract_plugin_with_cancel(archive, into, None)
 }
+#[cfg(windows)]
 fn extract_plugin_with_cancel(archive: &Path, into: &Path, cancel: Option<&std::sync::atomic::AtomicBool>) -> Result<(), String> {
     let output = crate::download::run(Command::new(system_tool("WindowsPowerShell/v1.0/powershell.exe"))
         .creation_flags(CREATE_NO_WINDOW)
@@ -154,6 +165,15 @@ fn extract_plugin_with_cancel(archive: &Path, into: &Path, cancel: Option<&std::
         Err(format!("cannot extract plugin ZIP {}: {}", archive.display(),
             String::from_utf8_lossy(&output.stderr).trim()))
     }
+}
+
+#[cfg(unix)]
+fn extract_plugin_with_cancel(archive:&Path,into:&Path,cancel:Option<&std::sync::atomic::AtomicBool>)->Result<(),String>{
+    let executable=std::env::current_exe().map_err(|error|error.to_string())?;
+    let helper=executable.parent().ok_or("Executable directory unavailable")?.join("OtdArchiveTools.dll");
+    if !helper.is_file(){return Err("Validated portable ZIP extractor is absent; install the complete distribution".into());}
+    let output=crate::download::run(Command::new("dotnet").arg(helper).arg("extract-plugin").arg(archive).arg(into),cancel)?;
+    if output.status.success(){Ok(())}else{Err(format!("cannot extract plugin ZIP {}: {}",archive.display(),String::from_utf8_lossy(&output.stderr)))}
 }
 
 fn json_files(directory: &Path, found: &mut Vec<PathBuf>) {
@@ -452,7 +472,7 @@ fn install_file_into_with_cancel(file: &Path, root: &Path, work: &Path, cancel: 
         .map(|extension| extension.to_string_lossy().to_ascii_lowercase());
     match extension.as_deref() {
         Some("zip") => extract_plugin_with_cancel(file, &staged, cancel)?,
-        Some("dll") => {
+        Some("dll" | "so" | "dylib") if cfg!(unix) || file.extension().is_some_and(|ext|ext.eq_ignore_ascii_case("dll")) => {
             fs::create_dir_all(&staged).map_err(|error| error.to_string())?;
             let copied = staged.join(file.file_name().unwrap_or_default());
             fs::copy(file, copied)
@@ -568,7 +588,7 @@ pub fn dlls(folder: &Path) -> Vec<PathBuf> {
                 walk(&path, found);
             } else if path
                 .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("dll"))
+                .is_some_and(|e| e.eq_ignore_ascii_case("dll") || cfg!(unix) && (e.eq_ignore_ascii_case("so") || e.eq_ignore_ascii_case("dylib")))
             {
                 found.push(path);
             }

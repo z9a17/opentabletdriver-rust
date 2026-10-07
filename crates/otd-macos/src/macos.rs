@@ -8,6 +8,10 @@ use std::io;
 use std::ptr;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use otd_platform::shared_device_io::{ReaderServices,ServiceCall,RequestKind,SharedIo};
+use otd_platform::shared_devices::{Registration,OutputGate};
+use otd_platform::managed_services::Operation;
 use std::time::{Duration, Instant};
 
 use otd_core::display::{DisplayFingerprint, DisplaySnapshot};
@@ -291,6 +295,12 @@ pub struct HidSource<'a> {
     // Buffers passed to asynchronous init calls stay alive through close even
     // on a timeout/stop. No subsequent write is issued before completion.
     pending_writes: Vec<Vec<u8>>,
+    services:Option<ReaderServices>, registration:Option<Registration>,
+    service:Option<Box<PendingService>>,
+}
+struct PendingService {call:ServiceCall,length:isize,offset:usize,done:bool,result:i32}
+unsafe extern "C" fn service_completed(context:*mut c_void,result:i32,_:*mut c_void,_:u32,_:u32,_:*mut u8,length:isize){
+    let pending=unsafe{&mut *context.cast::<PendingService>()};pending.result=result;pending.length=length;pending.done=true;
 }
 
 impl<'a> HidSource<'a> {
@@ -314,7 +324,7 @@ impl<'a> HidSource<'a> {
                 write_done: false, write_result: 0,
             })),
             input: Box::new(UnsafeCell::new([0; MAX_REPORT])), delivery: [0; MAX_REPORT],
-            run_loop: unsafe { ffi::CFRunLoopGetCurrent() }, pending_writes: Vec::new(),
+            run_loop: unsafe { ffi::CFRunLoopGetCurrent() }, pending_writes: Vec::new(),services:None,registration:None,service:None,
         };
         let context = source.callbacks.get().cast();
         // SAFETY: callbacks and input are stable heap allocations, retained
@@ -325,6 +335,44 @@ impl<'a> HidSource<'a> {
             ffi::IOHIDDeviceScheduleWithRunLoop(hid, source.run_loop, ffi::kCFRunLoopDefaultMode);
         }
         Ok(source)
+    }
+
+    pub fn attach(&mut self,configuration:&TabletConfiguration,identifier:&DeviceIdentifier,auxiliary:bool,gate:Arc<OutputGate>,epoch:Option<u64>)->io::Result<()> {
+        let(io,services)=SharedIo::new(self.device.endpoint.output_length,self.device.endpoint.feature_length)?;
+        let registration=Registration::new(self.device.endpoint.path.clone(),identifier.parser().into(),auxiliary,io,gate,
+            self.device.endpoint.input_length as usize,serde_json::json!({"Properties":configuration,"Identifiers":[identifier]}),
+            serde_json::json!(identifier),serde_json::json!(configuration),epoch).map_err(io::Error::other)?;
+        self.services=Some(services);self.registration=Some(registration);Ok(())
+    }
+    pub fn initialized(&self){if let Some(registration)=&self.registration{registration.endpoint.initialized.store(true,Ordering::Release);}}
+    fn service_requests(&mut self)->io::Result<()> {
+        if let Some(pending)=&self.service {
+            if pending.done {
+                let mut pending=self.service.take().expect("checked service");
+                let result=if pending.result!=0{Err(native_error("HID service callback",pending.result))}else if pending.length<0||pending.length as usize+pending.offset>pending.call.data.len(){Err(io::Error::new(io::ErrorKind::InvalidData,"HID service returned an invalid length"))}else{Ok(())};
+                if matches!(pending.call.kind,RequestKind::Report(Operation::GetFeature)){pending.call.data.truncate(pending.length.max(0) as usize+pending.offset);}
+                pending.call.finish(result);
+            }else if Instant::now()>=pending.call.deadline {
+                // Close/unschedule in Drop happens before the retained call's
+                // buffer is freed. Never reuse a timed-out callback context.
+                return Err(io::Error::new(io::ErrorKind::TimedOut,"HID service callback timed out; reader retired safely"));
+            }else{return Ok(());}
+        }
+        let Some(call)=self.services.as_mut().and_then(ReaderServices::next)else{return Ok(());};
+        if let RequestKind::String(index)=call.kind {
+            let mut call=call;let result=self.device.indexed_string_checked(index,||check_discovery(Some(self.stop),Some(call.deadline)))
+                .map(|value|{call.data=value.into_bytes();});call.finish(result);return Ok(());
+        }
+        let operation=match call.kind{RequestKind::Report(operation)=>operation,RequestKind::String(_)=>unreachable!()};
+        if !matches!(operation,Operation::WriteStream|Operation::GetFeature|Operation::SetFeature){call.finish(Err(io::Error::new(io::ErrorKind::InvalidInput,"Invalid HID service operation")));return Ok(());}
+        let offset=usize::from(!self.device.uses_report_ids);
+        if call.data.is_empty()||offset>call.data.len()||(!self.device.uses_report_ids&&call.data[0]!=0){call.finish(Err(io::Error::new(io::ErrorKind::InvalidInput,"Invalid unnumbered HID report")));return Ok(());}
+        let mut pending=Box::new(PendingService{length:(call.data.len()-offset) as isize,call,offset,done:false,result:0});
+        let context=(&mut *pending as *mut PendingService).cast();let hid=self.device.handle.0.cast_mut();
+        let result=unsafe{if operation==Operation::GetFeature {
+            ffi::IOHIDDeviceGetReportWithCallback(hid,2,isize::from(pending.call.data[0]),pending.call.data.as_mut_ptr().add(offset),&mut pending.length,1000.0,Some(service_completed),context)
+        }else{ffi::IOHIDDeviceSetReportWithCallback(hid,if operation==Operation::SetFeature{2}else{1},isize::from(pending.call.data[0]),pending.call.data.as_ptr().add(offset),pending.length,1000.0,Some(service_completed),context)}};
+        if result!=0{pending.call.finish(Err(native_error("submitting HID service",result)));}else{self.service=Some(pending);}Ok(())
     }
 
     // Callbacks run only while pump()/unschedule is inside native code. Never
@@ -415,11 +463,16 @@ impl<'a> HidSource<'a> {
 impl ReportSource for HidSource<'_> {
     fn label(&self) -> &str { &self.label }
     fn now(&self) -> Instant { Instant::now() }
+    fn native_output_enabled(&self)->bool{self.registration.as_ref().is_none_or(|registration|registration.endpoint.output.native_enabled())}
+    fn output_started(&self){if let Some(registration)=&self.registration{registration.endpoint.output.start();}}
+    fn output_acknowledged(&self,enabled:bool){if let Some(registration)=&self.registration{registration.endpoint.output.acknowledge(enabled);}}
     fn next(&mut self, timeout: Duration) -> io::Result<Read<'_>> {
         let queued = self.state().count > 0;
         let deadline = Instant::now() + timeout;
         loop {
             if self.stopped() { return Ok(Read::Ended); }
+            self.service_requests()?;
+            if let Some(registration)=&self.registration{if registration.endpoint.output.reader_wake().take_signal(){return Ok(Read::Idle);}}
             if self.state().error != 0 { return Err(native_error("HID report callback", self.state().error)); }
             if self.state().overflow { return Err(io::Error::new(io::ErrorKind::InvalidData, "macOS HID callback queue overflow or oversized report; session stopped instead of silently losing reports")); }
             if self.state().count > 0 {
@@ -432,6 +485,7 @@ impl ReportSource for HidSource<'_> {
                 self.delivery[..length].copy_from_slice(&slot.bytes[..length]);
                 state.head = (state.head + 1) % QUEUE;
                 state.count -= 1;
+                if let Some(registration)=&self.registration{registration.publish(&self.delivery[..length]);}
                 return Ok(Read::Report { bytes: &self.delivery[..length], ready, queued });
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
