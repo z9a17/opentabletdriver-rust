@@ -116,6 +116,14 @@ static class HostedCustomDevices
             opened?.Dispose();
         }
     }
+    internal static string DeviceString(ulong token, byte index)
+    {
+        Endpoint endpoint;
+        lock (Gate) endpoint = Endpoints.TryGetValue(token, out var found) && found.Active
+            ? found : throw new IOException("Custom endpoint retired.");
+        endpoint.Cancellation.ThrowIfCancellationRequested();
+        return endpoint.Original.GetDeviceString(index);
+    }
     internal static Stream Get(ulong token) {
         lock (Gate) return Streams.TryGetValue(token, out var stream) && Volatile.Read(ref stream.Closed) == 0
             ? stream : throw new IOException("Custom stream closed.");
@@ -158,6 +166,22 @@ static class HostedCustomDevices
 public static unsafe partial class EntryPoints
 {
     [ThreadStatic] static byte[]? customDeviceJson;
+    [ThreadStatic] static byte[]? customString;
+    [ThreadStatic] static ulong customStringEndpoint;
+    [ThreadStatic] static byte customStringIndex;
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static int GetHostedDeviceString(ulong token, byte index, byte* output, int capacity)
+    {
+        try {
+            if (output == null) {
+                customString = Encoding.UTF8.GetBytes(HostedCustomDevices.DeviceString(token, index));
+                customStringEndpoint = token; customStringIndex = index;
+            }
+            if (customString == null || customStringEndpoint != token || customStringIndex != index)
+                throw new InvalidOperationException("No retained custom string query.");
+            return CopyOriginal(customString, output, capacity);
+        } catch (Exception error) { customString = null; lastError = error.GetBaseException().Message; return -1; }
+    }
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static int GetHostedDevices(byte* output, int capacity, int refresh)
     {

@@ -144,6 +144,7 @@ pub struct Candidate {
     pub usage_page: u16,
     pub usage: u16,
     pub endpoint: Endpoint,
+    pub managed_endpoint: Option<u64>,
 }
 
 impl Candidate {
@@ -161,6 +162,9 @@ impl Candidate {
     /// Whether this collection's interface still exists. Opens it without
     /// access rights, which costs far less than enumerating every HID device.
     pub fn is_present(&self) -> bool {
+        if let Some(endpoint)=self.managed_endpoint {
+            return crate::dotnet::custom_devices::snapshot().is_ok_and(|devices|devices.iter().any(|device|device.endpoint==endpoint));
+        }
         OwnedHandle::new(unsafe {
             CreateFileW(
                 self.path.as_ptr(),
@@ -180,6 +184,8 @@ impl Candidate {
     }
 
     pub fn open(&self, write: bool) -> io::Result<OwnedHandle> {
+        if self.managed_endpoint.is_some() { return Err(io::Error::new(io::ErrorKind::Unsupported,
+            "Actual managed custom endpoints must use their sole managed reader owner, not a Windows file handle")); }
         open_path(&self.path, write || self.endpoint.transport == Transport::WinUsb)
     }
 }
@@ -414,6 +420,7 @@ fn inspect(path: &[u16], instance: u32, database: Option<&Database>) -> Option<C
         usage_page: caps.UsagePage,
         usage: caps.Usage,
         endpoint,
+        managed_endpoint: None,
     })
 }
 
@@ -477,7 +484,33 @@ pub fn enumerate_with_database(database: &Database) -> io::Result<Vec<Candidate>
         index += 1;
     }
     found.extend(crate::winusb::enumerate(database)?);
+    found.extend(enumerate_managed(database)?);
     found.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(found)
+}
+
+/// Custom original hubs become candidates only after managed code is actually
+/// loaded. Discovery never opens their stream or initializes CLR for native users.
+fn enumerate_managed(database:&Database)->io::Result<Vec<Candidate>> {
+    let mut found=Vec::new();
+    for metadata in crate::dotnet::custom_devices::snapshot().map_err(io::Error::other)? {
+        if database.find(metadata.vendor,metadata.product).next().is_none(){continue;}
+        // Original custom endpoint contracts contain no parent-container ID.
+        // Providers may publish an explicit physical identity as an attribute;
+        // otherwise hub scope is the original matching domain for primary/aux.
+        let physical=metadata.attributes.as_ref().and_then(|attributes|attributes.get("OTD_PHYSICAL_ID")).cloned()
+            .unwrap_or_else(||format!("managed-hub:{}",metadata.scope));
+        let mut endpoint=Endpoint {path:metadata.path.clone(),physical_id:physical,
+            // Original Driver accepts custom endpoints with ordinary report IDs;
+            // UsbHid here selects identifier semantics, not a HID file backend.
+            transport:Transport::UsbHid,vendor_id:metadata.vendor,product_id:metadata.product,can_open:metadata.can_open,
+            input_length:u32::from(metadata.input_length),output_length:u32::from(metadata.output_length),
+            feature_length:u32::from(metadata.feature_length),strings:BTreeMap::new(),attributes:metadata.attributes};
+        read_matching_strings(&mut endpoint,database,|index|crate::dotnet::custom_devices::device_string(metadata.endpoint,index).map_err(io::Error::other));
+        let mut path:Vec<u16>=metadata.path.encode_utf16().collect();path.push(0);
+        found.push(Candidate {path,vendor:metadata.vendor,product:metadata.product,input_length:metadata.input_length,
+            usage_page:0,usage:0,endpoint,managed_endpoint:Some(metadata.endpoint)});
+    }
     Ok(found)
 }
 
