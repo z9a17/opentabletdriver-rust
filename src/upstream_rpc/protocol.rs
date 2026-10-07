@@ -29,7 +29,8 @@ pub fn response(body: &[u8], service: &mut impl Service) -> Option<Value> {
         return Some(error(Value::Null, -32600, "Expected a JSON-RPC request object"));
     };
     let id = object.get("id").cloned();
-    let usable_id = id.as_ref().filter(|value| value.is_null() || value.is_string() || value.is_number());
+    let usable_id = id.as_ref().filter(|value| value.is_null() || value.is_number()
+        || value.as_str().is_some_and(|text| text.len() <= MAX_HEADER));
     if object.get("jsonrpc") != Some(&json!("2.0")) || object.get("method").and_then(Value::as_str).is_none()
         || (id.is_some() && usable_id.is_none()) {
         return Some(error(usable_id.cloned().unwrap_or(Value::Null), -32600, "Invalid JSON-RPC request"));
@@ -97,6 +98,18 @@ pub fn encode(value: &Value) -> io::Result<Vec<u8>> {
     frame.extend_from_slice(&body);
     Ok(frame)
 }
+pub fn encode_response(value: &Value) -> io::Result<Vec<u8>> {
+    match encode(value) {
+        Ok(frame) => Ok(frame),
+        Err(failure) if failure.kind() == io::ErrorKind::InvalidData => {
+            // Inventory/configuration results can legitimately exceed the frame
+            // budget. Return a correlated explicit error instead of silently
+            // disconnecting after executing the caller's method.
+            encode(&error(value["id"].clone(), -32000, "RPC result exceeds 256 KiB; use the native bounded/paged API"))
+        }
+        Err(failure) => Err(failure),
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -130,5 +143,18 @@ mod tests {
             assert!(body_length(header).is_err());
         }
         assert_eq!(body_length(b"content-length: 2\r\nContent-Type: application/vscode-jsonrpc; charset=utf-8\r\n\r\n").unwrap(), 2);
+    }
+    #[test]
+    fn oversized_method_result_preserves_correlation_and_bounded_ids() {
+        let response = json!({"jsonrpc":"2.0","id":"inventory","result":"x".repeat(MAX_BODY)});
+        let frame = encode_response(&response).unwrap();
+        let boundary = frame.windows(4).position(|bytes| bytes == b"\r\n\r\n").unwrap() + 4;
+        let reply: Value = serde_json::from_slice(&frame[boundary..]).unwrap();
+        assert_eq!(reply["id"],"inventory");
+        assert_eq!(reply["error"]["code"],-32000);
+        let mut service = Echo { calls:0 };
+        let request = serde_json::to_vec(&json!({"jsonrpc":"2.0","id":"x".repeat(MAX_HEADER + 1),"method":"Echo","params":[1]})).unwrap();
+        assert_eq!(super::response(&request,&mut service).unwrap()["error"]["code"],-32600);
+        assert_eq!(service.calls,0);
     }
 }

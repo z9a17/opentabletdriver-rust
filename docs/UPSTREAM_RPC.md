@@ -16,7 +16,8 @@ The contract is pinned to
 19 methods and four events. Native protocol v2 retains its existing framing.
 
 There are at most four simultaneous clients, 4 KiB of headers and 256 KiB per
-body/response. Idle reads expire after 120 seconds; a header/body must finish
+body/response; string request IDs are limited to 4 KiB. Oversized method results
+return correlated errors. Idle reads expire after 120 seconds; a header/body must finish
 within five seconds after its first byte. Writes have a five-second budget.
 Cancellation drains pending overlapped IO before releasing buffers. Pipe ACLs
 grant the current user and SYSTEM and reject remote clients. Framing and event

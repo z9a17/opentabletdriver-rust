@@ -67,7 +67,9 @@ fn serve_connection(pipe: &CompatPipe, stop: &AtomicBool, service: &mut service:
             }
         }))?;
         if let Some(error) = failure { return Err(error); }
-        if let Some(response) = protocol::response(&body, service) { write(pipe, stop, &response)?; }
+        if let Some(response) = protocol::response(&body, service) {
+            pipe.write(&protocol::encode_response(&response)?, Instant::now() + FRAME_BUDGET, stop)?;
+        }
         // Busy clients must receive events too, rather than depending on IO wait.
         for event in service.events() { write(pipe, stop, &event)?; }
     }
