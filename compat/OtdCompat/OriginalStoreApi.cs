@@ -27,7 +27,7 @@ public static unsafe partial class EntryPoints
                 var entries = InstalledRegistry.TypeSnapshot().Select(type => {
                     JObject description = JObject.FromObject(DescribeType(type));
                     return new JObject { ["path"] = type.FullName,
-                        ["name"] = description["display_name"], ["category"] = description["category"],
+                        ["name"] = description.Value<string>("display_name") ?? type.FullName, ["category"] = description["kind"],
                         ["supported"] = description["supported"],
                         ["absolute_output"] = description["absolute_output"],
                         ["relative_output"] = description["relative_output"] };
@@ -52,7 +52,7 @@ public static unsafe partial class EntryPoints
                 using var services = new HostServices();
                 try {
                     JObject metadata = JObject.FromObject(DescribeType(selected.Type));
-                    if (metadata.Value<string>("category") != category || metadata.Value<bool>("supported") != true)
+                    if (metadata.Value<string>("kind") != category || metadata.Value<bool>("supported") != true)
                         throw new ArgumentException($"'{name}' is not a supported '{category}' plugin.");
                     instance = HostServices.Construct(selected.Type) ?? throw new InvalidOperationException("Plugin construction returned null.");
                     services.Inject(selected.Type, instance);
