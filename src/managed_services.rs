@@ -132,8 +132,10 @@ impl Host {
                         let operation_lane=match request.operation {Operation::Daemon=>0,Operation::Detect=>3,Operation::OutputOwner=>2,Operation::InputHold|Operation::InputRelease=>4,_=>1};
                         operation_lane==lane
                     }) { break Some(index); }
-                    let Ok((next,timeout)) = worker.ready.wait_timeout(state,Duration::from_millis(50)) else { return }; state = next;
-                    if lane==4&&timeout.timed_out(){break None;}
+                    if lane==4{
+                        let Ok((next,timeout))=worker.ready.wait_timeout(state,Duration::from_millis(250)) else{return};state=next;
+                        if timeout.timed_out(){break None;}
+                    }else{let Ok(next)=worker.ready.wait(state) else{return};state=next;}
                 };
                 let Some(index)=index else{continue};
                 let (id, size, request) = state.queue.remove(index).unwrap();
@@ -219,15 +221,19 @@ unsafe extern "C" fn request(op: u32, scope: u64, input: *const u8, len: u32, ou
     };
     let Ok(mut state) = engine.state.lock() else { return -5 };
     if state.stopped { return -5; }
-    let expected_source = if let Some(value) = payload.get("source_tablet_name") {
-        let Some(name) = value.as_str().filter(|name| !name.is_empty() && name.len() <= 4096) else { return -3 };
+    let mutating=operation==Operation::Daemon&&matches!(payload["method"].as_str(),Some("SetSettings"|"ResetSettings"|"ForceResynchronize"));
+    let expected_source = if payload.get("source_tablet_name").is_some()||(mutating&&payload.get("source_session").is_some()) {
+        let name=if let Some(value)=payload.get("source_tablet_name"){
+            let Some(name)=value.as_str().filter(|name|!name.is_empty()&&name.len()<=4096) else{return -3};Some(name)
+        }else{None};
         let supplied=payload.get("source_session");
         let identity=if let Some(supplied)=supplied {
+            if !crate::shared_devices::live_source(supplied){return -6;}
             let Some(id)=supplied["id"].as_str().filter(|id|!id.is_empty()) else{return -3};
             let Some(generation)=supplied["device_generation"].as_u64().filter(|generation|*generation>0) else{return -3};
             Some((id,generation))
         }else{None};
-        let mut matches = state.source_sessions.iter().filter(|source| source.tablet == name
+        let mut matches = state.source_sessions.iter().filter(|source| name.is_none_or(|name|source.tablet == name)
             && identity.is_none_or(|(id,generation)|source.id==id && source.device_generation==generation)
             && source.connected && source.state == crate::device_sessions::SessionState::Running
             && source.pending_generation.is_none());

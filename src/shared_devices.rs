@@ -24,6 +24,12 @@ thread_local! { static SOURCE: RefCell<Option<Value>> = const { RefCell::new(Non
 fn registry() -> &'static Mutex<Registry> { REGISTRY.get_or_init(|| Mutex::new(Registry::default())) }
 fn next() -> Result<u64,String> { NEXT.fetch_update(Ordering::Relaxed,Ordering::Relaxed,|n|n.checked_add(1)).map_err(|_| "Device lease identity exhausted".into()) }
 pub fn source_session_json() -> Option<Value> { SOURCE.with(|source| source.borrow().clone()) }
+pub fn live_source(value:&Value)->bool{
+    let (Some(id),Some(generation),Some(epoch))=(value["id"].as_str(),value["device_generation"].as_u64(),value["reader_generation"].as_u64()) else{return false};
+    registry().lock().ok().is_some_and(|state|state.readers.get(&epoch).is_some_and(|endpoints|endpoints.iter().filter_map(Weak::upgrade).any(|endpoint|
+        endpoint.session_id==id&&endpoint.generation==generation&&endpoint.alive.load(Ordering::Acquire)&&endpoint.initialized.load(Ordering::Acquire)
+            &&endpoint.output.started.load(Ordering::Acquire))))
+}
 
 /// One output authority for both collections of a physical tablet.
 pub struct OutputGate {
