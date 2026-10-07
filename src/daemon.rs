@@ -29,6 +29,10 @@ pub fn serve_with_rpc(upstream_pipe: Option<&str>) -> Result<(), String> {
     .map_err(|error| error.to_string())?;
     let rpc = upstream_pipe.map(crate::upstream_rpc::Listener::start).transpose()
         .map_err(|error| format!("upstream RPC endpoint: {error}"))?;
+    let console = if upstream_pipe == Some(crate::upstream_rpc::CONSOLE_PIPE) { None } else {
+        Some(crate::upstream_rpc::Listener::start(crate::upstream_rpc::CONSOLE_PIPE)
+            .map_err(|error| format!("console endpoint: {error}"))?)
+    };
     if let Some(name) = upstream_pipe { println!("Upstream compatibility endpoint: {name}"); }
     let mut daemon = Daemon::new(Arc::clone(&cancelled));
     let managed_services = crate::managed_host::Owner::start(daemon.identity(), Arc::clone(&cancelled))
@@ -39,6 +43,7 @@ pub fn serve_with_rpc(upstream_pipe: Option<&str>) -> Result<(), String> {
     let result = control::serve(&mut daemon, &cancelled).map_err(|error| error.to_string());
     drop(managed_services);
     let cleanup = daemon.cleanup();
+    drop(console);
     drop(rpc);
     match (result, cleanup) {
         (Err(error), Err(cleanup)) => Err(format!("{error}; cleanup also failed: {cleanup}")),

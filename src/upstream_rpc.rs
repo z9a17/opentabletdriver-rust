@@ -1,7 +1,7 @@
 //! Opt-in upstream Windows RPC. Native v2 framing and daemon ownership remain
 //! separate. Never start the original daemon or a tablet worker for RPC.
 //! Only explicit managed provider/debug requests initialize .NET.
-mod protocol;
+pub(crate) mod protocol;
 mod service;
 mod settings;
 mod apply;
@@ -15,6 +15,8 @@ use std::time::{Duration, Instant};
 use crate::control::pipe::CompatPipe;
 
 pub const DEFAULT_PIPE: &str = "OpenTabletDriverRust.Compat";
+/// Private original-console connection; never takes the original daemon name.
+pub const CONSOLE_PIPE: &str = "OpenTabletDriverRust.Console";
 const MAX_CLIENTS: u32 = 4;
 const IDLE_BUDGET: Duration = Duration::from_secs(120);
 const FRAME_BUDGET: Duration = Duration::from_secs(5);
