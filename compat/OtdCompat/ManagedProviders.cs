@@ -205,7 +205,8 @@ sealed class ManagedProviders : IDriver, IDeviceConfigurationProvider, IReportPa
         : Call("SetTabletDebug", false);
     public async Task<string> RequestDeviceString(int vendor, int product, int index) => (await Call("RequestDeviceString", vendor, product, index).ConfigureAwait(false)).Value<string>()!;
     public Task<IEnumerable<LogMessage>> GetCurrentLog() => Cached<IEnumerable<LogMessage>>("logs");
-    public async Task<DiagnosticInfo> GetDiagnosticInfo() => (await Call("GetDiagnosticInfo").ConfigureAwait(false)).ToObject<DiagnosticInfo>()!;
+    public Task<DiagnosticInfo> GetDiagnosticInfo() => Task.FromException<DiagnosticInfo>(new NotSupportedException(
+        "Original DiagnosticInfo requires a managed entry assembly; native hosting supplies diagnostics through the native/RPC endpoint instead."));
     public async Task<SerializedUpdateInfo?> CheckForUpdates() => (await Call("CheckForUpdates").ConfigureAwait(false)).ToObject<SerializedUpdateInfo>();
     public async Task InstallUpdate() => await Call("InstallUpdate").ConfigureAwait(false);
     public async Task ForceResynchronize() => await Call("ForceResynchronize").ConfigureAwait(false);

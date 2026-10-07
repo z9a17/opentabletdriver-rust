@@ -78,6 +78,12 @@ Remaining concrete gaps:
   native/RPC full-rate capture remains separate and is not advertised as this event.
 - Backend operations whose original native host implementation is unavailable
   return explicit errors (including updates/input prerequisites as applicable).
+- Original DiagnosticInfo requires a managed entry assembly and cannot be
+  constructed faithfully by this native CLR host. Its typed provider method
+  reports unsupported; native/RPC diagnostic JSON remains available separately.
+- Managed device metadata does not probe another input reader for CanOpen.
+  Unknown CanOpen and WinUSB descriptor fields remain unavailable. The observer
+  parks until managed initialization and refreshes only when snapshots are requested.
 - AppInfo's unchanged upstream static initializers can create its default plugin
   and preset directories before host paths are assigned. Then the bridge binds
   the real native application paths and refreshes original JSON presets. No saved
