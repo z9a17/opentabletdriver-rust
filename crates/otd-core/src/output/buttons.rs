@@ -279,6 +279,7 @@ impl Rotation {
 pub struct ButtonOutput {
     pen: Group,
     aux: Group,
+    mouse: Group,
     wheel_buttons: Vec<Group>,
     rotations: Vec<Rotation>,
     sink: Box<dyn ActionSink>,
@@ -397,6 +398,7 @@ impl ButtonOutput {
             Self {
                 pen,
                 aux: Group::default(),
+                mouse: Group::default(),
                 wheel_buttons: Vec::new(),
                 rotations: Vec::new(),
                 sink,
@@ -477,6 +479,20 @@ impl ButtonOutput {
 
     /// The pen buttons wanted down after a report. A report without a button
     /// reading leaves them as they are; a pen out of range holds none.
+    pub fn wanted_with_pressure(&self, buttons: Option<Buttons>, present: bool, pressure: Option<u32>, drag_only: bool) -> u64 {
+        let wanted = self.wanted(buttons, present);
+        if drag_only && !pressure.is_some_and(|pressure| pressure > 0) {
+            // BindingState retains a press when pressure drops: only gate rising edges.
+            wanted & self.pen.held
+        } else { wanted }
+    }
+
+    pub fn set_mouse(&mut self, bindings: &[ButtonAction]) -> Vec<String> {
+        let mut rejected = Vec::new();
+        self.mouse = group(bindings, false, WHEEL_ROTATION_OWNERS + 2 * crate::reports::MAX_WHEELS as u32, self.sink.as_ref(), &|index| format!("mouse button {}", index + 1), &mut rejected);
+        rejected
+    }
+
     pub fn wanted(&self, buttons: Option<Buttons>, present: bool) -> u64 {
         if !present {
             return 0;
@@ -522,6 +538,14 @@ impl ButtonOutput {
         use crate::reports::AnalogKind;
 
         let mut changed = self.unsettled;
+        if let Some(buttons) = values.mouse_buttons {
+            let wanted = self.mouse.wanted(buttons);
+            if wanted != self.mouse.held {
+                self.unsettled = true;
+                changed = true;
+                self.mouse.hold(self.sink.as_mut(), wanted)?;
+            }
+        }
         if let Some(buttons) = values.aux_buttons {
             let wanted = self.aux.wanted(buttons);
             if wanted != self.aux.held {
@@ -669,13 +693,14 @@ impl ButtonOutput {
         for rotation in &mut self.rotations {
             rotation.reset();
         }
-        let held = self.pen.held != 0
+        let held = self.mouse.held != 0 || self.pen.held != 0
             || self.aux.held != 0
             || self.wheel_buttons.iter().any(|group| group.held != 0);
         if !held && !self.unsettled {
             return Ok(false);
         }
         self.pen.held = 0;
+        self.mouse.held = 0;
         self.aux.held = 0;
         for group in &mut self.wheel_buttons {
             group.held = 0;
@@ -1215,4 +1240,47 @@ mod tests {
         assert_eq!(wheel_threshold(None, 5.0), 5.0);
         assert_eq!(wheel_threshold(Some(30.0), 5.0), 30.0);
     }
+    #[test]
+    fn drag_only_gates_rising_edge_but_retains_hold_when_pressure_drops() {
+        let (mut out, log, _) = output(&[ButtonAction::Mouse(MouseButton::Right)], false);
+        for (bits, pressure, expected) in [(1, Some(0), 0), (1, Some(1), 1), (1, Some(0), 1), (1, None, 1), (0, Some(0), 0)] {
+            let wanted = out.wanted_with_pressure(buttons(bits), true, pressure, true);
+            assert_eq!(wanted, expected);
+            out.apply(wanted).unwrap();
+        }
+        assert_eq!(&*log.borrow(), &[(right(), true), (right(), false)]);
+    }
+
+    #[test]
+    fn mouse_group_owns_shared_actions_independently_and_cleanup_releases_them() {
+        let (mut out, log, _) = output(&[ButtonAction::Mouse(MouseButton::Right)], false);
+        assert!(out.set_mouse(&[ButtonAction::Mouse(MouseButton::Right)]).is_empty());
+        out.apply(1).unwrap();
+        let mut values = crate::reports::ReportValues::default();
+        values.mouse_buttons = buttons(1);
+        out.apply_auxiliary(&values).unwrap();
+        out.apply(0).unwrap();
+        assert_eq!(&*log.borrow(), &[(right(), true)]);
+        assert!(!out.release_auxiliary().unwrap());
+        assert!(out.release_all().unwrap());
+        assert_eq!(&*log.borrow(), &[(right(), true), (right(), false)]);
+    }
+
+    #[test]
+    fn mouse_and_drag_dispatch_allocate_nothing_after_setup() {
+        let action: ButtonAction = "keys:Control+Z".parse().unwrap();
+        let sink = Box::new(LocalActions::new(|_| Ok(()), |_| true));
+        let (mut out, rejected) = ButtonOutput::new(&[action.clone()], false, sink);
+        assert!(rejected.is_empty());
+        assert!(out.set_mouse(&[action]).is_empty());
+        crate::test_alloc::assert_no_allocations(|| {
+            for bits in [1, 0, 1, 0] {
+                let wanted = out.wanted_with_pressure(buttons(bits), true, Some(1), true);
+                out.apply(wanted).unwrap();
+                out.apply_auxiliary(&crate::reports::ReportValues { mouse_buttons: buttons(bits), ..Default::default() }).unwrap();
+            }
+            out.release_all().unwrap();
+        });
+    }
+
 }

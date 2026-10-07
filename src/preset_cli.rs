@@ -1,4 +1,4 @@
-//! Offline named presets. These commands never contact the daemon or load DLLs.
+//! Named presets. Activation uses the existing guarded daemon transaction.
 use std::path::PathBuf;
 
 use otd_core::config::Profile;
@@ -7,11 +7,13 @@ use otd_core::storage;
 use serde_json::{Value, json};
 
 pub fn usage() -> &'static str {
-    "Named presets (offline; does not select or apply a running configuration):
+    "Named presets:
   presets list
   presets show NAME
   presets save NAME --config FILE [--replace]
   presets export NAME --output NEWFILE
+  presets apply NAME
+  presets save-active NAME [--replace]
 
 Names preserve case and spacing: 1-64 ASCII letters/digits, internal spaces,
 hyphens, underscores or parentheses; Windows device names are rejected.
@@ -19,12 +21,17 @@ Use quotes around names with spaces. Case-only aliases are not substituted.
 Save creates a new preset by default; --replace requires an existing valid preset.
 Show includes full profile values and plugin paths; review before sharing.
 Presets live below the selected data directory (OTD_RUST_PORTABLE_DIR if set).
-No GUI integration, runtime activation or delete command is provided here."
+Apply asks a running daemon to replace its configuration through guarded restart;
+its JSON reply is acceptance, query status for transaction completion. It can
+release input and initialize hardware exactly as restart does. Save-active reads
+the daemon snapshot; all other commands work offline. No DLLs load in the CLI."
 }
 
 enum Command {
     List,
     Show(PresetName),
+    Apply(PresetName),
+    SaveActive { name: PresetName, replace: bool },
     Save {
         name: PresetName,
         config: PathBuf,
@@ -52,7 +59,7 @@ fn parse(args: Vec<String>) -> Result<Command, String> {
             Command::Help
         });
     }
-    if !matches!(command.as_str(), "show" | "save" | "export") {
+    if !matches!(command.as_str(), "show" | "save" | "export" | "apply" | "save-active") {
         return Err(format!("unknown preset command {command:?}\n{}", usage()));
     }
     let name = PresetName::parse(&args.next().ok_or("preset command needs a NAME")?)?;
@@ -61,7 +68,7 @@ fn parse(args: Vec<String>) -> Result<Command, String> {
     let mut replace = false;
     while let Some(flag) = args.next() {
         match flag.as_str() {
-            "--replace" if command == "save" && !replace => replace = true,
+            "--replace" if matches!(command.as_str(), "save" | "save-active") && !replace => replace = true,
             "--config" if command == "save" && config.is_none() => {
                 config = Some(PathBuf::from(value(&mut args, &flag)?));
             }
@@ -77,6 +84,8 @@ fn parse(args: Vec<String>) -> Result<Command, String> {
     }
     match command.as_str() {
         "show" => Ok(Command::Show(name)),
+        "apply" => Ok(Command::Apply(name)),
+        "save-active" => Ok(Command::SaveActive { name, replace }),
         "save" => Ok(Command::Save {
             name,
             config: config.ok_or("presets save requires --config FILE")?,
@@ -115,6 +124,17 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             print(json!({"name": preset.name(), "path": preset.path(),
                 "settings_revision": preset.profile().settings_revision,
                 "profile_toml": preset.profile().to_toml()?}))
+        }
+        Command::Apply(name) => {
+            let preset = store.load(&name)?;
+            let text = preset.profile().to_toml()?;
+            crate::daemon::restart(Some(text)).and_then(|reply| crate::daemon::print_reply(&reply))
+        }
+        Command::SaveActive { name, replace } => {
+            let previous = replace.then(|| store.load(&name)).transpose()?;
+            let profile = crate::daemon::active_profile()?;
+            let preset = store.save(&name, &profile, previous.as_ref())?;
+            print(json!({"name": preset.name(), "path": preset.path(), "settings_revision": profile.settings_revision, "replaced": replace}))
         }
         Command::Save {
             name,

@@ -88,6 +88,8 @@ pub trait ReportSource {
 pub trait Displays {
     /// Called once a second while reports flow, so it must be cheap.
     fn fingerprint(&mut self) -> DisplayFingerprint;
+    /// A backend may detect rectangle changes which preserve aggregate bounds.
+    fn topology_changed(&mut self) -> bool { false }
     fn snapshot(&mut self) -> Result<DisplaySnapshot, String>;
 }
 
@@ -617,7 +619,7 @@ pub fn run_gated_with_endpoints(
             }
             if now >= next_refresh {
                 if layout.snapshot.is_some()
-                    && (layout.snapshot_failed || displays.fingerprint() != layout.fingerprint)
+                    && (layout.snapshot_failed || displays.fingerprint() != layout.fingerprint || displays.topology_changed())
                 {
                     layout.refresh(displays, profile, &mut pipeline, &mut send);
                 }

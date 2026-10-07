@@ -35,6 +35,7 @@ pub struct ReportPipeline {
     buttons: ButtonOutput,
     profile_buttons: Vec<crate::output::buttons::ButtonAction>,
     aux_buttons: Vec<crate::output::buttons::ButtonAction>,
+    mouse_buttons: Vec<crate::output::buttons::ButtonAction>,
     wheels: Vec<crate::output::buttons::WheelBinding>,
     controls: crate::spec::Controls,
     /// The profile asks for pen output; the platform supplies the device.
@@ -54,8 +55,21 @@ impl ReportPipeline {
         if pen_requested && profile.relative.is_some() {
             return Err("pen output is absolute; choose mouse output for relative mode".into());
         }
+        let mut contact = profile.contact;
+        // Native raw-threshold edits remain authoritative. Retain an imported
+        // percentage only while it represents that raw threshold on this tablet.
+        for (percent, raw) in [
+            (&mut contact.tip_threshold_percent, contact.tip_threshold_raw),
+            (&mut contact.eraser_threshold_percent, contact.eraser_threshold_raw),
+        ] {
+            if let (Some(value), Some(raw)) = (*percent, raw) {
+                if crate::config::activation_raw_for(f64::from(value), profile.tablet.max_pressure).ok() != Some(raw) {
+                    *percent = None;
+                }
+            }
+        }
         Ok(Self {
-            contact: profile.contact,
+            contact,
             filters: profile
                 .radial_follow
                 .iter()
@@ -70,6 +84,7 @@ impl ReportPipeline {
             buttons: ButtonOutput::new(&profile.pen_buttons, pen_requested, Box::new(NoActions)).0,
             profile_buttons: profile.pen_buttons.clone(),
             aux_buttons: profile.aux_buttons.clone(),
+            mouse_buttons: profile.mouse_buttons.clone(),
             wheels: profile.wheels.clone(),
             controls: profile.tablet.controls,
             pen_requested,
@@ -116,6 +131,7 @@ impl ReportPipeline {
             &self.wheels,
             self.controls.wheels(),
         ));
+        rejected.extend(buttons.set_mouse(&self.mouse_buttons));
         self.buttons = buttons;
         rejected
     }
@@ -519,10 +535,13 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
         let contact = self.pipeline.desired_contact;
         // Side buttons follow the report after the pointer has moved, so a
         // click lands where the pen is. A pen out of range holds none.
+        let drag_pressure = if self.pipeline.contact.drag_only {
+            self.pipeline.contact.drag_pressure(values.pressure, self.pipeline.max_pressure, self.pipeline.is_eraser)
+        } else { values.pressure };
         let wanted = self
             .pipeline
             .buttons
-            .wanted(values.pen_buttons, kind != ReportKind::OutOfRange);
+            .wanted_with_pressure(values.pen_buttons, kind != ReportKind::OutOfRange, drag_pressure, self.pipeline.contact.drag_only);
         let barrel = self.pipeline.buttons.barrel(wanted);
         if let Some(pen) = &mut self.pipeline.pen {
             let emitted = if kind == ReportKind::OutOfRange {
@@ -532,8 +551,8 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
                     Some((x, y)) => pen.sample(PenSample {
                         x,
                         y,
-                        pressure: values.pressure,
-                        tilt: values.tilt,
+                        pressure: if self.pipeline.contact.disable_pressure { None } else { values.pressure },
+                        tilt: if self.pipeline.contact.disable_tilt { None } else { values.tilt },
                         eraser: self.pipeline.is_eraser,
                         contact,
                         barrel,
@@ -541,7 +560,7 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
                     None => false,
                 }
             } else {
-                pen.contact(contact, values.pressure, barrel)?
+                pen.contact(contact, if self.pipeline.contact.disable_pressure { None } else { values.pressure }, barrel)?
             };
             self.stats.packets += u64::from(emitted);
             return self.pipeline.buttons.apply(wanted);

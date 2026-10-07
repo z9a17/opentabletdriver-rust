@@ -201,6 +201,7 @@ pub(super) fn extract_unknown_fields(document: &mut toml::Value) -> BTreeMap<Str
             "bindings",
             "pen_buttons",
             "aux_buttons",
+            "mouse_buttons",
             "wheels",
             "output",
             "radial_follow",
@@ -242,6 +243,11 @@ pub(super) fn extract_unknown_fields(document: &mut toml::Value) -> BTreeMap<Str
                 "eraser_enabled",
                 "tip_threshold_raw",
                 "eraser_threshold_raw",
+                "tip_threshold_percent",
+                "eraser_threshold_percent",
+                "drag_only",
+                "disable_pressure",
+                "disable_tilt",
             ][..],
         ),
         (
@@ -789,6 +795,8 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
         old_enabled,
         current_threshold,
         old_threshold,
+        current_percent,
+        old_percent,
         action,
     ) in [
         (
@@ -798,6 +806,8 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
             baseline.contact.tip_enabled,
             profile.contact.tip_threshold_raw,
             baseline.contact.tip_threshold_raw,
+            profile.contact.tip_threshold_percent,
+            baseline.contact.tip_threshold_percent,
             "Tip",
         ),
         (
@@ -807,6 +817,8 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
             baseline.contact.eraser_enabled,
             profile.contact.eraser_threshold_raw,
             baseline.contact.eraser_threshold_raw,
+            profile.contact.eraser_threshold_percent,
+            baseline.contact.eraser_threshold_percent,
             "Eraser",
         ),
     ] {
@@ -842,12 +854,12 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
             }
             set_field(store, "Enable", json!(current_enabled))?;
         }
-        if current_threshold != old_threshold {
+        if current_threshold != old_threshold || current_percent != old_percent {
             let raw = current_threshold.ok_or(
                 "hardware tip-switch contact cannot be represented as an OTD pressure threshold",
             )?;
             let max_pressure = profile.tablet.max_pressure;
-            let percent = (f64::from(raw) - 0.5) * 100.0 / f64::from(max_pressure);
+            let percent = current_percent.filter(|percent| super::activation_raw_for(f64::from(*percent), max_pressure).ok() == Some(raw)).map(f64::from).unwrap_or_else(|| (f64::from(raw) - 0.5) * 100.0 / f64::from(max_pressure));
             if super::activation_raw_for(percent, max_pressure).ok() != Some(raw) {
                 return Err(format!(
                     "raw threshold {raw} has no supported OTD percent representation"
@@ -855,6 +867,17 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
             }
             set_field(&mut selected["Bindings"], threshold, json!(percent))?;
         }
+    }
+    for (name, current, old) in [
+        ("EnableDragBindings", profile.contact.drag_only, baseline.contact.drag_only),
+        ("DisablePressure", profile.contact.disable_pressure, baseline.contact.disable_pressure),
+        ("DisableTilt", profile.contact.disable_tilt, baseline.contact.disable_tilt),
+    ] {
+        if current != old { set_field(&mut selected["Bindings"], name, json!(current))?; }
+    }
+    if profile.mouse_buttons != baseline.mouse_buttons {
+        ensure_object(&mut selected["Bindings"])?;
+        export_button_list(&mut selected["Bindings"]["MouseButtons"], "mouse button", &profile.mouse_buttons, &baseline.mouse_buttons, false)?;
     }
     export_pen_buttons(selected, profile, &baseline)?;
     let source_pen = baseline.output == super::OutputKind::Pen;

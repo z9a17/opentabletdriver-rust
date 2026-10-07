@@ -98,6 +98,83 @@ pub fn restart(replacement: Option<String>) -> Result<Reply, String> {
     })
 }
 
+/// A coherent active profile snapshot, with plugin paths already resolved by
+/// the daemon's loader. Saving it relocates those paths to the destination.
+pub fn active_profile() -> Result<crate::config::Profile, String> {
+    match configuration()? {
+        Reply::Configuration { profile_toml: Some(text), .. } => {
+            let path = otd_core::storage::data_directory()?.join("driver.toml");
+            crate::config::Profile::from_toml_text(&text, &path)
+        }
+        Reply::Configuration { profile_toml: None, .. } => Err("daemon has no active configuration".into()),
+        _ => Err("unexpected daemon configuration response".into()),
+    }
+}
+
+/// Save an active snapshot atomically. Replacement is explicit and guarded by
+/// the destination bytes observed before contacting the daemon.
+pub fn save_configuration(path: &std::path::Path, replace: bool) -> Result<(), String> {
+    use otd_core::storage::{self, SaveMode};
+    let previous = storage::capture(path)?;
+    if previous.exists() && !replace { return Err("destination exists; use --replace to replace it with a backup".into()); }
+    let profile = active_profile()?;
+    let text = profile.to_toml_at(path)?;
+    let mode = if previous.exists() { SaveMode::Replace(&previous) } else { SaveMode::CreateNew };
+    storage::save(path, text.as_bytes(), mode)?;
+    println!("{}", serde_json::json!({"output": path, "settings_revision": profile.settings_revision, "replaced": previous.exists()}));
+    Ok(())
+}
+
+/// Newline-delimited native protocol-v2 requests and responses. This is the
+/// Rust control contract, not StreamJsonRpc. No daemon is launched implicitly.
+pub fn stdio() -> Result<(), String> {
+    stdio_with(std::io::stdin().lock(), std::io::stdout().lock(), |request| {
+        control::request(request, REQUEST_TIMEOUT)
+    })
+}
+
+fn stdio_with(
+    mut input: impl std::io::BufRead,
+    mut output: impl std::io::Write,
+    mut call: impl FnMut(&Request) -> std::io::Result<control::Response>,
+) -> Result<(), String> {
+    use std::io::{BufRead, Read};
+    loop {
+        let mut line = Vec::new();
+        let count = input.by_ref().take((control::MAX_FRAME_BYTES + 1) as u64)
+            .read_until(b'\n', &mut line).map_err(|error| error.to_string())?;
+        if count == 0 { return Ok(()); }
+        if line.len() > control::MAX_FRAME_BYTES {
+            return Err("stdio request exceeds 256 KiB; input closed without dispatch".into());
+        }
+        let response = match serde_json::from_slice::<Request>(&line) {
+            Ok(request) => {
+                // Validate here as well as in request(), before handing anything
+                // to the transport (including a fake endpoint in regression tests).
+                if let Err(error) = request.validate() {
+                    let response = control::Response { version: control::PROTOCOL_VERSION, id: request.id, reply: Reply::Error { error } };
+                    serde_json::to_writer(&mut output, &response).map_err(|error| error.to_string())?;
+                    output.write_all(b"\n").map_err(|error| error.to_string())?;
+                    output.flush().map_err(|error| error.to_string())?;
+                    continue;
+                }
+                match call(&request) {
+                    Ok(response) => response,
+                    Err(error) => control::Response { version: control::PROTOCOL_VERSION, id: request.id,
+                        reply: Reply::Error { error: control::ControlError::new(
+                            if error.kind() == std::io::ErrorKind::InvalidInput { control::ErrorCode::InvalidRequest } else { control::ErrorCode::Internal },
+                            error.to_string()) } },
+                }
+            }
+            Err(error) => control::Response { version: control::PROTOCOL_VERSION, id: 0,
+                reply: Reply::Error { error: control::ControlError::new(control::ErrorCode::InvalidRequest, error.to_string()) } },
+        };
+        serde_json::to_writer(&mut output, &response).map_err(|error| error.to_string())?;
+        output.write_all(b"\n").map_err(|error| error.to_string())?;
+        output.flush().map_err(|error| error.to_string())?;
+    }
+}
+
 /// Invoked only by an explicit CLI command. No console window is created.
 pub fn background() -> Result<(), String> {
     let status = ensure_running(&AtomicBool::new(false))?;
@@ -175,5 +252,41 @@ pub fn ensure_running(cancelled: &AtomicBool) -> Result<ControlStatus, String> {
             );
         }
         std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[cfg(test)]
+mod stdio_tests {
+    use super::*;
+
+    #[test]
+    fn stdio_rejects_malformed_and_invalid_requests_before_dispatch() {
+        let mut bytes = b"not json\n".to_vec();
+        bytes.extend(serde_json::to_vec(&Request::new(0, Command::Stop)).unwrap());
+        bytes.push(b'\n');
+        bytes.extend(serde_json::to_vec(&Request::new(7, Command::Status)).unwrap());
+        bytes.push(b'\n');
+        let mut output = Vec::new();
+        let mut calls = 0;
+        stdio_with(std::io::Cursor::new(bytes), &mut output, |request| {
+            calls += 1;
+            assert_eq!(request.id, 7);
+            Ok(control::Response { version: control::PROTOCOL_VERSION, id: request.id, reply: Reply::ShutdownAccepted })
+        }).unwrap();
+        assert_eq!(calls, 1);
+        let replies = output.split(|byte| *byte == b'\n').filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice::<control::Response>(line).unwrap()).collect::<Vec<_>>();
+        assert_eq!(replies.len(), 3);
+        assert!(matches!(replies[0].reply, Reply::Error { .. }));
+        assert!(matches!(replies[1].reply, Reply::Error { .. }));
+        assert_eq!(replies[2].id, 7);
+    }
+
+    #[test]
+    fn stdio_bounds_unterminated_lines_without_dispatch() {
+        let mut output = Vec::new();
+        let oversized = vec![b' '; control::MAX_FRAME_BYTES + 1];
+        assert!(stdio_with(std::io::Cursor::new(oversized), &mut output, |_| panic!("must not dispatch")).is_err());
+        assert!(output.is_empty());
     }
 }

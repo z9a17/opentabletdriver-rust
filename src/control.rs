@@ -38,7 +38,7 @@ impl Request {
         }
     }
 
-    fn validate(&self) -> Result<(), ControlError> {
+    pub(crate) fn validate(&self) -> Result<(), ControlError> {
         if self.version != PROTOCOL_VERSION {
             return Err(ControlError::new(
                 ErrorCode::UnsupportedVersion,
