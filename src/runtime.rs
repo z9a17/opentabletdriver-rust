@@ -340,7 +340,7 @@ fn run(
             match receive(&commands, cancelled).map_err(|error| error.to_string())? {
                 Directive::Stop => return Ok(()),
                 Directive::Quiesce => {
-                    prepared = None;
+                    if let Some(mut source)=prepared.take(){source.retire().map_err(|error|format!("prepared device retirement failed: {error}"))?;}
                     reset_plugins(&mut plugins)?;
                     notify(Notice::Quiesced)?;
                     continue;
@@ -354,6 +354,9 @@ fn run(
             if cancelled.load(Ordering::Acquire) {
                 return Ok(());
             }
+            let source_generation = device_sessions.snapshot()?.sessions.into_iter().find(|session| session.id == id)
+                .map(|session| session.pending_generation.unwrap_or(session.device_generation)).unwrap_or(1);
+            crate::device_sessions::set_source_generation(source_generation);
             let source = prepared.take().map_or_else(
                 || PreparedSession::new(&selected, &notification, interrupt),
                 Ok,
@@ -394,8 +397,6 @@ fn run(
             let running = Cell::new(false);
             let quiesced = Cell::new(false);
             let opened_epoch = Cell::new(None);
-            // Tools run while this worker owns the output, like the tablet.
-            let tools = std::cell::RefCell::new(None);
             let preset_notices = notices.clone();
             let mut last_preset_press = std::time::Instant::now();
             let preset: crate::binding_presets::Callback = Box::new(move |owner, name| {
@@ -421,10 +422,7 @@ fn run(
                         // separate from tablet profiles. Peer workers run their
                         // filters/output/bindings, never another global tool set.
                         if bound_id.is_none() {
-                            *tools.borrow_mut() =
-                                Some(crate::plugins::Tools::start(&profile.plugins, |line| {
-                                    log(line)
-                                }));
+                            if let Err(error)=crate::tool_host::apply_profile(&profile.plugins) {log(&format!("Global tool submission failed: {error}"));}
                         }
                         Ok(true)
                     }
@@ -439,7 +437,6 @@ fn run(
             if let Some(epoch) = opened_epoch.get() {
                 device_sessions.clear_opened_identifiers(&id, epoch);
             }
-            drop(tools.take());
             // source has drained its read and core output cleanup has completed.
             if let Err(error) = &result
                 && otd_core::session::is_cleanup_failure(error)

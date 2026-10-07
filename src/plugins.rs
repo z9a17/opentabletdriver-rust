@@ -525,6 +525,7 @@ pub struct PluginChain {
     plugins: Vec<Plugin>,
     /// Matched, actually opened endpoints; captured only at session setup.
     identifiers: Option<Vec<DeviceIdentifier>>,
+    source_session: Option<serde_json::Value>,
     has_pre: bool,
     has_pixels: bool,
     /// Runs the host's built-in filters before `plugins[slot]` instead of
@@ -634,6 +635,7 @@ impl PluginChain {
             graph,
             managed_output: None,
             identifiers: identifiers.map(<[DeviceIdentifier]>::to_vec),
+            source_session: crate::dotnet::source_session_json(),
             plugins,
             has_pre,
             has_pixels,
@@ -647,7 +649,8 @@ impl PluginChain {
     /// Reconstruct at this cold boundary before creating any host output sink.
     pub fn bind_identifiers(&mut self, profile: &crate::config::Profile,
         tablet: &TabletConfiguration, identifiers: &[DeviceIdentifier]) -> Result<bool, String> {
-        if self.identifiers.as_deref() == Some(identifiers) { return Ok(false); }
+        if self.identifiers.as_deref() == Some(identifiers)
+            && (self.graph.is_none() || self.source_session == crate::dotnet::source_session_json()) { return Ok(false); }
         let replacement = Self::load_for_profile_with_identifiers(profile, tablet, identifiers)?;
         replacement.validate_output_mode(profile.relative.is_some())?;
         *self = replacement;

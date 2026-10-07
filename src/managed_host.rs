@@ -22,6 +22,7 @@ struct NativeBackend {
 }
 
 pub struct Owner {
+    tools:Option<crate::tool_host::Owner>,
     host: Option<Host>,
     stop: Arc<AtomicBool>,
     observer: Option<JoinHandle<()>>,
@@ -68,11 +69,14 @@ impl Owner {
             }
         }).map_err(|error| error.to_string())?;
         let _ = backend.observer_thread.set(observer.thread().clone());
-        Ok(Self { host: Some(host), stop, observer: Some(observer), backend })
+        let tools=crate::tool_host::Owner::start()?;
+        if let Some(settings)=crate::upstream_rpc::cached_original_settings() {crate::tool_host::initialize_document((*settings).clone())?;}
+        Ok(Self { tools:Some(tools),host: Some(host), stop, observer: Some(observer), backend })
     }
 }
 impl Drop for Owner {
     fn drop(&mut self) {
+        drop(self.tools.take());
         self.stop.store(true, Ordering::Release);
         if let Some(observer) = self.observer.take() {
             observer.thread().unpark();
@@ -228,11 +232,25 @@ pub fn publish_owned_devices() {
     }
 }
 fn service_devices()->Result<Vec<Value>,String> {
-    let mut devices=crate::hid::enumerate_service_devices().map_err(|error|error.to_string())?;
-    for owned in crate::shared_devices::owned_metadata() {
-        if let Some(device)=devices.iter_mut().find(|device|device["DevicePath"].as_str().zip(owned["DevicePath"].as_str())
+    let discovered=crate::hid::enumerate_service_devices().map_err(|error|error.to_string())?;
+    let mut devices=Vec::new();
+    let owned=crate::shared_devices::owned_metadata();
+    // Current and prepared readers can share an endpoint path. Keep each
+    // concrete reader generation available for exact scoped dependency lookup.
+    for device in &discovered {
+        if !owned.iter().any(|owned|device["DevicePath"].as_str().zip(owned["DevicePath"].as_str())
+            .is_some_and(|(a,b)|a.eq_ignore_ascii_case(b))) {devices.push(device.clone());}
+    }
+    for owned in owned {
+        if let Some(device)=discovered.iter().find(|device|device["DevicePath"].as_str().zip(owned["DevicePath"].as_str())
             .is_some_and(|(a,b)|a.eq_ignore_ascii_case(b))) {
+            let mut device=device.clone();
             if let Some(object)=device.as_object_mut() { object.extend(owned.as_object().unwrap().clone()); object.insert("CanOpen".into(),json!(true)); }
+            devices.push(device);
+        } else {
+            let mut device=owned;
+            if let Some(object)=device.as_object_mut(){object.insert("CanOpen".into(),json!(true));}
+            devices.push(device);
         }
     }
     Ok(devices)

@@ -320,7 +320,7 @@ fn inspect(path: &[u16], instance: u32, database: Option<&Database>) -> io::Resu
             "FeatureReportLength":endpoint.feature_length,"CanOpen":true,"DeviceAttributes":attributes})
     } else { serde_json::Value::Null };
     let candidate = Candidate { path: path.to_vec(), vendor, product, input_length: interface.input_length(),
-        usage_page: metadata.as_ref().map_or(0, |m| m.usage_page), usage: metadata.as_ref().map_or(0, |m| m.usage), endpoint };
+        usage_page: metadata.as_ref().map_or(0, |m| m.usage_page), usage: metadata.as_ref().map_or(0, |m| m.usage), endpoint, managed_endpoint:None };
     Ok((candidate, rpc))
 }
 

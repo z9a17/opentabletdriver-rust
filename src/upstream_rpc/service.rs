@@ -298,10 +298,6 @@ impl Connection {
             }
             Some((session.id.clone(),owner))
         } else { None };
-        if !sessions.iter().any(|session| session.primary && session.state == crate::device_sessions::SessionState::Running)
-            && settings["Tools"].as_array().is_some_and(|tools| tools.iter().any(|store| store["Enable"].as_bool().unwrap_or(false))) {
-            return Err(Error::unsupported("SetSettings", "enabled global Tools need a running primary tool owner; the previous collection was retained"));
-        }
         if sessions.is_empty() {
             if self.status()?.identity() != status.identity() || self.session_snapshots()?.iter().any(|session| session.connected) {
                 return Err(Error::failed("device lifecycle changed during idle settings apply; refresh and retry"));
@@ -314,6 +310,7 @@ impl Connection {
             };
             self.settings_revision = Some(revision);
             self.settings_native = None;
+            crate::tool_host::apply_document(&settings).map_err(Error::failed)?;
             return Ok(Value::Null);
         }
         if sessions.iter().any(|session| session.pending_generation.is_some()
@@ -366,7 +363,8 @@ impl Connection {
             self.shared.resynchronize.fetch_add(1,Ordering::AcqRel);
             return Err(error);
         }
-        self.settings_revision = Some(super::collection::publish(settings, retained.revision, true)?);
+        self.settings_revision = Some(super::collection::publish(settings.clone(), retained.revision, true)?);
+        crate::tool_host::apply_document(&settings).map_err(Error::failed)?;
         self.settings_native = None;
         self.shared.resynchronize.fetch_add(1,Ordering::AcqRel);
         Ok(Value::Null)

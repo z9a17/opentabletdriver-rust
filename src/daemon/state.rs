@@ -122,6 +122,7 @@ pub(super) struct Daemon {
     upstream_logs: VecDeque<(control::UpstreamLogMessage, usize)>,
     upstream_log_bytes: usize,
     update_reservation: Option<String>,
+    tool_drain: Option<crate::tool_host::Completion>,
     next_update: u64,
 }
 
@@ -157,6 +158,7 @@ impl Daemon {
             upstream_logs: VecDeque::new(),
             upstream_log_bytes: 0,
             update_reservation: None,
+            tool_drain: None,
             next_update: 0,
         }
     }
@@ -308,6 +310,7 @@ impl Daemon {
     fn update_ready(&self) -> bool {
         !self.stopping && self.worker.is_none() && self.pending.is_none()
             && self.retiring.is_none() && self.devices.is_none() && self.ownership.is_none()
+            && self.tool_drain.as_ref().is_some_and(|completion|matches!(completion.result(),Some(Ok(()))))
     }
     fn check_update_token(&self, token: &str) -> Result<(), ControlError> {
         if self.update_reservation.as_deref() != Some(token) {
@@ -1113,18 +1116,19 @@ impl ControlHandler for Daemon {
                 self.next_update = self.next_update.checked_add(1)
                     .ok_or_else(|| ControlError::new(ErrorCode::Internal, "update reservation sequence exhausted"))?;
                 let token = format!("{}:update:{}", self.instance, self.next_update);
+                self.tool_drain=Some(crate::tool_host::suspend().map_err(|error|ControlError::new(ErrorCode::StopFailed,error))?);
                 self.update_reservation = Some(token.clone());
                 if let Err(error) = self.stop_all() {
-                    self.update_reservation = None;
-                    return Err(ControlError::new(ErrorCode::StopFailed, error));
+                    self.remember_cleanup_error(error);
                 }
                 self.log("Update reserved; all tablet sessions and global tools are draining before installation.".into());
                 Ok(Reply::UpdateAccepted { token })
             }
             Command::UpdateStatus { token } => {
                 self.check_update_token(&token)?;
+                let tool_error=self.tool_drain.as_ref().and_then(|completion|completion.result()).and_then(Result::err);
                 Ok(Reply::UpdateState { token, ready: self.update_ready() && self.cleanup_error.is_none(),
-                    error: self.cleanup_error.clone() })
+                    error: self.cleanup_error.clone().or(tool_error) })
             }
             Command::FinishUpdate { token, success } => {
                 self.check_update_token(&token)?;
@@ -1135,7 +1139,13 @@ impl ControlHandler for Daemon {
                     self.log("Update staged and response delivered; shutting down the reserved daemon.".into());
                     Ok(Reply::ShutdownAccepted)
                 } else {
+                    let restore=if let Some(document)=crate::upstream_rpc::cached_original_settings(){crate::tool_host::resume(document)}
+                        else if let Some(text)=&self.configuration {
+                            Profile::from_toml_text(text,Path::new("update-cancelled.toml")).and_then(|profile|crate::tool_host::resume_profile(&profile.plugins))
+                        }else{crate::tool_host::resume(serde_json::json!({"Tools":[]}))};
+                    restore.map_err(|error|ControlError::new(ErrorCode::StopFailed,error))?;
                     self.update_reservation = None;
+                    self.tool_drain=None;
                     self.log("Update cancelled. Tablet input remains stopped; Start driver explicitly resumes it.".into());
                     Ok(Reply::UpdateCancelled)
                 }

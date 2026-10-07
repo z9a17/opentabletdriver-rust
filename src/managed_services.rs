@@ -113,10 +113,10 @@ impl Host {
             source_sessions: snapshot.source_sessions,
             queue: VecDeque::new(), queued_bytes: 0 }), ready: Condvar::new() });
         let mut workers = Vec::new();
-        for lane in 0..3 {
+        for lane in 0..4 {
         let worker = engine.clone();
         let backend = Arc::clone(&backend);
-        let join = std::thread::Builder::new().name(["managed-services","managed-device-io","managed-output-owner"][lane].into()).spawn(move || loop {
+        let join = std::thread::Builder::new().name(["managed-services","managed-device-io","managed-output-owner","managed-device-detect"][lane].into()).spawn(move || loop {
             let work = {
                 let Ok(mut state) = worker.state.lock() else { return };
                 // A real plugin constructor can ask for shared endpoint I/O
@@ -126,7 +126,7 @@ impl Host {
                 let index = loop {
                     if state.stopped { return; }
                     if let Some(index) = state.queue.iter().position(|(_, _, request)| {
-                        let operation_lane=match request.operation {Operation::Daemon|Operation::Detect=>0,Operation::OutputOwner=>2,_=>1};
+                        let operation_lane=match request.operation {Operation::Daemon=>0,Operation::Detect=>3,Operation::OutputOwner=>2,_=>1};
                         operation_lane==lane
                     }) { break index; }
                     let Ok(next) = worker.ready.wait(state) else { return }; state = next;
@@ -216,7 +216,14 @@ unsafe extern "C" fn request(op: u32, scope: u64, input: *const u8, len: u32, ou
     if state.stopped { return -5; }
     let expected_source = if let Some(value) = payload.get("source_tablet_name") {
         let Some(name) = value.as_str().filter(|name| !name.is_empty() && name.len() <= 4096) else { return -3 };
+        let supplied=payload.get("source_session");
+        let identity=if let Some(supplied)=supplied {
+            let Some(id)=supplied["id"].as_str().filter(|id|!id.is_empty()) else{return -3};
+            let Some(generation)=supplied["device_generation"].as_u64().filter(|generation|*generation>0) else{return -3};
+            Some((id,generation))
+        }else{None};
         let mut matches = state.source_sessions.iter().filter(|source| source.tablet == name
+            && identity.is_none_or(|(id,generation)|source.id==id && source.device_generation==generation)
             && source.connected && source.state == crate::device_sessions::SessionState::Running
             && source.pending_generation.is_none());
         let Some(source) = matches.next() else { return -6 };

@@ -19,6 +19,7 @@ pub mod endpoints;
 mod registry;
 #[path = "dotnet/parser.rs"]
 mod parser;
+pub mod custom_devices;
 pub use parser::{RuntimeDecoder, ManagedReportParser, installed_report_parser};
 pub use registry::{ManagedDebugDecoder, ManagedDebugReport, ManagedRegistryInfo, known_report_parser, registry_snapshot, reload_installed_plugins};
 pub use registry::{HostedRpc, get_plugin_types, construct_plugin_store};
@@ -53,6 +54,7 @@ struct NativePenReport {
 }
 
 struct Bridge {
+    custom_devices:Option<custom_devices::Api>,
     endpoints: Option<endpoints::Api>,
     registry: Option<registry::Api>,
     parser: Option<parser::Api>,
@@ -211,6 +213,7 @@ fn load_bridge() -> Result<Bridge, String> {
     let bridge = Bridge {
         endpoints: endpoints::Api::load(&entry).ok(),
         registry: registry::Api::load(&entry).ok(),
+        custom_devices:custom_devices::Api::load(&entry).ok(),
         parser: parser::Api::load(&entry).ok(),
         create_graph: unsafe {
             std::mem::transmute::<*mut c_void, graph::CreateGraph>(entry("CreateGraph").map_err(|error| format!("The installed .NET bridge lacks synchronous graph support. Replace the data/compat directory with this release's files: {error}"))?)

@@ -38,6 +38,8 @@ impl OutputGate {
         acknowledged: AtomicBool::new(true), started: AtomicBool::new(false), wake: Event::create(true)?,
         changed: std::sync::Condvar::new(),gate:Mutex::new(()) })) }
     pub fn native_enabled(&self) -> bool { self.desired.load(Ordering::Acquire) }
+    pub fn transition_pending(&self)->bool {self.native_enabled()!=self.acknowledged.load(Ordering::Acquire)}
+    pub fn signal(&self)->std::io::Result<()> {self.wake.signal()}
     #[cfg(windows)]
     pub fn event(&self) -> windows_sys::Win32::Foundation::HANDLE { self.wake.raw() }
     #[cfg(unix)]
@@ -108,13 +110,14 @@ struct Stream { endpoint:Arc<Endpoint>,scope:u64,expires:Instant,cursor:u64,lost
 impl Drop for Stream { fn drop(&mut self){self.endpoint.subscribers.fetch_sub(1,Ordering::Relaxed);} }
 #[derive(Default)]
 struct Registry { readers:HashMap<u64,Vec<Weak<Endpoint>>>, streams:HashMap<u64,Stream>,
-    events:HashMap<u64,EventLease> }
+    events:HashMap<u64,EventLease>, output_owners:HashMap<u64,u64> }
 struct EventLease { streams:HashMap<(u64,bool),Stream>,expires:Instant,cursor:u64,lost:u64,
     last_request:Option<u64>,last_reply:Option<Value> }
 fn prune(state:&mut Registry) {
     let now=Instant::now();state.streams.retain(|_,stream|now<stream.expires && stream.endpoint.alive.load(Ordering::Acquire));
     state.events.retain(|_,stream|now<stream.expires);
     state.readers.retain(|_,endpoints| { endpoints.retain(|endpoint|endpoint.upgrade().is_some_and(|e|e.alive.load(Ordering::Acquire)));!endpoints.is_empty() });
+    state.output_owners.retain(|epoch,_|state.readers.contains_key(epoch));
 }
 fn readers(state:&Registry)->Vec<Arc<Endpoint>> { state.readers.values().flatten().filter_map(Weak::upgrade)
     .filter(|e|e.alive.load(Ordering::Acquire)).collect() }
@@ -191,7 +194,15 @@ pub fn execute(operation:crate::managed_services::Operation,scope:u64,payload:&V
             let epoch=payload["reader_generation"].as_u64().or_else(||payload["device_generation"].as_u64()).ok_or("Output reader generation required")?;
             let endpoint=readers(&state).into_iter().find(|e|e.session_id==id&&e.epoch==epoch&&!e.auxiliary).ok_or("Output physical source changed")?;
             let managed=payload["managed_output"].as_bool().ok_or("Output ownership flag required")?;
-            drop(state);endpoint.output.request(!managed)?;Ok(Value::Null)
+            match state.output_owners.get(&epoch).copied() {
+                Some(owner) if owner!=scope=>return Err("This physical reader already has another managed output owner".into()),
+                None if !managed=>return Ok(Value::Null),
+                _=>{}
+            }
+            if managed {state.output_owners.insert(epoch,scope);}
+            drop(state);endpoint.output.request(!managed)?;
+            if !managed {if let Ok(mut state)=registry().lock() {if state.output_owners.get(&epoch)==Some(&scope){state.output_owners.remove(&epoch);}}}
+            Ok(Value::Null)
         },
         Operation::DeviceReports=>events(&mut state,scope,payload),
         _=>Err("Not an endpoint service operation".into()),

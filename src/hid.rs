@@ -567,6 +567,14 @@ fn enumerate_device_metadata(probe_open: bool) -> io::Result<Vec<serde_json::Val
             "DeviceAttributes":candidate.endpoint.attributes}));
     }
     devices.extend(if probe_open { crate::winusb::rpc_devices()? } else { crate::winusb::service_metadata()? });
+    for endpoint in crate::dotnet::custom_devices::snapshot().map_err(io::Error::other)? {
+        let mut metadata=serde_json::to_value(&endpoint.original).map_err(io::Error::other)?;
+        if let Some(object)=metadata.as_object_mut() {object.extend(serde_json::json!({"endpoint":endpoint.endpoint,"scope":endpoint.scope,
+            "DevicePath":endpoint.path,"VendorID":endpoint.vendor,"ProductID":endpoint.product,
+            "InputReportLength":endpoint.input_length,"OutputReportLength":endpoint.output_length,
+            "FeatureReportLength":endpoint.feature_length,"CanOpen":endpoint.can_open,"DeviceAttributes":endpoint.attributes}).as_object().unwrap().clone());}
+        devices.push(metadata);
+    }
     Ok(devices)
 }
 
