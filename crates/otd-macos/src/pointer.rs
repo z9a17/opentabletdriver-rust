@@ -8,6 +8,7 @@ use crate::{ffi,macos::{Owned,event_timestamp}};
 const DEVICE_ID:i64=5303613955435230461;
 const CAPABILITIES:i64=0x001|0x002|0x004|0x040|0x080|0x100|0x400;
 
+#[derive(Clone,Copy)]
 struct Clicks {count:i64,started:Option<Instant>,down:ffi::Point,moved:bool,interval:Duration,last_button:u8}
 impl Clicks {
     fn movement(&mut self,point:ffi::Point){let dx=point.x-self.down.x;let dy=point.y-self.down.y;if dx*dx+dy*dy>64.0{self.moved=true;}}
@@ -42,10 +43,11 @@ pub fn button(button:u8,held:bool,context:Option<otd_platform::input_owner::Poin
     let point=match context.and_then(|context|context.position){Some((x,y))=>ffi::Point{x,y},None=>{let query=Owned(unsafe{ffi::CGEventCreate(ptr::null())});if query.0.is_null(){return Err(io::Error::other("Cannot query mouse binding cursor"));}unsafe{ffi::CGEventGetLocation(query.0)}}};
     let previous=pointer.buttons;let buttons=if held{previous|(1<<button)}else{previous&!(1<<button)};
     let click_point=context.and_then(|context|context.click_position).map_or(point,|(x,y)|ffi::Point{x,y});
+    let previous_clicks=pointer.clicks;
     pointer.clicks.edge(held,click_point,Instant::now());pointer.clicks.last_button=button;
     let kind=match(button,held){(0,true)=>1,(0,false)=>2,(1,true)=>3,(1,false)=>4,(_,true)=>25,(_,false)=>26};
     let delta=context.and_then(|context|context.delta).map_or(ffi::Point::default(),|(x,y)|ffi::Point{x,y});
-    pointer.post(kind,button,point,delta,previous,buttons,flags)?;pointer.buttons=buttons;Ok(())
+    if let Err(error)=pointer.post(kind,button,point,delta,previous,buttons,flags){pointer.clicks=previous_clicks;return Err(error);}pointer.buttons=buttons;Ok(())
 })}
 pub fn movement(point:ffi::Point,delta:ffi::Point,click_point:ffi::Point,attributes:MouseAttributes,flags:u64)->io::Result<()>{with(|pointer|{
     pointer.attributes(attributes)?;pointer.clicks.movement(click_point);

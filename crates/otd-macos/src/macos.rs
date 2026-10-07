@@ -688,12 +688,13 @@ impl Mouse {
     }
 
     fn set_attributes(&mut self,attributes:otd_core::output::MouseAttributes)->io::Result<()>{
+        crate::pointer::attributes(attributes)?;
         self.position_emitted=false;self.attributes.has_position=attributes.has_position;
         if let Some(pressure)=attributes.pressure{self.attributes.pressure=Some(pressure);}
         if let Some(tilt)=attributes.tilt{self.attributes.tilt=Some(tilt);}
         if let Some(eraser)=attributes.eraser{self.attributes.eraser=Some(eraser);}
         if attributes.reset{self.contact_owner.release()?;self.contact=false;self.last_absolute=None;}
-        crate::pointer::attributes(attributes)
+        Ok(())
     }
     fn flush_attributes(&mut self)->io::Result<()>{
         if self.attributes.has_position&&!self.position_emitted{
