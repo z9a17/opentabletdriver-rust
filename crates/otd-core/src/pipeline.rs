@@ -625,6 +625,20 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
                 "nonfinite post-transform output",
             ));
         }
+        // A positional report can still be rejected by the final absolute
+        // mapping. Share this exact eligibility with stationary-pointer flush,
+        // so clipping cannot replay the previous cursor position.
+        let mapped = if self.pipeline.pen.is_none() && self.pipeline.relative.is_none()
+            && kind == ReportKind::Data && position.is_some() {
+            if let Some((x, y)) = self.unfiltered_raw {
+                self.mapper.and_then(|mapper| mapper.map(x, y))
+            } else {
+                position.and_then(|(x, y)| self.mapper.and_then(|mapper| mapper.normalize_pixels(x, y)))
+            }
+        } else { None };
+        let has_position = kind == ReportKind::Data && if self.pipeline.relative.is_some() {
+            position.is_some()
+        } else { mapped.is_some() };
         if self.pipeline.pen.is_none() {
             // Original ThresholdBindingState rewrites pressure before output.
             // Avoid a second remap when the managed binding path already did it.
@@ -638,7 +652,7 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
                 } else { pressure }
             });
             self.pipeline.buttons.pointer_attributes(MouseAttributes {
-                has_position: position.is_some(),
+                has_position,
                 pressure: if policy.disable_pressure { None } else { pressure.map(|raw| raw as f32 / self.pipeline.max_pressure.max(1) as f32) },
                 tilt: if self.pipeline.contact.disable_tilt { None } else { values.tilt },
                 eraser: values.eraser,
@@ -701,12 +715,6 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
                 .output
                 .emit_relative(delta, contact, &mut *self.send)?
         } else {
-            let mapped = if let Some((x, y)) = self.unfiltered_raw {
-                self.mapper.and_then(|mapper| mapper.map(x, y))
-            } else {
-                position
-                    .and_then(|(x, y)| self.mapper.and_then(|mapper| mapper.normalize_pixels(x, y)))
-            };
             self.pipeline
                 .output
                 .emit_mapped(mapped, contact, &mut *self.send)?
