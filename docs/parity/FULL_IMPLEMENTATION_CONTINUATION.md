@@ -1,5 +1,8 @@
 # Remaining implementation ownership
 
+Historical work assignment for the 0.18 implementation. Delivered source and
+deferred acceptance are recorded in [the completion report](IMPLEMENTATION_0.18.md).
+
 The owner requested continued full implementation parity after v0.17.1, with
 parallel agents and runtime validation deferred. The baseline stays
 OpenTabletDriver 0.6.7, revision 736003ed72c8bbb28033b039d5a0bb76c344145c.
