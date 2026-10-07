@@ -107,6 +107,7 @@ sealed class OriginalInputServices : IDisposable
         }
         public IEnumerable<string> SupportedKeys => codes.Keys;
         void Send(string key,bool held) {
+            if (key=="None") return;
             if (!codes.TryGetValue(key,out uint code)) throw new KeyNotFoundException($"Original keyboard has no key '{key}'.");
             owner.Send(new JObject { ["type"]="key",["platform"]=platform,["code"]=code,["key"]=key,["held"]=held });
         }
