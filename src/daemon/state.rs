@@ -229,8 +229,12 @@ impl Daemon {
             return Err(ControlError::new(ErrorCode::Busy, "primary device is already active or ownership is unavailable"));
         }
         let next = generation.checked_add(1).ok_or_else(|| ControlError::new(ErrorCode::Internal, "device generation exhausted"))?;
-        let text = self.device_sessions().unwrap().profile(id, generation).map_err(|error| ControlError::new(ErrorCode::InvalidProfile, error))?;
-        let (profile, text) = Self::prepare(Some(text))?;
+        let handle = self.device_sessions().unwrap();
+        let use_collection = handle.profile_uses_settings_collection(id, generation)
+            .map_err(|error| ControlError::new(ErrorCode::Conflict, error))?;
+        let text = handle.profile(id, generation).map_err(|error| ControlError::new(ErrorCode::InvalidProfile, error))?;
+        let (mut profile, text) = Self::prepare(Some(text))?;
+        profile.use_settings_collection = use_collection;
         self.begin(profile, text, true)?;
         self.device_sessions().unwrap().primary_pending(next, crate::device_sessions::SessionState::Preparing);
         Ok(crate::device_sessions::SessionReceipt { id: id.to_owned(), device_generation: generation,
