@@ -312,13 +312,14 @@ impl<'a> HidSource<'a> {
 
     /// An independently owned parser for an actually opened auxiliary endpoint.
     /// Construction failures abort startup instead of silently dropping input.
-    fn auxiliary_decoder(&mut self, selected: &SelectedDevice<'_>, prefer_original: bool) -> io::Result<Option<RuntimeDecoder>> {
+    fn auxiliary_decoder(&mut self, selected: &SelectedDevice<'_>, plugins: Option<&PluginChain>) -> io::Result<Option<RuntimeDecoder>> {
         let Some((_, identifier)) = selected.auxiliary.as_ref() else { return Ok(None); };
         if self.auxiliary.is_none() { return Ok(None); }
-        if !hid::parser_supported(identifier.parser()) && !prefer_original {
+        if !hid::parser_supported(identifier.parser()) && plugins.is_none() {
             crate::plugins::load_parser_registry().map_err(io::Error::other)?;
         }
-        RuntimeDecoder::for_graph(identifier.parser(), selected.spec, prefer_original).map(Some).map_err(io::Error::other)
+        match plugins { Some(plugins) => plugins.source_decoder(identifier.parser(), selected.spec),
+            None => RuntimeDecoder::for_parser(identifier.parser(), selected.spec) }.map(Some).map_err(io::Error::other)
     }
 
     /// Arms the high-resolution timer to signal after `wait`.
@@ -530,9 +531,8 @@ pub fn run(
     if matches!(mode, Mode::Driver) && source.needs_original_parser(selected) {
         plugins.prepare_managed_decoder().map_err(io::Error::other)?;
     }
-    let prefer_original = matches!(mode, Mode::Driver) && plugins.needs_concrete_reports();
-    let mut decoder = selected.decoder_for_graph(prefer_original)?;
-    let mut auxiliary = source.auxiliary_decoder(selected, prefer_original)?;
+    let mut decoder = if matches!(mode, Mode::Driver) { plugins.source_decoder(selected.identifier.parser(), selected.spec).map_err(io::Error::other)? } else { selected.decoder()? };
+    let mut auxiliary = source.auxiliary_decoder(selected, matches!(mode, Mode::Driver).then_some(&*plugins))?;
     if matches!(mode, Mode::Driver) && (decoder.is_managed() || auxiliary.as_ref().is_some_and(RuntimeDecoder::is_managed)) {
         plugins.prepare_managed_decoder().map_err(io::Error::other)?;
     }
@@ -690,10 +690,9 @@ impl<'a> PreparedSession<'a> {
                 }
             }
         }
-        Ok(Self {
-            source: HidSource::open(selected, notification, interrupt, true)?,
-            selected,
-        })
+        let source = HidSource::open(selected, notification, interrupt, true)?;
+        source.prepare_parsers(selected)?;
+        Ok(Self { source, selected })
     }
 
     pub fn identifiers(&self) -> Vec<DeviceIdentifier> {
@@ -754,9 +753,8 @@ impl<'a> PreparedSession<'a> {
         if source.needs_original_parser(self.selected) {
             plugins.prepare_managed_decoder().map_err(io::Error::other)?;
         }
-        let prefer_original = plugins.needs_concrete_reports();
-        let mut decoder = self.selected.decoder_for_graph(prefer_original)?;
-        let mut auxiliary = source.auxiliary_decoder(self.selected, prefer_original)?;
+        let mut decoder = plugins.source_decoder(self.selected.identifier.parser(), self.selected.spec).map_err(io::Error::other)?;
+        let mut auxiliary = source.auxiliary_decoder(self.selected, Some(&*plugins))?;
         if decoder.is_managed() || auxiliary.as_ref().is_some_and(RuntimeDecoder::is_managed) {
             plugins.prepare_managed_decoder().map_err(io::Error::other)?;
         }

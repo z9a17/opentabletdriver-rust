@@ -76,7 +76,12 @@ impl OutputSession {
     }
     pub(crate) fn new_with_identifiers(config: &PluginConfig, profile: &Profile, tablet: &TabletConfiguration,
         identifiers: Option<&[DeviceIdentifier]>) -> Result<Self, String> {
+        Self::new_for_graph(config, profile, tablet, identifiers, None)
+    }
+    pub(crate) fn new_for_graph(config: &PluginConfig, profile: &Profile, tablet: &TabletConfiguration,
+        identifiers: Option<&[DeviceIdentifier]>, graph: Option<&super::Graph>) -> Result<Self, String> {
         let mut value = envelope(config, profile, tablet, 4096, identifiers)?;
+        if let Some(graph) = graph { value["graph_context"] = serde_json::json!(graph.context_handle() as usize); }
         value["disable_pressure"] = profile.contact.disable_pressure.into(); value["disable_tilt"] = profile.contact.disable_tilt.into();
         if let Some(relative) = profile.relative {
             value["sensitivity_x"] = serde_json::json!(relative.sensitivity.0); value["sensitivity_y"] = serde_json::json!(relative.sensitivity.1);
@@ -120,10 +125,15 @@ pub(crate) fn wrap_sink_with_output(profile: &Profile, tablet: &TabletConfigurat
 }
 pub(crate) fn wrap_sink_with_identifiers(profile: &Profile, tablet: &TabletConfiguration, native: Box<dyn ActionSink>,
     output: Option<&OutputSession>, identifiers: Option<&[DeviceIdentifier]>) -> Result<Box<dyn ActionSink>, String> {
+    wrap_sink_for_graph(profile, tablet, native, output, identifiers, None)
+}
+pub(crate) fn wrap_sink_for_graph(profile: &Profile, tablet: &TabletConfiguration, native: Box<dyn ActionSink>,
+    output: Option<&OutputSession>, identifiers: Option<&[DeviceIdentifier]>, graph: Option<&super::Graph>) -> Result<Box<dyn ActionSink>, String> {
     let slots = ButtonOutput::managed_slots(profile);
     if slots.is_empty() { return Ok(native); }
     let bindings = slots.into_iter().map(|(owner, config)| {
         let mut value = envelope(&config, profile, tablet, owner, identifiers)?;
+        if let Some(graph) = graph { value["graph_context"] = serde_json::json!(graph.context_handle() as usize); }
         if let Some(output) = output { value["output_context"] = serde_json::json!(output.endpoint.context as usize); }
         let endpoint = Endpoint::create(&value, false)?;
         Ok(Binding { owner, config, endpoint, failed: false })

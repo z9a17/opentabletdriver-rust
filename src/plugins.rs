@@ -578,8 +578,8 @@ impl PluginChain {
         if !otd_core::output::buttons::ButtonOutput::managed_slots(profile).is_empty() { chain.prepare_managed_decoder()?; }
 
         if let Some(config) = profile.managed_output.as_ref().filter(|config| config.enabled) {
-            let output = crate::dotnet::endpoints::OutputSession::new_with_identifiers(config, profile, tablet, identifiers)?;
             if chain.graph.is_none() { chain.graph = graph::create_if(&chain.plugins, chain.builtin_slot, true)?; }
+            let output = crate::dotnet::endpoints::OutputSession::new_for_graph(config, profile, tablet, identifiers, chain.graph.as_ref())?;
             chain.graph.as_mut().ok_or("managed output graph was not created")?.attach_output(&output)?;
             chain.managed_output = Some(output);
         }
@@ -633,6 +633,9 @@ impl PluginChain {
     /// Original report consumers require an original parser object, including
     /// concrete type identity. Pure native profiles have no managed graph.
     pub fn needs_concrete_reports(&self) -> bool { self.graph.is_some() }
+    pub fn source_decoder(&self, name: &str, spec: otd_core::spec::TabletSpec) -> Result<crate::dotnet::RuntimeDecoder, String> {
+        crate::dotnet::RuntimeDecoder::for_pipeline(name, spec, self.graph.as_ref())
+    }
     pub fn prepare_managed_decoder(&mut self) -> Result<(), String> {
         if self.graph.is_none() { self.graph = graph::create_if(&self.plugins, self.builtin_slot, true)?; }
         Ok(())
@@ -642,7 +645,7 @@ impl PluginChain {
     /// their own real services/prerequisites rather than a native substitute.
     pub fn wrap_action_sink(&self, profile: &crate::config::Profile, tablet: &TabletConfiguration,
         native: Box<dyn otd_core::output::buttons::ActionSink>) -> Result<Box<dyn otd_core::output::buttons::ActionSink>, String> {
-        crate::dotnet::endpoints::wrap_sink_with_identifiers(profile, tablet, native, self.managed_output.as_ref(), self.identifiers.as_deref())
+        crate::dotnet::endpoints::wrap_sink_for_graph(profile, tablet, native, self.managed_output.as_ref(), self.identifiers.as_deref(), self.graph.as_ref())
     }
 
     /// The filters in the order they run and the settings they run with, for

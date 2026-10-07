@@ -54,7 +54,7 @@ sealed class TouchSnapshot : ITouchReport
 
 sealed class GraphAbort : Exception { }
 
-unsafe sealed class SynchronousGraph
+unsafe sealed class SynchronousGraph : IDisposable
 {
     internal const uint Position = 1, Tablet = 2, Eraser = 4, Tilt = 8, Proximity = 16,
         Tool = 32, Aux = 64, Mouse = 128, Absolute = 256, Relative = 512,
@@ -70,6 +70,15 @@ unsafe sealed class SynchronousGraph
     }
     [ThreadStatic] internal static IDeviceReport? CurrentReport;
     OutputInstance? managedOutput;
+    RegistryGeneration? sourceGeneration;
+    bool disposed;
+    internal RegistryGeneration? SourceGeneration { get { ObjectDisposedException.ThrowIf(disposed, this); return sourceGeneration; } }
+    public void Dispose() {
+        if (disposed) return;
+        if (running || Environment.CurrentManagedThreadId != ownerThread) throw new InvalidOperationException("Invalid graph disposal lifecycle.");
+        disposed = true;
+        if (sourceGeneration != null) { InstalledRegistry.Release(sourceGeneration); sourceGeneration = null; }
+    }
     readonly Node[] pre, post, timed;
     readonly Action<IDeviceReport> transform, output;
     readonly int ownerThread = Environment.CurrentManagedThreadId;
@@ -91,7 +100,7 @@ unsafe sealed class SynchronousGraph
     Type? shapeType, previousShapeType;
     uint shape, previousShape;
 
-    public SynchronousGraph(ReadOnlySpan<GraphNode> nodes)
+    public SynchronousGraph(ReadOnlySpan<GraphNode> nodes, bool captureRegistry = true)
     {
         if (nodes.Length > 32) throw new ArgumentException("The synchronous graph supports at most 32 filters.");
         GraphNode[] owned = nodes.ToArray();
@@ -103,6 +112,11 @@ unsafe sealed class SynchronousGraph
         timed = pre.Concat(post).Where(node => node.Filter is { HasTimers: true }).ToArray();
         Precompiler.Bridge();
         foreach (Node node in pre.Concat(post)) node.Filter?.PrecompileConsume();
+        if (captureRegistry) {
+            var generations = pre.Concat(post).Select(node => node.Filter?.SourceGeneration).Where(value => value != null).Distinct().ToArray();
+            if (generations.Length > 1) throw new InvalidOperationException("Installed registry changed while constructing the report graph; retry startup.");
+            sourceGeneration = InstalledRegistry.RetainForGraph(generations.FirstOrDefault());
+        }
     }
 
     Node[] CreateStage(GraphNode[] descriptions, uint stage, Action<IDeviceReport> end)
@@ -127,6 +141,7 @@ unsafe sealed class SynchronousGraph
         delegate* unmanaged[Cdecl]<nint, uint, uint, GraphReport*, int> native, nint nativeScope,
         bool fusedContinuations = false, IDeviceReport? originalReport = null)
     {
+        ObjectDisposedException.ThrowIf(disposed, this);
         if (running || Environment.CurrentManagedThreadId != ownerThread)
             throw new InvalidOperationException("The synchronous graph must run on its owning thread.");
         if (Volatile.Read(ref foreignOutputEmission) != 0) throw new InvalidOperationException("Managed output emitted outside its owning dispatch; the mode must be restarted.");
@@ -721,7 +736,7 @@ public static unsafe partial class EntryPoints
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static void DestroyGraph(nint context)
     {
-        try { GCHandle.FromIntPtr(context).Free(); }
+        try { var handle = GCHandle.FromIntPtr(context); ((SynchronousGraph)handle.Target!).Dispose(); handle.Free(); }
         catch (Exception error) { lastError = error.GetBaseException().Message; }
     }
 }

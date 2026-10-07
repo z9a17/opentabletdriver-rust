@@ -20,12 +20,36 @@ unsafe static class RegistryProbe
         using var filter = new Instance(new JObject { ["assembly_path"] = path, ["type_name"] = "SettingsFixture.ConcreteReportFilter", ["settings"] = new JObject(), ["tablet"] = JObject.Parse(File.ReadAllText(args[1])) });
         var handle = GCHandle.Alloc(filter);
         try {
-            var graph = new SynchronousGraph([new GraphNode { Context = GCHandle.ToIntPtr(handle), Index = 0, Stage = 1 }]);
+            using var graph = new SynchronousGraph([new GraphNode { Context = GCHandle.ToIntPtr(handle), Index = 0, Stage = 1 }]);
             byte[] wire = [7]; ParsedSourceReport projected = default;
             fixed (byte* raw = wire) if (parser.Project(raw, 1, &projected) != 1) throw new Exception("Original parser did not emit.");
             var original = ParserSession.Take(projected.Parser, projected.Sequence);
             if (original.GetType().FullName != "SettingsFixture.StatefulReport" || original.Raw[0] != 42) throw new Exception("Source parser identity/raw replaced.");
             if (graph.Dispatch(&projected.Report, &SourceOutput, 0, true, original) != 0 || sourceOutputs != 1) throw new Exception("Original object did not traverse filter/output graph.");
+            // Reload while an existing graph is retained. Parser and newly
+            // prepared binding/output must keep that graph's original types.
+            InstalledRegistry.Reload(Path.GetFullPath(args[3]));
+            using (var retained = new ParserSession("SettingsFixture.RewriteRawParser", graph.SourceGeneration, frozen: true)) {
+                ParsedSourceReport next = default; fixed (byte* raw = wire) retained.Project(raw, 1, &next);
+                var retainedReport = ParserSession.Take(next.Parser, next.Sequence);
+                if (!ReferenceEquals(retainedReport.GetType(), original.GetType())) throw new Exception("Reload mixed graph/parser type identities.");
+                if (graph.Dispatch(&next.Report, &SourceOutput, 0, true, retainedReport) != 0 || sourceOutputs != 2) throw new Exception("Retired generation report failed original graph.");
+                var graphHandle = GCHandle.Alloc(graph);
+                try {
+                    var settings = new JObject { ["assembly_path"] = path, ["type_name"] = "SettingsFixture.EndpointBinding", ["settings"] = new JObject(),
+                        ["tablet"] = JObject.Parse(File.ReadAllText(args[1])), ["keys"] = new JObject { ["A"] = 4 }, ["owner"] = 9,
+                        ["graph_context"] = (ulong)(nuint)GCHandle.ToIntPtr(graphHandle) };
+                    using var binding = new BindingInstance(settings);
+                    var instanceValue = typeof(EndpointInstance).GetProperty("Value", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(binding)!;
+                    if (!ReferenceEquals(instanceValue.GetType().Assembly, original.GetType().Assembly)) throw new Exception("Reload mixed binding/report assemblies.");
+                    binding.SetReport(retainedReport); binding.Set(true, 9); binding.Set(false, 9);
+                    settings["type_name"] = "SettingsFixture.EndpointOutput";
+                    settings["input"] = new JObject { ["Width"] = 100, ["Height"] = 100, ["X"] = 50, ["Y"] = 50 };
+                    settings["output"] = new JObject { ["Width"] = 1920, ["Height"] = 1080, ["X"] = 960, ["Y"] = 540 };
+                    using var output = new OutputInstance(settings);
+                    if (!ReferenceEquals(output.Mode.GetType().Assembly, original.GetType().Assembly)) throw new Exception("Reload mixed output/report assemblies.");
+                } finally { graphHandle.Free(); }
+            }
             try { ParserSession.Take(projected.Parser, projected.Sequence); throw new Exception("Consumed source token replayed."); } catch (InvalidOperationException) { }
             ulong prior = projected.Sequence;
             fixed (byte* raw = wire) parser.Project(raw, 1, &projected);

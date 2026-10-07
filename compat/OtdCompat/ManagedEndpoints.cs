@@ -133,7 +133,10 @@ abstract class EndpointInstance : IDisposable
     protected EndpointInstance(JObject config, Type contract)
     {
         string path = Path.GetFullPath(config.Value<string>("assembly_path") ?? throw new ArgumentException("assembly_path missing"));
-        context = new PluginLoad(path);
+        if (config.Value<ulong?>("graph_context") is { } graphHandle) {
+            var graph = (SynchronousGraph)GCHandle.FromIntPtr((nint)graphHandle).Target!;
+            context = new PluginLoad(path, graph.SourceGeneration, frozen: true);
+        } else context = new PluginLoad(path);
         Queue.Owner = config.Value<uint>("owner");
         Pointer = new SessionPointer(Queue, config.Value<bool>("relative"), config.Value<bool>("pen"));
         var keyboard = new SessionKeyboard(Queue, config["keys"] as JObject ?? new JObject());
@@ -208,7 +211,7 @@ abstract class EndpointInstance : IDisposable
 
 sealed class BindingInstance(JObject config) : EndpointInstance(config, typeof(IStateBinding))
 {
-    readonly SynchronousGraph projector = new([]);
+    readonly SynchronousGraph projector = new([], captureRegistry: false);
     IDeviceReport? report;
     bool pressed;
     public unsafe IDeviceReport Project(GraphReport* frame) { CheckThread(); return SynchronousGraph.CurrentReport ?? projector.Import(frame); }

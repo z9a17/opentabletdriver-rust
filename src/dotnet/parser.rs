@@ -13,12 +13,13 @@ use otd_core::spec::TabletSpec;
 
 #[repr(C)]
 struct ParsedSourceReport { report: GraphReport, token: ManagedReportToken }
+type CreateForGraph = unsafe extern "C" fn(*mut c_void, *const u8, i32) -> *mut c_void;
 type Parse = unsafe extern "C" fn(*mut c_void, *const u8, u32, *mut ParsedSourceReport) -> i32;
 type Dispatch = unsafe extern "C" fn(*mut c_void, u64, u64, *const GraphReport, Callback, *mut c_void, i32) -> i32;
-pub(super) struct Api { parse: Parse, dispatch: Dispatch }
+pub(super) struct Api { create: CreateForGraph, parse: Parse, dispatch: Dispatch }
 impl Api {
     pub(super) fn load(entry: &impl Fn(&str) -> Result<*mut c_void, String>) -> Result<Self, String> {
-        Ok(unsafe { Self { parse: std::mem::transmute::<*mut c_void, Parse>(entry("ParseSourceReport")?),
+        Ok(unsafe { Self { create: std::mem::transmute::<*mut c_void, CreateForGraph>(entry("CreateGraphParser")?), parse: std::mem::transmute::<*mut c_void, Parse>(entry("ParseSourceReport")?),
             dispatch: std::mem::transmute::<*mut c_void, Dispatch>(entry("DispatchParsedGraph")?) } })
     }
 }
@@ -31,6 +32,12 @@ pub struct ManagedReportParser {
     _owner_thread: PhantomData<Rc<()>>,
 }
 impl ManagedReportParser {
+    pub fn for_graph(name: &str, spec: TabletSpec, graph: &Graph) -> Result<Self, String> {
+        if name.is_empty() || name.len() > 4096 { return Err("Managed parser name length must be 1..4096".into()); }
+        let context = unsafe { (api()?.create)(graph.context_handle(), name.as_ptr(), name.len() as i32) };
+        if context.is_null() { return Err(last_error()); }
+        Ok(Self { context, spec, reset_failure: None, _owner_thread: PhantomData })
+    }
     pub fn new(name: &str, spec: TabletSpec) -> Result<Self, String> {
         if name.is_empty() || name.len() > 4096 { return Err("Managed parser name length must be 1..4096".into()); }
         api()?;
@@ -74,6 +81,12 @@ impl RuntimeDecoder {
     pub fn for_graph(name: &str, spec: TabletSpec, prefer_original: bool) -> Result<Self, String> {
         if !prefer_original && let Some(native) = TabletDecoder::for_parser(name, spec) { return Ok(Self::Native(native)); }
         ManagedReportParser::new(name, spec).map(Self::Managed)
+    }
+    pub fn for_pipeline(name: &str, spec: TabletSpec, graph: Option<&Graph>) -> Result<Self, String> {
+        match graph {
+            Some(graph) => ManagedReportParser::for_graph(name, spec, graph).map(Self::Managed),
+            None => Self::for_parser(name, spec),
+        }
     }
     pub fn is_managed(&self) -> bool { matches!(self, Self::Managed(_)) }
 }

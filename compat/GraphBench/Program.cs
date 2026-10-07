@@ -46,7 +46,7 @@ unsafe class GraphProbe
         var handle = GCHandle.Alloc(instance);
         try {
             long created = Stopwatch.GetTimestamp();
-            var graph = new SynchronousGraph(new GraphNode[] {new() {Context = GCHandle.ToIntPtr(handle), Index = 0, Stage = 1}});
+            using var graph = new SynchronousGraph(new GraphNode[] {new() {Context = GCHandle.ToIntPtr(handle), Index = 0, Stage = 1}});
             double createMs = (Stopwatch.GetTimestamp() - created) * 1e3 / Stopwatch.Frequency;
             byte[] bytes = new byte[192]; bytes[0] = 0x10;
             var micros = new List<double>();
@@ -83,7 +83,7 @@ unsafe class GraphProbe
         });
         var handle = GCHandle.Alloc(instance);
         try {
-            var graph = new SynchronousGraph(new GraphNode[] {new() {Context = GCHandle.ToIntPtr(handle), Index = 0, Stage = 1}});
+            using var graph = new SynchronousGraph(new GraphNode[] {new() {Context = GCHandle.ToIntPtr(handle), Index = 0, Stage = 1}});
             byte[] bytes = new byte[17]; bytes[0] = 0x10;
             fixed (byte* raw = bytes) {
                 GraphReport input = new() {Version = 2, Size = (uint)sizeof(GraphReport), Raw = raw, RawLength = 17,
@@ -130,7 +130,7 @@ unsafe class GraphProbe
         });
         var timerHandle = GCHandle.Alloc(timedInstance);
         try {
-            var graph = new SynchronousGraph(new GraphNode[] {new() {Context = GCHandle.ToIntPtr(timerHandle), Index = 0, Stage = 1}});
+            using var graph = new SynchronousGraph(new GraphNode[] {new() {Context = GCHandle.ToIntPtr(timerHandle), Index = 0, Stage = 1}});
             for (int i = 0; i < 10000; i++) graph.NextTickMicros();
             for (int trial = 0; trial < 3; trial++) {
                 long allocated = GC.GetAllocatedBytesForCurrentThread(), started = Stopwatch.GetTimestamp();

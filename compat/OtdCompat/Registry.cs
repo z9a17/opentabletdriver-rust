@@ -96,19 +96,23 @@ static class InstalledRegistry
         }
         catch { next.Dispose(); throw; }
     }
-    internal static RegistryGeneration? AcquirePath(string path)
-    {
-        lock (Gate) { if (current == null || !current.Assemblies.ContainsKey(path)) return null; current.References++; return current; }
+    internal static RegistryGeneration? RetainForGraph(RegistryGeneration? selected) {
+        lock (Gate) { var source = selected ?? current; if (source != null) source.References++; return source; }
     }
-    internal static (Type Type, RegistryGeneration? Generation) AcquireParser(string name)
+    internal static RegistryGeneration? AcquirePath(string path, RegistryGeneration? selected = null, bool frozen = false)
+    {
+        lock (Gate) { var source = frozen ? selected : current; if (source == null || !source.Assemblies.ContainsKey(path)) return null; source.References++; return source; }
+    }
+    internal static (Type Type, RegistryGeneration? Generation) AcquireParser(string name, RegistryGeneration? selected = null, bool frozen = false)
     {
         lock (Gate)
         {
-            if (current != null && current.Types.TryGetValue(name, out var entries))
+            var source = frozen ? selected : current;
+            if (source != null && source.Types.TryGetValue(name, out var entries))
             {
                 var matches = entries.Where(type => typeof(IReportParser<IDeviceReport>).IsAssignableFrom(type)).ToArray();
                 if (matches.Length > 1) throw new InvalidOperationException($"Parser '{name}' occurs in multiple installed DLLs.");
-                if (matches.Length == 1) { current.References++; return (matches[0], current); }
+                if (matches.Length == 1) { source.References++; return (matches[0], source); }
             }
             if (BuiltinParsers.TryGetValue(name, out var builtin)) return (builtin, null);
             throw new KeyNotFoundException($"Parser '{name}' is not in the loaded installed registry or pinned Configurations assembly.");
@@ -135,9 +139,10 @@ sealed class PluginLoad
     readonly RegistryGeneration? generation;
     readonly PluginContext? context;
     int disposed;
-    internal PluginLoad(string path)
+    internal RegistryGeneration? Generation => generation;
+    internal PluginLoad(string path, RegistryGeneration? selected = null, bool frozen = false)
     {
-        generation = InstalledRegistry.AcquirePath(path);
+        generation = InstalledRegistry.AcquirePath(path, selected, frozen);
         if (generation == null) context = new PluginContext(path);
     }
     internal Assembly LoadFromAssemblyPath(string path) => generation?.Assemblies[path] ?? context!.LoadFromAssemblyPath(path);
@@ -156,7 +161,7 @@ sealed class ParserSession : IDisposable
     static long nextId;
     static readonly ConcurrentDictionary<ulong, ParserSession> Sources = new();
     internal readonly ulong Id;
-    readonly SynchronousGraph projector = new([]);
+    readonly SynchronousGraph projector = new([], captureRegistry: false);
     IDeviceReport? sourceReport;
     ulong sourceSequence;
     bool sourceConsumed = true;
@@ -167,9 +172,9 @@ sealed class ParserSession : IDisposable
     IReportParser<IDeviceReport>? parser;
     bool disposed;
     internal byte[]? Pending { get; private set; }
-    internal ParserSession(string name)
+    internal ParserSession(string name, RegistryGeneration? selected = null, bool frozen = false)
     {
-        (type, generation) = InstalledRegistry.AcquireParser(name);
+        (type, generation) = InstalledRegistry.AcquireParser(name, selected, frozen);
         try {
             Reset();
             long id = Interlocked.Increment(ref nextId);
@@ -275,6 +280,17 @@ public static unsafe partial class EntryPoints
             var parser = new ParserSession(Encoding.UTF8.GetString(new ReadOnlySpan<byte>(name, length)));
             return GCHandle.ToIntPtr(GCHandle.Alloc(parser));
 
+        }
+        catch (Exception error) { lastError = error.GetBaseException().Message; return 0; }
+    }
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static nint CreateGraphParser(nint graph, byte* name, int length)
+    {
+        try {
+            if (name == null || length < 1 || length > 4096) throw new ArgumentException("Invalid parser name.");
+            var pipeline = (SynchronousGraph)GCHandle.FromIntPtr(graph).Target!;
+            var parser = new ParserSession(Encoding.UTF8.GetString(new ReadOnlySpan<byte>(name, length)), pipeline.SourceGeneration, frozen: true);
+            return GCHandle.ToIntPtr(GCHandle.Alloc(parser));
         }
         catch (Exception error) { lastError = error.GetBaseException().Message; return 0; }
     }

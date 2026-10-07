@@ -152,6 +152,7 @@ sealed class Instance : IDisposable
     readonly bool providerTimers;
     public PipelinePosition Position { get; }
     public bool HasTimers => timers.Count != 0 || providerTimers;
+    internal RegistryGeneration? SourceGeneration => context.Generation;
 
     public Instance(JObject config)
     {

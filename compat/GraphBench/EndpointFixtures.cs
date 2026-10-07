@@ -64,7 +64,7 @@ unsafe static class EndpointProbe
         config["input"] = new JObject { ["Width"] = 100, ["Height"] = 100, ["X"] = 50, ["Y"] = 50 };
         config["output"] = new JObject { ["Width"] = 1920, ["Height"] = 1080, ["X"] = 960, ["Y"] = 540 };
         using var output = new OutputInstance(config);
-        var graph = new SynchronousGraph([]); graph.AttachOutput(output);
+        using var graph = new SynchronousGraph([]); graph.AttachOutput(output);
         byte[] bytes = new byte[] { 1, 2, 3 };
         fixed (byte* raw = bytes)
         {
