@@ -2,7 +2,7 @@
 //! hidden owner and synthetic device results. No app startup or daemon client.
 use super::*;
 
-fn fixture(hwnd: HWND) -> App {
+pub(super) fn fixture(hwnd: HWND) -> App {
     let null = ptr::null_mut();
     let fonts = FontSet::new(96);
     LOOK.with(|slot| *slot.borrow_mut() = Some(Look {
@@ -30,7 +30,7 @@ fn fixture(hwnd: HWND) -> App {
         profile_path: PathBuf::new(), profile_snapshot: None, profile_revision_floor: 0,
         recovered_backup: false, dirty: false, selected_filter: 0, properties: Vec::new(),
         plugin_metadata: HashMap::new(), metadata_pending: HashMap::new(), metadata_versions: HashMap::new(),
-        metadata_generation: 0, metadata_refresh_deferred: false, edit_revision: 0,
+        metadata_generation: 0, metadata_refresh_deferred: false, edit_revision: 0, managed_token: managed_settings::new_token(),
         background_tx, background_rx, device_scan: background::DeviceScan::default(),
         device_strings_pending: false, import_pending: false, diagnostics_pending: false,
         connected_tablets: Vec::new(), binding_rows: Vec::new(), wheel_fields: Vec::new(),

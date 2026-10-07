@@ -837,7 +837,7 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
             with_app(App::read_device_strings);
         }
         ID_MODE => {
-            let mode = with_app(|app| (app.editor.mode(), app.editor.pen()));
+            let mode = with_app(|app| app.editor.profile.managed_output.is_none().then(|| (app.editor.mode(), app.editor.pen()))).flatten();
             let menu = unsafe { CreatePopupMenu() };
             append(
                 menu,
@@ -858,7 +858,9 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
                 3,
                 PEN_MODE_LABEL,
             );
+            append(menu, 0, 4, "Managed output mode...");
             match popup(window, menu, control) {
+                4 => managed_settings::choose(window, control, managed_settings::Target::Output),
                 1 => {
                     with_app(|app| app.set_output_mode(OutputMode::Absolute, false));
                 }
@@ -874,15 +876,18 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         ID_TIP_BINDING | ID_ERASER_BINDING => {
             let eraser = id == ID_ERASER_BINDING;
             let enabled = with_app(|app| app.editor.binding_enabled(eraser)).unwrap_or(true);
+            let managed = with_app(|app| if eraser { app.editor.profile.managed_eraser_binding.is_some() } else { app.editor.profile.managed_tip_binding.is_some() }).unwrap_or(false);
             let menu = unsafe { CreatePopupMenu() };
             append(
                 menu,
-                MFT_RADIOCHECK | checked(enabled),
+                MFT_RADIOCHECK | checked(enabled && !managed),
                 1,
                 if eraser { "Eraser" } else { "Tip" },
             );
-            append(menu, MFT_RADIOCHECK | checked(!enabled), 2, "None");
+            append(menu, MFT_RADIOCHECK | checked(!enabled && !managed), 2, "None");
+            append(menu, 0, 3, "Managed binding...");
             match popup(window, menu, control) {
+                3 => managed_settings::choose(window, control, if eraser { managed_settings::Target::Eraser } else { managed_settings::Target::Tip }),
                 1 => {
                     with_app(|app| app.set_binding(eraser, true));
                 }

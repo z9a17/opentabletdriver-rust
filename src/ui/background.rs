@@ -107,6 +107,7 @@ impl App {
         let mut dialog = None;
         while let Ok(event) = self.background_rx.try_recv() {
             match event {
+                BackgroundResult::Managed { guard, result } => managed_settings::inspected(self, guard, result),
                 BackgroundResult::Metadata {
                     generation,
                     revision,
@@ -132,6 +133,7 @@ impl App {
                                 }
                             }
                             if add {
+                                let entries: Vec<_> = entries.into_iter().filter(|entry| auto_add_metadata(&entry.metadata)).collect();
                                 if entries.is_empty() {
                                     self.metadata_changed();
                                     self.log(
@@ -202,8 +204,9 @@ impl App {
                     if !entries.is_empty() {
                         let mut metadata_by_path: HashMap<PathBuf, Vec<FilterMetadata>> = HashMap::new();
                         for entry in entries {
+                            let auto_add = auto_add_metadata(&entry.metadata);
                             metadata_by_path.entry(entry.config.path.clone()).or_default().push(entry.metadata);
-                            configs.push(entry.config);
+                            if auto_add { configs.push(entry.config); }
                         }
                         for (path, metadata) in metadata_by_path {
                             let inspected = canonical_alias(&path, &aliases);
@@ -569,4 +572,19 @@ pub(super) fn within_folder(path: &Path, folder: &Path) -> bool {
     let path = normalize(path);
     let folder = normalize(folder);
     path == folder || path.starts_with(&(folder.trim_end_matches('\\').to_owned() + "\\"))
+}
+
+fn auto_add_metadata(metadata: &FilterMetadata) -> bool { metadata.supported && matches!(metadata.category.as_str(), "filter" | "tool") }
+
+#[cfg(test)]
+mod managed_category_tests {
+    use super::*;
+    #[test]
+    fn only_supported_filters_and_tools_are_automatically_added() {
+        for category in ["output", "binding", "other"] { assert!(!auto_add_metadata(&FilterMetadata { category: category.into(), ..Default::default() })); }
+        for category in ["filter", "tool"] {
+            assert!(auto_add_metadata(&FilterMetadata { category: category.into(), ..Default::default() }));
+            assert!(!auto_add_metadata(&FilterMetadata { category: category.into(), supported: false, ..Default::default() }));
+        }
+    }
 }

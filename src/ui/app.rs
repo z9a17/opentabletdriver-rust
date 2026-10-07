@@ -213,6 +213,7 @@ impl App {
             metadata_generation: 0,
             metadata_refresh_deferred: false,
             edit_revision: 0,
+            managed_token: managed_settings::new_token(),
             background_tx,
             background_rx,
             device_scan: background::DeviceScan::default(),
@@ -602,7 +603,8 @@ impl App {
             OutputMode::Absolute => "Absolute Mode",
             OutputMode::Relative => "Relative Mode",
         };
-        set_text(self.c.mode, label);
+        let managed = self.editor.profile.managed_output.as_ref().map(|config| format!("Managed: {}", model::plugin_name(config)));
+        set_text(self.c.mode, managed.as_deref().unwrap_or(label));
     }
 
     pub(super) fn sync_areas(&mut self, skip: Option<HWND>) {
@@ -667,11 +669,9 @@ impl App {
             let name = if eraser { "Eraser" } else { "Tip" };
             set_text(
                 binding,
-                if self.editor.binding_enabled(eraser) {
-                    name
-                } else {
-                    "None"
-                },
+                &if let Some(config) = if eraser { &self.editor.profile.managed_eraser_binding } else { &self.editor.profile.managed_tip_binding } {
+                    format!("Managed: {}", model::plugin_name(config))
+                } else if self.editor.binding_enabled(eraser) { name.into() } else { "None".into() },
             );
             let percent = self.editor.threshold_percent(eraser);
             if Some(slider) != skip {
@@ -1620,7 +1620,8 @@ impl App {
 
     pub(super) fn set_output_mode(&mut self, mode: OutputMode, pen: bool) {
         let pen = pen && mode == OutputMode::Absolute;
-        if self.editor.mode() != mode || self.editor.pen() != pen {
+        let managed = self.editor.profile.managed_output.take().is_some();
+        if managed || self.editor.mode() != mode || self.editor.pen() != pen {
             self.editor.set_mode(mode, &self.displays);
             self.editor.set_pen(pen, &self.displays);
             self.mark_dirty();
@@ -1643,7 +1644,8 @@ impl App {
     }
 
     pub(super) fn set_binding(&mut self, eraser: bool, enabled: bool) {
-        if self.editor.binding_enabled(eraser) != enabled {
+        let managed = if eraser { self.editor.profile.managed_eraser_binding.take().is_some() } else { self.editor.profile.managed_tip_binding.take().is_some() };
+        if managed || self.editor.binding_enabled(eraser) != enabled {
             self.editor.set_binding_enabled(eraser, enabled);
             self.mark_dirty();
             self.sync_pen(None);
@@ -1950,6 +1952,7 @@ impl App {
         experimental::refresh_theme();
         shortcut::refresh_theme();
         accent::refresh_theme();
+        managed_settings::refresh_theme();
         let mut scrolling = vec![self.c.filter_list, self.c.log];
         if !self.tooltip.is_null() {
             scrolling.push(self.tooltip);

@@ -31,6 +31,7 @@ mod draw;
 mod experimental;
 mod layout;
 mod model;
+mod managed_settings;
 mod paint;
 mod plugin_manager;
 mod presets;
@@ -195,6 +196,7 @@ const WM_TRAY: u32 = WM_APP + 6;
 const WM_BACKGROUND: u32 = WM_APP + 7;
 const WM_METADATA_REFRESH: u32 = WM_APP + 8;
 const WM_EXPERIMENTAL_APPLY: u32 = WM_APP + 9;
+const WM_MANAGED_SETTINGS: u32 = WM_APP + 10;
 
 const PANEL_CLASS: &str = "OpenTabletDriverRustControlPanel";
 const PANEL_MUTEX: &str = "Local\\OpenTabletDriverRustPanel";
@@ -697,6 +699,7 @@ struct Controls {
 }
 
 enum BackgroundResult {
+    Managed { guard: managed_settings::Guard, result: Result<Vec<crate::dotnet::InspectedFilter>, String> },
     Metadata {
         generation: u64,
         revision: u64,
@@ -767,6 +770,7 @@ struct App {
     metadata_generation: u64,
     metadata_refresh_deferred: bool,
     edit_revision: u64,
+    managed_token: u64,
     background_tx: std::sync::mpsc::Sender<BackgroundResult>,
     background_rx: std::sync::mpsc::Receiver<BackgroundResult>,
     device_scan: background::DeviceScan,
@@ -1184,6 +1188,7 @@ unsafe extern "system" fn window_proc(
             with_app(App::driver_status);
             0
         }
+        WM_MANAGED_SETTINGS => { managed_settings::open_ready(window); 0 }
         WM_BACKGROUND => {
             if let Some(text) = with_app(App::background_results).flatten() {
                 // Modal dialogs pump messages; release the App borrow first.
