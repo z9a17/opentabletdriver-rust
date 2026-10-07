@@ -666,17 +666,16 @@ impl Mouse {
         };
         let contact = if packet.flags & flags::LEFTDOWN != 0 { true }
             else if packet.flags & flags::LEFTUP != 0 { false } else { self.contact };
-        let was_left=otd_platform::input_owner::button_down(0);
         if packet.flags&(flags::LEFTDOWN|flags::LEFTUP)!=0{self.contact_owner.hold_at(otd_platform::input_owner::Code::Button(0),contact,Some((position.x,position.y)))?;}
         self.buttons=otd_platform::input_owner::buttons();let left=self.buttons&1!=0;
-        if !moving || was_left!=left {
+        if !moving {
             self.contact = contact;
             self.last_position=Some(position);if moving{self.last_absolute=absolute.then_some(position);}
             return Ok(());
         }
-        let (event, kind, button) = if !was_left && left { (self.down.0, 1, 0) }
-            else if was_left && !left { (self.up.0, 2, 0) }
-            else if left { (self.dragged.0, 6, 0) }
+        // Shared ownership emits contact edges. Every moving packet still
+        // updates the cursor even if another input scope changes its buttons.
+        let (event, kind, button) = if left { (self.dragged.0, 6, 0) }
             else if self.buttons & 2 != 0 { (self.dragged.0, 7, 1) }
             else if self.buttons & 0x1c != 0 { (self.dragged.0, 27, (self.buttons & 0x1c).trailing_zeros()) }
             else { (self.moved.0, 5, 0) };
@@ -804,11 +803,21 @@ pub fn action_sink(mouse: Rc<RefCell<Mouse>>) -> io::Result<Box<dyn ActionSink>>
     Ok(Box::new(LocalActions::new(move |transition:ActionTransition|{
         let code=match transition.action{Action::Key(key)=>otd_platform::input_owner::Code::Key(crate::keymap::key_code(key).ok_or_else(||io::Error::new(io::ErrorKind::Unsupported,"Unsupported macOS keyboard usage"))?),
             Action::Mouse(button)=>otd_platform::input_owner::Code::Button(match button{MouseButton::Left=>0,MouseButton::Right=>1,MouseButton::Middle=>2,MouseButton::Backward=>3,MouseButton::Forward=>4})};
-        owner.hold(code,transition.pressed)
+        let action=match transition.action{Action::Key(key)=>key.usage() as u32,Action::Mouse(_)=>0x10000+match code{otd_platform::input_owner::Code::Button(button)=>button as u32,_=>unreachable!()}};
+        owner.hold_action(action,code,transition.pressed,None)
     },
         |action| match action { Action::Mouse(_) => true, Action::Key(key) => crate::keymap::key_code(key).is_some() })
         .with_scroll(move |pulse| scroll.borrow_mut().send_scroll(pulse))))
 }
+impl otd_platform::managed_source::NativeSource for HidSource<'_>{
+    fn tablet(&self,value:serde_json::Value){HidSource::tablet(self,value)}
+    fn initialized(&self){HidSource::initialized(self)}
+    fn waits(&self)->[libc::pollfd;3]{[libc::pollfd{fd:-1,events:0,revents:0},
+        libc::pollfd{fd:self.services.as_ref().map_or(-1,|services|services.wake().raw()),events:libc::POLLIN,revents:0},
+        libc::pollfd{fd:self.registration.as_ref().map_or(-1,|registration|registration.endpoint.output.reader_wake().raw()),events:libc::POLLIN,revents:0}]}
+    fn pump_native(&mut self,timeout:Duration)->io::Result<()>{self.pump(timeout.min(Duration::from_millis(50)));Ok(())}
+}
+impl otd_platform::paired_source::Retire for HidSource<'_>{}
 
 // CGEvent objects can be posted from any thread. The shared owner mutex is the
 // sole accessor; no CFRunLoop or tablet-thread resource is borrowed here.

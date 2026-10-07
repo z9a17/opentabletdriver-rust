@@ -8,7 +8,7 @@ use crate::managed_services::Operation;
 pub enum Code {Key(u16),Button(u8)}
 impl Code {fn index(self)->io::Result<usize>{match self{Self::Key(code)if code<768=>Ok(code as usize),Self::Button(button)if button<5=>Ok(768+button as usize),_=>Err(io::Error::new(io::ErrorKind::InvalidInput,"Input code exceeds supported OS domain"))}}}
 #[derive(Clone,Copy,PartialEq,Eq)]
-enum Owner {Native(u64),Managed(u64)}
+enum Owner {Native(u64,u32),Managed(u64)}
 #[derive(Clone,Copy)]
 struct Hold {owner:Owner,index:usize}
 type Writer=Box<dyn FnMut(Code,bool,Option<(f64,f64)>)->io::Result<()>+Send>;
@@ -39,6 +39,7 @@ impl State {
         }}}Ok(())
     }
     fn release(&mut self,owner:Owner)->io::Result<()>{for hold in &mut self.holds{if hold.is_some_and(|hold|hold.owner==owner){let index=hold.take().unwrap().index;self.desired[index]-=1;}}self.flush()}
+    fn release_native(&mut self,id:u64)->io::Result<()>{for hold in &mut self.holds{if hold.is_some_and(|hold|matches!(hold.owner,Owner::Native(owner,_)if owner==id)){let index=hold.take().unwrap().index;self.desired[index]-=1;}}self.flush()}
 }
 static STATE:OnceLock<Mutex<State>>=OnceLock::new();
 fn state()->&'static Mutex<State>{STATE.get_or_init(||Mutex::new(State{holds:[None;4096],desired:[0;773],emitted:[false;773],positions:[None;773],writer:None,leases:BTreeMap::new()}))}
@@ -49,8 +50,11 @@ pub struct Native {id:u64}
 impl Native {
     pub fn new()->io::Result<Self>{static NEXT:AtomicU64=AtomicU64::new(1);let id=NEXT.fetch_update(Ordering::Relaxed,Ordering::Relaxed,|id|id.checked_add(1)).map_err(|_|io::Error::other("Input owner IDs exhausted"))?;Ok(Self{id})}
     pub fn hold(&self,code:Code,held:bool)->io::Result<()>{self.hold_at(code,held,None)}
-    pub fn hold_at(&self,code:Code,held:bool,position:Option<(f64,f64)>)->io::Result<()>{state().lock().map_err(|_|io::Error::other("Shared input ownership poisoned"))?.hold(Owner::Native(self.id),code,held,position)}
-    pub fn release(&self)->io::Result<()>{state().lock().map_err(|_|io::Error::other("Shared input ownership poisoned"))?.release(Owner::Native(self.id))}
+    pub fn hold_at(&self,code:Code,held:bool,position:Option<(f64,f64)>)->io::Result<()>{self.hold_action(0,code,held,position)}
+    /// LocalActions merges bindings per portable action. Preserve that action's
+    /// identity here: two distinct portable keys can alias one OS key code.
+    pub fn hold_action(&self,action:u32,code:Code,held:bool,position:Option<(f64,f64)>)->io::Result<()>{state().lock().map_err(|_|io::Error::other("Shared input ownership poisoned"))?.hold(Owner::Native(self.id,action),code,held,position)}
+    pub fn release(&self)->io::Result<()>{state().lock().map_err(|_|io::Error::other("Shared input ownership poisoned"))?.release_native(self.id)}
 }
 impl Drop for Native {fn drop(&mut self){if let Err(error)=self.release(){eprintln!("Shared native input cleanup failed: {error}");}}}
 pub fn button_down(button:u8)->bool{state().lock().ok().is_some_and(|state|button<5&&state.emitted[768+button as usize])}

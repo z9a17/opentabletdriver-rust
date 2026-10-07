@@ -333,7 +333,7 @@ impl<'a> Hidraw<'a> {
     }
     pub fn initialized(&self){if let Some(registration)=&self.registration{registration.endpoint.initialized.store(true,Ordering::Release);}}
     pub fn tablet(&self,tablet:serde_json::Value){if let Some(registration)=&self.registration{registration.tablet(tablet);}}
-    fn waits(&self)->[libc::pollfd;3]{[
+    pub fn waits(&self)->[libc::pollfd;3]{[
         libc::pollfd{fd:self.file.as_raw_fd(),events:libc::POLLIN,revents:0},
         libc::pollfd{fd:self.services.as_ref().map_or(-1,|services|services.wake().raw()),events:libc::POLLIN,revents:0},
         libc::pollfd{fd:self.registration.as_ref().map_or(-1,|registration|registration.endpoint.output.reader_wake().raw()),events:libc::POLLIN,revents:0}]}
@@ -453,6 +453,13 @@ impl ReportSource for Hidraw<'_> {
 }
 
 const UI_SET_EVBIT: u32 = ioc(WRITE, b'U', 100, size_of::<libc::c_int>());
+impl otd_platform::managed_source::NativeSource for Hidraw<'_>{
+    fn tablet(&self,value:serde_json::Value){Hidraw::tablet(self,value)}
+    fn initialized(&self){Hidraw::initialized(self)}
+    fn waits(&self)->[libc::pollfd;3]{Hidraw::waits(self)}
+    fn pump_native(&mut self,timeout:Duration)->io::Result<()>{Hidraw::wait_pair(self,None,timeout)}
+}
+impl otd_platform::paired_source::Retire for Hidraw<'_>{}
 const UI_SET_KEYBIT: u32 = ioc(WRITE, b'U', 101, size_of::<libc::c_int>());
 const UI_SET_RELBIT: u32 = ioc(WRITE, b'U', 102, size_of::<libc::c_int>());
 const UI_SET_ABSBIT: u32 = ioc(WRITE, b'U', 103, size_of::<libc::c_int>());
@@ -703,7 +710,7 @@ pub fn action_sink(
         move |transition: ActionTransition|{let code=match transition.action{
             Action::Mouse(button)=>otd_platform::input_owner::Code::Button(match button{MouseButton::Left=>0,MouseButton::Right=>1,MouseButton::Middle=>2,MouseButton::Backward=>3,MouseButton::Forward=>4}),
             Action::Key(key)=>otd_platform::input_owner::Code::Key(crate::keymap::key_code(key).ok_or_else(||io::Error::new(io::ErrorKind::Unsupported,"No evdev key for this usage"))?),
-        };owner.hold(code,transition.pressed)},
+        };let action=match transition.action{Action::Key(key)=>key.usage() as u32,Action::Mouse(_)=>0x10000+code_index(code)};owner.hold_action(action,code,transition.pressed,None)},
         move |action| match action {
             Action::Mouse(_) => supports_mouse,
             Action::Key(key) => supports_keys && crate::keymap::key_code(key).is_some(),
@@ -720,6 +727,7 @@ pub fn ensure_shared_inputs()->io::Result<()>{otd_platform::input_owner::ensure(
         otd_platform::input_owner::Code::Button(button)=>[0x110,0x111,0x112,0x113,0x114][button as usize],
     },held)))
 })}
+fn code_index(code:otd_platform::input_owner::Code)->u32{match code{otd_platform::input_owner::Code::Key(code)=>code as u32,otd_platform::input_owner::Code::Button(button)=>button as u32}}
 
 impl Drop for Uinput {
     fn drop(&mut self) {
