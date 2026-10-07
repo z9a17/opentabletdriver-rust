@@ -16,7 +16,10 @@ struct Published {
     retained: Option<Arc<Value>>,
     projection_pending: bool,
 }
-struct NativeBackend { stopped: Arc<AtomicBool>, published: Mutex<Published> }
+struct NativeBackend {
+    stopped: Arc<AtomicBool>, published: Mutex<Published>, activated: AtomicBool,
+    observer_thread: OnceLock<std::thread::Thread>,
+}
 
 pub struct Owner {
     host: Option<Host>,
@@ -37,7 +40,8 @@ impl Owner {
             application_info: crate::upstream_rpc::original_application_info().ok(),
             configurations, tablets: Some(json!([])), ..Snapshot::default() };
         let stop = Arc::new(AtomicBool::new(false));
-        let backend = Arc::new(NativeBackend { stopped: Arc::clone(&stop), published: Mutex::new(Published {
+        let backend = Arc::new(NativeBackend { stopped: Arc::clone(&stop), activated: AtomicBool::new(false),
+            observer_thread: OnceLock::new(), published: Mutex::new(Published {
             publisher: None, snapshot: snapshot.clone(), last_devices: None, sessions: Vec::new(),
             retained: crate::upstream_rpc::cached_original_settings(),
             projection_pending: true,
@@ -49,12 +53,17 @@ impl Owner {
         let observer_stop = Arc::clone(&stop);
         let observer = std::thread::Builder::new().name("managed-service-state".into()).spawn(move || {
             while !observer_stop.load(Ordering::Acquire) && !cancelled.load(Ordering::Acquire) {
+                if !observer_backend.activated.load(Ordering::Acquire) {
+                    std::thread::park();
+                    continue;
+                }
                 // Native-only profiles do not initialize CLR, enumerate devices
                 // or send recurring control requests for managed services.
                 if crate::dotnet::initialized() { let _ = observer_backend.refresh(false, false, true); }
                 std::thread::park_timeout(Duration::from_millis(250));
             }
         }).map_err(|error| error.to_string())?;
+        let _ = backend.observer_thread.set(observer.thread().clone());
         Ok(Self { host: Some(host), stop, observer: Some(observer), backend })
     }
 }
@@ -81,7 +90,11 @@ pub fn prime() {
     // request back to that handler here would wait on its own control thread.
     // Seed only cold metadata; the background observer projects live settings
     // once CLR initialization has completed.
-    if let Some(backend) = backend { let _ = backend.prime_metadata(); }
+    if let Some(backend) = backend {
+        let _ = backend.prime_metadata();
+        backend.activated.store(true, Ordering::Release);
+        if let Some(observer) = backend.observer_thread.get() { observer.unpark(); }
+    }
 }
 fn call(command: Command) -> Result<Reply, String> {
     let response = control::request_owned(&control::Request::new(1, command), Duration::from_secs(2), std::process::id())
