@@ -233,8 +233,13 @@ impl Daemon {
         let use_collection = handle.profile_uses_settings_collection(id, generation)
             .map_err(|error| ControlError::new(ErrorCode::Conflict, error))?;
         let text = handle.profile(id, generation).map_err(|error| ControlError::new(ErrorCode::InvalidProfile, error))?;
-        let (mut profile, text) = Self::prepare(Some(text))?;
+        let (mut profile, _) = Self::prepare(Some(text))?;
         profile.use_settings_collection = use_collection;
+        if use_collection {
+            profile = handle.effective_profile(id, &profile, true)
+                .map_err(|error| ControlError::new(ErrorCode::InvalidProfile, error))?;
+        }
+        let text = profile.to_toml().map_err(|error| ControlError::new(ErrorCode::InvalidProfile, error))?;
         self.begin(profile, text, true)?;
         self.device_sessions().unwrap().primary_pending(next, crate::device_sessions::SessionState::Preparing);
         Ok(crate::device_sessions::SessionReceipt { id: id.to_owned(), device_generation: generation,
