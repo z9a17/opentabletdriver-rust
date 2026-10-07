@@ -122,6 +122,7 @@ pub(super) struct Daemon {
     upstream_logs: VecDeque<(control::UpstreamLogMessage, usize)>,
     upstream_log_bytes: usize,
     update_reservation: Option<String>,
+    plugin_update: Option<crate::plugin_manager::UpdateReservation>,
     tool_drain: Option<crate::tool_host::Completion>,
     tool_resume: Option<crate::tool_host::Completion>,
     next_update: u64,
@@ -162,6 +163,7 @@ impl Daemon {
             upstream_logs: VecDeque::new(),
             upstream_log_bytes: 0,
             update_reservation: None,
+            plugin_update: None,
             tool_drain: None,
             tool_resume: None,
             next_update: 0,
@@ -1145,11 +1147,14 @@ impl ControlHandler for Daemon {
             Command::BeginUpdate { expected } => {
                 self.check_identity(&expected)?;
                 if self.update_reservation.is_some() { return Err(ControlError::new(ErrorCode::Busy, "another update is already reserved")); }
+                let plugin_update = crate::plugin_manager::reserve_update()
+                    .map_err(|error| ControlError::new(ErrorCode::Busy, error))?;
                 self.next_update = self.next_update.checked_add(1)
                     .ok_or_else(|| ControlError::new(ErrorCode::Internal, "update reservation sequence exhausted"))?;
                 let token = format!("{}:update:{}", self.instance, self.next_update);
                 self.tool_drain=Some(crate::tool_host::suspend().map_err(|error|ControlError::new(ErrorCode::StopFailed,error))?);
                 self.update_reservation = Some(token.clone());
+                self.plugin_update = Some(plugin_update);
                 if let Err(error) = self.stop_all() {
                     self.remember_cleanup_error(error);
                 }
@@ -1179,6 +1184,7 @@ impl ControlHandler for Daemon {
                         Some(Ok(()))=>{}
                     }
                     self.update_reservation = None;
+                    self.plugin_update = None;
                     self.tool_drain=None;
                     self.tool_resume=None;
                     self.log("Update cancelled. Tablet input remains stopped; Start driver explicitly resumes it.".into());

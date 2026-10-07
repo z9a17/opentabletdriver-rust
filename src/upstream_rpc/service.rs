@@ -621,6 +621,13 @@ fn operating_system() -> Result<Value, Error> {
 }
 impl Service for Connection {
     fn invoke(&mut self, method: &str, params: &Value) -> Result<Value, Error> {
+        // Console calls bypass the managed backend's plugin-manager entry point.
+        // Count them through registry publication/default-store construction, so
+        // BeginUpdate cannot race a previously accepted cold CLR/file mutation.
+        let _plugin_admission = if crate::plugin_manager::is_operation(method)
+            || matches!(method, "GetPluginTypes" | "ConstructPluginStore") {
+            Some(crate::plugin_manager::admit()?)
+        } else { None };
         // If the constructor raced initial native-pipe startup, establish the
         // baseline before any first method can append logs or mutate state.
         if METHODS.contains(&method) { self.establish_log_cursor()?; }

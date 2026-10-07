@@ -2,10 +2,43 @@
 //! Called on service worker threads; native report paths never enter this module.
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
+use std::sync::Mutex;
 use serde_json::{Value, json};
 
+#[derive(Default)]
+struct AdmissionState { calls: usize, update: bool }
+static ADMISSION: Mutex<AdmissionState> = Mutex::new(AdmissionState { calls: 0, update: false });
+
+/// Cold service admission, never held as a mutex across a plugin constructor.
+/// The update owner fails Busy rather than waiting on a callback that may itself
+/// need the native control thread. Accepted operations finish before reservation.
+pub(crate) struct Admission;
+impl Drop for Admission {
+    fn drop(&mut self) { if let Ok(mut state) = ADMISSION.lock() { state.calls -= 1; } }
+}
+pub(crate) fn admit() -> Result<Admission, String> {
+    let mut state = ADMISSION.lock().map_err(|_| "Plugin admission lock poisoned")?;
+    if state.update { return Err("Plugin operations are reserved for update".into()); }
+    state.calls = state.calls.checked_add(1).ok_or("Plugin admission count exhausted")?;
+    Ok(Admission)
+}
+pub(crate) struct UpdateReservation;
+impl Drop for UpdateReservation {
+    fn drop(&mut self) { if let Ok(mut state) = ADMISSION.lock() { state.update = false; } }
+}
+pub(crate) fn reserve_update() -> Result<UpdateReservation, String> {
+    let mut state = ADMISSION.lock().map_err(|_| "Plugin admission lock poisoned")?;
+    if state.update || state.calls != 0 { return Err("Plugin operations are active or already reserved; retry update after they finish".into()); }
+    state.update = true;
+    Ok(UpdateReservation)
+}
+pub(crate) fn is_operation(method: &str) -> bool {
+    matches!(method,"LoadPlugins"|"InstallPlugin"|"DownloadPlugin"|"UninstallPlugin"|"InstallPluginDirectory"|"UpdatePluginDirectory"|"UnloadPluginContext"|"RemovePluginAssembly")
+}
+
 pub fn invoke(method: &str, params: &Value, cancel: Option<&AtomicBool>) -> Result<Option<Value>, String> {
-    if !matches!(method,"LoadPlugins"|"InstallPlugin"|"DownloadPlugin"|"UninstallPlugin"|"InstallPluginDirectory"|"UpdatePluginDirectory"|"UnloadPluginContext"|"RemovePluginAssembly") { return Ok(None); }
+    if !is_operation(method) { return Ok(None); }
+    let _admission = admit()?;
     crate::download::cancelled(cancel)?;
     let args = params.as_array().ok_or("Plugin manager parameters must be an array")?;
     let text = |index:usize| args.get(index).and_then(Value::as_str).ok_or("Plugin manager argument must be a string");
