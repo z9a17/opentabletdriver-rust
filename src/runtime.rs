@@ -40,6 +40,7 @@ pub enum Directive {
 }
 #[derive(Debug)]
 pub enum Notice {
+    PreparedProfile(Box<Profile>),
     Prepared,
     ActivationReady,
     Running,
@@ -82,13 +83,13 @@ impl Worker {
         let thread = std::thread::spawn(move || { let _done = thread_done; script(receiver, notifier, thread_cancelled) });
         Self { interrupt, cancelled, commands, notices, logs, thread, done }
     }
-    pub fn spawn(profile: Profile, devices: crate::device_sessions::Handle) -> Result<Self, String> {
-        Self::spawn_bound(profile, devices, None)
+    pub fn spawn(profile: Profile, devices: crate::device_sessions::Handle, prefer_saved: bool) -> Result<Self, String> {
+        Self::spawn_bound(profile, devices, None, prefer_saved)
     }
     pub(crate) fn spawn_device(profile: Profile, devices: crate::device_sessions::Handle, id: String) -> Result<Self, String> {
-        Self::spawn_bound(profile, devices, Some(id))
+        Self::spawn_bound(profile, devices, Some(id), false)
     }
-    fn spawn_bound(profile: Profile, devices: crate::device_sessions::Handle, id: Option<String>) -> Result<Self, String> {
+    fn spawn_bound(profile: Profile, devices: crate::device_sessions::Handle, id: Option<String>, prefer_saved: bool) -> Result<Self, String> {
         let interrupt = Event::create(true).map_err(|error| error.to_string())?;
         let thread_interrupt = interrupt.duplicate().map_err(|error| error.to_string())?;
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -111,6 +112,7 @@ impl Worker {
                     logger,
                     devices,
                     id,
+                    prefer_saved,
                 )
             })
             .map_err(|error| error.to_string())?;
@@ -179,6 +181,7 @@ fn run(
     logs: SyncSender<String>,
     device_sessions: crate::device_sessions::Handle,
     bound_id: Option<String>,
+    prefer_saved: bool,
 ) -> Result<(), String> {
     let log = |line: &str| {
         let _ = logs.try_send(line.to_owned());
@@ -211,6 +214,7 @@ fn run(
     }
     let notification = Notification::register().map_err(|error| error.to_string())?;
     let mut waiting = false;
+    let mut profile_loaded = false;
     'connect: loop {
         if cancelled.load(Ordering::Acquire) {
             return Ok(());
@@ -265,6 +269,18 @@ fn run(
             id.clone()
         } else { device_sessions.reserve_primary(&selected)? };
         crate::device_sessions::set_debug_key(&id);
+        if !profile_loaded {
+            profile = device_sessions.effective_profile(&id, &profile, prefer_saved)?;
+            if profile.plugins.iter().any(|plugin| plugin.enabled) && !crate::plugin_catalog::recover_installations()? {
+                return Err("Plugins are being installed or recovered; retry starting the driver after that finishes.".into());
+            }
+            crate::plugin_catalog::use_native_ports(&mut profile, log);
+            profile.validate_runtime_tablet_in(database)?;
+            profile.validate_filter_execution()?;
+            let _ = otd_core::pipeline::ReportPipeline::new(&profile.for_tablet(selected.spec)?)?;
+            if profile.relative.is_none() { crate::display::read_snapshot()?.mapper(&profile.for_tablet(selected.spec)?)?; }
+            profile_loaded = true;
+        }
         // These stay on this thread and survive a quiesce/failed replacement.
         // Construction/reset executes trusted plugin code (including its
         // reset/range-loss callback), but has no live input or host output sink.
@@ -278,6 +294,7 @@ fn run(
             PreparedSession::new(&selected, &notification, interrupt)
                 .map_err(|error| format!("HID preparation failed: {error}"))?,
         );
+        notify(Notice::PreparedProfile(Box::new(profile.clone())))?;
         notify(Notice::Prepared)?;
         loop {
             match receive(&commands, cancelled).map_err(|error| error.to_string())? {

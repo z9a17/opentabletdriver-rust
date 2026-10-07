@@ -108,6 +108,7 @@ impl Transaction {
         for notice in notices {
             let suppress = matches!(self.phase, Some(Phase::Quiescing | Phase::Activating | Phase::Rollback | Phase::Stopping));
             match notice {
+                Notice::PreparedProfile(_) => {}
                 Notice::Quiesced if self.phase == Some(Phase::Quiescing) => {
                     self.phase = Some(Phase::Activating);
                     handle.state(id, SessionState::Starting, None);
@@ -132,6 +133,7 @@ impl Transaction {
             if matches!(self.phase, Some(Phase::Abort | Phase::Rollback | Phase::Stopping)) { continue; }
             if self.candidate.is_none() {
                 match notice {
+                    Notice::PreparedProfile(_) => {}
                     Notice::Prepared => self.active.as_ref().unwrap().command(Directive::Activate)?,
                     Notice::ActivationReady => self.active.as_ref().unwrap().command(Directive::Run)?,
                     Notice::Running => handle.state(id, SessionState::Running, None),
@@ -142,6 +144,7 @@ impl Transaction {
                 continue;
             }
             match notice {
+                Notice::PreparedProfile(profile) if self.phase == Some(Phase::Preparing) => self.pending_profile = Some(*profile),
                 Notice::Prepared if self.phase == Some(Phase::Preparing) => {
                     if let Some(active) = &self.active {
                         self.phase = Some(Phase::Quiescing);
@@ -259,6 +262,7 @@ fn supervise(profile: Profile, handle: Handle, requests: mpsc::Receiver<Request>
                             (entry.enabled, entry.profile.clone())
                         };
                         if !should_start { continue; }
+                        let stored = stored.or(handle.saved_profile(&id)?);
                         let own_profile = stored.map_or_else(|| super::companion_profile(&profile, profile.tablet_name()?.as_deref(), &selected.configuration.name, super::import_otd), Ok);
                         match own_profile {
                             Ok(own_profile) => {
@@ -300,6 +304,18 @@ fn supervise(profile: Profile, handle: Handle, requests: mpsc::Receiver<Request>
                     request => request,
                 };
                 let (id, generation) = match &request { Request::Apply { id, generation, .. } | Request::Stop { id, generation } | Request::Start { id, generation } => (id.clone(), *generation), Request::Refresh(_) => unreachable!() };
+                if !sessions.contains_key(&id) {
+                    let profile = match &request {
+                        Request::Apply { profile, .. } => Ok(Some(profile.clone())),
+                        Request::Start { .. } => handle.saved_profile(&id),
+                        _ => Ok(None),
+                    };
+                    match profile {
+                        Ok(Some(profile)) => { sessions.insert(id.clone(), Transaction::new(profile)); }
+                        Err(error) => { handle.reject(&id, error); continue; }
+                        Ok(None) => {}
+                    }
+                }
                 let result = if let Some(transaction) = sessions.get_mut(&id) {
                     match request {
                         Request::Refresh(_) => unreachable!(),

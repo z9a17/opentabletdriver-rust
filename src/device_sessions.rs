@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use crate::config::Profile;
 use crate::hid::{self, Candidate, Event, SelectedDevice};
 use otd_core::tablets::{Database, DeviceIdentifier, TabletConfiguration};
+mod profile_store;
+use profile_store::ProfileFile;
 
 pub const MAX_SESSIONS: usize = 32;
 pub type SessionId = String;
@@ -32,6 +34,12 @@ pub struct SessionSnapshot {
     pub digitizer: DeviceIdentifier,
     pub auxiliary: Option<DeviceIdentifier>,
     pub profile_source: Option<String>,
+    pub profile_path: String,
+    pub persisted_revision: Option<u64>,
+    pub persisted_digest: Option<String>,
+    /// The active profile equals its observed file, including revision. A UI
+    /// verifies the digest before treating a fresh disk capture as clean.
+    pub profile_saved: bool,
     pub last_error: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -44,6 +52,15 @@ pub struct SessionReceipt {
     pub accepted_pending: bool,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SavedDeviceProfile {
+    pub id: SessionId,
+    pub device_generation: u64,
+    pub profile_path: String,
+    pub settings_revision: u64,
+    pub persisted_digest: String,
+    pub profile_toml: String,
+}
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct DeviceKey { tablet: String, parent: String, fallback: bool }
 impl DeviceKey {
@@ -60,6 +77,7 @@ pub(crate) struct Entry {
     pub path: String,
     pub profile: Option<Profile>,
     pub enabled: bool,
+    file: ProfileFile,
 }
 #[derive(Default)]
 pub(crate) struct Registry {
@@ -117,7 +135,24 @@ impl Handle {
     pub fn profile(&self, id: &str, generation: u64) -> Result<String, String> {
         let registry = self.registry.lock().map_err(|_| "device registry poisoned")?;
         let entry = checked(&registry, id, generation)?;
-        entry.profile.as_ref().ok_or("device profile is not prepared")?.to_toml()
+        if let Some(profile) = entry.profile.as_ref().or(entry.file.profile.as_ref()) { return profile.to_toml(); }
+        if let Some(error) = &entry.file.error { return Err(error.clone()); }
+        Profile { target_tablet: Some(entry.snapshot.tablet.clone()),
+            tablet: otd_core::spec::TabletSpec::from_configuration(&entry.snapshot.properties)?,
+            source: format!("unsaved full-area defaults for {}", entry.snapshot.tablet), ..Profile::default() }.to_toml()
+    }
+    /// Explicit Save leaves the active profile unchanged until Apply.
+    pub fn save_profile(&self, id: &str, generation: u64, expected_revision: Option<u64>, expected_digest: Option<&str>, profile: &Profile) -> Result<SavedDeviceProfile, String> {
+        let mut registry = self.registry.lock().map_err(|_| "device registry poisoned")?;
+        let entry = checked(&registry, id, generation)?;
+        if entry.snapshot.pending_generation.is_some() { return Err("device session is transitioning".into()); }
+        if profile.tablet_name()?.is_some_and(|name| name != entry.snapshot.tablet) { return Err("profile belongs to another tablet".into()); }
+        let entry = registry.entries.get_mut(id).unwrap();
+        let saved = entry.file.save(profile, expected_revision, expected_digest)?;
+        entry.snapshot.profile_saved = entry.profile.as_ref().is_some_and(|active| entry.file.matches(active));
+        Ok(SavedDeviceProfile { id: id.to_owned(), device_generation: generation,
+            profile_path: entry.file.path.to_string_lossy().into_owned(), settings_revision: saved.settings_revision,
+            persisted_digest: entry.file.digest.clone().unwrap(), profile_toml: saved.to_toml()? })
     }
     pub fn apply(&self, id: &str, generation: u64, profile: Profile) -> Result<SessionReceipt, String> {
         profile.validate_runtime_tablet()?;
@@ -129,7 +164,9 @@ impl Handle {
         let mut registry = self.registry.lock().map_err(|_| "device registry poisoned")?;
         let entry = checked(&registry, id, generation)?;
         if profile.tablet_name()?.is_some_and(|name| name != entry.snapshot.tablet) { return Err("profile belongs to another tablet".into()); }
-        if profile.device_path.as_deref().is_some_and(|path| !path.eq_ignore_ascii_case(&entry.path)) { return Err("profile selects another device endpoint".into()); }
+        // This explicit session ID owns the physical target. A legacy saved
+        // collection selector can become stale across reconnects; it cannot
+        // retarget the bound worker and does not invalidate a profile edit.
         self.submit(&mut registry, id, generation, |next| Request::Apply { id: id.to_owned(), profile, generation: next })
     }
     pub fn stop_device(&self, id: &str, generation: u64) -> Result<SessionReceipt, String> {
@@ -170,12 +207,17 @@ impl Handle {
         if registry.entries.len() == MAX_SESSIONS { return Err("device identity registry is full (32 retained tablets)".into()); }
         registry.next = registry.next.checked_add(1).ok_or("device identity counter exhausted")?;
         let id = format!("device-{}", registry.next);
-        registry.entries.insert(id.clone(), Entry { key: key.clone(), path: selected.pen.path_text(), profile: None, enabled: true,
+        let file = ProfileFile::for_device(&key)?;
+        let profile_path = file.path.to_string_lossy().into_owned();
+        let file_error = file.error.clone();
+        registry.entries.insert(id.clone(), Entry { key: key.clone(), path: selected.pen.path_text(), profile: None, enabled: file_error.is_none(),
             snapshot: SessionSnapshot { id: id.clone(), device_generation: 0, pending_generation: None,
-                tablet: selected.configuration.name.clone(), state: SessionState::Detected, primary: false, selected: false,
+                tablet: selected.configuration.name.clone(), state: if file_error.is_some() { SessionState::Failed } else { SessionState::Detected }, primary: false, selected: false,
                 connected: true, identity_stability: if key.fallback { IdentityStability::PathFallback } else { IdentityStability::PhysicalParent },
                 properties: selected.configuration.clone(), digitizer: selected.identifier.clone(),
-                auxiliary: selected.auxiliary.as_ref().map(|(_, identifier)| identifier.clone()), profile_source: None, last_error: None } });
+                auxiliary: selected.auxiliary.as_ref().map(|(_, identifier)| identifier.clone()), profile_source: None,
+                profile_path, persisted_revision: file.revision(), persisted_digest: file.digest.clone(), profile_saved: false,
+                last_error: file_error }, file });
         Ok(id)
     }
     pub(crate) fn primary_id(&self) -> Result<Option<SessionId>, String> {
@@ -225,6 +267,9 @@ impl Handle {
                 entry.snapshot.device_generation = generation;
                 entry.snapshot.pending_generation = None;
                 entry.snapshot.profile_source = Some(bounded(profile.source.clone()));
+                entry.snapshot.persisted_revision = entry.file.revision();
+                entry.snapshot.persisted_digest = entry.file.digest.clone();
+                entry.snapshot.profile_saved = entry.file.matches(&profile);
                 entry.snapshot.last_error = None;
                 entry.profile = Some(profile);
                 entry.enabled = true;
@@ -258,6 +303,42 @@ impl Handle {
         if let Ok(mut registry) = self.registry.lock() {
             if let Some(entry) = registry.entries.get_mut(id) { entry.snapshot.last_error = Some(bounded(error)); }
         }
+    }
+    pub(crate) fn saved_profile(&self, id: &str) -> Result<Option<Profile>, String> {
+        let (path, tablet) = {
+            let registry = self.registry.lock().map_err(|_| "device registry poisoned")?;
+            let entry = registry.entries.get(id).ok_or("unknown device session")?;
+            (entry.file.path.clone(), entry.snapshot.tablet.clone())
+        };
+        // Explicit Save may have used the UI's core snapshot writer. Re-read
+        // here rather than requiring a daemon restart to observe that file.
+        let file = ProfileFile::read(path)?;
+        if let Some(error) = &file.error { return Err(error.clone()); }
+        if file.profile.as_ref().map(Profile::tablet_name).transpose()?.flatten().is_some_and(|name| name != tablet) {
+            return Err("saved physical profile belongs to another tablet".into());
+        }
+        let profile = file.profile.clone();
+        self.registry.lock().map_err(|_| "device registry poisoned")?.entries.get_mut(id).ok_or("unknown device session")?.file = file;
+        Ok(profile)
+    }
+    /// Runs once before pipeline/handle preparation. Saved defaults apply to
+    /// the initial generation; an explicit Apply wins unless the current file
+    /// is its exact semantic source, in which case use that actual parsed file.
+    pub(crate) fn effective_profile(&self, id: &str, incoming: &Profile, prefer_saved: bool) -> Result<Profile, String> {
+        let (path, tablet) = {
+            let registry = self.registry.lock().map_err(|_| "device registry poisoned")?;
+            let entry = registry.entries.get(id).ok_or("unknown device session")?;
+            (entry.file.path.clone(), entry.snapshot.tablet.clone())
+        };
+        let file = ProfileFile::read(path)?;
+        let effective = if prefer_saved || file.matches(incoming) {
+            if let Some(error) = &file.error { return Err(error.clone()); }
+            file.profile.as_ref().unwrap_or(incoming).clone()
+        } else { incoming.clone() };
+        if effective.tablet_name()?.is_some_and(|name| name != tablet) { return Err("saved physical profile belongs to another tablet".into()); }
+        let mut registry = self.registry.lock().map_err(|_| "device registry poisoned")?;
+        registry.entries.get_mut(id).ok_or("unknown device session")?.file = file;
+        Ok(effective)
     }
     pub(crate) fn primary_pending(&self, generation: u64, state: SessionState) {
         if let Ok(mut registry) = self.registry.lock() {

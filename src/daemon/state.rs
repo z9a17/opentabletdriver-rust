@@ -353,7 +353,7 @@ impl Daemon {
                 .map_err(|error| ControlError::new(ErrorCode::StartFailed, error))?);
         }
         let device_handle = self.devices.as_ref().unwrap().handle();
-        let worker = match Worker::spawn(profile.clone(), device_handle) {
+        let worker = match Worker::spawn(profile.clone(), device_handle, initial && !device_start) {
             Ok(worker) => worker,
             Err(error) => {
                 if initial && !device_start {
@@ -500,6 +500,7 @@ impl Daemon {
         }
         let phase = self.pending.as_ref().map(|pending| pending.phase);
         match notice {
+            Notice::PreparedProfile(_) => {}
             Notice::Prepared => {
                 // A disconnect can race the queued quiesce. Do not enqueue a
                 // second activation behind that command and accidentally resume
@@ -601,6 +602,18 @@ impl Daemon {
             return;
         }
         match notice {
+            Notice::PreparedProfile(profile) if phase == Phase::Preparing => {
+                match profile.to_toml() {
+                    Ok(text) if text.len() <= control::MAX_PROFILE_BYTES && serde_json::to_vec(&text).is_ok_and(|encoded| encoded.len() <= control::MAX_FRAME_BYTES - 1024) => {
+                        let pending = self.pending.as_mut().unwrap();
+                        pending.profile = profile.source.clone();
+                        pending.text = text;
+                        pending.applied_profile = *profile;
+                    }
+                    Ok(_) => self.reject_candidate("effective physical profile exceeds control frame limits".into(), false),
+                    Err(error) => self.reject_candidate(error, false),
+                }
+            }
             Notice::Prepared if phase == Phase::Preparing => {
                 if pending.expected != self.identity() {
                     self.reject_candidate(
