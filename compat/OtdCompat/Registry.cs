@@ -225,10 +225,12 @@ sealed class ParserSession : IDisposable
         sourceReport = report; sourceConsumed = false;
         return 1;
     }
-    internal static IDeviceReport Take(ulong id, ulong sequence)
+    internal static IDeviceReport Take(ulong id, ulong sequence, RegistryGeneration? expected = null, bool validateGeneration = false)
     {
         if (!Sources.TryGetValue(id, out var parser)) throw new InvalidOperationException("Managed source parser has ended.");
         parser.Check();
+        if (validateGeneration && parser.generation != null && !ReferenceEquals(parser.generation, expected))
+            throw new InvalidOperationException("Source parser and report graph use different installed registry generations.");
         if (parser.sourceConsumed || parser.sourceReport == null || parser.sourceSequence != sequence)
             throw new InvalidOperationException("Managed source report is expired or already consumed.");
         parser.sourceConsumed = true;
@@ -320,7 +322,7 @@ public static unsafe partial class EntryPoints
         try {
             if (input == null || callback == null) throw new ArgumentException("Missing source graph input or continuation.");
             var pipeline = (SynchronousGraph)GCHandle.FromIntPtr(graph).Target!;
-            int result = pipeline.Dispatch(input, callback, scope, fused != 0, ParserSession.Take(parser, sequence));
+            int result = pipeline.Dispatch(input, callback, scope, fused != 0, ParserSession.Take(parser, sequence, pipeline.SourceGeneration, validateGeneration: true));
             if (result != 0) lastError = pipeline.Error ?? "A native source graph continuation failed.";
             return result;
         }

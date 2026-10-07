@@ -31,7 +31,11 @@ unsafe static class RegistryProbe
             InstalledRegistry.Reload(Path.GetFullPath(args[3]));
             using (var retained = new ParserSession("SettingsFixture.RewriteRawParser", graph.SourceGeneration, frozen: true)) {
                 ParsedSourceReport next = default; fixed (byte* raw = wire) retained.Project(raw, 1, &next);
-                var retainedReport = ParserSession.Take(next.Parser, next.Sequence);
+                using (var different = new SynchronousGraph([])) {
+                    try { ParserSession.Take(next.Parser, next.Sequence, different.SourceGeneration, validateGeneration: true); throw new Exception("Foreign graph generation accepted source token."); }
+                    catch (InvalidOperationException) { }
+                }
+                var retainedReport = ParserSession.Take(next.Parser, next.Sequence, graph.SourceGeneration, validateGeneration: true);
                 if (!ReferenceEquals(retainedReport.GetType(), original.GetType())) throw new Exception("Reload mixed graph/parser type identities.");
                 if (graph.Dispatch(&next.Report, &SourceOutput, 0, true, retainedReport) != 0 || sourceOutputs != 2) throw new Exception("Retired generation report failed original graph.");
                 var graphHandle = GCHandle.Alloc(graph);
