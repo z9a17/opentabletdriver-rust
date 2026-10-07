@@ -14,6 +14,11 @@ also requests a guarded replacement when its worker is active. Apply requests
 a replacement without persisting it. Per-device Start/Stop
 controls leave other sessions running. Global Stop driver stops all sessions.
 
+When another client applies changed settings that are not saved, the panel
+adopts them as a runtime draft requiring Save. Recoverable startup defaults
+stay clean. An unchanged runtime draft can become clean only after an owned
+saved match; intervening local edits remain intact.
+
 Physical profiles live under the Rust data directory's `devices` folder. Paths
 use a hash of the normalized device key. Saved revision and file digest guards
 prevent overwriting an external edit or applying to a replacement session.

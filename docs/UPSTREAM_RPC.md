@@ -30,7 +30,7 @@ JSON-RPC batch messages are rejected.
 | Methods | Current behavior |
 | --- | --- |
 | GetDevices | Actual HID/WinUSB endpoint inventory, strings, lengths and openability. |
-| GetTablets | Connected device-session snapshots, actual configurations and identifiers. |
+| GetTablets | Activated device-session configurations and identifiers for actual opened endpoints. Discovered candidates and auxiliary endpoints that failed to open are excluded. |
 | GetSettings | Actual connected device profiles reconciled into the original OTD document. Representable standalone explicit-area/relative profiles receive canonical known stores. Resolved managed DLL paths require matching original identities/order. Different tools across devices, differing profiles for same-model physical tablets, native pixel-span crops/hardware-tip contact and ambiguous stores return errors. |
 | SetSettings | Preflights all detected named profiles, preserves inactive rows and generates pinned defaults for missing detected names. Applies through guarded per-device receipts, waits committed generations, and rolls back only accepted generations it still owns on failure. Newer/pending peer operations are preserved and reported as partial/uncertain failure with Resynchronize. Group atomicity is not claimed. Unsupported active stores and idle collection storage remain explicit errors. |
 | GetCurrentLog, WriteMessage | Bounded typed log retention preserves original Time, Group, Message, StackTrace, Level and Notification, including nullable text fields. Native messages carry their creation timestamp. |

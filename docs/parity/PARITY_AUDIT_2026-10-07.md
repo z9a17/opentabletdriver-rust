@@ -60,7 +60,8 @@ merged commit and lockfile.
 
 Source review corrected managed Enable defaults, typed log field loss,
 invalid timestamp acceptance, first-request event loss, incorrect opened-tablet
-identifiers, dynamic managed pen storage, parser/graph reload identity and original-import gaps. The new
+identifiers, external unsaved Apply origin, dynamic managed pen storage,
+parser/graph reload identity and original-import gaps. The new
 registry compilation error was fixed before any package was copied.
 
 Fixtures were written but not executed. CI, format/Clippy/test/build-check
