@@ -15,5 +15,7 @@ RootHub enumeration transform/publication routes actual custom hub endpoints
 through the native sole-reader broker without changing public contracts; internal
 DeviceReader callback scopes reject synchronous I/O/ownership waits on its own
 report callback. Hosted tree publication keeps actual disconnect notifications. All other source is pinned.
+DeviceHubsProvider has an internal constructor receiving actual native hub
+objects instead of opening built-in physical hubs again.
 The project references exact upstream dependency versions, and grants only
 OtdCompat internal access. No physical hub or second physical handle is created.

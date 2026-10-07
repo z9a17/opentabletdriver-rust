@@ -49,6 +49,7 @@ sealed partial class ManagedProviders : IDriver, IDeviceConfigurationProvider, I
     Task? monitor;
     bool disposed;
     HostedNativeHub? nativeHub;
+    OpenTabletDriver.ComponentProviders.DeviceHubsProvider? concreteHubs;
     DesktopDeviceConfigurationProvider? desktopConfigurations;
     OpenTabletDriver.Configurations.DeviceConfigurationProvider? builtinConfigurations;
     DesktopReportParserProvider? desktopParsers;
@@ -57,6 +58,8 @@ sealed partial class ManagedProviders : IDriver, IDeviceConfigurationProvider, I
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         if (!ServiceClient.Available) return null;
+        if (type == typeof(OpenTabletDriver.ComponentProviders.DeviceHubsProvider))
+            return concreteHubs ??= new OpenTabletDriver.ComponentProviders.DeviceHubsProvider(DeviceHubs);
         if (type == typeof(OpenTabletDriver.Driver) || type == typeof(IDriver)) return Core.Driver;
         if (type == typeof(OpenTabletDriver.InputDeviceTree)) return Core.SelectedTree();
         if (type == typeof(OpenTabletDriver.InputDevice)) return Core.SelectedInput();
@@ -267,9 +270,10 @@ sealed class ProviderParser : IReportParser<IDeviceReport>, IDisposable
     readonly HostServices services;
     readonly IReportParser<IDeviceReport> parser;
     bool disposed;
-    internal ProviderParser(string name, ManagedProviders? owner = null)
+    internal ProviderParser(string name, ManagedProviders? owner = null, JObject? sourceSession = null)
     {
-        services = new HostServices(input: owner == null ? null : owner.Get);
+        services = new HostServices(input: sourceSession != null || owner == null ? null : owner.Get);
+        if (sourceSession != null) services.ConfigureSource(new JObject { ["source_session"] = sourceSession });
         var selected = InstalledRegistry.AcquireParser(name); generation = selected.Generation;
         object? value = null;
         try { value = HostServices.Construct(selected.Type) ?? throw new InvalidOperationException("Cannot construct original report parser.");
@@ -367,6 +371,7 @@ sealed class HostPluginManager : DesktopPluginManager
         AddService<IDriverDaemon>(() => (IDriverDaemon)services.GetService(typeof(IDriverDaemon))!);
         AddService<IDeviceConfigurationProvider>(() => (IDeviceConfigurationProvider)services.GetService(typeof(IDeviceConfigurationProvider))!);
         AddService<IReportParserProvider>(() => (IReportParserProvider)services.GetService(typeof(IReportParserProvider))!);
+        AddService<OpenTabletDriver.ComponentProviders.DeviceHubsProvider>(() => (OpenTabletDriver.ComponentProviders.DeviceHubsProvider)services.GetService(typeof(OpenTabletDriver.ComponentProviders.DeviceHubsProvider))!);
         AddService<IDeviceHubsProvider>(() => (IDeviceHubsProvider)services.GetService(typeof(IDeviceHubsProvider))!);
         AddService<IDeviceHub>(() => (IDeviceHub)services.GetService(typeof(IDeviceHub))!);
         AddService<ICompositeDeviceHub>(() => (ICompositeDeviceHub)services.GetService(typeof(ICompositeDeviceHub))!);

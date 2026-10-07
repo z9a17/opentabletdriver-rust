@@ -11,6 +11,11 @@ namespace OpenTabletDriver.ComponentProviders
 {
     public class DeviceHubsProvider : IDeviceHubsProvider
     {
+        internal DeviceHubsProvider(IEnumerable<IDeviceHub> hostedHubs)
+        {
+            DeviceHubs = hostedHubs.ToArray();
+        }
+
         public DeviceHubsProvider(IServiceProvider serviceProvider)
         {
             DeviceHubs = Assembly.GetExecutingAssembly().DefinedTypes

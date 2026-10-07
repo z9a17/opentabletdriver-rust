@@ -56,6 +56,16 @@ pub fn snapshot() -> Result<Vec<Metadata>,String> {
     }
     Ok(entries)
 }
+impl Metadata {
+    pub fn original_json(&self)->serde_json::Value {
+        let mut values:serde_json::Map<String,serde_json::Value>=self.original.clone().into_iter().collect();
+        values.extend(serde_json::json!({"endpoint":self.endpoint,"scope":self.scope,"DevicePath":self.path,
+            "VendorID":self.vendor,"ProductID":self.product,"InputReportLength":self.input_length,
+            "OutputReportLength":self.output_length,"FeatureReportLength":self.feature_length,
+            "CanOpen":self.can_open,"DeviceAttributes":self.attributes}).as_object().expect("metadata object").clone());
+        serde_json::Value::Object(values)
+    }
+}
 pub fn device_string(endpoint:u64,index:u8)->Result<String,String> {
     let api=api()?;let size=unsafe{(api.string)(endpoint,index,std::ptr::null_mut(),0)};
     if size<0{return Err(last_error());}if size>4194304{return Err("Custom string exceeds 4 MiB".into());}

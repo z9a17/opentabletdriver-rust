@@ -74,10 +74,13 @@ sealed partial class ManagedProviders
                     if (cursor == ulong.MaxValue || sequence != cursor + 1) throw new IOException("Managed debug source sequence gap.");
                     string parserName = item.Value<string>("parser") ?? throw new IOException("Managed debug report has no original parser type.");
                     string session = item.Value<string>("session_id") ?? throw new IOException("Managed debug report has no physical source identity.");
-                    string key = session + ":" + item.Value<ulong>("device_generation") + ":" + item.Value<bool>("auxiliary") + ":" + parserName;
+                    string key = session + ":" + item.Value<ulong>("device_generation") + ":" + item.Value<ulong>("reader_generation") + ":" + item.Value<bool>("auxiliary") + ":" + parserName;
                     if (!decoders.TryGetValue(key, out var parser)) {
                         if (decoders.Count >= 256) throw new IOException("Managed debug endpoint parser budget exceeded.");
-                        parser = new ProviderParser(parserName, this); decoders.Add(key, parser);
+                        parser = new ProviderParser(parserName, sourceSession: new JObject {
+                            ["id"] = session, ["device_generation"] = item["device_generation"],
+                            ["reader_generation"] = item["reader_generation"] });
+                        decoders.Add(key, parser);
                     }
                     string hex = item.Value<string>("raw") ?? throw new IOException("Managed debug report has no raw bytes.");
                     if (hex.Length is < 2 or > 131070 || hex.Length % 2 != 0) throw new IOException("Managed debug report has invalid length.");
