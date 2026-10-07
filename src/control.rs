@@ -59,7 +59,7 @@ impl Request {
             Command::StartIf { profile_toml, .. } | Command::Restart { profile_toml, .. } => {
                 Some(profile_toml)
             }
-            Command::ApplyDeviceProfile { profile_toml, .. } => Some(profile_toml),
+            Command::ApplyDeviceProfile { profile_toml, .. } | Command::SaveDeviceProfile { profile_toml, .. } => Some(profile_toml),
             _ => None,
         };
         if profile.is_some_and(|profile| profile.len() > MAX_PROFILE_BYTES) {
@@ -84,6 +84,7 @@ impl Request {
             Command::SelectDeviceSession { id, .. }
             | Command::GetDeviceProfile { id, .. }
             | Command::ApplyDeviceProfile { id, .. }
+            | Command::SaveDeviceProfile { id, .. }
             | Command::StopDevice { id, .. }
             | Command::StartDevice { id, .. } => {
                 if id.is_empty() || id.len() > 128 || id.chars().any(char::is_control) {
@@ -123,6 +124,8 @@ pub enum Command {
     SelectDeviceSession { expected: WorkerIdentity, id: String },
     GetDeviceProfile { expected: WorkerIdentity, id: String, device_generation: u64 },
     ApplyDeviceProfile { expected: WorkerIdentity, id: String, device_generation: u64, profile_toml: String },
+    SaveDeviceProfile { expected: WorkerIdentity, id: String, device_generation: u64,
+        expected_revision: Option<u64>, expected_digest: Option<String>, profile_toml: String },
     StopDevice { expected: WorkerIdentity, id: String, device_generation: u64 },
     StartDevice { expected: WorkerIdentity, id: String, device_generation: u64 },
     /// The supplied OTD log is validated at the RPC boundary. The daemon owner
@@ -284,6 +287,7 @@ pub enum Reply {
     DeviceSessionSelected { id: String },
     DeviceProfile { identity: WorkerIdentity, id: String, device_generation: u64, profile_toml: String },
     DeviceOperationAccepted { receipt: crate::device_sessions::SessionReceipt },
+    DeviceProfileSaved { saved: crate::device_sessions::SavedDeviceProfile },
     Status {
         status: ControlStatus,
     },

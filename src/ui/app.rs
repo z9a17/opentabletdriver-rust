@@ -2534,18 +2534,21 @@ impl App {
                         if self.dirty || !self.invalid.is_empty() {
                             self.log(Level::Warning, "Settings", "Daemon configuration changed. Unsaved local edits were kept; Apply deliberately replaces the active configuration.");
                         } else {
-                            if switched_device && let Some(device) = &self.selected_device {
-                                if let Some(path) = device.profile_source.as_ref().map(PathBuf::from)
-                                    .filter(|path| path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("toml"))) {
-                                    self.profile_path = path;
-                                    self.profile_snapshot = otd_core::storage::capture(&self.profile_path).ok();
-                                } else if !device.primary {
-                                    // A tablet without its own durable profile needs Save As;
-                                    // never overwrite the previous tablet's settings file.
-                                    self.recovered_backup = true;
+                            if let Some(device) = self.selected_device.clone()
+                                && (switched_device || self.profile_path == PathBuf::from(&device.profile_path)) {
+                                self.profile_path = PathBuf::from(&device.profile_path);
+                                self.profile_revision_floor = device.persisted_revision.unwrap_or(0);
+                                self.recovered_backup = false;
+                                match crate::device_sessions::observed_profile_snapshot(&device) {
+                                    Ok(snapshot) => self.profile_snapshot = Some(snapshot),
+                                    Err(error) => { self.profile_snapshot = None; self.log(Level::Warning, "Settings", error); }
                                 }
                             }
                             self.load_active_profile(*profile);
+                            if self.selected_device.as_ref().is_some_and(|device| !device.profile_saved) {
+                                self.dirty = true;
+                                self.update_title();
+                            }
                             self.log(Level::Info, "Settings", "Loaded the daemon's active configuration. Save writes it to the local profile file.");
                         }
                     }

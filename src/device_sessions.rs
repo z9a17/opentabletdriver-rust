@@ -12,6 +12,22 @@ mod profile_store;
 use profile_store::ProfileFile;
 
 pub const MAX_SESSIONS: usize = 32;
+/// Capture only the exact file the daemon observed. A new snapshot must never
+/// silently bless same-revision edits made by another program.
+pub fn observed_profile_snapshot(device: &SessionSnapshot) -> Result<otd_core::storage::FileSnapshot, String> {
+    let path = std::path::Path::new(&device.profile_path);
+    if let Some(expected) = &device.persisted_digest {
+        let loaded = otd_core::storage::read_utf8(path)?;
+        if profile_store::sha256(loaded.text.as_bytes())? != *expected {
+            return Err("The saved tablet profile changed outside this panel; reload it or use Save As.".into());
+        }
+        Ok(loaded.snapshot)
+    } else {
+        let snapshot = otd_core::storage::capture(path)?;
+        if snapshot.exists() { return Err("A saved tablet profile appeared outside this panel; reload it or use Save As.".into()); }
+        Ok(snapshot)
+    }
+}
 pub type SessionId = String;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -149,6 +165,8 @@ impl Handle {
         if profile.tablet_name()?.is_some_and(|name| name != entry.snapshot.tablet) { return Err("profile belongs to another tablet".into()); }
         let entry = registry.entries.get_mut(id).unwrap();
         let saved = entry.file.save(profile, expected_revision, expected_digest)?;
+        entry.snapshot.persisted_revision = entry.file.revision();
+        entry.snapshot.persisted_digest = entry.file.digest.clone();
         entry.snapshot.profile_saved = entry.profile.as_ref().is_some_and(|active| entry.file.matches(active));
         Ok(SavedDeviceProfile { id: id.to_owned(), device_generation: generation,
             profile_path: entry.file.path.to_string_lossy().into_owned(), settings_revision: saved.settings_revision,
@@ -264,6 +282,9 @@ impl Handle {
     pub(crate) fn commit(&self, id: &str, generation: u64, profile: Profile) {
         if let Ok(mut registry) = self.registry.lock() {
             if let Some(entry) = registry.entries.get_mut(id) {
+                // Save can use the panel's exact-byte writer. Observe its new
+                // file on Apply, and never treat a different file as active.
+                if let Ok(file) = ProfileFile::read(entry.file.path.clone()) { entry.file = file; }
                 entry.snapshot.device_generation = generation;
                 entry.snapshot.pending_generation = None;
                 entry.snapshot.profile_source = Some(bounded(profile.source.clone()));

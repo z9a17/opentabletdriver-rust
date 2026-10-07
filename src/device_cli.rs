@@ -18,7 +18,7 @@ fn status() -> Result<control::ControlStatus, String> {
 }
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
-    let usage = "devices list | select ID | profile ID | apply ID PROFILE.toml | start ID | stop ID | save ID NEW_FILE.toml [--replace]";
+    let usage = "devices list | select ID | profile ID | apply ID PROFILE.toml | persist ID PROFILE.toml | start ID | stop ID | save ID NEW_FILE.toml [--replace]";
     if args.len() == 1 && args[0] == "list" {
         println!("{}", serde_json::to_string_pretty(&sessions()?).map_err(|error| error.to_string())?);
         return Ok(());
@@ -28,7 +28,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let id = &args[1];
     let valid = match action {
         "select" | "profile" | "start" | "stop" => args.len() == 2,
-        "apply" => args.len() == 3,
+        "apply" | "persist" => args.len() == 3,
         "save" => args.len() == 3 || (args.len() == 4 && args[3] == "--replace"),
         _ => false,
     };
@@ -40,6 +40,20 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     if device.pending_generation.is_some() { return Err("device is changing state; refresh devices list".into()); }
     let expected = before.identity();
     let generation = device.device_generation;
+    if action == "persist" {
+        let path = Path::new(&args[2]);
+        let loaded = otd_core::storage::read_utf8(path)?;
+        let mut profile = crate::config::Profile::from_toml_text(&loaded.text, path)?;
+        profile.settings_revision = device.persisted_revision.unwrap_or(0).checked_add(1).ok_or("settings revision exhausted")?;
+        match call(Command::SaveDeviceProfile { expected, id: id.clone(), device_generation: generation,
+            expected_revision: device.persisted_revision, expected_digest: device.persisted_digest.clone(), profile_toml: profile.to_toml()? })? {
+            Reply::DeviceProfileSaved { saved } if saved.id == *id && saved.device_generation == generation => {
+                println!("Saved {} at revision {}. Use devices apply or start to activate it.", saved.profile_path, saved.settings_revision);
+            },
+            _ => return Err("unexpected physical profile save response".into()),
+        }
+        return Ok(());
+    }
     if action == "select" {
         match call(Command::SelectDeviceSession { expected, id: id.clone() })? {
             Reply::DeviceSessionSelected { id } => println!("Selected {id} for the tablet debugger."),

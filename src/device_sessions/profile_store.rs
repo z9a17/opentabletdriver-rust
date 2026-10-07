@@ -65,7 +65,7 @@ fn profile_path(directory: &Path, key: &DeviceKey) -> Result<PathBuf, String> {
     bytes.push(u8::from(key.fallback));
     Ok(directory.join("devices").join(format!("device-{}.toml", sha256(&bytes)?)))
 }
-fn sha256(bytes: &[u8]) -> Result<String, String> {
+pub(super) fn sha256(bytes: &[u8]) -> Result<String, String> {
     use windows_sys::Win32::Security::Cryptography::{BCRYPT_HASH_HANDLE, BCRYPT_SHA256_ALG_HANDLE,
         BCryptCreateHash, BCryptHashData, BCryptFinishHash, BCryptDestroyHash};
     struct Hash(BCRYPT_HASH_HANDLE);

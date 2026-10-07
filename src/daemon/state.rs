@@ -945,7 +945,7 @@ impl ControlHandler for Daemon {
         self.poll();
         if self.update_reservation.is_some() && matches!(&command,
             Command::Start { .. } | Command::StartIf { .. } | Command::Restart { .. }
-            | Command::ApplyDeviceProfile { .. } | Command::StartDevice { .. }
+            | Command::ApplyDeviceProfile { .. } | Command::SaveDeviceProfile { .. } | Command::StartDevice { .. }
             | Command::SelectDeviceSession { .. } | Command::DetectDeviceSessions) {
             return Err(ControlError::new(ErrorCode::Busy, "an update owns the stopped driver; wait for completion or cancel its reservation"));
         }
@@ -1028,6 +1028,15 @@ impl ControlHandler for Daemon {
             Command::StopDevice { expected, id, device_generation } => {
                 self.check_identity(&expected)?;
                 Ok(Reply::DeviceOperationAccepted { receipt: self.device_lifecycle(&id, device_generation, false)? })
+            }
+            Command::SaveDeviceProfile { expected, id, device_generation, expected_revision, expected_digest, profile_toml } => {
+                self.check_identity(&expected)?;
+                let handle = self.device_sessions().ok_or_else(|| ControlError::new(ErrorCode::Busy, "device supervisor is unavailable"))?;
+                let path = otd_core::storage::data_directory().map_err(|error| ControlError::new(ErrorCode::Internal, error))?.join("driver.toml");
+                let profile = Profile::from_toml_text(&profile_toml, &path).map_err(|error| ControlError::new(ErrorCode::InvalidProfile, error))?;
+                let saved = handle.save_profile(&id, device_generation, expected_revision, expected_digest.as_deref(), &profile)
+                    .map_err(|error| ControlError::new(ErrorCode::Conflict, error))?;
+                Ok(Reply::DeviceProfileSaved { saved })
             }
             Command::StartDevice { expected, id, device_generation } => {
                 self.check_identity(&expected)?;
