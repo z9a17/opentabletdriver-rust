@@ -158,6 +158,7 @@ fn check_discovery(stop: Option<&AtomicBool>, deadline: Option<Instant>) -> io::
 pub fn rpc_inventory(devices:&[Device])->serde_json::Value{
     let mut inventory=otd_platform::daemon::inventory(&devices.iter().map(|device|device.endpoint.clone()).collect::<Vec<_>>());
     for(value,device)in inventory.as_array_mut().unwrap().iter_mut().zip(devices){let hid=device.handle.0.cast_mut();
+        value["Transport"]=serde_json::json!(string(property(hid,"Transport")));
         value["Manufacturer"]=serde_json::json!(string(property(hid,"Manufacturer")));value["ProductName"]=serde_json::json!(string(property(hid,"Product")));value["SerialNumber"]=serde_json::json!(string(property(hid,"SerialNumber")));
     }inventory
 }
@@ -178,7 +179,9 @@ pub fn enumerate(database: &Database, stop: Option<&AtomicBool>, deadline: Optio
         let handle = Owned(unsafe { ffi::IOHIDDeviceCreate(ptr::null(), service.0) }.cast_const());
         if handle.0.is_null() { continue; }
         let hid = handle.0.cast_mut();
-        if string(property(hid, "Transport")).as_deref() != Some("USB") { continue; }
+        let transport_name=string(property(hid,"Transport"));
+        let transport=match transport_name.as_deref(){Some("USB")=>Transport::UsbHid,
+            Some("Bluetooth"|"BluetoothLowEnergy")=>Transport::BluetoothHid,_=>continue};
         let Some(vendor) = number(property(hid, "VendorID")).and_then(|id| u16::try_from(id).ok()) else { continue; };
         let Some(product) = number(property(hid, "ProductID")).and_then(|id| u16::try_from(id).ok()) else { continue; };
         let data = property(hid, "ReportDescriptor");
@@ -191,7 +194,13 @@ pub fn enumerate(database: &Database, stop: Option<&AtomicBool>, deadline: Optio
         let mut registry_id = 0;
         if unsafe { ffi::IORegistryEntryGetRegistryEntryID(service.0, &mut registry_id) } != 0 { continue; }
         let mut attributes = BTreeMap::new();
-        let mut physical_id = format!("hid:{registry_id}");
+        // Apple's PhysicalDeviceUniqueID is the actual physical identity,
+        // unlike a display name or serial alone. Absent identity keeps endpoint
+        // registry IDs separate rather than merging distinct Bluetooth tablets.
+        let mut physical_id=if transport==Transport::BluetoothHid{
+            string(property(hid,"PhysicalDeviceUniqueID")).filter(|id|!id.is_empty())
+                .map(|id|format!("bluetooth:{id}")).unwrap_or_else(||format!("hid:{registry_id}"))
+        }else{format!("hid:{registry_id}")};
         let mut usb_parent = None;
         // Traverse only the retained parent chain, collecting actual interface
         // and USB-device identity; never assume descriptor string indices.
@@ -200,7 +209,7 @@ pub fn enumerate(database: &Database, stop: Option<&AtomicBool>, deadline: Optio
             if let Some(interface) = number(registry_property(current.0, "bInterfaceNumber").0) {
                 attributes.entry("USB_INTERFACE_NUMBER".into()).or_insert_with(|| interface.to_string());
             }
-            if number(registry_property(current.0, "idVendor").0).is_some() {
+            if transport==Transport::UsbHid&&number(registry_property(current.0, "idVendor").0).is_some() {
                 let mut parent_id = 0;
                 if unsafe { ffi::IORegistryEntryGetRegistryEntryID(current.0, &mut parent_id) } == 0 {
                     physical_id = format!("usb:{parent_id}");
@@ -215,7 +224,7 @@ pub fn enumerate(database: &Database, stop: Option<&AtomicBool>, deadline: Optio
         let mut device = Device {
             endpoint: Endpoint {
                 path: format!("IOHID:{registry_id}"), physical_id,
-                transport: Transport::UsbHid, vendor_id: vendor, product_id: product,
+                transport, vendor_id: vendor, product_id: product,
                 // Access is checked again immediately before opening. Unknown
                 // TCC status must not prevent discovery or permission requests.
                 can_open: unsafe { ffi::IOHIDCheckAccess(LISTEN_EVENT) } != 1,
@@ -223,7 +232,7 @@ pub fn enumerate(database: &Database, stop: Option<&AtomicBool>, deadline: Optio
                 feature_length: lengths.feature, strings: BTreeMap::new(),
                 attributes: Some(attributes),
             },
-            name: string(property(hid, "Product")).unwrap_or_else(|| "USB HID device".into()),
+            name: string(property(hid, "Product")).unwrap_or_else(|| "HID device".into()),
             handle, uses_report_ids: lengths.uses_report_ids, usb_parent, string_error: None,
         };
         // Request only indices declared by plausible configured tablet endpoints.

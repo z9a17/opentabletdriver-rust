@@ -26,7 +26,7 @@ Usage: opentabletdriver-rust-macos list\n\
 Daemon: daemon [--upstream-rpc | --upstream-pipe NAME]\n\
 Original frontend: ui; native control: status/start/stop/shutdown/detect/request/console\n\
 macOS 11+; grant Input Monitoring and Accessibility to your terminal.\n\
-USB HID and absolute/relative mouse only; macOS hardware validation pending.";
+USB/Bluetooth HID and absolute/relative tablet mouse output; macOS hardware validation pending.";
 
 fn main() {
     match std::env::args().nth(1).as_deref() {

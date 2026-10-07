@@ -74,6 +74,7 @@ pub fn prepare_connected(database:&otd_core::tablets::Database,endpoints:&[Endpo
 }
 pub fn inventory(endpoints:&[Endpoint]) -> Value {
     json!(endpoints.iter().map(|endpoint|json!({"DevicePath":endpoint.path,"VendorID":endpoint.vendor_id,"ProductID":endpoint.product_id,
+        "Transport":match endpoint.transport{otd_core::endpoint_match::Transport::UsbHid=>"USB",otd_core::endpoint_match::Transport::BluetoothHid=>"Bluetooth",otd_core::endpoint_match::Transport::WinUsb=>"WinUSB",otd_core::endpoint_match::Transport::Other=>"Other"},
         "CanOpen":endpoint.can_open,"InputReportLength":endpoint.input_length,"OutputReportLength":endpoint.output_length,
         "FeatureReportLength":endpoint.feature_length,"Manufacturer":Value::Null,"ProductName":Value::Null,
         "SerialNumber":Value::Null,"DeviceAttributes":endpoint.attributes})).collect::<Vec<_>>())

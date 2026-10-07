@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 
 /// `BUS_USB` in `HID_ID`.
 pub const BUS_USB: u16 = 0x0003;
+/// Linux input.h BUS_BLUETOOTH, also used in HID_ID.
+pub const BUS_BLUETOOTH:u16=0x0005;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HidId {
@@ -117,5 +119,26 @@ mod tests {
         );
         assert_eq!(string_descriptor(&[4, 2, 0, 0]), None);
         assert_eq!(string_descriptor(&[]), None);
+    }
+}
+
+/// Bluetooth HID physical/unique fields are local/remote address metadata,
+/// not a user display name. Keep the adapter path so two connections cannot
+/// silently coalesce; missing/invalid remote identity falls back to endpoint ID.
+pub fn bluetooth_physical_id(uevent:&str)->Option<String>{
+    let field=|name:&str|uevent.lines().find_map(|line|line.strip_prefix(name));
+    let remote=field("HID_UNIQ=")?;
+    if remote.len()!=17||!remote.bytes().enumerate().all(|(index,byte)|if index%3==2{byte==b':'}else{byte.is_ascii_hexdigit()}){return None;}
+    let physical=field("HID_PHYS=").unwrap_or("");
+    let physical=physical.rsplit_once("/input").filter(|(_,suffix)|!suffix.is_empty()&&suffix.bytes().all(|byte|byte.is_ascii_digit())).map_or(physical,|(parent,_)|parent);
+    Some(format!("bluetooth:{}:{}",physical.to_ascii_lowercase(),remote.to_ascii_lowercase()))
+}
+#[cfg(test)]mod bluetooth_fixtures{
+    use super::*;
+    #[test]fn remote_identity_keeps_same_model_devices_distinct_and_groups_collections(){
+        let first="HID_PHYS=AA:BB:CC:DD:EE:FF/input0\nHID_UNIQ=10:20:30:40:50:60\n";
+        let auxiliary=first.replace("/input0","/input1");assert_eq!(bluetooth_physical_id(first),bluetooth_physical_id(&auxiliary));
+        assert_ne!(bluetooth_physical_id(first),bluetooth_physical_id(&first.replace("50:60","50:61")));
+        assert_eq!(bluetooth_physical_id("HID_UNIQ=ordinary serial\n"),None);
     }
 }

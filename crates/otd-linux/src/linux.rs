@@ -65,7 +65,7 @@ pub fn enumerate(database: &Database) -> io::Result<Vec<Device>> {
             continue;
         };
         let node = Path::new("/dev").join(entry.file_name());
-        let usb = sysfs::usb_device(&sys);
+        let usb = if id.bus==sysfs::BUS_USB{sysfs::usb_device(&sys)}else{None};
         let mut strings = BTreeMap::new();
         let mut string_errors = BTreeMap::new();
         if let Some(usb) = &usb {
@@ -92,9 +92,11 @@ pub fn enumerate(database: &Database) -> io::Result<Vec<Device>> {
                 physical_id: usb
                     .as_ref()
                     .map(|usb| usb.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
+                    .or_else(||(id.bus==sysfs::BUS_BLUETOOTH).then(||fs::read_to_string(hid.join("uevent")).ok().and_then(|text|sysfs::bluetooth_physical_id(&text))).flatten())
+                    .unwrap_or_else(||hid.to_string_lossy().into_owned()),
                 transport: if id.bus == sysfs::BUS_USB {
                     Transport::UsbHid
+                } else if id.bus==sysfs::BUS_BLUETOOTH{Transport::BluetoothHid
                 } else {
                     Transport::Other
                 },
@@ -125,7 +127,10 @@ pub fn rpc_inventory(devices:&[Device])->serde_json::Value{
     let mut inventory=otd_platform::daemon::inventory(&devices.iter().map(|device|device.endpoint.clone()).collect::<Vec<_>>());
     for(value,device)in inventory.as_array_mut().unwrap().iter_mut().zip(devices){
         let text=|name:&str|device.usb.as_ref().and_then(|usb|fs::read_to_string(usb.join(name)).ok()).map(|text|text.trim_end_matches(['\r','\n']).to_owned());
-        value["Manufacturer"]=serde_json::json!(text("manufacturer"));value["ProductName"]=serde_json::json!(text("product"));value["SerialNumber"]=serde_json::json!(text("serial"));
+        let hid=Path::new(&device.endpoint.path).parent().and_then(Path::parent);
+        let uevent=hid.and_then(|hid|fs::read_to_string(hid.join("uevent")).ok());
+        let field=|prefix:&str|uevent.as_deref().and_then(|uevent|uevent.lines().find_map(|line|line.strip_prefix(prefix))).map(str::to_owned);
+        value["Manufacturer"]=serde_json::json!(text("manufacturer"));value["ProductName"]=serde_json::json!(text("product").or_else(||field("HID_NAME=")));value["SerialNumber"]=serde_json::json!(text("serial").or_else(||field("HID_UNIQ=")));
     }inventory
 }
 
