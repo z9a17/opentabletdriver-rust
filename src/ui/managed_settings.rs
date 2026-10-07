@@ -78,7 +78,8 @@ pub(super) fn choose(window: HWND, control: HWND, target: Target) {
                 if !guard.valid(app){return;}
                 app.background("managed-registered-types",move||BackgroundResult::Managed{
                     guard,result:(||{
-                        if let Some(registry)=crate::dotnet::registry_snapshot(){return Ok(registry.plugins.clone());}
+                        // Explicit selection refreshes the installed registry: cached metadata
+                        // can outlive DLL installation/removal in the plugin manager.
                         let root=crate::plugin_catalog::plugins_directory()?;
                         crate::dotnet::reload_installed_plugins(&root).map(|registry|registry.plugins)
                     })(),

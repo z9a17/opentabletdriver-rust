@@ -775,13 +775,29 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         CMD_CHECK_UPDATES => updates::check(window, true),
         presets::CMD_PRESET_SAVE => presets::save(window),
         presets::CMD_PRESET_FOLDER => presets::open_folder(window),
+        presets::CMD_PRESET_REFRESH => { with_app(App::refresh_presets); },
         presets::CMD_PRESET_PREVIOUS=>{with_app(|app|app.preset_page=app.preset_page.saturating_sub(1));},
         presets::CMD_PRESET_NEXT=>{with_app(|app|app.preset_page=app.preset_page.saturating_add(1));},
         id if (presets::CMD_PRESET_FIRST..presets::CMD_PRESET_FIRST + presets::PRESET_CHOICES)
             .contains(&id) =>
         {
             let index = usize::from(id - presets::CMD_PRESET_FIRST);
-            if confirm_discard(window){with_app(|app|presets::apply(app,index));}
+            let guard = with_app(|app| {
+                (!app.closing && !app.update_restart_pending && !app.control_busy
+                    && !app.original_pending && !app.import_pending)
+                    .then(|| (app.managed_token, app.edit_revision, app.metadata_generation,
+                        app.preset_choices.get(index).cloned()))
+            }).flatten();
+            if guard.is_some() && confirm_discard(window) {
+                with_app(|app| {
+                    let current = (app.managed_token, app.edit_revision, app.metadata_generation,
+                        app.preset_choices.get(index).cloned());
+                    if guard.as_ref() == Some(&current) && !app.closing && !app.update_restart_pending
+                        && !app.control_busy && !app.original_pending && !app.import_pending {
+                        presets::apply(app,index);
+                    }
+                });
+            }
         }
         CMD_START_WITH_WINDOWS => {
             let enable = !startup::enabled();

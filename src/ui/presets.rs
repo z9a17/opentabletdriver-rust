@@ -12,6 +12,7 @@ pub(super) const CMD_PRESET_SAVE: u16 = 6200;
 pub(super) const CMD_PRESET_FOLDER: u16 = 6201;
 pub(super) const CMD_PRESET_PREVIOUS: u16 = 6202;
 pub(super) const CMD_PRESET_NEXT: u16 = 6203;
+pub(super) const CMD_PRESET_REFRESH: u16 = 6204;
 
 /// Called by the background worker; menu creation only uses its cached result.
 pub(super) fn list_names() -> Result<Vec<String>, String> {
@@ -45,16 +46,19 @@ pub(super) fn append_menu(menu: HMENU, app: &mut App) {
     if names.is_empty() {
         append(presets, MF_GRAYED, 0, if !app.presets_loaded && app.preset_scan_pending { "Loading presets..." } else { "No presets saved" });
     }
+    let editable = !app.closing && !app.update_restart_pending && !app.control_busy
+        && !app.original_pending && !app.import_pending;
     for (index, name) in names.iter().enumerate() {
-        append(presets, MF_STRING, CMD_PRESET_FIRST + index as u16, name);
+        append(presets, if editable { MF_STRING } else { MF_GRAYED }, CMD_PRESET_FIRST + index as u16, name);
     }
     unsafe { AppendMenuW(presets, MF_SEPARATOR, 0, ptr::null()) };
     append(
         presets,
-        MF_STRING,
+        if editable { MF_STRING } else { MF_GRAYED },
         CMD_PRESET_SAVE,
         "Save settings as preset...",
     );
+    append(presets, MF_STRING, CMD_PRESET_REFRESH, "Refresh presets");
     append(presets, MF_STRING, CMD_PRESET_FOLDER, "Open presets folder");
     // Keep the command mapping fixed while a menu is open. A worker may
     // update preset_names during the modal Windows menu message loop.
@@ -84,7 +88,12 @@ pub(super) fn apply(app: &mut App, index: usize) {
 /// Saves the current settings as a preset chosen in a save dialog opened in
 /// the presets folder.
 pub(super) fn save(window: HWND) {
-    let guard=with_app(|app|(app.edit_revision,app.metadata_generation));
+    let guard=with_app(|app| {
+        (!app.closing && !app.update_restart_pending && !app.control_busy
+            && !app.original_pending && !app.import_pending)
+            .then_some((app.managed_token,app.edit_revision,app.metadata_generation))
+    }).flatten();
+    if guard.is_none() { return; }
     let result = (|| -> Result<Option<String>, String> {
         let store = PresetStore::user()?;
         std::fs::create_dir_all(store.directory()).map_err(|error| error.to_string())?;
@@ -106,7 +115,7 @@ pub(super) fn save(window: HWND) {
             .ok_or("invalid preset file name")?;
         let name = PresetName::parse(stem)?;
         let profile = with_app(|app|{
-            if guard!=Some((app.edit_revision,app.metadata_generation))||app.closing||app.update_restart_pending{return Err("editor changed while choosing a preset file".into());}
+            if guard!=Some((app.managed_token,app.edit_revision,app.metadata_generation))||app.closing||app.update_restart_pending||app.control_busy||app.original_pending||app.import_pending{return Err("editor changed while choosing a preset file".into());}
             app.checked_profile()
         }).ok_or("the panel is closing")??;
         // The dialog already asked before replacing an existing preset.
