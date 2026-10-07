@@ -240,6 +240,10 @@ impl Daemon {
                 .map_err(|error| ControlError::new(ErrorCode::InvalidProfile, error))?;
         }
         let text = profile.to_toml().map_err(|error| ControlError::new(ErrorCode::InvalidProfile, error))?;
+        if text.len() > control::MAX_PROFILE_BYTES || serde_json::to_vec(&text)
+            .is_ok_and(|encoded| encoded.len() > control::MAX_FRAME_BYTES - 1024) {
+            return Err(ControlError::new(ErrorCode::InvalidProfile, "restarted profile exceeds control frame limits"));
+        }
         self.begin(profile, text, true)?;
         self.device_sessions().unwrap().primary_pending(next, crate::device_sessions::SessionState::Preparing);
         Ok(crate::device_sessions::SessionReceipt { id: id.to_owned(), device_generation: generation,
