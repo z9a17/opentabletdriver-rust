@@ -22,7 +22,7 @@ mod parser;
 #[path = "dotnet/custom_devices.rs"]
 pub mod custom_devices;
 pub use parser::{RuntimeDecoder, ManagedReportParser, installed_report_parser};
-pub use registry::{mutate_installed_plugins, ManagedDebugDecoder, ManagedDebugReport, ManagedRegistryInfo, known_report_parser, registry_snapshot, reload_installed_plugins};
+pub use registry::{drain_managed_retirements, mutate_installed_plugins, ManagedDebugDecoder, ManagedDebugReport, ManagedRegistryInfo, known_report_parser, registry_snapshot, reload_installed_plugins};
 pub use registry::{HostedRpc, get_plugin_types, construct_plugin_store};
 pub(crate) fn source_session_json()->Option<serde_json::Value> {
     #[cfg(windows)] {crate::shared_devices::source_session_json()}
@@ -444,33 +444,16 @@ impl Default for FilterMetadata {
 /// Starts an OpenTabletDriver tool: constructs it, applies its settings and
 /// calls `Initialize`. Returns the handle `destroy_tool` disposes.
 pub fn create_tool(config: &crate::plugins::PluginConfig) -> Result<*mut c_void, String> {
-    let bridge = bridge()?;
-    let create = bridge.create_tool.ok_or(
-        "The installed .NET bridge lacks tool support. Replace the data/compat directory with this release's files.",
-    )?;
     let settings = serde_json::json!({
         "assembly_path": config.path.canonicalize().map_err(|e| e.to_string())?,
         "type_name": config.type_name,
         "settings": serde_json::from_str::<serde_json::Value>(&config.settings_json).map_err(|e| e.to_string())?,
     })
     .to_string();
-    let handle = unsafe { create(settings.as_ptr(), settings.len()) };
-    if handle.is_null() {
-        Err(last_error())
-    } else {
-        Ok(handle)
-    }
+    registry::create_retained_tool(&settings)
 }
 
-pub fn destroy_tool(handle: *mut c_void) {
-    if let Ok(Bridge {
-        destroy_tool: Some(destroy),
-        ..
-    }) = bridge()
-    {
-        unsafe { destroy(handle) };
-    }
-}
+pub fn destroy_tool(handle: *mut c_void) { registry::destroy_retained_tool(handle); }
 
 #[derive(Clone, Debug)]
 pub struct InspectedFilter {

@@ -87,6 +87,7 @@ sealed class OriginalInputServices : IDisposable
         public void Dispose() {
             lock (gate) {
                 if (disposed) return; disposed = true; lifetime.Cancel();
+                if (heartbeat != null) ManagedRetirements.Track(heartbeat);
                 using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(3));
                 ServiceClient.Request(13,scope,new JObject(),deadline.Token).GetAwaiter().GetResult();
             }
@@ -138,19 +139,34 @@ sealed class OriginalInputServices : IDisposable
     {
         readonly ITimer original;
         int disposed;
+        readonly object callbackGate = new();
+        int callbacks;
+        readonly TaskCompletionSource drained = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal ScopedTimer(ITimer original) { this.original = original; original.Elapsed += Fire; }
         public bool Enabled => Volatile.Read(ref disposed) == 0 && original.Enabled;
         public float Interval { get => original.Interval; set { ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this); original.Interval = value; } }
         public event Action? Elapsed;
-        void Fire() { if (Volatile.Read(ref disposed) != 0) return; using var callback = ServiceClient.Report(); Elapsed?.Invoke(); }
+        void Fire() {
+            lock (callbackGate) { if (disposed != 0) return; callbacks++; }
+            try { using var callback = ServiceClient.Report(); Elapsed?.Invoke(); }
+            finally { lock (callbackGate) { callbacks--; if (disposed != 0 && callbacks==0) drained.TrySetResult(); } }
+        }
         public void Start() { ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this); original.Start(); }
         public void Stop() => original.Stop();
         public void Dispose() {
-            if (Interlocked.Exchange(ref disposed, 1) != 0) return;
+            lock (callbackGate) {
+                if (disposed != 0) return; disposed=1;
+                if (callbacks==0) drained.TrySetResult();
+            }
             original.Elapsed -= Fire; Elapsed = null;
             // A callback may be awaiting the native settings transaction which
             // retires this scope. It must not be joined by that same transaction.
-            _ = Task.Run(() => { try { original.Dispose(); } catch (Exception error) { Console.Error.WriteLine(error); } });
+            ManagedRetirements.Track(Task.Run(async () => {
+                Exception? failure=null;
+                try { original.Dispose(); } catch (Exception error) { failure=error; }
+                await drained.Task.ConfigureAwait(false);
+                if (failure != null) throw failure;
+            }));
         }
     }
 }

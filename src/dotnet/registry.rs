@@ -13,11 +13,16 @@ type CreateParser = unsafe extern "C" fn(*const u8, i32) -> *mut c_void;
 type DecodeParser = unsafe extern "C" fn(*mut c_void, *const u8, u32, *mut u8, i32) -> i32;
 type ResetParser = unsafe extern "C" fn(*mut c_void) -> i32;
 type DestroyParser = unsafe extern "C" fn(*mut c_void);
+type CreateRetainedTool = unsafe extern "C" fn(*const u8,usize,*mut u64)->*mut c_void;
+type DestroyRetainedTool = unsafe extern "C" fn(*mut c_void)->u64;
+type WaitRetirement = unsafe extern "C" fn(u64,u32)->i32;
+type ReleaseRetirement = unsafe extern "C" fn(u64)->i32;
 type PluginTypes = unsafe extern "C" fn(*mut u8,i32,i32)->i32;
 type StartRpc = unsafe extern "C" fn(*const u8,u32)->isize;
 type StopRpc = unsafe extern "C" fn(isize)->i32;
-pub(super) struct Api { has_parser: HasParser, reload: Reload, create: CreateParser, decode: DecodeParser, reset: ResetParser, destroy: DestroyParser,
-    store:Reload, types:PluginTypes, start_rpc:StartRpc, stop_rpc:StopRpc,mutate:Reload }
+pub(super) struct Api { has_parser: HasParser, reload: Reload, mutate: Reload, create: CreateParser, decode: DecodeParser, reset: ResetParser, destroy: DestroyParser,
+    store:Reload, types:PluginTypes, start_rpc:StartRpc, stop_rpc:StopRpc,
+    create_tool:CreateRetainedTool,destroy_tool:DestroyRetainedTool,wait_retirement:WaitRetirement,release_retirement:ReleaseRetirement }
 impl Api {
     pub(super) fn load(entry: &impl Fn(&str) -> Result<*mut c_void, String>) -> Result<Self, String> {
         Ok(unsafe { Self { has_parser: std::mem::transmute::<*mut c_void, HasParser>(entry("HasReportParser")?), reload: std::mem::transmute::<*mut c_void, Reload>(entry("ReloadRegistry")?),
@@ -29,10 +34,49 @@ impl Api {
             store:std::mem::transmute::<*mut c_void,Reload>(entry("ConstructPluginStore")?),
             types:std::mem::transmute::<*mut c_void,PluginTypes>(entry("GetPluginTypes")?),
             start_rpc:std::mem::transmute::<*mut c_void,StartRpc>(entry("StartHostedRpc")?),
-            stop_rpc:std::mem::transmute::<*mut c_void,StopRpc>(entry("StopHostedRpc")?) } })
+            stop_rpc:std::mem::transmute::<*mut c_void,StopRpc>(entry("StopHostedRpc")?),
+            create_tool:std::mem::transmute::<*mut c_void,CreateRetainedTool>(entry("CreateToolRetained")?),
+            destroy_tool:std::mem::transmute::<*mut c_void,DestroyRetainedTool>(entry("DestroyToolRetained")?),
+            wait_retirement:std::mem::transmute::<*mut c_void,WaitRetirement>(entry("WaitManagedRetirement")?),
+            release_retirement:std::mem::transmute::<*mut c_void,ReleaseRetirement>(entry("ReleaseManagedRetirement")?) } })
     }
 }
 fn api() -> Result<&'static Api, String> { bridge()?.registry.as_ref().ok_or_else(|| "The installed .NET bridge lacks registry/concrete debug parser support; replace data/compat with this release's files.".into()) }
+thread_local! {static RETIREMENTS:std::cell::RefCell<Vec<u64>>=const {std::cell::RefCell::new(Vec::new())};static RETIREMENT_ERRORS:std::cell::RefCell<Vec<String>>=const {std::cell::RefCell::new(Vec::new())};}
+pub(super) fn create_retained_tool(settings:&str)->Result<*mut c_void,String> {
+    let mut receipt=0;let handle=unsafe{(api()?.create_tool)(settings.as_ptr(),settings.len(),&mut receipt)};
+    if receipt!=0 {RETIREMENTS.with(|pending|pending.borrow_mut().push(receipt));}
+    if handle.is_null(){Err(last_error())}else{Ok(handle)}
+}
+pub(super) fn destroy_retained_tool(handle:*mut c_void) {
+    match api() {
+        Ok(api)=>{let receipt=unsafe{(api.destroy_tool)(handle)};
+            if receipt!=0 {RETIREMENTS.with(|pending|pending.borrow_mut().push(receipt));}
+            else {RETIREMENT_ERRORS.with(|errors|errors.borrow_mut().push(last_error()));}},
+        Err(error)=>RETIREMENT_ERRORS.with(|errors|errors.borrow_mut().push(error)),
+    }
+}
+/// Wait only on the cold thread which created/dropped the tool collection.
+/// Pending receipts remain retained on timeout, permitting a later drain retry.
+pub fn drain_managed_retirements(timeout:std::time::Duration)->Result<(),String> {
+    let mut receipts=RETIREMENTS.with(|pending|std::mem::take(&mut *pending.borrow_mut()));
+    let mut errors=RETIREMENT_ERRORS.with(|pending|std::mem::take(&mut *pending.borrow_mut()));
+    if receipts.is_empty(){return if errors.is_empty(){Ok(())}else{Err(errors.join("; "))};}
+    let api=api()?;let deadline=std::time::Instant::now()+timeout;
+    let mut retained=Vec::new();
+    for receipt in receipts.drain(..) {
+        let left=deadline.saturating_duration_since(std::time::Instant::now());
+        let millis=left.as_millis().min(60000) as u32;
+        match unsafe{(api.wait_retirement)(receipt,millis)} {
+            0=>{if unsafe{(api.release_retirement)(receipt)}!=0 {errors.push(last_error());retained.push(receipt);}},
+            1=>retained.push(receipt),
+            _=>{errors.push(last_error());if unsafe{(api.release_retirement)(receipt)}!=0 {retained.push(receipt);}},
+        }
+    }
+    if !retained.is_empty(){errors.push("Owned managed retirements remain pending; no successful drain receipt was published".into());}
+    RETIREMENTS.with(|pending|pending.borrow_mut().extend(retained));
+    if errors.is_empty(){Ok(())}else{Err(errors.join("; "))}
+}
 fn copy_result(size:i32,copy:impl FnOnce(*mut u8,i32)->i32)->Result<serde_json::Value,String> {
     if size<0 {return Err(last_error());}
     if size==0 || size>4194304 {return Err("Invalid original metadata result size".into());}

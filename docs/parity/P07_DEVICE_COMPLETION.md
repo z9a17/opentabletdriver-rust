@@ -38,3 +38,14 @@ or auxiliary endpoint for captured reader_generation. Hosted original RPC update
 retirement is admitted only after its successful matching JSON-RPC response has
 completed actual handler WriteAsync/flush; failed responses never retire.
 All changes remain source-only: no suites, CLR/plugin/hardware execution here.
+
+Managed global input holds use native Op12 (key/button/renew) and Op13 (scope
+release), sharing ownership with native bindings. Keys preserve exact original
+platform dictionary codes; scoped heartbeats preserve long holds. Fresh cleanup
+deadlines release holds after scope cancellation. Position/scroll remain real
+original platform services. Tool disposal and failed constructors issue exact
+owned retirement receipts, including original readers, timer callbacks, platform
+Dispose work, and delegated-output releases. The cold global tool worker awaits
+these before publishing successful generation/drain completion. Pending/failing
+retirement is explicit and cannot authorize update replacement. No checks or
+runtime/plugin/hardware execution were performed.

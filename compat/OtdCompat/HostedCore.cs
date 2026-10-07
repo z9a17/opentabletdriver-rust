@@ -93,7 +93,7 @@ sealed class HostedCore : IDisposable, IServiceProvider
                 foreach (var previous in trees) {
                     if (!replacement.TryGetValue(previous.Key, out var retained) || !ReferenceEquals(previous.Value.Tree, retained.Tree)) {
                         var release = (JObject)previous.Value.Identity.DeepClone(); release.Remove("members"); release["managed_output"] = false;
-                        _ = RetireAndRelease(previous.Value.Tree, release);
+                        ManagedRetirements.Track(RetireAndRelease(previous.Value.Tree, release));
                     }
                 }
                 trees.Clear(); foreach (var item in replacement) trees.Add(item.Key, item.Value);
@@ -167,7 +167,7 @@ sealed class HostedCore : IDisposable, IServiceProvider
             foreach (var item in trees.Values) {
                 var payload = (JObject)item.Identity.DeepClone(); payload.Remove("members"); payload["managed_output"] = false;
                 // Scope retirement must not synchronously await its own native apply.
-                _ = RetireAndRelease(item.Tree, payload);
+                ManagedRetirements.Track(RetireAndRelease(item.Tree, payload));
             }
             providers.DevicesChanged -= NativeChanged;
             providers.TabletsChanged -= NativeTabletsChanged;
@@ -179,20 +179,29 @@ sealed class HostedCore : IDisposable, IServiceProvider
     }
     async Task RetireAndRelease(InputDeviceTree tree, JObject payload)
     {
-        // Drain the shadow callback independently of the native apply thread.
-        // Its output ownership stays delegated until this drain completes.
-        var mode = await Task.Run(() => {
-            var previous = tree.OutputMode;
-            tree.HostedRetire(); return previous;
+        // Drain independently of the native apply thread, including external
+        // Report/RawReport subscribers and platform timer callbacks.
+        var result = await Task.Run(() => {
+            var previous=tree.OutputMode;
+            var errors=new List<Exception>();
+            try { tree.HostedRetire(); } catch(Exception error) {errors.Add(error);}
+            if (previous != null && !IsQueuedMode(previous)) {
+                try {HostPluginManager.ReleaseConstructed(previous);} catch(Exception error) {errors.Add(error);}
+            }
+            return (Mode:previous,Errors:errors);
         }).ConfigureAwait(false);
-        if (mode != null) RestorePointer(mode);
-        await ReleaseOutput(payload).ConfigureAwait(false);
+        if (result.Mode != null) RestorePointer(result.Mode);
+        try {await Task.WhenAll(tree.InputDevices.Select(reader=>reader.HostedCompletion)).ConfigureAwait(false);}
+        catch(Exception error) {result.Errors.Add(error);}
+        try {await ReleaseOutput(payload).ConfigureAwait(false);}
+        catch(Exception error) {result.Errors.Add(error);}
+        if (result.Errors.Count!=0) throw new AggregateException("Concrete Core retirement failed.",result.Errors);
     }
     async Task ReleaseOutput(JObject payload)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
         try { await ServiceClient.Request(11, scope, payload, deadline.Token).ConfigureAwait(false); }
-        catch (Exception) { /* native retiring generation clears its ownership */ }
+        catch (Exception error) { throw new IOException("Delegated output ownership release failed.",error); }
     }
     sealed class NativeDriver(HostedCore owner, ICompositeDeviceHub hub, IReportParserProvider parser, IDeviceConfigurationProvider configuration)
         : Driver(hub, parser, configuration)

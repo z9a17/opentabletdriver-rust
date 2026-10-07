@@ -424,15 +424,19 @@ sealed class HostPluginManager : DesktopPluginManager
     public override IReadOnlyCollection<TypeInfo> GetChildTypes<T>() => base.GetChildTypes<T>()
         .Concat(InstalledRegistry.TypeSnapshot().Where(type => typeof(T).IsAssignableFrom(type)).Select(type => type.GetTypeInfo()))
         .Distinct().ToArray();
-    sealed class ConstructedLease(HostServices services, RegistryGeneration generation)
+    internal static void ReleaseConstructed(object value) {
+        if (constructed.TryGetValue(value,out var lease)) { constructed.Remove(value); lease.Dispose(); }
+    }
+    sealed class ConstructedLease(HostServices services, RegistryGeneration generation) : IDisposable
     {
         // Caller owns plugin IDisposable; this lease keeps its real dependencies
         // loaded until the returned object itself is no longer reachable.
-        ~ConstructedLease() {
-            // Third-party IDisposable errors remain visible during explicit
-            // cleanup, but must never escape the CLR finalizer thread.
-            try { services.Dispose(); } catch (Exception) { }
-            try { InstalledRegistry.Release(generation); } catch (Exception) { }
+        int disposed;
+        public void Dispose() {
+            if (Interlocked.Exchange(ref disposed,1)!=0) return;
+            try { services.Dispose(); } finally { InstalledRegistry.Release(generation); }
+            GC.SuppressFinalize(this);
         }
+        ~ConstructedLease() { try { Dispose(); } catch (Exception) { } }
     }
 }

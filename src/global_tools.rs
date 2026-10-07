@@ -45,18 +45,29 @@ impl Owner {
                     // Old tools release their timers/leases before constructors
                     // for this collection run. Upstream logs/skips a failed tool.
                     drop(tools.take());
+                    if let Err(error)=crate::dotnet::drain_managed_retirements(Duration::from_secs(15)) {
+                        if let Ok(mut state)=worker_state.lock(){*state=State{generation,configured:0,started:0,failures:vec![error.clone()]};}
+                        let _=reply.try_send(Err(error));continue;
+                    }
                     let configured=configs.iter().filter(|config|config.enabled).count();
                     let counts=std::cell::RefCell::new((0usize,Vec::new()));
                     let value=crate::plugins::Tools::start(&configs,|line|{
                         let mut counts=counts.borrow_mut();
                         if line.starts_with("Started tool "){counts.0+=1;}else if line.starts_with("Failed to start tool "){counts.1.push(line.to_owned());}log(line);
                     });
-                    tools=Some(value);let(started,failures)=counts.into_inner();
+                    tools=Some(value);
+                    if let Err(error)=crate::dotnet::drain_managed_retirements(Duration::from_secs(15)) {
+                        let(started,mut failures)=counts.into_inner();failures.push(error.clone());
+                        if let Ok(mut state)=worker_state.lock(){*state=State{generation,configured,started,failures};}
+                        let _=reply.try_send(Err(error));continue;
+                    }
+                    let(started,failures)=counts.into_inner();
                     let snapshot=State{generation,configured,started,failures};
                     let result=worker_state.lock().map_err(|_|"Global tool state poisoned".to_owned()).map(|mut state|{*state=snapshot.clone();snapshot});
                     let _=reply.try_send(result);
                 },
             }}drop(tools);
+            if let Err(error)=crate::dotnet::drain_managed_retirements(Duration::from_secs(15)){log(&error);}
         }).map_err(|error|error.to_string())?;
         Ok(Self{handle:Handle{tx,state,next},join:Some(join)})
     }

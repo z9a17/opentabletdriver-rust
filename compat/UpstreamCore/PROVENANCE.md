@@ -19,3 +19,7 @@ DeviceHubsProvider has an internal constructor receiving actual native hub
 objects instead of opening built-in physical hubs again.
 The project references exact upstream dependency versions, and grants only
 OtdCompat internal access. No physical hub or second physical handle is created.
+
+DeviceReader exposes an internal worker-completion Task for cold scoped retirement
+after its exact reader exits; public APIs remain unchanged. This prevents native
+tool/update completion while managed parser/report callbacks still execute.

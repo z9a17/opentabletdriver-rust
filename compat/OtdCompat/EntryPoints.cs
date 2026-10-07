@@ -519,7 +519,7 @@ sealed class ToolInstance : IDisposable
         {
             try { HostServices.DisposePlugin(created); }
             catch (Exception error) { Console.Error.WriteLine($".NET tool cleanup failed: {error.GetBaseException().Message}"); }
-            finally { services.Dispose(); context.Unload(); }
+            finally { try { services.Dispose(); } finally { context.Unload(); } }
             throw;
         }
     }
@@ -528,7 +528,7 @@ sealed class ToolInstance : IDisposable
     {
         using var setup = ServiceClient.Setup();
         try { tool.Dispose(); }
-        finally { services.Dispose(); context.Unload(); }
+        finally { try { services.Dispose(); } finally { context.Unload(); } }
     }
 }
 

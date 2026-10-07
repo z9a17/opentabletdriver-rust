@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Threading;
+using System.Threading.Tasks;
 using OpenTabletDriver.Plugin;
 using OpenTabletDriver.Plugin.Devices;
 using OpenTabletDriver.Plugin.Tablet;
@@ -22,6 +23,8 @@ namespace OpenTabletDriver.Devices
         }
 
         internal Func<IDisposable> HostedReportScope;
+        private readonly TaskCompletionSource hostedCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal Task HostedCompletion => (workerThread.ThreadState & ThreadState.Unstarted) != 0 ? Task.CompletedTask : hostedCompletion.Task;
         private readonly Thread workerThread;
         private bool initialized, connected;
 
@@ -135,7 +138,8 @@ namespace OpenTabletDriver.Devices
             }
             finally
             {
-                Connected = false;
+                try { Connected = false; }
+                finally { hostedCompletion.TrySetResult(); }
             }
         }
 
