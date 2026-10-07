@@ -27,6 +27,10 @@ const CMD_VISUALIZER: u16 = 1;
 const CMD_HEX: u16 = 2;
 const CMD_BINARY: u16 = 3;
 const CMD_CLOSE: u16 = 4;
+const CMD_RECORD: u16 = 5;
+const CMD_STATS: u16 = 6;
+const CMD_RESET_STATS: u16 = 7;
+const CMD_COPY_STATS: u16 = 8;
 
 /// Upstream's debugger text sizes, in the panel's monospace face.
 struct MonoFonts {
@@ -71,6 +75,11 @@ struct Debugger {
     title: String,
     visualizer: bool,
     binary: bool,
+    statistics: debugger_data::Statistics,
+    show_statistics: bool,
+    recorder: Option<debugger_data::Recorder>,
+    recording_started: Instant,
+    recording_status: String,
     /// The File menu entry, where the last paint put it.
     menu: Cell<RECT>,
     menu_hot: bool,
@@ -203,11 +212,13 @@ pub(super) fn refresh_theme() {
 
 /// Called before panel resources are released or shutdown waits for the daemon.
 pub(super) fn close() {
-    let debugger = DEBUGGER.with(|slot| slot.try_borrow_mut().ok()?.take());
-    if let Some(debugger) = debugger {
-        debugger.cancelled.store(true, Ordering::Release);
-        unsafe { DestroyWindow(debugger.window) };
-    }
+    let window = DEBUGGER.with(|slot| slot.try_borrow().ok()?.as_ref().map(|debugger| debugger.window));
+    if let Some(window) = window { unsafe { SendMessageW(window, WM_CLOSE, 0, 0); } }
+}
+
+/// The panel also waits for buffered recordings before exiting its process.
+pub(super) fn is_open() -> bool {
+    DEBUGGER.with(|slot| slot.borrow().is_some())
 }
 
 impl Drop for Debugger {
@@ -278,6 +289,11 @@ impl Debugger {
             title: TITLE.into(),
             visualizer: true,
             binary: false,
+            statistics: debugger_data::Statistics::default(),
+            show_statistics: false,
+            recorder: None,
+            recording_started: Instant::now(),
+            recording_status: String::new(),
             menu: Cell::new(RECT::default()),
             menu_hot: false,
             menu_open: false,
@@ -288,6 +304,10 @@ impl Debugger {
     /// Takes the newest reports; returns a new window title if the tablet
     /// changed, for the caller to set once this borrow has ended.
     fn take_updates(&mut self) -> Option<String> {
+        if let Some(result) = self.recorder.as_ref().and_then(debugger_data::Recorder::result) {
+            self.recording_status = match result { Ok(()) => "Recording saved.".into(), Err(error) => error };
+            self.recorder = None;
+        }
         while let Ok(update) = self.updates.try_recv() {
             match update {
                 Ok(report) => {
@@ -320,6 +340,11 @@ impl Debugger {
                     {
                         self.spec =
                             Some((name.clone(), otd_core::config::runtime_tablet(name).ok()));
+                    }
+                    if self.statistics.observe(&report) {
+                        if let Some(recorder) = &self.recorder {
+                            recorder.push(self.recording_started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64, report.clone());
+                        }
                     }
                     self.raw = parse_hex(&report.raw_hex).unwrap_or_default();
                     self.error = None;
@@ -498,8 +523,9 @@ impl Debugger {
         // binary raw view leaves too little width.
         let stacked = device_width + gap + rate_width > left.right - left.left;
         let rows_height = if stacked { row * 2 + gap } else { row };
+        let stats_height = if self.show_statistics { s(155.0) } else { 0 };
         let rows_top = if self.visualizer {
-            bottom - rows_height
+            bottom - rows_height - stats_height
         } else {
             top
         };
@@ -547,6 +573,20 @@ impl Debugger {
                 p.text,
                 draw::TEXT_LEFT | DT_NOPREFIX,
             );
+        }
+        if self.show_statistics {
+            let stats_top = rows_top + rows_height + gap;
+            let stats = section(canvas, rect(left.left, stats_top, left.right, bottom), "Additional Statistics", style, header);
+            let inner = draw::inset(stats, s(8.0), s(6.0));
+            let status = self.recorder.as_ref().map_or_else(|| self.recording_status.clone(), debugger_data::Recorder::status);
+            let mut lines = self.statistics.lines();
+            if !status.is_empty() { lines.insert(0, status); }
+            let room = usize::try_from((inner.bottom - inner.top) / line).unwrap_or(0);
+            for (index, value) in lines.iter().take(room).enumerate() {
+                let y = inner.top + index as i32 * line;
+                canvas.text(rect(inner.left, y, inner.right, y + line), value, text, p.text,
+                    DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            }
         }
         if self.visualizer {
             let area = section(
@@ -788,9 +828,11 @@ fn format_report(report: &Value) -> Vec<String> {
 /// Opens the File menu below its entry. No debugger borrow survives the
 /// menu's message loop.
 fn open_menu(window: HWND) {
-    let Some((entry, visualizer, binary)) = with_debugger(window, |debugger| {
+    let Some((entry, visualizer, binary, stats, recording, finishing)) = with_debugger(window, |debugger| {
         debugger.menu_open = true;
-        (debugger.menu.get(), debugger.visualizer, debugger.binary)
+        (debugger.menu.get(), debugger.visualizer, debugger.binary, debugger.show_statistics,
+            debugger.recorder.as_ref().is_some_and(debugger_data::Recorder::active),
+            debugger.recorder.as_ref().is_some_and(|recorder| !recorder.active()))
     }) else {
         return;
     };
@@ -798,6 +840,11 @@ fn open_menu(window: HWND) {
     let command = unsafe {
         let menu = CreatePopupMenu();
         append(menu, checked(visualizer), CMD_VISUALIZER, "Visualizer");
+        append(menu, checked(stats), CMD_STATS, "Additional Statistics");
+        append(menu, MF_STRING, CMD_RESET_STATS, "Reset Statistics");
+        append(menu, MF_STRING, CMD_COPY_STATS, "Copy All Statistics");
+        append(menu, if finishing { MF_GRAYED } else { MF_STRING }, CMD_RECORD,
+            if recording { "Stop Recording" } else if finishing { "Finishing Recording…" } else { "Record Sampled Reports…" });
         let modes = CreatePopupMenu();
         append(modes, MF_STRING, CMD_HEX, "Hex");
         append(modes, MF_STRING, CMD_BINARY, "Binary");
@@ -870,11 +917,43 @@ fn open_menu(window: HWND) {
             CMD_VISUALIZER => debugger.visualizer = !debugger.visualizer,
             CMD_HEX => debugger.binary = false,
             CMD_BINARY => debugger.binary = true,
+            CMD_STATS => debugger.show_statistics = !debugger.show_statistics,
+            CMD_RESET_STATS => debugger.statistics = debugger_data::Statistics::default(),
             _ => {}
         }
     });
+    if command == CMD_COPY_STATS {
+        if let Some(lines) = with_debugger(window, |debugger| debugger.statistics.lines().join("\r\n")) {
+            copy_to_clipboard(window, &lines);
+        }
+    }
+    if command == CMD_RECORD {
+        if recording {
+            with_debugger(window, |debugger| { if let Some(recorder) = &mut debugger.recorder { recorder.stop(); } });
+        } else if !finishing {
+            match commands::file_dialog(window, true, commands::FileKind::Recording, "Record sampled reports") {
+                Ok(Some(path)) => {
+                    let result = debugger_data::Recorder::start(&path);
+                    with_debugger(window, |debugger| {
+                        debugger.show_statistics = true;
+                        match result {
+                            Ok(recorder) => {
+                                debugger.recorder = Some(recorder);
+                                debugger.recording_started = Instant::now();
+                                debugger.statistics = debugger_data::Statistics::default();
+                                debugger.recording_status = String::new();
+                            }
+                            Err(error) => debugger.recording_status = error,
+                        }
+                    });
+                }
+                Err(error) => { with_debugger(window, |debugger| debugger.recording_status = error); }
+                Ok(None) => {},
+            }
+        }
+    }
     if command == CMD_CLOSE {
-        unsafe { DestroyWindow(window) };
+        unsafe { SendMessageW(window, WM_CLOSE, 0, 0); };
     } else {
         unsafe { InvalidateRect(window, ptr::null(), 0) };
     }
@@ -970,7 +1049,7 @@ unsafe extern "system" fn window_proc(
         // Escape closes the window, as upstream's does; Alt+F and F10 open
         // the File menu.
         WM_KEYDOWN if wparam == usize::from(VK_ESCAPE) => {
-            unsafe { DestroyWindow(window) };
+            unsafe { SendMessageW(window, WM_CLOSE, 0, 0); };
             0
         }
         WM_SYSCHAR if matches!(wparam, 0x46 | 0x66) => {
@@ -1015,6 +1094,27 @@ unsafe extern "system" fn window_proc(
                     );
                 }
                 InvalidateRect(window, ptr::null(), 0);
+            }
+            0
+        }
+        WM_CLOSE => {
+            let finishing = with_debugger(window, |debugger| {
+                debugger.cancelled.store(true, Ordering::Release);
+                if let Some(recorder) = &mut debugger.recorder { recorder.stop(); true } else { false }
+            }).unwrap_or(false);
+            if finishing { unsafe { SetTimer(window, 1, 33, None); } }
+            else { unsafe { DestroyWindow(window); } }
+            0
+        }
+        WM_TIMER if wparam == 1 => {
+            let result = with_debugger(window, |debugger| {
+                debugger.recorder.as_ref().and_then(debugger_data::Recorder::result)
+            }).flatten();
+            if let Some(result) = result {
+                if let Err(error) = result { with_app(|app| app.log(Level::Error, "Debugger", error)); }
+                unsafe { KillTimer(window, 1); DestroyWindow(window); }
+            } else if with_debugger(window, |debugger| debugger.recorder.is_none()) == Some(true) {
+                unsafe { KillTimer(window, 1); DestroyWindow(window); }
             }
             0
         }

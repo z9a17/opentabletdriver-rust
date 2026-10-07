@@ -29,6 +29,7 @@ const MOUSE_CHOICES: [(MouseButton, &str); 5] = [
 pub(super) enum BindingTarget {
     Pen(usize),
     Aux(usize),
+    Mouse(usize),
     Clockwise(usize),
     CounterClockwise(usize),
     WheelButton(usize, usize),
@@ -40,6 +41,10 @@ impl BindingTarget {
         match self {
             Self::Pen(index) => format!("Pen Binding {}", index + 1),
             Self::Aux(index) => format!("Express Key {}", index + 1),
+            Self::Mouse(0) => "Primary Binding".into(),
+            Self::Mouse(1) => "Alternate Binding".into(),
+            Self::Mouse(2) => "Middle Binding".into(),
+            Self::Mouse(index) => format!("Mouse Binding {}", index + 1),
             Self::Clockwise(_) => "Clockwise".into(),
             Self::CounterClockwise(_) => "Counter-Clockwise".into(),
             Self::WheelButton(_, index) => format!("Wheel Button {}", index + 1),
@@ -51,6 +56,7 @@ impl BindingTarget {
         match self {
             Self::Pen(index) => format!("pen button {}", index + 1),
             Self::Aux(index) => format!("express key {}", index + 1),
+            Self::Mouse(index) => format!("mouse button {}", index + 1),
             Self::Clockwise(wheel) => format!("wheel {} clockwise rotation", wheel + 1),
             Self::CounterClockwise(wheel) => {
                 format!("wheel {} counter-clockwise rotation", wheel + 1)
@@ -118,6 +124,8 @@ impl App {
         };
         let mut rows: Vec<BindingTarget> = (0..pen).map(BindingTarget::Pen).collect();
         rows.extend((0..aux).map(BindingTarget::Aux));
+        let mouse = detected.map_or(profile.mouse_buttons.len(), |c| usize::from(c.mouse_buttons));
+        rows.extend((0..mouse).map(BindingTarget::Mouse));
         let mut fields = Vec::new();
         for (wheel, buttons) in wheels.iter().enumerate() {
             rows.push(BindingTarget::Clockwise(wheel));
@@ -141,6 +149,7 @@ impl App {
         match target {
             BindingTarget::Pen(index) => profile.pen_buttons.get(index).cloned(),
             BindingTarget::Aux(index) => profile.aux_buttons.get(index).cloned(),
+            BindingTarget::Mouse(index) => profile.mouse_buttons.get(index).cloned(),
             BindingTarget::Clockwise(index) => wheel(index).map(|wheel| wheel.clockwise.clone()),
             BindingTarget::CounterClockwise(index) => {
                 wheel(index).map(|wheel| wheel.counter_clockwise.clone())
@@ -173,6 +182,7 @@ impl App {
         match target {
             BindingTarget::Pen(index) => put(&mut self.editor.profile.pen_buttons, index, action),
             BindingTarget::Aux(index) => put(&mut self.editor.profile.aux_buttons, index, action),
+            BindingTarget::Mouse(index) => put(&mut self.editor.profile.mouse_buttons, index, action),
             BindingTarget::Clockwise(index) => self.wheel_mut(index).clockwise = action,
             BindingTarget::CounterClockwise(index) => {
                 self.wheel_mut(index).counter_clockwise = action;
@@ -284,7 +294,7 @@ impl App {
                     }
                 }
             }
-            if self.tab == Tab::Pen || self.tab == Tab::Aux {
+            if matches!(self.tab, Tab::Pen | Tab::Aux | Tab::Mouse) {
                 self.layout();
             }
         }
@@ -488,6 +498,22 @@ impl App {
             Tone::Muted,
             DT_LEFT | DT_WORDBREAK | DT_NOPREFIX,
         ));
+    }
+
+    /// Mouse button controls use the same action chooser and dirty state.
+    pub(super) fn layout_mouse(&mut self, content: RECT, items: &mut Vec<Item>,
+        shown: &mut Vec<(HWND, RECT)>, measure: &dyn Fn(HFONT, &str) -> (i32, i32), dc: HDC) {
+        let s = |value: i32| scale(value, self.dpi);
+        let targets: Vec<_> = self.binding_rows.iter().map(|row| row.target)
+            .filter(|target| matches!(target, BindingTarget::Mouse(_))).collect();
+        let body = self.group("Mouse Buttons", content, items);
+        let inner = draw::inset(body, s(12), s(12));
+        if targets.is_empty() {
+            let text = self.no_rows_text("mouse buttons");
+            let height = canvas::wrapped_height(dc, self.style().fonts.ui, &text, inner.right - inner.left);
+            items.push(Item::Label(rect(inner.left, inner.top, inner.right, inner.top + height),
+                text, Tone::Muted, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX));
+        } else { self.layout_binding_grid(&targets, inner, items, shown, measure); }
     }
 
     /// The Auxiliary Settings page: express keys, then one group per wheel.

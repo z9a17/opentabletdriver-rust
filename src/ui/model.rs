@@ -535,8 +535,10 @@ impl Editor {
             .transpose()?;
         if eraser {
             self.profile.contact.eraser_threshold_raw = raw;
+            self.profile.contact.eraser_threshold_percent = percent.map(|value| value as f32);
         } else {
             self.profile.contact.tip_threshold_raw = raw;
+            self.profile.contact.tip_threshold_percent = percent.map(|value| value as f32);
         }
         Ok(())
     }
@@ -544,7 +546,16 @@ impl Editor {
     /// Filters in the order they run. The built-in Radial Follow is listed
     /// where it runs: in place of a Radial Follow DLL entry, or first.
     pub fn filters(&self) -> Vec<FilterItem> {
-        let mut items = self.radial_filters();
+        self.plugin_items(false)
+    }
+
+    /// Tools keep their saved order and use the same property/enable contract.
+    pub fn tools(&self) -> Vec<FilterItem> {
+        self.plugin_items(true)
+    }
+
+    fn plugin_items(&self, tools: bool) -> Vec<FilterItem> {
+        let mut items = if tools { Vec::new() } else { self.radial_filters() };
         let anchor = self
             .profile
             .plugins
@@ -559,6 +570,7 @@ impl Editor {
             .plugins
             .iter()
             .enumerate()
+            .filter(|(_, plugin)| (plugin.kind == PluginKind::DotnetTool) == tools)
             .map(|(index, plugin)| FilterItem {
                 target: FilterRef::Plugin(index),
                 name: plugin_name(plugin),
@@ -567,7 +579,9 @@ impl Editor {
             })
             .collect();
         let mut plugins = plugins.into_iter();
-        let mut ordered: Vec<FilterItem> = plugins.by_ref().take(anchor).collect();
+        let before = if tools { 0 } else { self.profile.plugins[..anchor]
+            .iter().filter(|plugin| plugin.kind != PluginKind::DotnetTool).count() };
+        let mut ordered: Vec<FilterItem> = plugins.by_ref().take(before).collect();
         ordered.append(&mut items);
         ordered.extend(plugins);
         ordered

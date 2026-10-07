@@ -22,7 +22,7 @@ fn fixture(hwnd: HWND) -> App {
             filter_list: null, add_dotnet: null, add_native: null, remove_filter: null,
             filter_defaults: null, property_prev: null, property_next: null, filter_enable: null,
             tip_binding: null, tip_slider: null, tip_field: null,
-            eraser_binding: null, eraser_slider: null, eraser_field: null,
+            eraser_binding: null, eraser_slider: null, eraser_field: null, pen_policy: [null; 3],
             log: null, copy_log: null, clear_log: null, save: null, apply: null,
         },
         tab: Tab::Output, items: Vec::new(), experimental: None, display_view: None, tablet_view: None,
@@ -338,6 +338,81 @@ fn binding_pages_follow_the_detected_tablet_and_edit_the_profile() {
     ]);
     assert!(!app.bindings_detected);
     render_page(&app, "bindings-Aux-absent");
+    drop(app);
+    LOOK.with(|slot| slot.borrow_mut().take());
+    unsafe { DestroyWindow(window); }
+}
+
+#[test]
+fn tool_mouse_and_pen_policy_editors_preserve_other_settings() {
+    use bindings::BindingTarget;
+    use otd_core::output::buttons::ButtonAction;
+    let window = unsafe { CreateWindowExW(0, wide("STATIC").as_ptr(), wide("Desktop editors").as_ptr(),
+        WS_POPUP, 0, 0, 760, 640, ptr::null_mut(), ptr::null_mut(), GetModuleHandleW(ptr::null()), ptr::null()) };
+    assert!(!window.is_null());
+    let mut app = fixture(window);
+    app.c.tabs.clear();
+    app.create_controls().unwrap();
+    let tool = PluginConfig { path: "fixture-tool.dll".into(), kind: PluginKind::DotnetTool,
+        type_name: "Fixture.Tool".into(), enabled: false,
+        settings_json: r#"{"Interval":25,"Unknown":{"preserve":true}}"#.into() };
+    app.editor.profile.plugins = vec![
+        PluginConfig { kind: PluginKind::Dotnet, type_name: "Fixture.Filter".into(),
+            settings_json: "{}".into(), ..tool.clone() }, tool.clone()];
+    let metadata = FilterMetadata { type_name: tool.type_name.clone(), display_name: Some("Fixture Tool".into()),
+        default_settings_json: "{}".into(), properties: vec![crate::dotnet::PropertyMetadata {
+            name: "Interval".into(), property_type: "System.UInt32".into(), writable: true,
+            unit: Some("ms".into()), ..Default::default() }] };
+    // Inspection is fixture data; no DLL is constructed or daemon requested.
+    app.plugin_metadata.insert(tool.path.clone(), Ok(vec![metadata]));
+    app.select_tab(Tab::Tools);
+    assert_eq!(app.selected_target(), Some(FilterRef::Plugin(1)));
+    assert_eq!(with_look(|look| look.filters.len()), Some(1));
+    let field = app.properties.iter().position(|row| row.label == "Interval").unwrap();
+    app.edit_property(field, "-1");
+    assert!(app.invalid.contains(&(app.properties[field].hwnd as isize)));
+    app.select_tab(Tab::Output);
+    assert_eq!(app.tab, Tab::Tools, "invalid tool edits retain their editor");
+    app.edit_property(field, "40");
+    let settings: serde_json::Value = serde_json::from_str(&app.editor.profile.plugins[1].settings_json).unwrap();
+    assert_eq!(settings["Interval"], 40);
+    assert_eq!(settings["Unknown"]["preserve"], true);
+    assert!(!app.editor.profile.plugins[1].enabled, "editing a disabled tool cannot run it");
+    assert_eq!(app.editor.profile.plugins[0].settings_json, "{}");
+
+    app.editor.profile.mouse_buttons = vec![ButtonAction::None; 5];
+    app.sync_bindings();
+    app.select_tab(Tab::Mouse);
+    app.set_binding_action(BindingTarget::Mouse(3), "keys:Control+Z".parse().unwrap());
+    assert!(matches!(app.editor.profile.mouse_buttons[3], ButtonAction::Keys(_)));
+    let mouse: Vec<_> = app.binding_rows.iter().filter(|row| matches!(row.target, BindingTarget::Mouse(_)))
+        .map(|row| row.hwnd).collect();
+    assert_eq!(placed(&app, &mouse).len(), 5);
+    app.select_tab(Tab::Pen);
+    for index in 0..3 {
+        unsafe { SendMessageW(app.c.pen_policy[index], BM_SETCHECK, BST_CHECKED as usize, 0); }
+        app.pen_policy_toggled(index);
+    }
+    assert!(app.editor.profile.contact.drag_only && app.editor.profile.contact.disable_pressure
+        && app.editor.profile.contact.disable_tilt);
+
+    // New tabs wrap instead of pushing essential navigation beyond small windows.
+    for (name, palette) in [("dark", Palette::dark()), ("light", Palette::light()), ("contrast", Palette::high_contrast())] {
+        update_look(|look| look.style.palette = palette);
+        for dpi in [96, 144, 192] {
+            app.set_dpi(dpi);
+            unsafe { SetWindowPos(window, ptr::null_mut(), 0, 0, scale(760, dpi), scale(640, dpi), SWP_NOZORDER | SWP_NOACTIVATE); }
+            for tab in [Tab::Tools, Tab::Mouse, Tab::Pen] {
+                app.select_tab(tab);
+                app.layout();
+                let client = client_rect(window);
+                for bounds in placed(&app, &app.c.tabs) {
+                    assert!(bounds.left >= 0 && bounds.right <= client.right);
+                }
+                render_page(&app, &format!("desktop-{tab:?}-{name}-{dpi}"));
+            }
+        }
+    }
     drop(app);
     LOOK.with(|slot| slot.borrow_mut().take());
     unsafe { DestroyWindow(window); }

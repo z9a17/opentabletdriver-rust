@@ -40,13 +40,19 @@ impl App {
 
         // Tabs open into the page, whose top border they overlap.
         let tabs_top = s(32);
-        let page_top = tabs_top + s(28) - 1;
+        let mut tabs_row = tabs_top;
         let mut x = s(10);
         for (index, hwnd) in self.c.tabs.iter().enumerate() {
             let width = measure(fonts.ui, TABS[index].1).0 + s(28);
-            shown.push((*hwnd, rect(x, tabs_top, x + width, page_top + 1)));
+            if x + width > client.right - s(10) && x > s(10) {
+                x = s(10);
+                tabs_row += s(30);
+            }
+            shown.push((*hwnd, rect(x, tabs_row, x + width, tabs_row + s(28))));
             x += width + s(2);
         }
+
+        let page_top = tabs_row + s(28) - 1;
 
         // Command bar, as in upstream's TabletSwitcherPanel.
         let bar_top = client.bottom - s(48);
@@ -68,8 +74,9 @@ impl App {
         let content = draw::inset(page, s(12), s(12));
         match self.tab {
             Tab::Output => self.layout_output(content, &mut items, &mut shown, &measure, dc),
-            Tab::Filters => self.layout_filters(content, &mut items, &mut shown, &measure, dc),
+            Tab::Filters | Tab::Tools => self.layout_filters(content, &mut items, &mut shown, &measure, dc),
             Tab::Pen => self.layout_pen(content, &mut items, &mut shown, &measure, dc),
+            Tab::Mouse => self.layout_mouse(content, &mut items, &mut shown, &measure, dc),
             Tab::Aux => self.layout_aux(content, &mut items, &mut shown, &measure, dc),
             Tab::Experimental => {
                 if let Some(page) = &self.experimental {
@@ -379,7 +386,7 @@ impl App {
         shown.push((self.c.filter_list, draw::inset(list_box, 1, s(4))));
         let width = (list_width - s(6)) / 2;
         for (index, hwnd) in [self.c.add_dotnet, self.c.add_native, self.c.remove_filter, self.c.filter_defaults]
-            .into_iter()
+            .into_iter().filter(|hwnd| self.tab != Tab::Tools || *hwnd != self.c.add_native)
             .enumerate()
         {
             let left = content.left + (index % 2) as i32 * (width + s(6));
@@ -396,6 +403,9 @@ impl App {
         items.push(Item::Group(panel));
         let inner = draw::inset(panel, s(16), s(14));
         let Some(target) = self.selected_target() else {
+            items.push(Item::Label(inner, if self.tab == Tab::Tools {
+                "No tools configured. Add a .NET tool or install one with Plugin Manager."
+            } else { "No filters configured." }.into(), Tone::Muted, DT_LEFT | DT_WORDBREAK));
             return;
         };
         let mut y = inner.top;
@@ -410,7 +420,7 @@ impl App {
         if self.properties.is_empty() {
             items.push(Item::Label(
                 rect(inner.left, y, inner.right, y + s(28)),
-                "No editable settings are available for this filter.".into(),
+                "No editable settings are available for this plugin.".into(),
                 Tone::Muted,
                 draw::TEXT_LEFT,
             ));
@@ -679,7 +689,15 @@ impl App {
             ));
         }
 
-        let top = content.top + height + gap;
+        let policy_top = content.top + height + gap;
+        let body = self.group("Pen Output", rect(content.left, policy_top, content.right, policy_top + s(70)), items);
+        let inner = draw::inset(body, s(12), s(8));
+        let width = (inner.right - inner.left) / 3;
+        for (index, hwnd) in self.c.pen_policy.iter().enumerate() {
+            let left = inner.left + index as i32 * width;
+            shown.push((*hwnd, rect(left, inner.top, left + width, inner.top + s(28))));
+        }
+        let top = policy_top + s(70) + gap;
         self.layout_pen_buttons(
             rect(content.left, top, content.right, content.bottom),
             items,
