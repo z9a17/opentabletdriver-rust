@@ -276,9 +276,9 @@ def make_package(args):
                 raise ValueError('compatibility bridge changed since recorded build; rebuild Windows')
             (data_directory / 'compat').mkdir()
             for name in COMPAT_FILES:
-                destination = data_directory / 'compat' / name
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(compat / name, destination)
+                component_destination = data_directory / 'compat' / name
+                component_destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(compat / name, component_destination)
         elif platform == 'linux-x64':
             (stage / 'setup').mkdir()
             for name in LINUX_SETUP:
