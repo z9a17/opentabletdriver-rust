@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup Label="Project Properties">
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>OpenTabletDriver.Console</AssemblyName>
+    <RootNamespace>OpenTabletDriver.Console</RootNamespace>
+    <Version>0.6.7</Version>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <PackageLicenseExpression>LGPL-3.0-or-later</PackageLicenseExpression>
+    <NoWarn>VSTHRD100; VSTHRD101; VSTHRD110; VSTHRD200</NoWarn>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Pack">
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>otd</ToolCommandName>
+    <PackageOutputPath>./nupkg</PackageOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup Label="Project References">
+    <ProjectReference Include="..\UpstreamDesktop\OpenTabletDriver.Desktop.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -332,6 +332,17 @@ impl<'a> Hidraw<'a> {
         self.services=Some(services);self.registration=Some(registration);Ok(())
     }
     pub fn initialized(&self){if let Some(registration)=&self.registration{registration.endpoint.initialized.store(true,Ordering::Release);}}
+    pub fn tablet(&self,tablet:serde_json::Value){if let Some(registration)=&self.registration{registration.tablet(tablet);}}
+    fn waits(&self)->[libc::pollfd;3]{[
+        libc::pollfd{fd:self.file.as_raw_fd(),events:libc::POLLIN,revents:0},
+        libc::pollfd{fd:self.services.as_ref().map_or(-1,|services|services.wake().raw()),events:libc::POLLIN,revents:0},
+        libc::pollfd{fd:self.registration.as_ref().map_or(-1,|registration|registration.endpoint.output.reader_wake().raw()),events:libc::POLLIN,revents:0}]}
+    pub fn wait_pair(primary:&mut Self,auxiliary:Option<&mut Self>,timeout:Duration)->io::Result<()> {
+        let mut waits=[libc::pollfd{fd:-1,events:0,revents:0};6];waits[..3].copy_from_slice(&primary.waits());
+        if let Some(auxiliary)=auxiliary{waits[3..].copy_from_slice(&auxiliary.waits());}
+        let result=unsafe{libc::poll(waits.as_mut_ptr(),waits.len() as libc::nfds_t,timeout.min(Duration::from_secs(1)).as_micros().div_ceil(1000) as i32)};
+        if result<0{let error=io::Error::last_os_error();if error.kind()!=io::ErrorKind::Interrupted{return Err(error);}}Ok(())
+    }
     fn services(&mut self){
         if let Some(mut services)=self.services.take(){let file=&self.file;let usb=&self.usb;
             services.drain(|kind,data|match kind{

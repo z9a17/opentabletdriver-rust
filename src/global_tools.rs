@@ -16,6 +16,7 @@ impl Receipt {pub fn wait(self,timeout:Duration)->Result<State,String>{
     self.rx.recv_timeout(timeout).map_err(|_|"Global tools are still changing; query generation before retrying".to_owned())?
 }}
 impl Handle {
+    pub fn pending(&self)->Result<bool,String>{let next=self.next.lock().map_err(|_|"Global tool generation poisoned")?;Ok(*next!=self.snapshot()?.generation)}
     pub fn snapshot(&self)->Result<State,String>{self.state.lock().map(|state|state.clone()).map_err(|_|"Global tool state poisoned".into())}
     /// The caller uses the observed committed generation. Reservations prevent
     /// a second client from overwriting a pending, not-yet-completed change.

@@ -82,3 +82,12 @@ pub fn ui(arguments:Vec<String>) -> Result<(),String> {
     let status=command.current_dir(base).args(arguments).status().map_err(|error|error.to_string())?;
     if status.success(){Ok(())}else{Err(format!("Original frontend exited with {status}"))}
 }
+/// Pinned original CLI retains every original alias, binding editor, plugin
+/// command and settings workflow. Its client uses the original fixed pipe.
+pub fn original_console(arguments:Vec<String>)->Result<(),String>{
+    let base=std::env::current_exe().map_err(|error|error.to_string())?.parent().ok_or("Executable directory unavailable")?.to_owned();
+    let path=base.join("OpenTabletDriver.Console.dll");
+    if !path.is_file(){return Err("Original console is absent; install the complete distribution".into());}
+    let status=std::process::Command::new("dotnet").arg(path).args(arguments).current_dir(base).status().map_err(|error|error.to_string())?;
+    if status.success(){Ok(())}else{Err(format!("Original console exited with {status}"))}
+}

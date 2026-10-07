@@ -43,28 +43,32 @@ pub mod action_output {
 pub mod managed_host {
     use std::sync::{Mutex,OnceLock};
     use super::managed_services::{Publisher,Snapshot};
-    struct Cached {publisher:Publisher,snapshot:Snapshot}
+    struct Cached {publisher:Publisher,snapshot:Snapshot,inventory:Option<serde_json::Value>}
     static CURRENT:OnceLock<Mutex<Option<Cached>>>=OnceLock::new();
     pub fn install(publisher:Publisher,snapshot:Snapshot)->Result<(),String>{
         let mut current=CURRENT.get_or_init(||Mutex::new(None)).lock().map_err(|_|"Managed publication poisoned")?;
-        if current.is_some(){return Err("Managed publication owner already installed".into());}*current=Some(Cached{publisher,snapshot});Ok(())
+        if current.is_some(){return Err("Managed publication owner already installed".into());}let inventory=snapshot.devices.clone();*current=Some(Cached{publisher,snapshot,inventory});Ok(())
     }
     pub fn publish(mut snapshot:Snapshot)->Result<(),String>{
         let mut current=CURRENT.get_or_init(||Mutex::new(None)).lock().map_err(|_|"Managed publication poisoned")?;
         let current=current.as_mut().ok_or("Managed native publication owner unavailable")?;
         snapshot.version=current.snapshot.version.checked_add(1).ok_or("Managed snapshot generation exhausted")?;
+        current.inventory=snapshot.devices.clone();snapshot.devices=merge_owned(current.inventory.as_ref());
         current.publisher.publish(snapshot.clone())?;current.snapshot=snapshot;Ok(())
     }
     pub fn clear(){if let Ok(mut current)=CURRENT.get_or_init(||Mutex::new(None)).lock(){*current=None;}}
+    fn merge_owned(inventory:Option<&serde_json::Value>)->Option<serde_json::Value>{
+        let discovered=inventory?.as_array()?;let owned=crate::shared_devices::owned_metadata();let mut result=Vec::new();
+        for device in discovered{if !owned.iter().any(|owner|owner["DevicePath"]==device["DevicePath"]){result.push(device.clone());}}
+        for owner in owned{let mut device=discovered.iter().find(|device|device["DevicePath"]==owner["DevicePath"]).cloned().unwrap_or_else(||serde_json::json!({}));
+            if let Some(value)=device.as_object_mut(){value.extend(owner.as_object()?.clone());value.insert("CanOpen".into(),true.into());}result.push(device);}
+        Some(serde_json::json!(result))
+    }
     pub fn publish_owned_devices(){
         if let Ok(mut current)=CURRENT.get_or_init(||Mutex::new(None)).lock(){if let Some(current)=current.as_mut(){
-            if let Some(devices)=current.snapshot.devices.as_mut().and_then(serde_json::Value::as_array_mut){
-                for owned in crate::shared_devices::owned_metadata(){
-                    if let Some(device)=devices.iter_mut().find(|device|device["DevicePath"]==owned["DevicePath"]){
-                        if let (Some(device),Some(owned))=(device.as_object_mut(),owned.as_object()){device.extend(owned.clone());}
-                    }
-                }
-            }
+            // Do not collapse current and prepared readers sharing one path.
+            // Scoped constructors select their concrete reader_generation.
+            current.snapshot.devices=merge_owned(current.inventory.as_ref());
             if let Some(version)=current.snapshot.version.checked_add(1){current.snapshot.version=version;let _=current.publisher.publish(current.snapshot.clone());}
         }}
     }

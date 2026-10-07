@@ -28,6 +28,8 @@ impl Device {
     }
 }
 pub trait Platform: Send + Sync + 'static {
+    fn default_profile(&self,_tablet:&str)->Result<Option<Profile>,String>{Ok(None)}
+    fn startup_tools(&self)->Option<Vec<otd_core::plugins::PluginConfig>>{None}
     fn prepare_start(&self) -> Result<(),String> { Ok(()) }
     /// Must only discover here. No output, initialization or CLR construction.
     fn discover(&self) -> Result<Vec<Device>,String>;
@@ -81,8 +83,14 @@ pub struct WorkerContext {
     pub stop: Arc<AtomicBool>,
     events: SyncSender<Event>,
     activation: Receiver<()>,
+    bindings:SyncSender<(u64,crate::binding_presets::Request)>,
 }
 impl WorkerContext {
+    pub fn actions(&self,sink:Box<dyn otd_core::output::buttons::ActionSink>,inhibit:Option<u32>)->Box<dyn otd_core::output::buttons::ActionSink>{
+        let tx=self.bindings.clone();let generation=self.reader_generation;
+        crate::binding_presets::wrap(sink,Box::new(move|owner,name|tx.try_send((generation,crate::binding_presets::Request::new(owner,name)))
+            .map_err(|_|std::io::Error::new(std::io::ErrorKind::WouldBlock,"Deferred preset queue is full or owner retired"))),inhibit)
+    }
     pub fn activate(&self) -> Result<(),String> {
         self.events.send(Event::Prepared).map_err(|_| "Device transaction ended before preparation".to_owned())?;
         loop {
@@ -115,11 +123,11 @@ struct Worker {
     stop: Arc<AtomicBool>, join: Option<JoinHandle<()>>, events: Receiver<Event>, activate: SyncSender<()>,
 }
 impl Worker {
-    fn prepare(platform:Arc<dyn Platform>,device:Device,profile:Profile,id:String,generation:u64,reader_generation:u64) -> Result<Self,String> {
+    fn prepare(platform:Arc<dyn Platform>,device:Device,profile:Profile,id:String,generation:u64,reader_generation:u64,bindings:SyncSender<(u64,crate::binding_presets::Request)>) -> Result<Self,String> {
         let stop = Arc::new(AtomicBool::new(false));
         let (tx,events) = mpsc::sync_channel(4);
         let (activate,rx) = mpsc::sync_channel(1);
-        let context = WorkerContext { id,generation,reader_generation,stop:stop.clone(),events:tx.clone(),activation:rx };
+        let context = WorkerContext { id,generation,reader_generation,stop:stop.clone(),events:tx.clone(),activation:rx,bindings };
         let join = std::thread::Builder::new().name(format!("tablet-{}",context.id)).spawn(move || {
             let _source = crate::device_sessions::source_scope(&context.id,context.generation,context.reader_generation);
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| platform.run(device,profile,context)))
@@ -204,6 +212,7 @@ struct State {
     selected:Option<String>, enabled:bool, shutdown:bool,
     settings:Value, logs:VecDeque<Value>, log_sequence:u64,resynchronize:u64,
     tools:crate::global_tools::Handle,pending_tools:Option<crate::global_tools::Receipt>,tools_configured:bool,
+    bindings:SyncSender<(u64,crate::binding_presets::Request)>,
 }
 impl State {
     fn expected(&self,expected:&WorkerIdentity) -> Result<(),String> {
@@ -234,6 +243,7 @@ impl State {
             if let Some(saved) = self.settings["Profiles"].as_array().and_then(|rows| rows.iter().position(|row| row["Tablet"]==device.configuration.name)) {
                 profile = import_profile(&self.settings,saved)?;
             }
+            if let Some(explicit)=platform.default_profile(&device.configuration.name)?{profile=explicit;}
             profile = profile.for_tablet(otd_core::spec::TabletSpec::from_configuration(&device.configuration)?)?;
             let session = Session { id:id.clone(),device_generation:1,reader_generation:0,
                 tablet:device.configuration.name.clone(),connected:true,state:SessionState::Detected,
@@ -277,7 +287,7 @@ impl State {
             slot.profile=profile;slot.session.device_generation=next;return self.changed();
         }
         self.next_reader=self.next_reader.checked_add(1).ok_or("Reader generation exhausted")?;
-        let mut candidate=Worker::prepare(platform.clone(),slot.device.clone(),profile.clone(),id.into(),next,self.next_reader)?;
+        let mut candidate=Worker::prepare(platform.clone(),slot.device.clone(),profile.clone(),id.into(),next,self.next_reader,self.bindings.clone())?;
         if let Some(mut old)=slot.worker.take() {
             if let Err(error)=old.retire() {
                 let _=candidate.retire();slot.session.state=SessionState::Failed;slot.session.last_error=Some(error.clone());
@@ -290,7 +300,7 @@ impl State {
             if cleanup.is_err() { return Err(format!("Candidate activation failed: {error}; cleanup failed: {}",cleanup.unwrap_err())); }
             // Rollback retains the old authored profile and owns this generation.
             self.next_reader=self.next_reader.checked_add(1).ok_or("Reader generation exhausted")?;
-            let rollback=Worker::prepare(platform.clone(),slot.device.clone(),slot.profile.clone(),id.into(),expected,self.next_reader)
+            let rollback=Worker::prepare(platform.clone(),slot.device.clone(),slot.profile.clone(),id.into(),expected,self.next_reader,self.bindings.clone())
                 .and_then(|mut worker| {worker.start()?;Ok(worker)});
             match rollback { Ok(worker)=>{slot.worker=Some(worker);slot.session.reader_generation=self.next_reader;slot.session.state=SessionState::Running;},
                 Err(rollback)=>return Err(format!("Activation failed: {error}; rollback failed: {rollback}")) }
@@ -309,7 +319,14 @@ impl State {
         slot.session.device_generation=generation.checked_add(1).ok_or("Device generation exhausted")?;
         self.changed()
     }
-    fn tablets(&self) -> Vec<Value> { self.slots.values().filter(|slot|slot.session.connected&&slot.session.state==SessionState::Running).map(|slot|slot.device.tablet_reference()).collect() }
+    fn tablets(&self) -> Vec<Value> {
+        let owned=crate::shared_devices::owned_metadata();
+        self.slots.values().filter(|slot|slot.session.connected&&slot.session.state==SessionState::Running).filter_map(|slot|{
+            let endpoints=owned.iter().filter(|endpoint|endpoint["session_id"]==slot.session.id&&endpoint["reader_generation"]==slot.session.reader_generation).collect::<Vec<_>>();
+            if !endpoints.iter().any(|endpoint|endpoint["auxiliary"]==false){return None;}
+            Some(json!({"Properties":slot.device.configuration,"Identifiers":endpoints.iter().map(|endpoint|endpoint["Identifier"].clone()).collect::<Vec<_>>()}))
+        }).collect()
+    }
     fn settings(&self,platform:&Arc<dyn Platform>) -> Result<Value,String> {
         let mut value=self.settings.clone();
         let rows=value["Profiles"].as_array_mut().ok_or("Stored settings Profiles are invalid")?;
@@ -323,6 +340,7 @@ impl State {
         Ok(value)
     }
     fn apply_settings(&mut self,platform:&Arc<dyn Platform>,settings:Value,source:Option<(String,u64)>,owner:Option<u32>) -> Result<(),String> {
+        if self.tools.pending()?{return Err("Global tools are still changing; refresh before applying settings".into());}
         let profiles=settings["Profiles"].as_array().ok_or("Settings require Profiles array")?;
         if profiles.len()>512 { return Err("Settings exceed 512 profiles".into()); }
         let mut names=BTreeSet::new();
@@ -359,10 +377,11 @@ impl State {
         self.settings=settings;self.changed()
     }
     fn command(&mut self,platform:&Arc<dyn Platform>,command:Command) -> Result<Value,String> {
+        if self.tools.pending()?&&matches!(&command,Command::Start|Command::Stop|Command::Shutdown){return Err("Global tools are still changing; refresh before changing daemon lifetime".into());}
         match command {
             Command::Status=>Ok(json!({"identity":self.identity,"sessions":self.slots.values().map(|slot|&slot.session).collect::<Vec<_>>(),"selected_id":self.selected,"enabled":self.enabled})),
             Command::Detect=>{self.scan(platform)?;Ok(json!(self.tablets()))},
-            Command::Start=>{platform.prepare_start()?;self.enabled=true;if !self.tools_configured{let generation=self.tools.snapshot()?.generation;self.pending_tools=Some(self.tools.set(generation,tool_configs(&self.settings)?)?);self.tools_configured=true;}for slot in self.slots.values_mut(){slot.explicitly_stopped=false;if slot.session.state==SessionState::Failed{slot.session.state=SessionState::Detected;}}self.scan(platform)?;self.changed()?;Ok(Value::Null)},
+            Command::Start=>{platform.prepare_start()?;self.enabled=true;if !self.tools_configured{let generation=self.tools.snapshot()?.generation;self.pending_tools=Some(self.tools.set(generation,match platform.startup_tools(){Some(configs)=>configs,None=>tool_configs(&self.settings)?})?);self.tools_configured=true;}for slot in self.slots.values_mut(){slot.explicitly_stopped=false;if slot.session.state==SessionState::Failed{slot.session.state=SessionState::Detected;}}self.scan(platform)?;self.changed()?;Ok(Value::Null)},
             Command::Stop|Command::Shutdown=>{
                 self.enabled=false;if self.tools_configured{let generation=self.tools.snapshot()?.generation;self.pending_tools=Some(self.tools.drain(generation)?);self.tools_configured=false;}let mut errors=Vec::new();
                 for slot in self.slots.values_mut(){if let Some(mut worker)=slot.worker.take(){if let Err(error)=worker.retire(){errors.push(error);slot.session.state=SessionState::Failed;continue;}}slot.session.state=SessionState::Stopped;}
@@ -457,8 +476,9 @@ impl Owner {
             if !document["Profiles"].is_array(){return Err("Original settings require Profiles array".into());}document
         },_=>crate::upstream_settings::collection::empty()};
         let tools=crate::global_tools::Owner::start(|line|eprintln!("{line}"))?;
+        let(bindings,binding_rx)=mpsc::sync_channel(64);
         let state=State { identity:WorkerIdentity {instance,generation:1},slots:BTreeMap::new(),next_id:0,next_reader:0,selected:None,enabled:false,shutdown:false,
-            settings,logs:VecDeque::new(),log_sequence:0,resynchronize:0,tools:tools.handle.clone(),pending_tools:None,tools_configured:false };
+            settings,logs:VecDeque::new(),log_sequence:0,resynchronize:0,tools:tools.handle.clone(),pending_tools:None,tools_configured:false,bindings };
         let (tx,rx)=mpsc::sync_channel::<Call>(64);let handle=Handle {tx};
         let services=Arc::new(Services {handle:handle.clone(),platform:platform.clone()});
         let snapshot=state.snapshot(&platform,1);
@@ -469,6 +489,14 @@ impl Owner {
             let mut state=state;let mut next_scan=Instant::now();let mut version=1u64;
             let mut discovery_error=None;
             while !owner_stop.load(Ordering::Acquire)&&!state.shutdown {
+                for _ in 0..16{let Ok((reader,request))=binding_rx.try_recv()else{break;};
+                    let source=state.slots.iter().find(|(_,slot)|slot.session.reader_generation==reader&&slot.session.state==SessionState::Running)
+                        .map(|(id,slot)|(id.clone(),slot.session.device_generation));
+                    if let Some((id,generation))=source{
+                        let result=crate::binding_presets::load(request).and_then(|profile|state.replace(&platform,&id,generation,profile));
+                        if let Err(error)=result{eprintln!("Preset binding failed: {error}");if let Some(slot)=state.slots.get_mut(&id){slot.session.last_error=Some(error);}}
+                    }
+                }
                 if Instant::now()>=next_scan {
                     discovery_error=state.scan(&platform).err();next_scan=Instant::now()+Duration::from_secs(2);
                     version=version.checked_add(1).ok_or("Snapshot generation exhausted")?;

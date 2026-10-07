@@ -78,9 +78,11 @@ mod app {
         if command == "daemon" {
             install_signals()?;
             let options = otd_platform::cli::Options::parse(args)?;
-            return otd_platform::cli::daemon(std::sync::Arc::new(NativePlatform), options, &STOP);
+            return otd_platform::cli::daemon(std::sync::Arc::new(NativePlatform::default()), options, &STOP);
         }
+        if command == "plugins" { return otd_platform::plugin_catalog::run(args.collect()); }
         if command == "ui" { return otd_platform::cli::ui(args.collect()); }
+        if matches!(command.as_str(),"original-console"|"otd") { return otd_platform::cli::original_console(args.collect()); }
         if matches!(command.as_str(), "status" | "start" | "stop" | "shutdown" | "detect" | "request" | "console") {
             return otd_platform::cli::control(&command, args.collect());
         }
@@ -170,7 +172,7 @@ mod app {
 
     struct Selected<'a> {
         device: &'a Device, configuration: TabletConfiguration,
-        identifier: DeviceIdentifier, spec: TabletSpec,
+        identifier: DeviceIdentifier, spec: TabletSpec,auxiliary:Option<(&'a Device,DeviceIdentifier)>,
     }
 
     fn select<'a>(devices: &'a [Device], database: &Database, tablet: Option<&str>, path: Option<&str>) -> Result<Option<Selected<'a>>, String> {
@@ -193,7 +195,7 @@ mod app {
                     continue;
                 }
                 match TabletSpec::from_configuration(found.configuration) {
-                    Ok(spec) => return Ok(Some(Selected { device, configuration: found.configuration.clone(), identifier: found.identifier.clone(), spec })),
+                    Ok(spec) => return Ok(Some(Selected { device, configuration: found.configuration.clone(), identifier: found.identifier.clone(), spec,auxiliary:None })),
                     Err(error) => unsupported = Some(error),
                 }
             }
@@ -210,6 +212,7 @@ mod app {
             if requested != saved { return Err(format!("--tablet {requested} conflicts with the profile for {saved}")); }
         }
         let tablet = options.tablet.or(profile_tablet);
+        if !capture{return otd_platform::cli::daemon(std::sync::Arc::new(NativePlatform{profile:requested_profile,tablet,screen:options.screen}),otd_platform::cli::Options::default(),&STOP);}
         let mut displays = NativeDisplays::new(options.screen).map_err(|error| error.to_string())?;
         let database = otd_core::config::configured_tablets()?;
         let deadline = capture.then(|| Instant::now() + Duration::from_secs(options.seconds));
@@ -269,21 +272,32 @@ mod app {
         if let Some(context) = context { context.activate().map_err(io::Error::other)?; }
         let mut source = HidSource::open(selected.device, format!("{} ({})", selected.configuration.name, selected.device.endpoint.path), stop)?;
         let gate=otd_platform::shared_devices::OutputGate::new()?;
-        source.attach(&selected.configuration,&selected.identifier,false,gate,context.map(|context|context.reader_generation))?;
+        source.attach(&selected.configuration,&selected.identifier,false,gate.clone(),context.map(|context|context.reader_generation))?;
+        let mut auxiliary=selected.auxiliary.as_ref().and_then(|(device,identifier)|{
+            let opened=(||{let mut auxiliary=HidSource::open(device,format!("{} auxiliary ({})",selected.configuration.name,device.endpoint.path),stop)?;
+                auxiliary.attach(&selected.configuration,identifier,true,gate.clone(),context.map(|context|context.reader_generation))?;
+                auxiliary.initialize(identifier,&selected.configuration,match mode{Mode::Capture{deadline,..}=>Some(deadline),Mode::Driver=>None})?;auxiliary.initialized();Ok::<_,io::Error>(auxiliary)})();
+            match opened{Ok(source)=>Some((source,identifier.clone())),Err(error)=>{eprintln!("Auxiliary endpoint unavailable: {error}");None}}
+        });
+        let mut identifiers=vec![selected.identifier.clone()];if let Some((_,identifier))=&auxiliary{identifiers.push(identifier.clone());}
+        let tablet=serde_json::json!({"Properties":selected.configuration,"Identifiers":identifiers});source.tablet(tablet.clone());if let Some((source,_))=&auxiliary{source.tablet(tablet);}
         otd_platform::managed_host::publish_owned_devices();
         let mut plugins = if matches!(mode, Mode::Driver) {
-            PluginChain::load_for_profile_with_identifiers(profile, &selected.configuration, std::slice::from_ref(&selected.identifier))
+            PluginChain::load_for_profile_with_identifiers(profile, &selected.configuration, &identifiers)
         } else { PluginChain::load_with_tablet(&[], &selected.configuration) }.map_err(io::Error::other)?;
         let mut decoder = plugins.source_decoder(selected.identifier.parser(), selected.spec).map_err(io::Error::other)?;
 
+        let mut auxiliary_decoder=auxiliary.as_ref().map(|(_,identifier)|plugins.source_decoder(identifier.parser(),selected.spec)).transpose().map_err(io::Error::other)?;
         let actions = mouse.as_ref().map(|mouse| plugins.wrap_action_sink(profile, &selected.configuration,
             crate::macos::action_sink(std::rc::Rc::clone(mouse)))).transpose().map_err(io::Error::other)?;
+        let actions=actions.map(|sink|match context{Some(context)=>context.actions(sink,profile.binding_inhibit),None=>sink});
         source.initialize(&selected.identifier, &selected.configuration,
             match mode { Mode::Capture { deadline, .. } => Some(deadline), Mode::Driver => None })?;
         let _debug = otd_core::debug::Registration::with_selection_key(
             otd_core::debug::Device { name: selected.configuration.name.clone(), parser: selected.identifier.parser().into() },
-            selected.device.endpoint.input_length as usize, None, context.map(|context| context.id.clone()));
+            selected.device.endpoint.input_length.max(selected.auxiliary.as_ref().map_or(0,|(device,_)|device.endpoint.input_length)) as usize, auxiliary.as_ref().map(|(_,identifier)|identifier.parser().to_owned()), context.map(|context| context.id.clone()));
         source.initialized();
+        let source=otd_platform::paired_source::PairedSource::new(source,auxiliary.take().map(|(source,_)|source),HidSource::wait_pair);
         let mut source=otd_platform::daemon::LifecycleSource::new(source,context);
         if let ParserSupport::Partial(reason) = parser_support(selected.identifier.parser()) {
             eprintln!("Partial parser support: {reason}");
@@ -291,13 +305,16 @@ mod app {
         eprintln!("macOS native CLI: hardware validation pending; Ctrl+C stops and releases contact.");
         let _realtime = matches!(mode, Mode::Driver).then(crate::realtime::TimeConstraint::raise);
         let _tools = (matches!(mode, Mode::Driver) && context.is_none()).then(|| otd_platform::plugins::Tools::start(&profile.plugins, |line| eprintln!("{line}")));
-        session::run_gated_with_devices(&mut source, displays, profile, mode, &mut decoder, &mut plugins,
+        session::run_gated_with_endpoints(&mut source, displays, profile, mode, &mut decoder, auxiliary_decoder.as_mut().map(|decoder|decoder as &mut dyn otd_core::decoders::PenDecoder), &mut plugins,
             |packet| match &mouse { Some(mouse) => mouse.borrow_mut().send(packet), None => Ok(()) },
             None, actions, &|line| eprintln!("{line}"), || Ok(true))
     }
 
-    struct NativePlatform;
+    #[derive(Default)]
+    struct NativePlatform{profile:Option<Profile>,screen:Option<Rect>,tablet:Option<String>}
     impl otd_platform::daemon::Platform for NativePlatform {
+        fn default_profile(&self,tablet:&str)->Result<Option<Profile>,String>{if self.tablet.as_deref().is_none_or(|name|name==tablet){Ok(self.profile.clone())}else{Ok(None)}}
+        fn startup_tools(&self)->Option<Vec<otd_core::plugins::PluginConfig>>{self.profile.as_ref().map(|profile|profile.plugins.iter().filter(|config|config.kind==otd_core::plugins::PluginKind::DotnetTool).cloned().collect())}
         fn prepare_start(&self) -> Result<(),String> {
             let database=otd_core::config::configured_tablets()?;
             let endpoints=macos::enumerate(&database,None,None).map_err(|error|error.to_string())?.into_iter().map(|device|device.endpoint.clone()).collect::<Vec<_>>();
@@ -306,10 +323,10 @@ mod app {
         fn discover(&self) -> Result<Vec<otd_platform::daemon::Device>,String> {
             let database=otd_core::config::configured_tablets()?;
             let endpoints=macos::enumerate(&database,None,None).map_err(|error|error.to_string())?.into_iter().map(|device|device.endpoint.clone()).collect::<Vec<_>>();
-            otd_platform::daemon::discover(&database,&endpoints)
+            otd_platform::daemon::discover(&database,&endpoints).map(|devices|devices.into_iter().filter(|device|self.tablet.as_deref().is_none_or(|name|device.configuration.name==name)&&self.profile.as_ref().and_then(|profile|profile.device_path.as_deref()).is_none_or(|path|device.endpoint.path==path)).collect())
         }
         fn screen(&self) -> Result<Rect,String> {
-            let mut displays=NativeDisplays::new(None).map_err(|error|error.to_string())?;
+            let mut displays=NativeDisplays::new(self.screen).map_err(|error|error.to_string())?;
             Ok(displays.snapshot()?.virtual_screen)
         }
         fn inventory(&self) -> Result<serde_json::Value,String> {
@@ -323,8 +340,9 @@ mod app {
             let devices=macos::enumerate(&database,Some(&context.stop),None).map_err(|error|error.to_string())?;
             let actual=devices.iter().find(|actual|actual.endpoint.path==device.endpoint.path&&actual.endpoint.physical_id==device.endpoint.physical_id)
                 .ok_or("Exact physical endpoint disconnected before preparation")?;
-            let selected=Selected {device:actual,spec:TabletSpec::from_configuration(&device.configuration)?,configuration:device.configuration,identifier:device.identifier};
-            let mut displays=NativeDisplays::new(None).map_err(|error|error.to_string())?;
+            let auxiliary=device.auxiliary.as_ref().and_then(|(endpoint,identifier)|devices.iter().find(|candidate|candidate.endpoint.path==endpoint.path&&candidate.endpoint.physical_id==endpoint.physical_id).map(|candidate|(candidate,identifier.clone())));
+            let selected=Selected {device:actual,spec:TabletSpec::from_configuration(&device.configuration)?,configuration:device.configuration,identifier:device.identifier,auxiliary};
+            let mut displays=NativeDisplays::new(self.screen).map_err(|error|error.to_string())?;
             run_session(&selected,&profile,&mut displays,Mode::Driver,&context.stop,Some(&context)).map_err(|error|error.to_string())
         }
         fn service_io(&self,request:otd_platform::managed_services::Request) -> Result<serde_json::Value,String> {

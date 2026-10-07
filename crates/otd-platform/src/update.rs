@@ -3,6 +3,10 @@ use std::path::{Path,PathBuf};
 use std::sync::atomic::{AtomicU64,Ordering};
 #[path = "../../../src/update/transaction.rs"]
 pub mod transaction;
+#[path = "../../../src/update.rs"]
+mod common;
+pub use common::{Release,latest,current_version};
+pub(crate) use common::{latest_with_cancel,install_with_cancel,recover_for_daemon};
 static NEXT:AtomicU64=AtomicU64::new(1);
 pub fn system_tool(name:&str)->PathBuf {PathBuf::from(match name{"curl.exe"=>"curl","tar.exe"=>"tar",name=>name})}
 pub fn unique_directory(root:&Path,prefix:&str)->Result<PathBuf,String>{

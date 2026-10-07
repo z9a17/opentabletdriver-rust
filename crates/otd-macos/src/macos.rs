@@ -345,6 +345,12 @@ impl<'a> HidSource<'a> {
         self.services=Some(services);self.registration=Some(registration);Ok(())
     }
     pub fn initialized(&self){if let Some(registration)=&self.registration{registration.endpoint.initialized.store(true,Ordering::Release);}}
+    pub fn tablet(&self,tablet:serde_json::Value){if let Some(registration)=&self.registration{registration.tablet(tablet);}}
+    pub fn wait_pair(primary:&mut Self,_auxiliary:Option<&mut Self>,timeout:Duration)->io::Result<()>{
+        // Both endpoints are scheduled on this same CFRunLoop. One pump services
+        // their independent fixed queues and callback contexts.
+        primary.pump(timeout.min(Duration::from_millis(50)));Ok(())
+    }
     fn service_requests(&mut self)->io::Result<()> {
         if let Some(pending)=&self.service {
             if pending.done {

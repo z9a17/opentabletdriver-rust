@@ -20,11 +20,16 @@ pub mod cli;
 #[cfg(unix)]
 pub mod shared_device_io;
 #[cfg(unix)]
+pub mod paired_source;
+#[cfg(unix)]
 #[path = "../../../src/shared_devices.rs"]
 pub mod shared_devices;
 #[cfg(unix)]
 #[path = "../../../src/global_tools.rs"]
 pub mod global_tools;
+#[cfg(unix)]
+#[path = "../../../src/binding_presets.rs"]
+pub mod binding_presets;
 #[cfg(unix)]
 #[path = "../../../src/plugin_catalog.rs"]
 pub mod plugin_catalog;
@@ -35,3 +40,9 @@ pub mod download;
 pub mod update;
 #[cfg(unix)]
 pub mod process;
+
+#[cfg(unix)]
+#[path = "../../../src/custom_devices.rs"]
+pub mod custom_devices;
+#[cfg(unix)]
+pub mod managed_source;
