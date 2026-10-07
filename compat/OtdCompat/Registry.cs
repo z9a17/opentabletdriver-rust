@@ -301,7 +301,13 @@ public static unsafe partial class EntryPoints
     public static int DispatchParsedGraph(nint graph, ulong parser, ulong sequence, GraphReport* input,
         delegate* unmanaged[Cdecl]<nint, uint, uint, GraphReport*, int> callback, nint scope, int fused)
     {
-        try { return ((SynchronousGraph)GCHandle.FromIntPtr(graph).Target!).Dispatch(input, callback, scope, fused != 0, ParserSession.Take(parser, sequence)); }
+        try {
+            if (input == null || callback == null) throw new ArgumentException("Missing source graph input or continuation.");
+            var pipeline = (SynchronousGraph)GCHandle.FromIntPtr(graph).Target!;
+            int result = pipeline.Dispatch(input, callback, scope, fused != 0, ParserSession.Take(parser, sequence));
+            if (result != 0) lastError = pipeline.Error ?? "A native source graph continuation failed.";
+            return result;
+        }
         catch (Exception error) { lastError = error.GetBaseException().Message; return -1; }
     }
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
