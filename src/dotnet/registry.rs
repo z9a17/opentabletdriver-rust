@@ -13,17 +13,138 @@ type CreateParser = unsafe extern "C" fn(*const u8, i32) -> *mut c_void;
 type DecodeParser = unsafe extern "C" fn(*mut c_void, *const u8, u32, *mut u8, i32) -> i32;
 type ResetParser = unsafe extern "C" fn(*mut c_void) -> i32;
 type DestroyParser = unsafe extern "C" fn(*mut c_void);
-pub(super) struct Api { has_parser: HasParser, reload: Reload, create: CreateParser, decode: DecodeParser, reset: ResetParser, destroy: DestroyParser }
+type CreateRetainedTool = unsafe extern "C" fn(*const u8,usize,*mut u64)->*mut c_void;
+type DestroyRetainedTool = unsafe extern "C" fn(*mut c_void)->u64;
+type WaitRetirement = unsafe extern "C" fn(u64,u32)->i32;
+type ReleaseRetirement = unsafe extern "C" fn(u64)->i32;
+type PluginTypes = unsafe extern "C" fn(*mut u8,i32,i32)->i32;
+type StartRpc = unsafe extern "C" fn(*const u8,u32)->isize;
+type StopRpc = unsafe extern "C" fn(isize)->i32;
+pub(super) struct Api { has_parser: HasParser, reload: Reload, mutate: Reload, create: CreateParser, decode: DecodeParser, reset: ResetParser, destroy: DestroyParser,
+    store:Reload, types:PluginTypes, display:PluginTypes, start_rpc:StartRpc, stop_rpc:StopRpc,
+    create_tool:CreateRetainedTool,destroy_tool:DestroyRetainedTool,wait_retirement:WaitRetirement,release_retirement:ReleaseRetirement }
 impl Api {
     pub(super) fn load(entry: &impl Fn(&str) -> Result<*mut c_void, String>) -> Result<Self, String> {
         Ok(unsafe { Self { has_parser: std::mem::transmute::<*mut c_void, HasParser>(entry("HasReportParser")?), reload: std::mem::transmute::<*mut c_void, Reload>(entry("ReloadRegistry")?),
+            mutate: std::mem::transmute::<*mut c_void, Reload>(entry("MutateHostedRegistry")?),
             create: std::mem::transmute::<*mut c_void, CreateParser>(entry("CreateDebugParser")?),
             decode: std::mem::transmute::<*mut c_void, DecodeParser>(entry("DecodeDebugParser")?),
             reset: std::mem::transmute::<*mut c_void, ResetParser>(entry("ResetDebugParser")?),
-            destroy: std::mem::transmute::<*mut c_void, DestroyParser>(entry("DestroyDebugParser")?) } })
+            destroy: std::mem::transmute::<*mut c_void, DestroyParser>(entry("DestroyDebugParser")?),
+            store:std::mem::transmute::<*mut c_void,Reload>(entry("ConstructPluginStore")?),
+            types:std::mem::transmute::<*mut c_void,PluginTypes>(entry("GetPluginTypes")?),
+            display:std::mem::transmute::<*mut c_void,PluginTypes>(entry("OriginalDisplaySnapshot")?),
+            start_rpc:std::mem::transmute::<*mut c_void,StartRpc>(entry("StartHostedRpc")?),
+            stop_rpc:std::mem::transmute::<*mut c_void,StopRpc>(entry("StopHostedRpc")?),
+            create_tool:std::mem::transmute::<*mut c_void,CreateRetainedTool>(entry("CreateToolRetained")?),
+            destroy_tool:std::mem::transmute::<*mut c_void,DestroyRetainedTool>(entry("DestroyToolRetained")?),
+            wait_retirement:std::mem::transmute::<*mut c_void,WaitRetirement>(entry("WaitManagedRetirement")?),
+            release_retirement:std::mem::transmute::<*mut c_void,ReleaseRetirement>(entry("ReleaseManagedRetirement")?) } })
     }
 }
 fn api() -> Result<&'static Api, String> { bridge()?.registry.as_ref().ok_or_else(|| "The installed .NET bridge lacks registry/concrete debug parser support; replace data/compat with this release's files.".into()) }
+thread_local! {static RETIREMENTS:std::cell::RefCell<Vec<u64>>=const {std::cell::RefCell::new(Vec::new())};static RETIREMENT_ERRORS:std::cell::RefCell<Vec<String>>=const {std::cell::RefCell::new(Vec::new())};}
+pub(super) fn create_retained_tool(settings:&str)->Result<*mut c_void,String> {
+    let mut receipt=0;let handle=unsafe{(api()?.create_tool)(settings.as_ptr(),settings.len(),&mut receipt)};
+    if receipt!=0 {RETIREMENTS.with(|pending|pending.borrow_mut().push(receipt));}
+    if handle.is_null(){Err(last_error())}else{Ok(handle)}
+}
+pub(super) fn destroy_retained_tool(handle:*mut c_void) {
+    match api() {
+        Ok(api)=>{let receipt=unsafe{(api.destroy_tool)(handle)};
+            if receipt!=0 {RETIREMENTS.with(|pending|pending.borrow_mut().push(receipt));}
+            else {RETIREMENT_ERRORS.with(|errors|errors.borrow_mut().push(last_error()));}},
+        Err(error)=>RETIREMENT_ERRORS.with(|errors|errors.borrow_mut().push(error)),
+    }
+}
+/// Wait only on the cold thread which created/dropped the tool collection.
+/// Pending receipts remain retained on timeout, permitting a later drain retry.
+pub fn drain_managed_retirements(timeout:std::time::Duration)->Result<(),String> {
+    let mut receipts=RETIREMENTS.with(|pending|std::mem::take(&mut *pending.borrow_mut()));
+    let mut errors=RETIREMENT_ERRORS.with(|pending|std::mem::take(&mut *pending.borrow_mut()));
+    if receipts.is_empty(){return if errors.is_empty(){Ok(())}else{Err(errors.join("; "))};}
+    let api=api()?;let deadline=std::time::Instant::now()+timeout;
+    let mut retained=Vec::new();
+    for receipt in receipts.drain(..) {
+        let left=deadline.saturating_duration_since(std::time::Instant::now());
+        let millis=left.as_millis().min(60000) as u32;
+        match unsafe{(api.wait_retirement)(receipt,millis)} {
+            0=>{if unsafe{(api.release_retirement)(receipt)}!=0 {errors.push(last_error());retained.push(receipt);}},
+            1=>retained.push(receipt),
+            _=>{errors.push(last_error());if unsafe{(api.release_retirement)(receipt)}!=0 {retained.push(receipt);}},
+        }
+    }
+    if !retained.is_empty(){errors.push("Owned managed retirements remain pending; no successful drain receipt was published".into());}
+    RETIREMENTS.with(|pending|pending.borrow_mut().extend(retained));
+    if errors.is_empty(){Ok(())}else{Err(errors.join("; "))}
+}
+fn copy_result(size:i32,copy:impl FnOnce(*mut u8,i32)->i32)->Result<serde_json::Value,String> {
+    if size<0 {return Err(last_error());}
+    if size==0 || size>4194304 {return Err("Invalid original metadata result size".into());}
+    let mut bytes=vec![0;size as usize];let written=copy(bytes.as_mut_ptr(),size);
+    if written!=size {return Err(if written<0 {last_error()}else{"Original metadata changed during capacity retry".into()});}
+    serde_json::from_slice(&bytes).map_err(|error|error.to_string())
+}
+pub fn get_plugin_types()->Result<serde_json::Value,String> {
+    let api=api()?;let size=unsafe{(api.types)(std::ptr::null_mut(),0,1)};
+    copy_result(size,|out,cap|unsafe{(api.types)(out,cap,0)})
+}
+/// Cold display-only enumeration through the pinned Desktop provider. It never
+/// constructs a Driver, physical reader, or input/output provider.
+pub fn original_display_snapshot()->Result<otd_core::display::DisplaySnapshot,String> {
+    #[derive(serde::Deserialize)]
+    struct Geometry { x:f64, y:f64, width:f64, height:f64 }
+    #[derive(serde::Deserialize)]
+    struct Snapshot { virtual_screen:Geometry, displays:Vec<Geometry> }
+    fn rectangle(value:Geometry)->Result<otd_core::mapping::Rect,String> {
+        if ![value.x,value.y,value.width,value.height].into_iter().all(f64::is_finite)
+            || value.width<=0.0 || value.height<=0.0 {
+            return Err("Original display provider returned nonfinite or empty geometry".into());
+        }
+        let left=value.x.floor();let top=value.y.floor();
+        let right=(value.x+value.width).ceil();let bottom=(value.y+value.height).ceil();
+        if ![left,top,right,bottom].into_iter().all(|v|v.is_finite() && v>=f64::from(i32::MIN) && v<=f64::from(i32::MAX))
+            || right-left<1.0 || bottom-top<1.0
+            || right-left>f64::from(i32::MAX) || bottom-top>f64::from(i32::MAX) {
+            return Err("Original display geometry exceeds native rectangle range".into());
+        }
+        Ok(otd_core::mapping::Rect{left:left as i32,top:top as i32,right:right as i32,bottom:bottom as i32})
+    }
+    let api=api()?;let size=unsafe{(api.display)(std::ptr::null_mut(),0,1)};
+    let value=copy_result(size,|out,cap|unsafe{(api.display)(out,cap,0)})?;
+    let snapshot:Snapshot=serde_json::from_value(value).map_err(|error|error.to_string())?;
+    if snapshot.displays.is_empty() || snapshot.displays.len()>256 {
+        return Err("Original display provider returned an invalid physical monitor count".into());
+    }
+    let virtual_screen=rectangle(snapshot.virtual_screen)?;
+    let mut monitors=snapshot.displays.into_iter().map(rectangle).collect::<Result<Vec<_>,_>>()?;
+    monitors.sort_by_key(|r|(r.left,r.top,r.right,r.bottom));
+    Ok(otd_core::display::DisplaySnapshot{virtual_screen,monitors})
+}
+pub fn construct_plugin_store(path:&str,category:&str)->Result<serde_json::Value,String> {
+    let json=serde_json::json!({"path":path,"category":category}).to_string();
+    if json.len()>32768 {return Err("Plugin store request exceeds 32 KiB".into());}
+    let api=api()?;let size=unsafe{(api.store)(json.as_ptr(),json.len() as i32,std::ptr::null_mut(),0)};
+    copy_result(size,|out,cap|unsafe{(api.store)(std::ptr::null(),0,out,cap)})
+}
+/// The original server drains every client before its native owner retires.
+pub struct HostedRpc { token:isize }
+impl HostedRpc {
+    pub fn start(pipe:&str)->Result<Self,String> {
+        if pipe.is_empty() || pipe.len()>512 || pipe.contains('\0') {return Err("Invalid original RPC pipe name".into());}
+        let token=unsafe{(api()?.start_rpc)(pipe.as_ptr(),pipe.len() as u32)};
+        if token==0 {Err(last_error())}else{Ok(Self{token})}
+    }
+    /// Call on the cold owning shutdown thread before dropping the native
+    /// services host. A failed drain keeps the token available for retry.
+    pub fn stop(&mut self)->Result<(),String> {
+        if self.token==0 {return Ok(());}
+        if unsafe{(api()?.stop_rpc)(self.token)}<0 {return Err(last_error());}
+        self.token=0;
+        Ok(())
+    }
+}
+impl Drop for HostedRpc {fn drop(&mut self){if let Err(error)=self.stop(){eprintln!("Original RPC shutdown: {error}");}}}
 
 #[derive(Clone, Debug)]
 pub struct ManagedRegistryInfo {
@@ -51,6 +172,23 @@ pub fn reload_installed_plugins(root: &Path) -> Result<ManagedRegistryInfo, Stri
     let mut bytes = vec![0; size as usize];
     let copied = unsafe { (api.reload)(std::ptr::null(), 0, bytes.as_mut_ptr(), size) };
     if copied != size { return Err(if copied < 0 { last_error() } else { "Managed registry result changed during capacity retry".into() }); }
+    publish_registry_bytes(&bytes)
+}
+/// Unload changes discovery only; running instances retain their assembly lease.
+/// Cached reads do not undo exclusions. Explicit LoadPlugins starts a fresh registry.
+pub fn mutate_installed_plugins(request: &serde_json::Value) -> Result<ManagedRegistryInfo, String> {
+    let request = serde_json::to_vec(request).map_err(|error| error.to_string())?;
+    if request.is_empty() || request.len() > 32768 { return Err("Registry mutation exceeds 32 KiB".into()); }
+    let api = api()?;
+    let size = unsafe { (api.mutate)(request.as_ptr(), request.len() as i32, std::ptr::null_mut(), 0) };
+    if size < 0 { return Err(last_error()); }
+    if size == 0 || size > 1048576 { return Err("Invalid managed registry mutation size".into()); }
+    let mut bytes = vec![0; size as usize];
+    let copied = unsafe { (api.mutate)(std::ptr::null(), 0, bytes.as_mut_ptr(), size) };
+    if copied != size { return Err(if copied < 0 { last_error() } else { "Registry mutation result changed during capacity retry".into() }); }
+    publish_registry_bytes(&bytes)
+}
+fn publish_registry_bytes(bytes: &[u8]) -> Result<ManagedRegistryInfo, String> {
     #[derive(serde::Deserialize)]
     struct TypeInfo { assembly_path: std::path::PathBuf, metadata: serde_json::Value }
     #[derive(serde::Deserialize)]

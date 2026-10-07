@@ -56,6 +56,7 @@ unsafe extern "C" {
     pub fn IOHIDDeviceScheduleWithRunLoop(device: Hid, run_loop: Ref, mode: Ref);
     pub fn IOHIDDeviceUnscheduleFromRunLoop(device: Hid, run_loop: Ref, mode: Ref);
     pub fn IOHIDDeviceSetReportWithCallback(device: Hid, kind: u32, id: isize, report: *const u8, length: isize, timeout: f64, callback: Option<ReportCallback>, context: *mut c_void) -> i32;
+    pub fn IOHIDDeviceGetReportWithCallback(device: Hid, kind: u32, id: isize, report: *mut u8, length: *mut isize, timeout: f64, callback: Option<ReportCallback>, context: *mut c_void) -> i32;
     pub fn IOHIDCheckAccess(request: u32) -> u32;
     pub fn IOHIDRequestAccess(request: u32) -> bool;
 }
@@ -84,4 +85,26 @@ unsafe extern "C" {
     pub fn CGEventSourceFlagsState(state: i32) -> u64;
     pub fn CGEventSetTimestamp(event: Ref, timestamp: u64);
     pub fn CGEventPost(tap: u32, event: Ref);
+}
+
+// NSEvent is loaded from AppKit; the selector is read-only and creates no UI.
+#[link(name = "AppKit", kind = "framework")]
+unsafe extern "C" {}
+#[link(name = "objc")]
+unsafe extern "C" {
+    pub fn objc_autoreleasePoolPush()->*mut c_void;
+    pub fn objc_autoreleasePoolPop(pool:*mut c_void);
+    pub fn objc_getClass(name:*const c_char)->Ref;
+    pub fn sel_registerName(name:*const c_char)->Ref;
+    #[link_name="objc_msgSend"]
+    pub fn objc_msgSend_double(receiver:Ref,selector:Ref)->f64;
+}
+
+/// Pinned OSX.CGEventPost surrounds posting with an autorelease pool. Native
+/// tablet threads do not have an AppKit application loop to drain one for them.
+/// # Safety
+/// The event must be a live CoreGraphics event for the duration of this call.
+pub unsafe fn post_event(event:Ref){
+    let pool=unsafe{objc_autoreleasePoolPush()};
+    unsafe{CGEventPost(0,event);objc_autoreleasePoolPop(pool);}
 }

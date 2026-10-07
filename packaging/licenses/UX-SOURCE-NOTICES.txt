@@ -1,0 +1,7 @@
+Original OpenTabletDriver UX source: 0.6.7, revision 736003ed72c8bbb28033b039d5a0bb76c344145c. https://github.com/OpenTabletDriver/OpenTabletDriver/tree/736003ed72c8bbb28033b039d5a0bb76c344145c
+
+Eto.Forms/Eto.Platform.Mac64 2.5.10 and Eto.Platform.Gtk 2.5.11: https://github.com/picoe/Eto ; copyright/licensing notices preserved in ETO-LICENSE.txt and MONOMAC-LICENSE.txt from those exact NuGet packages.
+
+GtkSharp/AtkSharp/CairoSharp/GLibSharp/GdkSharp/GioSharp/PangoSharp 3.24.24.34: https://github.com/GtkSharp/GtkSharp/tree/7995f132e19e18b8dae94359246540f059e53a86 ; GNU Library GPLv2 license preserved in GTKSHARP-LICENSE.txt from this release tag. Dynamic managed assembly files remain independently replaceable. Native GTK dependencies are provided by the user's OS and are not redistributed in this archive.
+
+The Rust native daemon launcher and archive helper sources are in this release's source archive under compat/NativeDaemonLauncher and compat/ArchiveTools, under the Rust project's GPLv3 license.

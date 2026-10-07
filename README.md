@@ -1,6 +1,6 @@
 # OpenTabletDriver Rust
 
-A fast, lightweight drawing-tablet driver written in Rust, compatible with [OpenTabletDriver](https://github.com/OpenTabletDriver/OpenTabletDriver) settings, tablets and plugins. Releases include Windows x64, Linux x64, Intel Mac and Apple Silicon builds. Windows has a native control panel; Linux and macOS currently use a command-line driver.
+A fast, lightweight drawing-tablet driver written in Rust, compatible with [OpenTabletDriver](https://github.com/OpenTabletDriver/OpenTabletDriver) settings, tablets and plugins. Releases include Windows x64, Linux x64, Intel Mac and Apple Silicon builds. Windows has a native control panel; Linux and macOS include the original Gtk/Eto frontends alongside their native command-line drivers.
 
 It turns your pen tablet into a precise mouse or a pressure-sensitive pen. Core native report processing keeps storage inline and borrowed; managed plugins can add allocation and processing costs. If you already use OpenTabletDriver, it imports supported settings.
 
@@ -13,16 +13,25 @@ The Windows build offers:
 - **Absolute mode:** the pen position on the tablet maps to a position on your screen. Set the tablet area, screen area, rotation and clipping in a graphical editor.
 - **Relative mode:** the tablet moves the cursor like a mouse, with sensitivity, rotation and a reset delay.
 - **Pen pressure, tilt and eraser** in drawing apps, through Windows Ink. *Newly added and not yet tried with a real tablet in a drawing app.*
-- **Filters** to smooth the pen: a built-in Radial Follow smoothing filter, native filter DLLs, and supported existing OpenTabletDriver `.NET` filters, unchanged. Arbitrary plugin-owned threads and dependencies remain compatibility limits.
+- **Filters** to smooth the pen: a built-in Radial Follow smoothing filter, native filter DLLs, and supported existing OpenTabletDriver `.NET` filters, unchanged. Background emissions use owned scheduling; the unchanged plugin corpus remains unqualified.
 - **Plugins:** browse and install from OpenTabletDriver's plugin catalog (checked against its SHA-256 hash), or install one from a file. Supported unchanged output-mode and binding classes have typed settings selectors alongside filters and tools.
 - **Several tablets at once,** each with its own profile.
 - **Native control panel** in OpenTabletDriver's layout, with light and dark themes, configurable accent colors, a tray icon, and a tablet debugger that shows raw and decoded pen data live.
 - **Command line and background service** for scripting: profiles, presets, diagnostics and area conversion all work headless.
 - **Pen side buttons** click or press keys and shortcuts, with right and middle click defaults. The Windows CLI can inspect defaults, edit individual buttons into a new profile and export supported edits back to OTD settings. See [pen side buttons](docs/PEN_BUTTONS.md).
 
-The Windows panel includes pen, mouse, express-key, wheel and scroll binding editors, native held-action toggles and guarded preset switching. The original Desktop assembly supplies managed preset bindings and driver services. See [the 0.17.1 workflows and limits](docs/WINDOWS_COMPATIBILITY_0.17.1.md) and [express keys and wheels](docs/EXPRESS_KEYS_AND_WHEELS.md). Runtime validation and the remaining concrete device-service compatibility are open.
+The Windows panel includes pen, mouse, express-key, wheel and scroll binding editors, native held-action toggles and guarded preset switching. The original Desktop assembly supplies managed preset bindings and driver services. Version 0.18 adds concrete original device/hub/readers and shared services, full collection commands, setup help, strings and original diagnostics. See [implementation scope and deferred acceptance](docs/parity/IMPLEMENTATION_0.18.md), [desktop workflows](docs/parity/DESKTOP_WORKFLOWS_0.18.md) and [express keys and wheels](docs/EXPRESS_KEYS_AND_WHEELS.md).
 
 ## Installation
+
+Version 0.18 changes Windows commands that use original Console names to operate
+on the running daemon's original JSON collection. This includes `save`,
+`save-defaults`, `stdio`, `preset`, `savepreset`, `listpresets`, `log`, `detect`,
+`getstring`, the original `get*`/`list*` commands, `hasupdate`, `installupdate`
+and non-TOML `load`. For native TOML/protocol scripts, use `native-save`,
+`native-save-defaults`, `native-stdio` and the existing `profiles`, `presets`,
+`devices`, `configuration`, `status` and `update` commands. Explicit `load`/`save`
+paths ending in `.toml` retain native behavior. See the [migration table](docs/REFERENCE.md#windows-console-migration-in-018).
 
 Download from [this project's latest release](https://github.com/z9a17/opentabletdriver-rust/releases/latest). Choose the archive for your operating system and processor:
 
@@ -41,7 +50,7 @@ These instructions follow the original OpenTabletDriver website's [Windows](http
 
 #### Prerequisites
 
-The driver and native panel run without .NET. To use existing OpenTabletDriver `.NET` plugins, install the Windows **x64 .NET 8 or newer runtime** from [Microsoft's download page](https://dotnet.microsoft.com/en-us/download/dotnet/8.0). Choose the x64 installer under **.NET Runtime**; the x64 Desktop Runtime also includes it. Keep the release's `data` folder beside the executables; plugin dependencies are in `data/compat`.
+Native-only profiles and the native panel run without .NET until a managed feature is requested. Existing OpenTabletDriver `.NET` plugins, original fixed RPC hosting, registered type discovery and default-store construction need the Windows **x64 .NET 8 or newer runtime** from [Microsoft's download page](https://dotnet.microsoft.com/en-us/download/dotnet/8.0). This includes registered type lists/selectors and Console commands that construct plugin stores; simple native Console collection reads/edits do not themselves require CLR. Choose the x64 installer under **.NET Runtime**; the x64 Desktop Runtime also includes it. Keep the release's `data` folder beside the executables; plugin dependencies are in `data/compat`.
 
 #### Install and start
 
@@ -80,7 +89,7 @@ To uninstall, turn off **Tablets > Start with Windows** if enabled, close the pa
 
 #### Prerequisites
 
-The Linux x64 release is a static executable and needs no .NET runtime. Setup requires Bash and udev and loads the kernel's `uinput` module. Its permission rules grant device access to the active systemd-logind desktop user. Other session managers need equivalent device permissions; see the [Linux guide](crates/otd-linux/README.md).
+The Linux x64 release uses GNU dynamic linking (glibc 2.31+). Native profiles with Hyprland/Sway/X11 discovery or an explicit `--screen` need no .NET runtime. Generic Wayland discovery, original plugins, fixed RPC hosting, registered type/default-store requests, original Console and the Gtk frontend need the x64 .NET 8 runtime; the frontend also needs GTK3. Explicit network operations need system curl. Setup requires Bash and udev and loads the kernel's `uinput` module. Its permission rules grant device access to the active systemd-logind desktop user. Other session managers need equivalent device permissions; see the [Linux guide](crates/otd-linux/README.md).
 
 #### Install and start
 
@@ -108,9 +117,9 @@ The Linux x64 release is a static executable and needs no .NET runtime. Setup re
 
 Use sudo for the setup script only. Press Ctrl+C to stop the driver. Setup does not register a background service or start the driver automatically.
 
-Hyprland, Sway and X11 screen layouts are detected at startup. Other desktops need a desktop size, for example `./opentabletdriver-rust-linux run --screen 1920x1080`. Restart after changing monitor layout or scaling. Existing OpenTabletDriver settings are imported for the selected tablet; use `run --profile /path/to/profile.toml` for a native profile.
+Hyprland, Sway and X11 screen layouts are detected natively at startup. Other Wayland compositors use the original display-provider fallback, which requires .NET 8. An explicit desktop size bypasses discovery, for example `./opentabletdriver-rust-linux run --screen 1920x1080`. Use it if discovery fails. Restart after changing monitor layout or scaling. Existing OpenTabletDriver settings are imported for the selected tablet; use `run --profile /path/to/profile.toml` for a native profile.
 
-Linux supports absolute/relative mouse output and pressure-sensitive Artist Mode. It currently has no control panel or external plugin host. Enabled external plugins in an imported profile must be disabled or replaced with supported native settings.
+Linux supports absolute/relative mouse output, pressure-sensitive Artist Mode, independent auxiliary/tablet sessions and unchanged managed hosting. Use `./opentabletdriver-rust-linux ui` for the original Gtk frontend or `original-console` for the packaged original Console. Native Linux runtime and hardware validation remain deferred.
 
 #### Permissions, competing input and removal
 
@@ -130,7 +139,7 @@ Use `capture --seconds 10` to inspect pen reports without injecting input. See t
 
 #### Prerequisites
 
-Use macOS 11 or newer. Download `macos-arm64` for Apple Silicon or `macos-x64` for Intel. The CLI needs no .NET runtime. Give the terminal application you use **Input Monitoring** and **Accessibility** access before running tablet output.
+Use macOS 11 or newer. Download `macos-arm64` for Apple Silicon or `macos-x64` for Intel. Native-only CLI input needs no .NET runtime. Original plugins, fixed RPC hosting, registered type/default-store requests, original Console and the Eto frontend need the CPU-matching .NET 8 runtime; explicit network operations need system curl. Give the terminal application you use **Input Monitoring** and **Accessibility** access before running tablet output.
 
 #### Install and start
 
@@ -149,19 +158,19 @@ Use macOS 11 or newer. Download `macos-arm64` for Apple Silicon or `macos-x64` f
 
 Press Ctrl+C to stop. If macOS blocks the downloaded executable, follow Apple's [Open Anyway instructions](https://support.apple.com/en-us/102445) after checking that you trust the download. These releases are unsigned and not notarized.
 
-The driver supports absolute/relative mouse output, tip clicks and pen side-button mouse/key/chord bindings. `Application` means Command and `Alt` means Option. Profiles and built-in Radial Follow use the shared Rust core. Pass `run --profile /path/to/profile.toml` for explicit settings. Imported profiles using pressure-sensitive pen output or external plugins need a supported mouse-output profile instead.
+The driver supports absolute/relative mouse output, tip clicks and pen side-button mouse/key/chord bindings. `Application` means Command and `Alt` means Option. Profiles and built-in Radial Follow use the shared Rust core. Pass `run --profile /path/to/profile.toml` for explicit settings. Unchanged managed plugins use the shared host and retain their own platform prerequisites. The pinned original macOS output contract is mouse/keyboard rather than Artist Mode or Windows Ink.
 
 #### Updates, removal and current limits
 
 For an update, stop the driver, extract the new archive into a new folder and run it from there. Keep any saved profiles. To uninstall, stop it and delete its extracted folder; remove the terminal's privacy permissions only if you no longer need them for other applications. This CLI does not register startup or a background service.
 
-The macOS backend is experimental and has no Mac hardware validation yet. There is no macOS control panel, external plugin host, pressure-sensitive drawing output or express-key support. See the [macOS guide](crates/otd-macos/README.md) for device initialization, permissions and other limits.
+The macOS backend has no native Mac validation yet. Packages include the original Eto frontend (`ui`), original Console (`original-console`), managed hosting and independent auxiliary/custom endpoints. Native ordinary mouse modes emit tablet pressure, tilt, eraser/proximity and double-click counts. USB/Bluetooth discovery and application drawing behavior still need native validation. See the [macOS guide](crates/otd-macos/README.md) for device initialization, permissions and other limits.
 
 Every future release must include Windows, Linux and both Mac architectures. The [release procedure](docs/RELEASING.md) checks the complete set before publication.
 
 ## Build from source
 
-You need the stable Rust toolchain. Use MSVC and the Windows SDK resource compiler on Windows; Linux and macOS builds select their backend crate as documented in [the release procedure](docs/RELEASING.md).
+You need Git, a real Git checkout with its `.git` metadata, and the stable Rust toolchain. The build scripts read the source commit date and references through Git; a downloaded source ZIP/tarball without Git metadata cannot be built as-is. Clone the repository before using these commands. Use MSVC and the Windows SDK resource compiler on Windows; Linux and macOS builds select their backend crate as documented in [the release procedure](docs/RELEASING.md).
 
 ```text
 cargo build --locked --release -p opentabletdriver-rust -p otd-ema-filter  # Windows
@@ -174,7 +183,9 @@ To build the Windows .NET bridge and ZIP, install the .NET 8+ SDK and run `pwsh 
 ## Learn more
 
 - [Windows compatibility workflows, 0.17.1](docs/WINDOWS_COMPATIBILITY_0.17.1.md): toggles, native/original presets, managed services and retained idle settings
-- [Current parity audit](docs/parity/PARITY_AUDIT_2026-10-07.md): implemented source, remaining gaps and validation boundaries
+- [0.18 implementation completion](docs/parity/IMPLEMENTATION_0.18.md): delivered baseline source, commands and deferred acceptance
+- [0.18 release notes](docs/RELEASE_0.18.0.md): platform packages and validation boundaries
+- [Historical 0.17.1 audit](docs/parity/PARITY_AUDIT_2026-10-07.md): source checkpoint before 0.18
 - [Update and packaging reliability, 0.15.4](docs/RELIABILITY_0.15.4.md): update lifecycle guards, clipboard preparation and Unix archive permissions
 - [Release 0.15.1](docs/RELEASE_0.15.1.md): pen side buttons, startup update prompts and all-platform packages
 - [Reference](docs/REFERENCE.md): every command, profile format, the daemon and troubleshooting notes

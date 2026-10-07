@@ -1,6 +1,8 @@
 //! Menus, dialogs and the `WM_COMMAND` dispatcher. Modal UI (menus, file
 //! dialogs, message boxes) runs here, outside any `App` borrow.
 use super::*;
+const CMD_EXPORT_ORIGINAL_DIAGNOSTICS:u16=287;
+const CMD_COPY_ORIGINAL_DIAGNOSTICS:u16=288;
 
 pub(super) fn checked(value: bool) -> u32 {
     if value { MF_CHECKED } else { MF_UNCHECKED }
@@ -70,6 +72,8 @@ pub(super) fn accelerator_table() -> HACCEL {
 #[derive(Clone, Copy)]
 pub(super) enum FileKind {
     Profile,
+    Original,
+    OriginalPreset,
     Dll,
     /// A plugin archive or DLL for the plugin folder.
     Package,
@@ -85,12 +89,18 @@ pub(super) fn file_dialog(
     let mut buffer = vec![0u16; 32_768];
     let (filter, extension) = match kind {
         FileKind::Profile => ("Rust profile (*.toml)\0*.toml\0All files\0*.*\0\0", "toml"),
+        FileKind::Original|FileKind::OriginalPreset => ("Original settings (*.json)\0*.json\0All files\0*.*\0\0", "json"),
         FileKind::Dll => ("Plugin DLL (*.dll)\0*.dll\0\0", "dll"),
         FileKind::Package => ("Plugin (*.zip;*.dll)\0*.zip;*.dll\0\0", "zip"),
         FileKind::Recording => ("Sampled reports (*.jsonl)\0*.jsonl\0\0", "jsonl"),
     };
     let (filter, extension) = (wide(filter), wide(extension));
     let title = wide(title);
+    let initial=if matches!(kind,FileKind::OriginalPreset){
+        let store=otd_core::presets::PresetStore::user()?;
+        std::fs::create_dir_all(store.directory()).map_err(|error|error.to_string())?;
+        Some(wide(&store.directory().to_string_lossy()))
+    }else{None};
     let mut dialog = OPENFILENAMEW {
         lStructSize: size_of::<OPENFILENAMEW>() as u32,
         hwndOwner: window,
@@ -99,6 +109,7 @@ pub(super) fn file_dialog(
         nMaxFile: buffer.len() as u32,
         lpstrDefExt: extension.as_ptr(),
         lpstrTitle: title.as_ptr(),
+        lpstrInitialDir:initial.as_ref().map_or(ptr::null(),|initial|initial.as_ptr()),
         Flags: OFN_NOCHANGEDIR
             | OFN_PATHMUSTEXIST
             | if save {
@@ -291,6 +302,13 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                     CMD_OPEN_FOLDER,
                     "Open settings directory...",
                 );
+                append(menu,MF_STRING,original_settings::CMD_LOAD,"Load and apply original settings collection...");
+                append(menu,MF_STRING,original_settings::CMD_EXPORT,"Export original settings collection...");
+                append(menu,if app.original_pending||app.control_busy{MF_GRAYED}else{MF_STRING},original_settings::CMD_APPLY,"Apply original settings collection...");
+                append(menu,if app.original_pending||app.control_busy{MF_GRAYED}else{MF_STRING},original_settings::CMD_SAVE_DEFAULT,"Save original collection as default...");
+                append(menu,if app.original_pending||app.control_busy{MF_GRAYED}else{MF_STRING},original_settings::CMD_RESET,"Reset original collection to defaults...");
+                append(menu,MF_STRING,original_settings::CMD_SAVE_AS,"Save and apply original collection as...");
+                append(menu,MF_STRING,original_settings::CMD_SAVE_PRESET,"Save original collection as preset...");
                 presets::append_menu(menu, app);
                 append(menu, MF_STRING, CMD_SAVE_LOG, "Save console log...");
                 unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null()) };
@@ -452,6 +470,7 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
             }
             _ => {
                 append(menu, MF_STRING, CMD_DOCS, "Open documentation...");
+                append(menu, MF_STRING, CMD_GUIDE, "Show guide...");
                 append(menu, if app.updates.blocking() { MF_GRAYED } else { MF_STRING }, CMD_CHECK_UPDATES, "Check for updates...");
                 append(
                     menu,
@@ -464,15 +483,17 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                     menu,
                     MF_STRING,
                     CMD_EXPORT_DIAGNOSTICS,
-                    "Export diagnostics...",
+                    "Export redacted native diagnostics...",
                 );
                 append(
                     menu,
                     MF_STRING,
                     CMD_COPY_DIAGNOSTICS,
-                    "Export diagnostics to clipboard",
+                    "Copy redacted native diagnostics",
                 );
                 append(menu, MF_SEPARATOR, 0, "");
+                append(menu,MF_STRING,CMD_EXPORT_ORIGINAL_DIAGNOSTICS,"Export original daemon diagnostics (includes environment/logs)...");
+                append(menu,MF_STRING,CMD_COPY_ORIGINAL_DIAGNOSTICS,"Copy original daemon diagnostics (includes environment/logs)");
                 append(menu, MF_STRING, CMD_ABOUT, "About...\tF1");
             }
         }
@@ -550,10 +571,12 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         CMD_PREV_TAB => {
             with_app(|app| app.cycle_tab(-1));
         }
+        original_settings::CMD_LOAD|original_settings::CMD_EXPORT|original_settings::CMD_APPLY|original_settings::CMD_SAVE_PRESET|original_settings::CMD_SAVE_DEFAULT|original_settings::CMD_RESET|original_settings::CMD_SAVE_AS=>original_settings::command(window,id),
         CMD_LOAD => {
             if confirm_discard(window) {
                 match file_dialog(window, false, FileKind::Profile, "Load settings") {
                     Ok(Some(path)) => {
+                        if path.extension().is_some_and(|extension|extension.eq_ignore_ascii_case("json")){with_app(|app|original_settings::load(app,path));return;}
                         let loaded = with_app(|app| app.load_file(path.clone())).unwrap_or(false);
                         if !loaded
                             && otd_core::storage::backup_path(&path)
@@ -739,6 +762,7 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
             };
             with_app(|app| app.set_theme(mode));
         }
+        CMD_GUIDE => {if let Err(error)=guide::show(window){with_app(|app|app.log(Level::Error,"Guide",error));}},
         CMD_DOCS => shell_open(window, DOCS_URL),
         CMD_ABOUT => about(window),
         CMD_START_STOP => {
@@ -755,11 +779,29 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         CMD_CHECK_UPDATES => updates::check(window, true),
         presets::CMD_PRESET_SAVE => presets::save(window),
         presets::CMD_PRESET_FOLDER => presets::open_folder(window),
+        presets::CMD_PRESET_REFRESH => { with_app(App::refresh_presets); },
+        presets::CMD_PRESET_PREVIOUS=>{with_app(|app|app.preset_page=app.preset_page.saturating_sub(1));},
+        presets::CMD_PRESET_NEXT=>{with_app(|app|app.preset_page=app.preset_page.saturating_add(1));},
         id if (presets::CMD_PRESET_FIRST..presets::CMD_PRESET_FIRST + presets::PRESET_CHOICES)
             .contains(&id) =>
         {
             let index = usize::from(id - presets::CMD_PRESET_FIRST);
-            with_app(|app| presets::apply(app, index));
+            let guard = with_app(|app| {
+                (!app.closing && !app.update_restart_pending && !app.control_busy
+                    && !app.original_pending && !app.import_pending)
+                    .then(|| (app.managed_token, app.edit_revision, app.metadata_generation,
+                        app.preset_choices.get(index).cloned()))
+            }).flatten();
+            if guard.is_some() && confirm_discard(window) {
+                with_app(|app| {
+                    let current = (app.managed_token, app.edit_revision, app.metadata_generation,
+                        app.preset_choices.get(index).cloned());
+                    if guard.as_ref() == Some(&current) && !app.closing && !app.update_restart_pending
+                        && !app.control_busy && !app.original_pending && !app.import_pending {
+                        presets::apply(app,index);
+                    }
+                });
+            }
         }
         CMD_START_WITH_WINDOWS => {
             let enable = !startup::enabled();
@@ -833,8 +875,21 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         CMD_COPY_DIAGNOSTICS => {
             with_app(|app| app.export_diagnostics(None));
         }
+        CMD_EXPORT_ORIGINAL_DIAGNOSTICS => {
+            let guard=with_app(|app|(app.managed_token,app.daemon_instance.clone()));
+            match text_save_dialog(window,"Export original daemon diagnostics to a new file","opentabletdriver-original-diagnostics.json") {
+                Ok(Some(path))=>{with_app(|app|{
+                    if guard==Some((app.managed_token,app.daemon_instance.clone())) && !app.closing && !app.update_restart_pending {
+                        app.export_original_diagnostics(Some(path));
+                    }
+                });},
+                Ok(None)=>{},
+                Err(error)=>{with_app(|app|app.log(Level::Error,"UI",error));},
+            }
+        }
+        CMD_COPY_ORIGINAL_DIAGNOSTICS => { with_app(|app|app.export_original_diagnostics(None)); }
         CMD_DEVICE_STRINGS => {
-            with_app(App::read_device_strings);
+            if let Err(error)=string_reader::show(window){with_app(|app|app.log(Level::Error,"Device strings",error));}
         }
         ID_MODE => {
             let mode = with_app(|app| app.editor.profile.managed_output.is_none().then(|| (app.editor.mode(), app.editor.pen()))).flatten();
@@ -942,43 +997,6 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
 }
 
 /// A save dialog for a text file, asking before replacing one.
-/// Upstream's Device string reader asks for IDs and one index; this reads
-/// strings 1-10 of every connected tablet, which is what writing a
-/// configuration needs. `device-strings` reads any IDs and indices.
-pub(super) fn device_string_report() -> String {
-    let database = otd_core::tablets::Database::builtin();
-    let mut tablets: Vec<(u16, u16, String)> = Vec::new();
-    for device in crate::hid::enumerate().unwrap_or_default() {
-        if let Some((name, _, _)) = crate::hid::identify(&device, database)
-            && !tablets
-                .iter()
-                .any(|(vendor, product, _)| (*vendor, *product) == (device.vendor, device.product))
-        {
-            tablets.push((device.vendor, device.product, name));
-        }
-    }
-    if tablets.is_empty() {
-        return "No tablet from OpenTabletDriver's database is connected. For other devices, run: opentabletdriver-rust.exe device-strings VID PID".into();
-    }
-    let indices: Vec<u8> = (1..=10).collect();
-    let mut report = String::new();
-    for (vendor, product, name) in tablets {
-        report.push_str(&format!("{name} ({vendor:04x}:{product:04x})\n"));
-        let collections = crate::hid::read_strings(vendor, product, &indices).unwrap_or_default();
-        // Every collection of one device reports the same strings.
-        if let Some((_, strings)) = collections.first() {
-            for (index, value) in strings {
-                if let Ok(text) = value
-                    && !text.is_empty()
-                {
-                    report.push_str(&format!("  {index}: {text}\n"));
-                }
-            }
-        }
-    }
-    report.trim_end().to_owned()
-}
-
 pub(super) fn text_save_dialog(
     window: HWND,
     title: &str,

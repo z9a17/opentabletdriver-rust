@@ -29,6 +29,16 @@ fn resource_compiler() -> Result<PathBuf, Box<dyn Error>> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    // Source commit time is stable across packages compiled from one commit.
+    // Release provenance records the actual compiler and binary hashes.
+    let date=Command::new("git").args(["show","-s","--format=%cI","HEAD"]).output()?;
+    if !date.status.success() { return Err("cannot determine build source date".into()); }
+    println!("cargo:rustc-env=OTD_BUILD_DATE={}",String::from_utf8(date.stdout)?.trim());
+    for name in ["HEAD","refs/heads"] {
+        let path=Command::new("git").args(["rev-parse","--git-path",name]).output()?;
+        if !path.status.success(){return Err("cannot determine source reference path".into());}
+        println!("cargo:rerun-if-changed={}",String::from_utf8(path.stdout)?.trim());
+    }
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return Ok(());
     }

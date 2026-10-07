@@ -30,6 +30,10 @@ pub struct Connection {
 }
 struct UpdateOwnership { token: String, exit: bool }
 impl Connection {
+    pub(super) fn detach_installed_update(&mut self)->Option<String>{
+        if !self.update.as_ref().is_some_and(|update|update.exit){return None;}
+        self.update.take().map(|update|update.token)
+    }
     pub fn new(shared: Arc<Shared>, stop: Arc<AtomicBool>) -> Self {
         let resync_cursor = shared.resynchronize.load(Ordering::Acquire);
         let mut connection = Self { shared, stop, next_poll: Instant::now(), log_cursor: None,
@@ -69,15 +73,20 @@ impl Connection {
         // Ownership cleanup must run even after this connection/daemon's local
         // listener cancellation was requested. PID/token guards prevent it
         // affecting a replacement daemon or another updater.
-        let response = control::request_owned(&Request::new(1,Command::FinishUpdate {
-            token:update.token.clone(),success:update.exit }),Duration::from_secs(5),std::process::id())
-            .map_err(|error| Error::failed(format!("update ownership cleanup: {error}")))?;
         let exit = update.exit;
-        match response.reply {
-            Reply::ShutdownAccepted if exit => {},
-            Reply::UpdateCancelled if !exit => {},
-            Reply::Error { error } => return Err(Error::failed(error.message)),
-            _ => return Err(Error::failed("unexpected update cleanup reply")),
+        let deadline=Instant::now()+Duration::from_secs(40);
+        loop {
+            let response = control::request_owned(&Request::new(1,Command::FinishUpdate {
+                token:update.token.clone(),success:exit }),Duration::from_secs(5),std::process::id())
+                .map_err(|error| Error::failed(format!("update ownership cleanup: {error}")))?;
+            match response.reply {
+                Reply::ShutdownAccepted if exit => break,
+                Reply::UpdateCancelled if !exit => break,
+                Reply::Error { error } if !exit && matches!(error.code,control::ErrorCode::Busy) && Instant::now()<deadline=>
+                    std::thread::sleep(Duration::from_millis(25)),
+                Reply::Error { error } => return Err(Error::failed(error.message)),
+                _ => return Err(Error::failed("unexpected update cleanup reply")),
+            }
         }
         self.update = None;
         Ok(exit)
@@ -298,10 +307,6 @@ impl Connection {
             }
             Some((session.id.clone(),owner))
         } else { None };
-        if !sessions.iter().any(|session| session.primary && session.state == crate::device_sessions::SessionState::Running)
-            && settings["Tools"].as_array().is_some_and(|tools| tools.iter().any(|store| store["Enable"].as_bool().unwrap_or(false))) {
-            return Err(Error::unsupported("SetSettings", "enabled global Tools need a running primary tool owner; the previous collection was retained"));
-        }
         if sessions.is_empty() {
             if self.status()?.identity() != status.identity() || self.session_snapshots()?.iter().any(|session| session.connected) {
                 return Err(Error::failed("device lifecycle changed during idle settings apply; refresh and retry"));
@@ -314,6 +319,7 @@ impl Connection {
             };
             self.settings_revision = Some(revision);
             self.settings_native = None;
+            crate::tool_host::apply_document(&settings).map_err(Error::failed)?;
             return Ok(Value::Null);
         }
         if sessions.iter().any(|session| session.pending_generation.is_some()
@@ -366,7 +372,8 @@ impl Connection {
             self.shared.resynchronize.fetch_add(1,Ordering::AcqRel);
             return Err(error);
         }
-        self.settings_revision = Some(super::collection::publish(settings, retained.revision, true)?);
+        self.settings_revision = Some(super::collection::publish(settings.clone(), retained.revision, true)?);
+        crate::tool_host::apply_document(&settings).map_err(Error::failed)?;
         self.settings_native = None;
         self.shared.resynchronize.fetch_add(1,Ordering::AcqRel);
         Ok(Value::Null)
@@ -614,10 +621,33 @@ fn operating_system() -> Result<Value, Error> {
 }
 impl Service for Connection {
     fn invoke(&mut self, method: &str, params: &Value) -> Result<Value, Error> {
+        // Console calls bypass the managed backend's plugin-manager entry point.
+        // Count them through registry publication/default-store construction, so
+        // BeginUpdate cannot race a previously accepted cold CLR/file mutation.
+        let _plugin_admission = if crate::plugin_manager::is_operation(method)
+            || matches!(method, "GetPluginTypes" | "ConstructPluginStore") {
+            Some(crate::plugin_manager::admit()?)
+        } else { None };
         // If the constructor raced initial native-pipe startup, establish the
         // baseline before any first method can append logs or mutate state.
         if METHODS.contains(&method) { self.establish_log_cursor()?; }
         match method {
+            "GetPluginTypes" => {
+                protocol::no_arguments(params)?;
+                crate::plugins::load_parser_registry()?;
+                Ok(crate::dotnet::get_plugin_types()?)
+            },
+            "ConstructPluginStore" => {
+                let (path,category)=match params {
+                    Value::Array(values) if values.len()==2=>(values[0].as_str(),values[1].as_str()),
+                    Value::Object(values) if values.len()==2=>(values.get("path").and_then(Value::as_str),values.get("category").and_then(Value::as_str)),
+                    _=>return Err(Error::invalid("expected plugin path and category")),
+                };
+                let path=path.ok_or_else(||Error::invalid("plugin path must be a string"))?;
+                let category=category.ok_or_else(||Error::invalid("plugin category must be a string"))?;
+                crate::plugins::load_parser_registry()?;
+                Ok(crate::dotnet::construct_plugin_store(path,category)?)
+            },
             "GetTablets" => { protocol::no_arguments(params)?; self.tablets() },
             "GetSettings" => { protocol::no_arguments(params)?; self.settings() },
             "SetSettings" => self.set_settings(protocol::argument(params, "settings")?),
@@ -720,7 +750,7 @@ impl Service for Connection {
                 let status = self.status()?;
                 let devices = crate::hid::enumerate_rpc_devices().map_err(|error| Error::failed(error.to_string()))?;
                 Ok(json!({"App Version":format!("OpenTabletDriver Rust v{}",env!("CARGO_PKG_VERSION")),
-                    "Build Date":null,"Operating System":operating_system()?,
+                    "Build Date":env!("OTD_BUILD_DATE"),"Operating System":operating_system()?,
                     "Environment Variables":std::env::vars().collect::<std::collections::BTreeMap<_,_>>(),
                     "HID Devices":devices,"Console Log":self.logs()?.2,
                     "Rust Native State":{"instance":status.instance,"generation":status.generation,"state":status.state,"profile":status.profile}}))

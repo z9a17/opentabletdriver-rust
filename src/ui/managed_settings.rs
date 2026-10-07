@@ -53,6 +53,7 @@ pub(super) fn choose(window: HWND, control: HWND, target: Target) {
     if guard.current.is_some() { commands::append(menu, 0, 1, "Edit current managed settings..."); }
     commands::append(menu, 0, 2, "Choose an installed DLL...");
     commands::append(menu, 0, 3, "Browse for a DLL...");
+    commands::append(menu, 0, 4, "Choose a registered type...");
     let path = match commands::popup(window, menu, control) {
         1 => guard.current.as_ref().map(|config| config.path.clone()),
         2 => {
@@ -72,6 +73,19 @@ pub(super) fn choose(window: HWND, control: HWND, target: Target) {
             Ok(path) => path,
             Err(error) => { with_app(|app| app.log(Level::Error, "Managed settings", error)); None }
         },
+        4=>{
+            with_app(|app|{
+                if !guard.valid(app){return;}
+                app.background("managed-registered-types",move||BackgroundResult::Managed{
+                    guard,result:(||{
+                        // Explicit selection refreshes the installed registry: cached metadata
+                        // can outlive DLL installation/removal in the plugin manager.
+                        let root=crate::plugin_catalog::plugins_directory()?;
+                        crate::dotnet::reload_installed_plugins(&root).map(|registry|registry.plugins)
+                    })(),
+                });
+            });return;
+        },
         _ => None,
     };
     if let Some(path) = path { with_app(|app| {
@@ -85,8 +99,8 @@ pub(super) fn inspected(app: &mut App, guard: Guard, result: Result<Vec<crate::d
     if !guard.valid(app) { return; }
     match result {
         Ok(entries) => {
-            let entries: Vec<_> = entries.into_iter().filter(|entry| entry.metadata.supported && entry.metadata.category == guard.target.category()).take(256).collect();
-            if entries.is_empty() { app.log(Level::Warning, "Managed settings", format!("This DLL exports no supported {} types.", guard.target.category())); return; }
+            let entries: Vec<_> = entries.into_iter().filter(|entry| entry.metadata.supported && entry.metadata.category == guard.target.category()).collect();
+            if entries.is_empty() { app.log(Level::Warning, "Managed settings", format!("No supported {} types.", guard.target.category())); return; }
             READY.with(|ready| *ready.borrow_mut() = Some((guard, entries)));
             unsafe { PostMessageW(app.hwnd, WM_MANAGED_SETTINGS, 0, 0); }
         }

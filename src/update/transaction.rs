@@ -6,6 +6,7 @@ use std::{
     io::Write,
     path::{Component, Path, PathBuf},
 };
+#[cfg(windows)]
 use windows_sys::Win32::{
     Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT},
     System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject},
@@ -14,7 +15,10 @@ use windows_sys::Win32::{
 const JOURNAL: &str = ".otd-update";
 
 pub(crate) struct InstallLock {
+    #[cfg(windows)]
     handle: crate::hid::OwnedHandle,
+    #[cfg(unix)]
+    handle:File,
     _thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 impl InstallLock {
@@ -23,6 +27,7 @@ impl InstallLock {
         Self::try_acquire(root, name)?.ok_or_else(|| "another process is updating or recovering this installation".into())
     }
 
+    #[cfg(windows)]
     pub fn try_acquire(root: &Path, name: &str) -> Result<Option<Self>, String> {
         let canonical = root.canonicalize().map_err(|error| error.to_string())?;
         let identity = format!("{}:{name}", canonical.to_string_lossy().to_lowercase());
@@ -47,6 +52,22 @@ impl InstallLock {
         }
     }
 }
+#[cfg(unix)]
+impl InstallLock {
+    pub fn try_acquire(root:&Path,name:&str)->Result<Option<Self>,String>{
+        use std::os::{fd::AsRawFd,unix::fs::{OpenOptionsExt,MetadataExt}};
+        if name.is_empty()||name.contains(['/', '\\'])||name=="."||name==".."{return Err("Invalid transaction lock name".into());}
+        let root=root.canonicalize().map_err(|error|error.to_string())?;
+        let handle=OpenOptions::new().create(true).read(true).write(true).mode(0o600).custom_flags(libc::O_NOFOLLOW|libc::O_CLOEXEC)
+            .open(root.join(name)).map_err(|error|error.to_string())?;
+        let metadata=handle.metadata().map_err(|error|error.to_string())?;
+        if !metadata.is_file()||metadata.uid()!=unsafe{libc::geteuid()}{return Err("Installation lock must be owned by current user".into());}
+        if unsafe{libc::flock(handle.as_raw_fd(),libc::LOCK_EX|libc::LOCK_NB)}!=0{
+            let error=std::io::Error::last_os_error();return if error.kind()==std::io::ErrorKind::WouldBlock{Ok(None)}else{Err(error.to_string())};
+        }Ok(Some(Self{handle,_thread_bound:std::marker::PhantomData}))
+    }
+}
+#[cfg(windows)]
 impl Drop for InstallLock {
     fn drop(&mut self) {
         unsafe {
@@ -54,6 +75,9 @@ impl Drop for InstallLock {
         }
     }
 }
+
+#[cfg(unix)]
+impl Drop for InstallLock {fn drop(&mut self){use std::os::fd::AsRawFd;let _=unsafe{libc::flock(self.handle.as_raw_fd(),libc::LOCK_UN)};}}
 
 #[derive(Serialize, Deserialize)]
 struct Entry {
@@ -250,7 +274,7 @@ pub(super) fn startup(install: &Path) -> Result<bool, String> {
     recover(install)
 }
 
-#[cfg(test)]
+#[cfg(all(test,windows))]
 mod tests {
     use super::*;
 

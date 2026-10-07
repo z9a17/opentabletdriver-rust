@@ -674,13 +674,13 @@ fn pen_button_action(store: Option<&OtdStore>, pen: bool) -> Result<ButtonAction
         },
         KEY_BINDING => match property("Key") {
             None | Some("None") => Ok(ButtonAction::None),
-            Some(name) => keys::usage_from_name(name)
+            Some(name) => keys::usage_from_original_name(name)
                 .map(|key| ButtonAction::Keys(vec![key]))
                 .ok_or_else(|| format!("unsupported key {name:?}")),
         },
         MULTI_KEY_BINDING => match property("Keys") {
             None => Ok(ButtonAction::None),
-            Some(names) => keys::parse_chord(names).map(ButtonAction::Keys),
+            Some(names) => keys::parse_original_chord(names).map(|keys| if keys.is_empty() { ButtonAction::None } else { ButtonAction::Keys(keys) }),
         },
         MOUSE_SCROLL_BINDING => {
             use crate::output::buttons::{ScrollAction, ScrollAxis};
@@ -2549,10 +2549,10 @@ mod tests {
             profile.pen_buttons[0],
             ButtonAction::Mouse(MouseButton::Forward)
         );
-        assert_eq!(profile.pen_buttons[1].to_string(), "keys:Escape");
+        assert_eq!(profile.pen_buttons[1].to_string(), if cfg!(windows) { "keys:vk:Escape" } else { "keys:Escape" });
         assert_eq!(
             profile.pen_buttons[2].to_string(),
-            "keys:LeftControl+LeftShift+Z"
+            if cfg!(windows) { "keys:vk:Control+vk:Shift+vk:Z" } else { "keys:LeftControl+LeftShift+Z" }
         );
         assert!(
             profile
@@ -2560,6 +2560,19 @@ mod tests {
                 .iter()
                 .all(|d| !d.location.contains("PenButtons"))
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn original_windows_logical_stores_survive_native_persistence_without_vk_json_names() {
+        let original = store(MULTI_KEY_BINDING, "Keys", "Control+A+VolumeUp".into());
+        let profile = import_pen_buttons_from(serde_json::json!([original.clone()]));
+        let native = profile.to_toml().unwrap();
+        assert!(native.contains("keys:vk:Control+vk:A+vk:VolumeUp"));
+        let reloaded = Profile::from_toml_text(&native, Path::new("logical.toml")).unwrap();
+        assert_eq!(reloaded.pen_buttons, profile.pen_buttons);
+        let exported: serde_json::Value = serde_json::from_str(&reloaded.to_otd_json().unwrap()).unwrap();
+        assert_eq!(exported["Profiles"][0]["Bindings"]["PenButtons"][0], original);
     }
 
     #[test]
@@ -2601,7 +2614,7 @@ mod tests {
             store(
                 "OpenTabletDriver.Desktop.Binding.KeyBinding",
                 "Key",
-                "Mute".into()
+                "UnknownKey".into()
             ),
             store(
                 "OpenTabletDriver.Desktop.Binding.MouseBinding",
@@ -2664,7 +2677,7 @@ mod tests {
         assert_eq!(profile.pen_buttons[1], ButtonAction::None);
         for bad in [
             "pen_buttons = [\"mouse:sideways\"]\n",
-            "pen_buttons = [\"keys:Mute\"]\n",
+            "pen_buttons = [\"keys:UnknownKey\"]\n",
             "pen_buttons = [1]\n",
         ] {
             assert!(
@@ -2680,7 +2693,7 @@ mod tests {
     fn edited_pen_buttons_export_and_reimport_all_supported_action_types() {
         let mut profile = import_pen_buttons_from(serde_json::json!([]));
         assert!(profile.to_otd_json().is_ok());
-        profile.pen_buttons = ["barrel:3", "mouse:forward", "keys:Escape", "keys:Control+Shift+Z", "none"]
+        profile.pen_buttons = if cfg!(windows) { ["barrel:3", "mouse:forward", "keys:vk:Escape", "keys:vk:Control+vk:Shift+vk:Z", "none"] } else { ["barrel:3", "mouse:forward", "keys:Escape", "keys:Control+Shift+Z", "none"] }
             .into_iter().map(|action| action.parse().unwrap()).collect();
         let exported = profile.to_otd_json().unwrap();
         let json: serde_json::Value = serde_json::from_str(&exported).unwrap();
@@ -2692,7 +2705,7 @@ mod tests {
         assert_eq!(buttons[2]["Path"], KEY_BINDING);
         assert_eq!(buttons[2]["Settings"][0]["Value"], "Escape");
         assert_eq!(buttons[3]["Path"], MULTI_KEY_BINDING);
-        assert_eq!(buttons[3]["Settings"][0]["Value"], "LeftControl+LeftShift+Z");
+        assert_eq!(buttons[3]["Settings"][0]["Value"], if cfg!(windows) { "Control+Shift+Z" } else { "LeftControl+LeftShift+Z" });
         assert!(buttons[4].is_null());
         let reimported = Profile::from_otd_text(&exported, Path::new("exported.json")).unwrap();
         assert_eq!(reimported.pen_buttons, profile.pen_buttons);
@@ -2721,7 +2734,7 @@ mod tests {
     fn edited_pen_buttons_change_known_types_and_disable_without_losing_properties() {
         let source = store(ADAPTIVE_BINDING, "Binding", "Button 1".into());
         let mut profile = import_pen_buttons_from(serde_json::json!([source.clone()]));
-        profile.pen_buttons[0] = "keys:Escape".parse().unwrap();
+        profile.pen_buttons[0] = if cfg!(windows) { "keys:vk:Escape" } else { "keys:Escape" }.parse().unwrap();
         let exported = profile.to_otd_json().unwrap();
         let reimported = Profile::from_otd_text(&exported, Path::new("edited.json")).unwrap();
         assert_eq!(reimported.pen_buttons, profile.pen_buttons);
@@ -2894,9 +2907,9 @@ mod tests {
             }]
         }));
         let texts: Vec<String> = profile.aux_buttons.iter().map(ToString::to_string).collect();
-        assert_eq!(texts, ["keys:E", "none", "keys:LeftControl+Z", "none"]);
+        assert_eq!(texts, if cfg!(windows) { ["keys:vk:E", "none", "keys:vk:Control+vk:Z", "none"] } else { ["keys:E", "none", "keys:LeftControl+Z", "none"] });
         let wheel = &profile.wheels[0];
-        assert_eq!(wheel.clockwise.to_string(), "keys:PageDown");
+        assert_eq!(wheel.clockwise.to_string(), if cfg!(windows) { "keys:vk:PageDown" } else { "keys:PageDown" });
         assert_eq!(wheel.counter_clockwise, ButtonAction::None);
         assert_eq!(
             (wheel.clockwise_threshold, wheel.counter_clockwise_threshold),
@@ -2941,7 +2954,7 @@ mod tests {
         let text = empty.to_toml().unwrap();
         assert!(!text.contains("wheels") && !text.contains("aux_buttons"), "{text}");
         for bad in [
-            "aux_buttons = [\"keys:Mute\"]\n",
+            "aux_buttons = [\"keys:UnknownKey\"]\n",
             "[[wheels]]\nclockwise = \"wheel:1\"\n",
             "[[wheels]]\nclockwise_threshold = 0.0\n",
             "[[wheels]]\ncounter_clockwise_threshold = -5.0\n",
@@ -2956,14 +2969,14 @@ mod tests {
         let mut profile = import_bindings(serde_json::json!({
             "AuxButtons": [store(KEY_BINDING, "Key", "E".into()), null],
         }));
-        profile.aux_buttons = ["keys:E", "keys:Control+Z", "mouse:middle"]
+        profile.aux_buttons = if cfg!(windows) { ["keys:vk:E", "keys:vk:Control+vk:Z", "mouse:middle"] } else { ["keys:E", "keys:Control+Z", "mouse:middle"] }
             .into_iter()
             .map(|action| action.parse().unwrap())
             .collect();
         profile.wheels = vec![crate::output::buttons::WheelBinding {
-            clockwise: "keys:PageDown".parse().unwrap(),
+            clockwise: if cfg!(windows) { "keys:vk:PageDown" } else { "keys:PageDown" }.parse().unwrap(),
             counter_clockwise_threshold: Some(20.0),
-            buttons: vec!["keys:Escape".parse().unwrap()],
+            buttons: vec![if cfg!(windows) { "keys:vk:Escape" } else { "keys:Escape" }.parse().unwrap()],
             ..Default::default()
         }];
         let exported = profile.to_otd_json().unwrap();
@@ -2999,7 +3012,7 @@ mod tests {
         assert!(reloaded.contact.drag_only && reloaded.contact.disable_pressure && reloaded.contact.disable_tilt);
         assert_eq!(reloaded.mouse_buttons, profile.mouse_buttons);
         profile.contact.drag_only = false;
-        profile.mouse_buttons[1] = "keys:Control+Z".parse().unwrap();
+        profile.mouse_buttons[1] = if cfg!(windows) { "keys:vk:Control+vk:Z" } else { "keys:Control+Z" }.parse().unwrap();
         let exported = profile.to_otd_json().unwrap();
         let imported = Profile::from_otd_text(&exported, Path::new("export.json")).unwrap();
         assert!(!imported.contact.drag_only);

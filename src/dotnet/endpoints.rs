@@ -41,12 +41,17 @@ impl Api {
 fn api() -> Result<&'static Api, String> { super::bridge()?.endpoints.as_ref().ok_or_else(|| "The installed .NET bridge lacks unchanged output/binding support; replace data/compat with this release's files.".into()) }
 fn envelope(config: &PluginConfig, profile: &Profile, tablet: &TabletConfiguration, owner: u32, identifiers: Option<&[DeviceIdentifier]>) -> Result<serde_json::Value, String> {
     config.validate()?;
-    let keys: serde_json::Map<String, serde_json::Value> = otd_core::keys::names()
+    let keys: serde_json::Map<String, serde_json::Value> = if cfg!(windows) {
+        otd_core::keys::windows_names().map(|(name, code)| (name.into(),
+            serde_json::json!(KeyboardUsage::windows_virtual_key(code).map_or(0, KeyboardUsage::usage)))).collect()
+    } else if cfg!(target_os="macos") {otd_core::keys::macos_names().map(|(name,code)|(name.into(),serde_json::json!(if name=="None"{0}else{KeyboardUsage::macos_virtual_key(code).unwrap().usage()}))).collect()
+    } else if cfg!(target_os="linux") {otd_core::keys::linux_names().map(|(name,code)|(name.into(),serde_json::json!(KeyboardUsage::linux_event_key(code).map_or(0,KeyboardUsage::usage)))).collect()
+    } else { otd_core::keys::names()
         .filter(|(_, key)| crate::action_output::supports(Action::Key(*key)))
-        .map(|(name, usage)| (name.into(), serde_json::json!(usage.usage()))).collect();
+        .map(|(name, usage)| (name.into(), serde_json::json!(usage.usage()))).collect() };
     Ok(serde_json::json!({ "assembly_path": config.path.canonicalize().map_err(|error| format!("{}: {error}", config.path.display()))?,
         "type_name": config.type_name, "settings": serde_json::from_str::<serde_json::Value>(&config.settings_json).map_err(|error| error.to_string())?,
-        "tablet": tablet, "identifiers": identifiers, "pen": profile.output == OutputKind::Pen, "relative": profile.relative.is_some(), "owner": owner, "keys": keys }))
+        "tablet": tablet, "identifiers": identifiers, "source_session":super::source_session_json(), "pen": profile.output == OutputKind::Pen, "relative": profile.relative.is_some(), "owner": owner, "keys": keys }))
 }
 struct Endpoint { context: *mut c_void }
 impl Endpoint {
@@ -164,6 +169,8 @@ impl BindingSink {
     }
 }
 impl ActionSink for BindingSink {
+    fn pointer_attributes(&mut self, attributes: otd_core::output::MouseAttributes) -> io::Result<()> { self.native.pointer_attributes(attributes) }
+    fn flush_pointer(&mut self) -> io::Result<()> { self.native.flush_pointer() }
     fn has_managed(&self) -> bool { true }
     fn supports(&self, action: Action) -> bool { self.native.supports(action) }
     fn supports_scroll(&self) -> bool { self.native.supports_scroll() }

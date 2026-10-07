@@ -45,8 +45,137 @@ COMPAT_FILES += [f'{locale}/{assembly}.resources.dll'
 # it is not a copy-local runtime dependency in OtdCompat.deps.json.
 BRIDGE_LICENSES = {'DOTNET-BRIDGE-NOTICES.txt': 'compat/THIRD_PARTY_NOTICES.txt',
                   'OTD-DESKTOP-LICENSE.txt': 'compat/UpstreamDesktop/LICENSE',
-                  'OTD-DESKTOP-SOURCE.txt': 'compat/UpstreamDesktop/PROVENANCE.md'}
+                  'OTD-DESKTOP-SOURCE.txt': 'compat/UpstreamDesktop/PROVENANCE.md',
+                  'OTD-CORE-LICENSE.txt':'compat/UpstreamCore/LICENSE',
+                  'OTD-CORE-SOURCE.txt':'compat/UpstreamCore/PROVENANCE.md'}
 LINUX_SETUP = ['install.sh', '70-opentabletdriver-rust.rules', 'opentabletdriver-rust.conf', 'generate-rules.py']
+
+RID = {'win-x64':'win-x64','linux-x64':'linux-x64','macos-x64':'osx-x64','macos-arm64':'osx-arm64'}
+NETHOST = {'win-x64':'nethost.dll','linux-x64':'libnethost.so','macos-x64':'libnethost.dylib','macos-arm64':'libnethost.dylib'}
+UX_PROJECT = {'linux-x64':('compat/UpstreamUX.Gtk/OpenTabletDriver.UX.Gtk.csproj','OpenTabletDriver.UX.Gtk'),
+              'macos-x64':('compat/UpstreamUX.MacOS/OpenTabletDriver.UX.MacOS.csproj','OpenTabletDriver.UX.MacOS'),
+              'macos-arm64':('compat/UpstreamUX.MacOS/OpenTabletDriver.UX.MacOS.csproj','OpenTabletDriver.UX.MacOS')}
+UX_LICENSES = {'OTD-UX-LICENSE.txt':'compat/UpstreamUX/LICENSE','OTD-UX-SOURCE.txt':'compat/UpstreamUX/PROVENANCE.md',
+               'OTD-CONSOLE-LICENSE.txt':'compat/UpstreamConsole/LICENSE',
+               'OTD-CONSOLE-SOURCE.txt':'compat/UpstreamConsole/PROVENANCE.md',
+               **{name:'packaging/licenses/'+name for name in ['ETO-LICENSE.txt','MONOMAC-LICENSE.txt','GTKSHARP-LICENSE.txt','UX-SOURCE-NOTICES.txt']}}
+CONSOLE_PROJECT = ('compat/UpstreamConsole/OpenTabletDriver.Console.csproj','OpenTabletDriver.Console',False)
+
+
+def safe_component(name):
+    path=PurePosixPath(name)
+    if not name or not path.parts or path.is_absolute() or '..' in path.parts or '\\' in name or ':' in name:
+        raise ValueError(f'unsafe managed component path: {name}')
+    return path
+
+
+def managed_assets(directory, assembly, platform, apphost=False):
+    """Use the published deps graph, excluding symbols/build output/legacy launchers."""
+    names=managed_assets_from_reader(lambda name:(directory/name).read_bytes(),'',assembly,platform,apphost)
+    for name in names:
+        if not (directory/name).is_file():raise ValueError(f'missing published {assembly} runtime dependency: {name}')
+    if apphost:check_binary(platform,assembly,(directory/assembly).read_bytes())
+    for name in names:
+        if name.endswith(('.so','.dylib')):check_binary(platform,name,(directory/name).read_bytes())
+    return names
+
+
+def native_host(dotnet_directory,platform):
+    override=os.environ.get('NETHOST_'+RID[platform].upper().replace('-','_'))
+    override=override or (os.environ.get('NETHOST_DLL') if platform=='win-x64' else os.environ.get('NETHOST_LIBRARY'))
+    if override:path=Path(override)
+    else:
+        package='microsoft.netcore.app.host.'+RID[platform]
+        cache=Path(os.environ.get('NUGET_PACKAGES',str(Path.home()/'.nuget/packages')))
+        candidates=list(dotnet_directory.glob('packs/Microsoft.NETCore.App.Host.'+RID[platform]+'/*/runtimes/'+RID[platform]+'/native/'+NETHOST[platform]))
+        candidates+=list((cache/package).glob('*/runtimes/'+RID[platform]+'/native/'+NETHOST[platform]))
+        candidates=[path for path in candidates if re.fullmatch(r'\d+\.\d+\.\d+',path.parts[-5])]
+        if not candidates:raise ValueError(f'supply NETHOST_{RID[platform].upper().replace("-","_")} from the target .NET host pack')
+        path=max(candidates,key=lambda path:tuple(int(part) for part in path.parts[-5].split('.')))
+    check_binary(platform,NETHOST[platform],path.read_bytes())
+    return path
+
+
+def publish_managed(dotnet,project,platform,output,apphost):
+    # Disable Eto's old x64-only Mono launcher/bundle target. SDK apphosts are
+    # generated from the selected RID; the native ui command starts those.
+    properties=['-p:MacBuildBundle=false','-p:MacAutoPublishBundle=false','-p:PublishTrimmed=false',
+                '-p:UseAppHost='+str(apphost).lower()]
+    # restore --runtime overrides RuntimeIdentifiers and invalidates a lock
+    # containing several RIDs. Restore the declared graph once, then publish
+    # one of the already locked runtime targets without another restore.
+    subprocess.run([dotnet,'restore',project,'--locked-mode','--nologo',*properties],cwd=ROOT,check=True)
+    subprocess.run([dotnet,'publish',project,'-c','Release','--no-restore','-r',RID[platform],
+                    '--self-contained','false','-o',str(output),'--nologo',*properties],cwd=ROOT,check=True)
+
+
+def build_managed(binaries,platform):
+    dotnet=os.environ.get('DOTNET','dotnet')
+    dotnet_directory=Path(shutil.which(dotnet) or dotnet).resolve().parent
+    compat=binaries/'compat'
+    publish_managed(dotnet,'compat/OtdCompat/OtdCompat.csproj',platform,compat,False)
+    host=native_host(dotnet_directory,platform)
+    shutil.copy2(host,compat/NETHOST[platform])
+    compat_names=managed_assets(compat,'OtdCompat',platform)|{NETHOST[platform]}
+    required=set(COMPAT_FILES)-{'nethost.dll'}
+    if not required<=compat_names:raise ValueError(f'managed bridge closure is missing pinned public dependencies: {sorted(required-compat_names)}')
+    desktop={}
+    if platform!='win-x64':
+        destination=binaries/'desktop';destination.mkdir(exist_ok=True)
+        projects=[(*UX_PROJECT[platform],True),('compat/NativeDaemonLauncher/OpenTabletDriver.Daemon.csproj','OpenTabletDriver.Daemon',True),
+                  ('compat/ArchiveTools/OtdArchiveTools.csproj','OtdArchiveTools',False),CONSOLE_PROJECT]
+        for project,assembly,apphost in projects:
+            output=binaries/('publish-'+assembly)
+            publish_managed(dotnet,project,platform,output,apphost)
+            for name in managed_assets(output,assembly,platform,apphost):
+                data=(output/name).read_bytes()
+                if name in desktop and desktop[name]!=digest(data):raise ValueError(f'conflicting desktop dependency: {name}')
+                target=destination/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)
+                desktop[name]=digest(data)
+    return dotnet_directory,{name:digest((compat/name).read_bytes()) for name in sorted(compat_names)},desktop
+
+
+def validate_managed_inventory(platform,compat,desktop,read):
+    expected=managed_assets_from_reader(read,'data/compat/','OtdCompat',platform,False)|{NETHOST[platform]}
+    if set(compat)!=expected:raise ValueError('managed bridge inventory differs from its actual published dependency graph')
+    if not (set(COMPAT_FILES)-{'nethost.dll'})<=expected:raise ValueError('managed bridge lacks pinned public dependencies')
+    check_binary(platform,NETHOST[platform],read('data/compat/'+NETHOST[platform]))
+    if platform=='win-x64':
+        if desktop:raise ValueError('Windows has unexpected Unix frontend payload')
+    else:
+        expected=set()
+        for assembly,apphost in [(UX_PROJECT[platform][1],True),('OpenTabletDriver.Daemon',True),('OtdArchiveTools',False),CONSOLE_PROJECT[1:]]:
+            expected|=managed_assets_from_reader(read,'',assembly,platform,apphost)
+        if set(desktop)!=expected:raise ValueError('desktop inventory differs from actual published dependency graphs')
+    for prefix,inventory in [('data/compat/',compat),('',desktop)]:
+        for name,expected_hash in inventory.items():
+            safe_component(name)
+            data=read(prefix+name)
+            if digest(data)!=expected_hash:raise ValueError(f'managed provenance mismatch: {name}')
+            if name.endswith(('.so','.dylib')) or (prefix=='' and name in [UX_PROJECT.get(platform,('',None))[1],'OpenTabletDriver.Daemon']):
+                check_binary(platform,name,data)
+
+
+def managed_assets_from_reader(read,prefix,assembly,platform,apphost):
+    # Same graph resolution for recorded folders and archives; no extraction.
+    deps=json.loads(read(prefix+assembly+'.deps.json'))
+    target=deps['runtimeTarget']['name']
+    if not target.endswith('/'+RID[platform]):raise ValueError('managed dependency graph has the wrong runtime target')
+    names={assembly+'.dll',assembly+'.deps.json',assembly+'.runtimeconfig.json'}
+    fallback={RID[platform],RID[platform].split('-')[0]}
+    if platform!='win-x64':fallback.add('unix')
+    for library in deps['targets'][target].values():
+        for group in ['runtime','native','resources','runtimeTargets']:
+            for asset,info in library.get(group,{}).items():
+                asset=safe_component(asset)
+                if asset.name=='_._' or (group=='runtimeTargets' and info.get('rid') not in fallback):continue
+                names.add(str(safe_component((info.get('locale') or asset.parent.name)+'/'+asset.name)) if group=='resources' else asset.name)
+    if apphost:
+        names.add(assembly)
+        # Apply the same target-architecture fence to folder and archive graph
+        # readers, including future apphosts added to the desktop payload.
+        check_binary(platform,assembly,read(prefix+assembly))
+    return names
 
 
 def quickstart(platform):
@@ -188,20 +317,7 @@ def build(args):
         invocation += ['-p', package]
     subprocess.run(invocation, cwd=ROOT, check=True)
     binaries = ROOT / 'target' / target / 'release'
-    if platform == 'win-x64':
-        dotnet = os.environ.get('DOTNET', 'dotnet')
-        dotnet_directory = Path(shutil.which(dotnet) or dotnet).resolve().parent
-        nethost = os.environ.get('NETHOST_DLL')
-        if not nethost:
-            packs = list(dotnet_directory.glob('packs/Microsoft.NETCore.App.Host.win-x64/*/runtimes/win-x64/native/nethost.dll'))
-            packs = [path for path in packs if re.fullmatch(r'\d+\.\d+\.\d+', path.parts[-5])]
-            if not packs:
-                raise ValueError('set NETHOST_DLL to the Windows x64 .NET host pack nethost.dll')
-            nethost = str(max(packs, key=lambda path: tuple(int(n) for n in path.parts[-5].split('.'))))
-        compat = binaries / 'compat'
-        subprocess.run([dotnet, 'restore', 'compat/OtdCompat', '--locked-mode', '--nologo'], cwd=ROOT, check=True)
-        subprocess.run([dotnet, 'build', 'compat/OtdCompat', '-c', 'Release', '--no-restore', '-o', str(compat), '--nologo'], cwd=ROOT, check=True)
-        shutil.copy2(nethost, compat / 'nethost.dll')
+    dotnet_directory,compat_metadata,desktop_metadata=build_managed(binaries,platform)
     license_directory = binaries / 'runtime-licenses'
     license_directory.mkdir(exist_ok=True)
     rust_documentation = Path(command(rustc, '--print', 'sysroot')) / 'share/doc/rust'
@@ -210,17 +326,17 @@ def build(args):
         shutil.copy2(rust_documentation / 'licenses' / name, license_directory / name)
     for name in PROJECT_LICENSES:
         shutil.copy2(ROOT / name, license_directory / name)
-    if platform == 'win-x64':
-        for packaged_name, source_name in BRIDGE_LICENSES.items():
-            shutil.copy2(ROOT / source_name, license_directory / packaged_name)
-        for name in ['LICENSE.txt', 'ThirdPartyNotices.txt']:
-            source = dotnet_directory / name
-            if not source.is_file():
-                raise ValueError(f'missing .NET SDK license: {source}')
-            shutil.copy2(source, license_directory / ('DOTNET-' + name))
-    if platform == 'linux-x64':
-        shutil.copy2(ROOT / 'packaging/linux/MUSL-COPYRIGHT.txt', license_directory)
-    elif platform == 'win-x64' and target.endswith('-gnu'):
+    for packaged_name,source_name in BRIDGE_LICENSES.items():
+        shutil.copy2(ROOT/source_name,license_directory/packaged_name)
+    if platform!='win-x64':
+        for packaged_name,source_name in UX_LICENSES.items():
+            shutil.copy2(ROOT/source_name,license_directory/packaged_name)
+    for name in ['LICENSE.txt', 'ThirdPartyNotices.txt']:
+        source = dotnet_directory / name
+        if not source.is_file():
+            raise ValueError(f'missing .NET SDK license: {source}')
+        shutil.copy2(source, license_directory / ('DOTNET-' + name))
+    if platform == 'win-x64' and target.endswith('-gnu'):
         for path in (ROOT / 'packaging/windows').glob('*.txt'):
             shutil.copy2(path, license_directory)
     after = source_state()
@@ -229,9 +345,9 @@ def build(args):
     metadata = dict(after, platform=platform, rust_target=target, rustc=command(rustc, '--version'),
                     binaries={name: digest((binaries / name).read_bytes()) for name in MATRIX[platform]['binaries']})
     metadata['licenses'] = {path.name: digest(path.read_bytes()) for path in sorted(license_directory.iterdir()) if path.is_file()}
-    if platform == 'win-x64':
-        metadata['compat'] = {name: digest((binaries / 'compat' / name).read_bytes()) for name in COMPAT_FILES}
-    metadata['package_layout'] = 2
+    metadata['compat']=compat_metadata
+    metadata['desktop']=desktop_metadata
+    metadata['package_layout'] = 3
     (binaries / 'OTD-BUILD.json').write_text(json.dumps(metadata, indent=2) + '\n')
     args.bin_dir = binaries
     args.compat_dir = None
@@ -251,7 +367,8 @@ def make_package(args):
         if digest((binaries / name).read_bytes()) != metadata['binaries'][name]:
             raise ValueError(f'changed binary since build: {name}')
         check_binary(platform, name, (binaries / name).read_bytes())
-    with tempfile.TemporaryDirectory(prefix='otd-package-') as scratch:
+    scratch_root=ROOT/'target/package-scratch';scratch_root.mkdir(parents=True,exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='otd-package-',dir=scratch_root) as scratch:
         stage = Path(scratch) / package_name(platform)
         stage.mkdir()
         data_directory = stage / 'data'
@@ -265,21 +382,15 @@ def make_package(args):
         if {path.name: digest(path.read_bytes()) for path in sorted(licenses.iterdir()) if path.is_file()} != metadata['licenses']:
             raise ValueError('runtime license files changed since recorded build')
         shutil.copytree(licenses, data_directory / 'licenses')
-        if platform == 'win-x64':
-            compat = (args.compat_dir or binaries / 'compat').resolve()
-            for name in COMPAT_FILES:
-                if not (compat / name).is_file():
-                    raise ValueError(f'missing Windows compatibility component: {compat / name}')
-            check_binary('win-x64', 'nethost.dll', (compat / 'nethost.dll').read_bytes())
-            actual_compat = {name: digest((compat / name).read_bytes()) for name in COMPAT_FILES}
-            if actual_compat != metadata.get('compat'):
-                raise ValueError('compatibility bridge changed since recorded build; rebuild Windows')
-            (data_directory / 'compat').mkdir()
-            for name in COMPAT_FILES:
-                component_destination = data_directory / 'compat' / name
-                component_destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(compat / name, component_destination)
-        elif platform == 'linux-x64':
+        compat=(args.compat_dir or binaries/'compat').resolve()
+        desktop=binaries/'desktop'
+        def read_component(name):
+            return ((compat/name.removeprefix('data/compat/')) if name.startswith('data/compat/') else desktop/name).read_bytes()
+        validate_managed_inventory(platform,metadata['compat'],metadata['desktop'],read_component)
+        for prefix,source,inventory in [('data/compat/',compat,metadata['compat']),('',desktop,metadata['desktop'])]:
+            for name in inventory:
+                target=stage/prefix/name;target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source/name,target)
+        if platform == 'linux-x64':
             (stage / 'setup').mkdir()
             for name in LINUX_SETUP:
                 # Git on Windows may check text out with CRLF. Linux shebangs,
@@ -288,7 +399,7 @@ def make_package(args):
                 (stage / 'setup' / name).write_bytes(source.replace(b'\r\n', b'\n'))
             (data_directory / 'LINUX.md').write_bytes(platform_guide('otd-linux'))
             (stage / 'setup/install.sh').chmod(0o755)
-        else:
+        elif platform.startswith('macos-'):
             (data_directory / 'MACOS.md').write_bytes(platform_guide('otd-macos'))
         (data_directory / 'BUILD-INFO.json').write_text(json.dumps(metadata, indent=2) + '\n')
         archive = archive_path(destination, platform)
@@ -298,7 +409,7 @@ def make_package(args):
                     if path.is_file():
                         output.write(path, path.relative_to(stage.parent).as_posix())
         else:
-            executables = set(MATRIX[platform]['binaries'])
+            executables = set(MATRIX[platform]['binaries'])|{UX_PROJECT[platform][1],'OpenTabletDriver.Daemon'}
             if platform == 'linux-x64':
                 executables.update({'setup/install.sh', 'setup/generate-rules.py'})
 
@@ -335,7 +446,7 @@ def read_archive(path):
                     continue
                 if not member.isfile() or member.name in files:
                     raise ValueError(f'unsafe or duplicate tar member: {member.name}')
-                if member.name.endswith(tuple('/' + name for spec in MATRIX.values() for name in spec['binaries']) + ('/setup/install.sh', '/setup/generate-rules.py')) and member.mode & 0o111 != 0o111:
+                if member.name.endswith(tuple('/' + name for spec in MATRIX.values() for name in spec['binaries']) + ('/setup/install.sh', '/setup/generate-rules.py','/OpenTabletDriver.UX.Gtk','/OpenTabletDriver.UX.MacOS','/OpenTabletDriver.Daemon')) and member.mode & 0o111 != 0o111:
                     raise ValueError(f'package executable mode missing: {member.name}')
                 stream = archive.extractfile(member)
                 if stream is None:
@@ -364,7 +475,7 @@ def verify(directory, require_clean):
         if any(not name.startswith(prefix) for name in files):
             raise ValueError(f'wrong package root: {archive.name}')
         metadata = json.loads(files[prefix + 'data/BUILD-INFO.json'])
-        if metadata.get('package_layout') != 2:
+        if metadata.get('package_layout') != 3:
             raise ValueError(f'unsupported package layout: {archive.name}')
         if metadata['version'] != VERSION or metadata['platform'] != platform or metadata['source_commit'] != revision:
             raise ValueError(f'package source/version mismatch: {archive.name}')
@@ -376,14 +487,16 @@ def verify(directory, require_clean):
             raise ValueError(f'lockfile mismatch: {archive.name}')
         required = spec['binaries'] + ['README.md', 'data/BUILD-INFO.json']
         required += ['data/licenses/' + name for name in metadata['licenses']]
-        if platform == 'win-x64':
-            required += ['data/compat/' + name for name in COMPAT_FILES]
-            required += ['data/licenses/' + name for name in BRIDGE_LICENSES]
-            required += ['data/licenses/DOTNET-LICENSE.txt', 'data/licenses/DOTNET-ThirdPartyNotices.txt']
-        elif platform == 'linux-x64':
+        required += ['data/compat/'+name for name in metadata['compat']]
+        required += list(metadata['desktop'])
+        required += ['data/licenses/'+name for name in BRIDGE_LICENSES]
+        required += ['data/licenses/DOTNET-LICENSE.txt','data/licenses/DOTNET-ThirdPartyNotices.txt']
+        if platform!='win-x64':required += ['data/licenses/'+name for name in UX_LICENSES]
+        if platform == 'linux-x64':
             required += ['setup/' + name for name in LINUX_SETUP] + ['data/LINUX.md']
-        else:
+        elif platform.startswith('macos-'):
             required += ['data/MACOS.md']
+        required=list(dict.fromkeys(required))
         for name in required:
             if prefix + name not in files:
                 raise ValueError(f'{archive.name} is missing {name}')
@@ -406,16 +519,10 @@ def verify(directory, require_clean):
         for name, expected_hash in metadata['licenses'].items():
             if digest(files[prefix + 'data/licenses/' + name]) != expected_hash:
                 raise ValueError(f'runtime license mismatch: {name}')
-        if platform == 'win-x64':
-            for packaged_name, source_name in BRIDGE_LICENSES.items():
-                if files[prefix + 'data/licenses/' + packaged_name] != (ROOT / source_name).read_bytes():
-                    raise ValueError(f'managed helper license/source notice mismatch: {packaged_name}')
-            check_binary('win-x64', 'nethost.dll', files[prefix + 'data/compat/nethost.dll'])
-            if set(metadata['compat']) != set(COMPAT_FILES):
-                raise ValueError('compatibility bridge dependency inventory differs from required runtime files')
-            for name, expected_hash in metadata['compat'].items():
-                if digest(files[prefix + 'data/compat/' + name]) != expected_hash:
-                    raise ValueError(f'compatibility bridge provenance mismatch: {name}')
+        for packaged_name,source_name in {**BRIDGE_LICENSES,**(UX_LICENSES if platform!='win-x64' else {})}.items():
+            if files[prefix+'data/licenses/'+packaged_name]!=(ROOT/source_name).read_bytes():
+                raise ValueError(f'managed license/source notice mismatch: {packaged_name}')
+        validate_managed_inventory(platform,metadata['compat'],metadata['desktop'],lambda name:files[prefix+name])
         if platform == 'linux-x64':
             for name in LINUX_SETUP:
                 if b'\r\n' in files[prefix + 'setup/' + name]:

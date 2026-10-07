@@ -1,6 +1,6 @@
 # Full OpenTabletDriver parity plan
 
-Status: approved project direction, implementation backlog open. The starting-point audit used Rust [v0.4.0 / 8d4d90e](https://github.com/z9a17/opentabletdriver-rust/tree/8d4d90eb0d7d2faeac248082c7da7a4c97c669e6) on 2026-09-21. For shipped behavior, use [PORTING_STATUS.md](PORTING_STATUS.md); the baseline and acceptance gates below remain in force.
+Status: pinned implementation source completion is recorded in [0.18](parity/IMPLEMENTATION_0.18.md); acceptance/backlog evidence remains open and is deferred by the owner. The starting-point audit used Rust [v0.4.0 / 8d4d90e](https://github.com/z9a17/opentabletdriver-rust/tree/8d4d90eb0d7d2faeac248082c7da7a4c97c669e6) on 2026-09-21. For shipped behavior, use [PORTING_STATUS.md](PORTING_STATUS.md); the baseline and acceptance gates below remain in force.
 
 The objective is a Rust implementation of the observable functionality of stable OpenTabletDriver, with efficient native report processing and **unchanged existing .NET plugins**. Windows PTH-660 support is the starting point. Full parity includes the upstream device database, Windows/Linux/macOS behavior, configuration and presets, desktop workflows, command-line and daemon interfaces, and the plugin ecosystem.
 

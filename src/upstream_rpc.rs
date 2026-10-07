@@ -1,7 +1,7 @@
 //! Opt-in upstream Windows RPC. Native v2 framing and daemon ownership remain
 //! separate. Never start the original daemon or a tablet worker for RPC.
 //! Only explicit managed provider/debug requests initialize .NET.
-mod protocol;
+pub(crate) mod protocol;
 mod service;
 mod settings;
 mod apply;
@@ -14,7 +14,9 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use crate::control::pipe::CompatPipe;
 
-pub const DEFAULT_PIPE: &str = "OpenTabletDriverRust.Compat";
+pub const DEFAULT_PIPE: &str = "OpenTabletDriver.Daemon";
+/// Private original-console connection; never takes the original daemon name.
+pub const CONSOLE_PIPE: &str = "OpenTabletDriverRust.Console";
 const MAX_CLIENTS: u32 = 4;
 const IDLE_BUDGET: Duration = Duration::from_secs(120);
 const FRAME_BUDGET: Duration = Duration::from_secs(5);
@@ -25,6 +27,25 @@ fn shared() -> Arc<service::Shared> {
 }
 fn provider_connection() -> service::Connection {
     service::Connection::new(shared(), Arc::new(AtomicBool::new(false)))
+}
+static HOSTED_UPDATE:std::sync::Mutex<Option<String>>=std::sync::Mutex::new(None);
+/// Retain update ownership until the original RpcHost confirms response flush.
+pub fn install_hosted_update(params:&serde_json::Value)->Result<serde_json::Value,String>{
+    use protocol::Service;
+    let mut connection=provider_connection();
+    let result=connection.invoke("InstallUpdate",params).map_err(|error|error.message)?;
+    let token=connection.detach_installed_update().ok_or("Installed update has no retirement token")?;
+    *HOSTED_UPDATE.lock().map_err(|_|"Hosted update ownership poisoned")?=Some(token);
+    Ok(result)
+}
+pub fn finish_hosted_update()->Result<serde_json::Value,String>{
+    let mut update=HOSTED_UPDATE.lock().map_err(|_|"Hosted update ownership poisoned")?;
+    let token=update.as_ref().ok_or("No installed original RPC update is pending")?;
+    let response=crate::control::request_owned(&crate::control::Request::new(1,crate::control::Command::FinishUpdate{token:token.clone(),success:true}),Duration::from_secs(5),std::process::id()).map_err(|error|error.to_string())?;
+    match response.reply{
+        crate::control::Reply::ShutdownAccepted=>{*update=None;Ok(serde_json::Value::Null)},
+        crate::control::Reply::Error{error}=>Err(error.message),_=>Err("Unexpected original update retirement receipt".into())
+    }
 }
 /// Background/control worker only; active settings projection uses native IPC.
 pub fn get_original_settings() -> Result<serde_json::Value, String> {
@@ -41,9 +62,6 @@ pub fn cached_settings_collection_revision() -> Option<u64> { collection::cached
 /// identity. Does not reserve OWNER because the originating RPC already owns it.
 pub fn publish_idle_original_settings(settings:serde_json::Value, expected_revision:u64) -> Result<u64,String> {
     let document = collection::normalize(&settings).map_err(|error| error.message)?;
-    if document["Tools"].as_array().is_some_and(|tools| tools.iter().any(|store| store["Enable"].as_bool().unwrap_or(false))) {
-        return Err("enabled global Tools need a running primary tool owner".into());
-    }
     let revision = collection::publish(document,expected_revision,true).map_err(|error| error.message)?;
     shared().resynchronize.fetch_add(1,Ordering::AcqRel);
     Ok(revision)

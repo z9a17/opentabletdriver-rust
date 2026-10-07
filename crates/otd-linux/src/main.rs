@@ -1,8 +1,6 @@
-//! Linux backend slice (X02/X03): runs a tablet through the portable core
-//! with hidraw input and a uinput pointer, or with pen output a virtual
-//! Artist Mode tablet. Desktop geometry is discovered at startup or supplied
-//! with `--screen`. Capture mode initializes and reads the tablet without
-//! creating an output device. There is no daemon, UI or plugin host yet.
+//! Linux native hidraw/uinput runtime with multi-device control and optional
+//! original Eto/StreamJsonRpc services. Artist Mode stays in the portable core.
+//! Runtime and hardware validation remain deferred to the owner.
 
 // Portable parsing and event framing, unit-tested on every platform.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -59,6 +57,7 @@ mod app {
     use otd_core::display::{DisplayFingerprint, DisplaySnapshot};
     use otd_core::endpoint_match;
     use otd_core::plugins::NoFilters;
+    use otd_platform::plugins::PluginChain;
     use otd_core::session::{self, Displays, Mode};
     use otd_core::spec::TabletSpec;
     use otd_core::tablets::{Database, ParserSupport, Role, parser_support};
@@ -69,7 +68,25 @@ mod app {
 
     static STOP: AtomicBool = AtomicBool::new(false);
 
-    const USAGE: &str = "Usage: opentabletdriver-rust-linux list\n       opentabletdriver-rust-linux run [--profile FILE] [--screen WIDTHxHEIGHT] [--tablet NAME]\n       opentabletdriver-rust-linux capture [--seconds 1..60] [--tablet NAME]\n       opentabletdriver-rust-linux --version\n\nRun discovers Hyprland, Sway or X11 monitors at startup. Other desktops need --screen.\nCapture reads reports for up to 10 seconds by default and never creates uinput output.\nBoth commands may send the tablet's configured initialization reports.\nLinux release setup: sudo ./setup/install.sh install\nSource checkout setup: sudo ./packaging/linux/install.sh install";
+    const USAGE: &str = "Usage: opentabletdriver-rust-linux list\n\
+       opentabletdriver-rust-linux run [--profile FILE] [--screen WIDTHxHEIGHT] [--tablet NAME]\n\
+       opentabletdriver-rust-linux capture [--seconds 1..60] [--tablet NAME]\n\
+       opentabletdriver-rust-linux update [--check | check | install]\n\
+       opentabletdriver-rust-linux plugins catalog|installed|install NAME|install-file PATH|remove NAME\n\
+       opentabletdriver-rust-linux original-console [ARGS ...] (alias: otd)\n\
+       opentabletdriver-rust-linux --version\n\n\
+Run discovers Hyprland, Sway or X11 monitors natively at startup.\n\
+Other Wayland compositors use the original display provider and need .NET 8.\n\
+Explicit --screen bypasses discovery; no desktop size is assumed on failure.\n\
+Capture reads reports for up to 10 seconds by default and never creates uinput output.\n\
+Both commands may send the tablet's configured initialization reports.\n\
+Daemon: daemon [--upstream-rpc | --upstream-pipe NAME]\n\
+Default original endpoint: OpenTabletDriver.Daemon\n\
+Original frontend: ui; original Console needs its listener or the frontend watchdog.\n\
+Original frontend/Console/RPC, registered types and managed plugins need .NET 8; ui also needs GTK3.\n\
+Native control: status/start/stop/shutdown/detect/request/console\n\
+Linux release setup: sudo ./setup/install.sh install\n\
+Source checkout setup: sudo ./packaging/linux/install.sh install";
 
     struct StaticDisplays(DisplaySnapshot);
 
@@ -96,6 +113,17 @@ mod app {
                 if arguments.next().is_some() { return Err(USAGE.into()); }
                 list()
             }
+            Some("daemon") => {
+                install_stop_handler()?;
+                let options = otd_platform::cli::Options::parse(arguments)?;
+                otd_platform::cli::daemon(std::sync::Arc::new(NativePlatform::default()), options, &STOP)
+            }
+            Some("update") => otd_platform::cli::update(std::sync::Arc::new(NativePlatform::default()),arguments.collect()),
+            Some("ui") => otd_platform::cli::ui(arguments.collect()),
+            Some("original-console" | "otd") => otd_platform::cli::original_console(arguments.collect()),
+            Some("plugins") => otd_platform::plugin_catalog::run(arguments.collect()),
+            Some("status" | "start" | "stop" | "shutdown" | "detect" | "request" | "console") =>
+                otd_platform::cli::control(command.as_deref().unwrap(), arguments.collect()),
             Some("run" | "capture") => {
                 let capture = command.as_deref() == Some("capture");
                 let (mut profile_path, mut screen, mut tablet, mut seconds) = (None, None, None, 10);
@@ -169,6 +197,7 @@ mod app {
         configuration: otd_core::tablets::TabletConfiguration,
         identifier: otd_core::tablets::DeviceIdentifier,
         spec: TabletSpec,
+        auxiliary:Option<(&'a Device,otd_core::tablets::DeviceIdentifier)>,
     }
 
     /// The first digitizer endpoint, by sysfs path, that matches a usable
@@ -207,7 +236,8 @@ mod app {
                     }
                     Err(_) => continue,
                 }
-                if parser_support(found.identifier.parser()) == ParserSupport::Missing {
+                if parser_support(found.identifier.parser()) == ParserSupport::Missing
+                    && !otd_platform::dotnet::installed_report_parser(found.identifier.parser()) {
                     unsupported = Some(format!(
                         "{} uses {}, which this driver cannot decode",
                         found.configuration.name,
@@ -221,7 +251,7 @@ mod app {
                             device,
                             configuration: found.configuration.clone(),
                             identifier: found.identifier.clone(),
-                            spec,
+                            spec,auxiliary:None,
                         }));
                     }
                     Err(error) => unsupported = Some(error),
@@ -231,75 +261,12 @@ mod app {
         unsupported.map_or(Ok(None), Err)
     }
 
-    fn run(
-        profile_path: Option<PathBuf>,
-        screen: Option<(i32, i32)>,
-        tablet: Option<String>,
-    ) -> Result<(), String> {
-        std::panic::set_hook(Box::new(|info| {
-            eprintln!("{info}");
-            STOP.store(true, Ordering::Release);
-        }));
+    fn run(profile_path:Option<PathBuf>,screen:Option<(i32,i32)>,tablet:Option<String>)->Result<(),String>{
         install_stop_handler()?;
-        let profile = profile_path.as_deref().map(|path| Profile::load(Some(path))).transpose()?;
-        let profile_tablet = profile.as_ref().map(Profile::tablet_name).transpose()?.flatten();
-        if let (Some(requested), Some(saved)) = (&tablet, &profile_tablet) {
-            if requested != saved {
-                return Err(format!("--tablet {requested} conflicts with the profile for {saved}"));
-            }
-        }
-        let tablet = tablet.or(profile_tablet);
-        let mut displays = StaticDisplays(match screen {
-            Some(screen) => crate::displays::explicit(screen),
-            None => crate::displays::discover()?,
-        });
-        eprintln!("Desktop at startup: {:?}, {} monitor(s). Restart after display changes.", displays.0.virtual_screen, displays.0.monitors.len());
-        let database = otd_core::config::configured_tablets()?;
-        let mut waiting = false;
-        while !STOP.load(Ordering::Acquire) {
-            let devices =
-                linux::enumerate(&database).map_err(|e| format!("hidraw discovery failed: {e}"))?;
-            let Some(selected) = select(&devices, &database, tablet.as_deref())? else {
-                if !waiting {
-                    eprintln!(
-                        "Waiting for {}.",
-                        tablet.as_deref().unwrap_or("a supported tablet")
-                    );
-                    waiting = true;
-                }
-                pause();
-                continue;
-            };
-            waiting = false;
-            if let Some(driver) = &selected.device.kernel_driver {
-                eprintln!("Tablet is bound to kernel driver {driver}; simultaneous native output can move the pointer twice. See ./setup/install.sh status in the extracted release (source: packaging/linux/install.sh) and the Linux README for scoped libinput input suppression.");
-            }
-            let profile = match &profile {
-                Some(profile) => profile.clone(),
-                None => Profile::load_otd_tablet(&selected.configuration.name)?.unwrap_or_default(),
-            }.for_tablet(selected.spec)?;
-            profile.validate_runtime_tablet_in(&database)?;
-            if profile.plugins.iter().any(|plugin| plugin.enabled) {
-                return Err("external plugins are not supported by the Linux runtime; disable them explicitly".into());
-            }
-            // Reject deterministic mapping/output errors before initialization
-            // writes, and do not repeatedly reinitialize on an unchanged fault.
-            let _ = otd_core::pipeline::ReportPipeline::new(&profile)?;
-            if profile.relative.is_none() { displays.0.mapper(&profile)?; }
-            if let Err(error) = run_session(&selected, &profile, &mut displays) {
-                if STOP.load(Ordering::Acquire) { break; }
-                match error {
-                    SessionError::Fatal(error) => {
-                        return Err(format!("{} stopped: {error}", selected.configuration.name));
-                    }
-                    SessionError::Retry(error) => {
-                        eprintln!("{} stopped: {error}; retrying after a device scan", selected.configuration.name);
-                    }
-                }
-            }
-            pause();
-        }
-        Ok(())
+        let profile=profile_path.as_deref().map(|path|Profile::load(Some(path))).transpose()?;
+        let profile_tablet=profile.as_ref().map(Profile::tablet_name).transpose()?.flatten();
+        if let(Some(requested),Some(saved))=(&tablet,&profile_tablet){if requested!=saved{return Err(format!("--tablet {requested} conflicts with profile for {saved}"));}}
+        otd_platform::cli::daemon(std::sync::Arc::new(NativePlatform{profile,screen,tablet:tablet.or(profile_tablet)}),otd_platform::cli::Options::default(),&STOP)
     }
 
     fn capture_tablet(tablet: Option<String>, seconds: u64) -> Result<(), String> {
@@ -349,20 +316,32 @@ mod app {
         }
     }
 
+    struct SourceEndpoint<'a>{endpoint:&'a otd_core::endpoint_match::Endpoint,native:Option<&'a Device>,custom:Option<u64>}
+    impl<'a> SourceEndpoint<'a>{
+        fn open(&self,configuration:&otd_core::tablets::TabletConfiguration,identifier:&otd_core::tablets::DeviceIdentifier,auxiliary:bool,gate:std::sync::Arc<otd_platform::shared_devices::OutputGate>,epoch:Option<u64>,stop:&'a AtomicBool)->std::io::Result<otd_platform::managed_source::Input<'a,Hidraw<'a>>>{
+            if let Some(token)=self.custom{return otd_platform::managed_source::Source::open(token,self.endpoint,configuration,identifier,auxiliary,gate,epoch,stop).map(otd_platform::managed_source::Input::Managed);}
+            let device=self.native.ok_or_else(||std::io::Error::new(std::io::ErrorKind::NotFound,"Exact native endpoint disappeared"))?;
+            let mut source=Hidraw::open(device,format!("{} ({})",configuration.name,self.endpoint.path),stop)?;source.attach(device,configuration,identifier,auxiliary,gate,epoch)?;Ok(otd_platform::managed_source::Input::Native(source))
+        }
+        fn initialize(&self,source:&mut otd_platform::managed_source::Input<'_,Hidraw<'_>>,identifier:&otd_core::tablets::DeviceIdentifier,configuration:&otd_core::tablets::TabletConfiguration,stop:&AtomicBool)->std::io::Result<()>{match source{
+            otd_platform::managed_source::Input::Native(source)=>linux::initialize(self.native.ok_or_else(||std::io::Error::other("Native endpoint metadata missing"))?,source.file(),identifier,configuration,stop),
+            otd_platform::managed_source::Input::Managed(source)=>source.initialize(identifier,configuration,self.endpoint),
+        }}
+    }
+    struct RunSelection<'a>{device:SourceEndpoint<'a>,configuration:otd_core::tablets::TabletConfiguration,identifier:otd_core::tablets::DeviceIdentifier,spec:TabletSpec,auxiliary:Option<(SourceEndpoint<'a>,otd_core::tablets::DeviceIdentifier)>}
     fn run_session(
-        selected: &Selected<'_>,
+        selected: &RunSelection<'_>,
         profile: &Profile,
         displays: &mut StaticDisplays,
+        stop: &AtomicBool,
+        context: Option<&otd_platform::daemon::WorkerContext>,
     ) -> Result<(), SessionError> {
-        let mut decoder = TabletDecoder::for_parser(selected.identifier.parser(), selected.spec)
-            .ok_or_else(|| SessionError::Fatal(std::io::Error::other("unsupported parser")))?;
-        let label = format!(
-            "{} ({})",
-            selected.configuration.name,
-            selected.device.node.display()
-        );
-        let mut source = Hidraw::open(selected.device, label, &STOP)
-            .map_err(SessionError::hardware)?;
+        otd_platform::display::set_snapshot(displays.0.clone());
+        otd_platform::action_output::set_supports(|action| match action {
+            otd_core::actions::Action::Mouse(_) => true,
+            otd_core::actions::Action::Key(key) => crate::keymap::key_code(key).is_some(),
+        });
+
         // Establish every output resource before initialization writes. Permission
         // failures are fatal; reconnect only retries actual hardware loss.
         // Resource discovery covers every binding group, including Artist Mode
@@ -372,36 +351,121 @@ mod app {
             .chain(profile.wheels.iter().flat_map(|wheel| [&wheel.clockwise, &wheel.counter_clockwise]
                 .into_iter().chain(wheel.buttons.iter())));
         let actions = || profile.pen_buttons.iter().chain(non_pen_actions());
-        let keys = actions().any(|action| matches!(action, ButtonAction::Keys(_)));
-        let clicks = actions().any(|action| matches!(action, ButtonAction::Mouse(_) | ButtonAction::Scroll(_)))
-            || non_pen_actions().any(|action| matches!(action, ButtonAction::Barrel(1 | 2)));
+        fn inner(action: &ButtonAction) -> &ButtonAction {
+            match action { ButtonAction::Toggle(inner) => inner.as_ref(), action => action }
+        }
+        let managed = !otd_core::output::buttons::ButtonOutput::managed_slots(profile).is_empty() || profile.managed_output.is_some();
+        let keys = managed || actions().any(|action| matches!(inner(action), ButtonAction::Keys(_)));
+        let clicks = managed || actions().any(|action| matches!(inner(action), ButtonAction::Mouse(_) | ButtonAction::Scroll(_)))
+            || non_pen_actions().any(|action| matches!(inner(action), ButtonAction::Barrel(1 | 2)));
         let keyboard = keys.then(VirtualKeyboard::create).transpose().map_err(SessionError::Fatal)?;
+        if keys{linux::ensure_shared_inputs().map_err(SessionError::Fatal)?;}
         let pen = if profile.output == OutputKind::Pen {
             Some(VirtualTablet::create(displays.0.virtual_screen).map_err(SessionError::Fatal)?)
         } else { None };
         let pointer = if pen.is_none() || clicks {
             Some(std::rc::Rc::new(Uinput::create(pen.is_some() || profile.relative.is_some()).map_err(SessionError::Fatal)?))
         } else { None };
-        linux::initialize(
-            selected.device, source.file(), &selected.identifier,
-            &selected.configuration, &STOP,
-        ).map_err(SessionError::hardware)?;
+        if let Some(context) = context { context.activate().map_err(|error| SessionError::Fatal(std::io::Error::other(error)))?; }
+        let gate=otd_platform::shared_devices::OutputGate::new().map_err(SessionError::Fatal)?;
+        let mut source=selected.device.open(&selected.configuration,&selected.identifier,false,gate.clone(),context.map(|context|context.reader_generation),stop).map_err(SessionError::hardware)?;
+        let mut auxiliary=selected.auxiliary.as_ref().and_then(|(device,identifier)|{
+            let opened=(||{let mut auxiliary=device.open(&selected.configuration,identifier,true,gate.clone(),context.map(|context|context.reader_generation),stop)?;
+                device.initialize(&mut auxiliary,identifier,&selected.configuration,stop)?;auxiliary.initialized();Ok::<_,std::io::Error>(auxiliary)})();
+            match opened{Ok(source)=>Some((source,identifier.clone())),Err(error)=>{eprintln!("Auxiliary endpoint unavailable: {error}");None}}
+        });
+        let mut identifiers=vec![selected.identifier.clone()];if let Some((_,identifier))=&auxiliary{identifiers.push(identifier.clone());}
+        let tablet=serde_json::json!({"Properties":selected.configuration,"Identifiers":identifiers});source.tablet(tablet.clone());if let Some((source,_))=&auxiliary{source.tablet(tablet);}
+        otd_platform::managed_host::publish_owned_devices();
+        let mut plugins = PluginChain::load_for_profile_with_identifiers(profile, &selected.configuration,
+            &identifiers).map_err(|error| SessionError::Fatal(std::io::Error::other(error)))?;
+        let mut decoder = plugins.source_decoder(selected.identifier.parser(), selected.spec)
+            .map_err(|error| SessionError::Fatal(std::io::Error::other(error)))?;
+        let mut auxiliary_decoder=auxiliary.as_ref().map(|(_,identifier)|plugins.source_decoder_for_endpoint(identifier.parser(),selected.spec,true)).transpose()
+            .map_err(|error|SessionError::Fatal(std::io::Error::other(error)))?;
+        let actions = plugins.wrap_action_sink(profile, &selected.configuration, linux::action_sink(pointer.clone(), keyboard).map_err(SessionError::Fatal)?)
+            .map_err(|error| SessionError::Fatal(std::io::Error::other(error)))?;
+        let actions=match context{Some(context)=>context.actions(actions,profile.binding_inhibit),None=>actions};
+        selected.device.initialize(&mut source,&selected.identifier,&selected.configuration,stop).map_err(SessionError::hardware)?;
+        source.initialized();
+        let _debug = otd_core::debug::Registration::with_selection_key(
+            otd_core::debug::Device { name: selected.configuration.name.clone(), parser: selected.identifier.parser().into() },
+            selected.device.endpoint.input_length.max(selected.auxiliary.as_ref().map_or(0,|(device,_)|device.endpoint.input_length)) as usize, auxiliary.as_ref().map(|(_,identifier)|identifier.parser().to_owned()), context.map(|context| context.id.clone()));
+        let source=otd_platform::paired_source::PairedSource::new(source,auxiliary.take().map(|(source,_)|source),otd_platform::managed_source::Input::wait_pair);
+        let mut source=otd_platform::daemon::LifecycleSource::new(source,context);
         let _realtime = crate::realtime::RealtimePriority::raise();
-        if let Some(tablet) = pen {
-            return session::run_gated_with_devices(
+        let _tools = context.is_none().then(|| otd_platform::plugins::Tools::start(&profile.plugins, |line| eprintln!("{line}")));
+        let result=if let Some(tablet) = pen {
+            session::run_gated_with_endpoints(
                 &mut source, displays, profile, Mode::Driver,
-                &mut decoder, &mut NoFilters, |_| Ok(()), Some(Box::new(tablet)),
-                Some(linux::action_sink(pointer, keyboard)), &|line| eprintln!("{line}"), || Ok(true),
-            ).map_err(SessionError::hardware);
-        }
+                &mut decoder, auxiliary_decoder.as_mut().map(|decoder|decoder as &mut dyn otd_core::decoders::PenDecoder), &mut plugins, |_| Ok(()), Some(Box::new(tablet)),
+                Some(actions), &|line| eprintln!("{line}"), || Ok(true),
+            )
+        }else{
         let output = pointer.ok_or_else(|| SessionError::Fatal(std::io::Error::other("mouse output was not created")))?;
         let sender = std::rc::Rc::clone(&output);
-        session::run_gated_with_devices(
-            &mut source, displays, profile, Mode::Driver, &mut decoder,
-            &mut NoFilters, move |packet| sender.send(packet), None,
-            Some(linux::action_sink(Some(output), keyboard)),
+        session::run_gated_with_endpoints(
+            &mut source, displays, profile, Mode::Driver, &mut decoder, auxiliary_decoder.as_mut().map(|decoder|decoder as &mut dyn otd_core::decoders::PenDecoder),
+            &mut plugins, move |packet| sender.send(packet), None,
+            Some(actions),
             &|line| eprintln!("{line}"), || Ok(true),
-        ).map_err(SessionError::hardware)
+        )};
+        let cleanup=source.source_mut().close(|source|source.close());
+        cleanup.and(result).map_err(SessionError::hardware)
+    }
+
+    #[derive(Default)]
+    struct NativePlatform{profile:Option<Profile>,screen:Option<(i32,i32)>,tablet:Option<String>}
+    impl otd_platform::daemon::Platform for NativePlatform {
+        fn default_profile(&self,tablet:&str)->Result<Option<Profile>,String>{if self.tablet.as_deref().is_none_or(|name|name==tablet){Ok(self.profile.clone())}else{Ok(None)}}
+        fn startup_tools(&self)->Option<Vec<otd_core::plugins::PluginConfig>>{self.profile.as_ref().map(|profile|profile.plugins.iter().filter(|config|config.kind==otd_core::plugins::PluginKind::DotnetTool).cloned().collect())}
+        fn prepare_start(&self) -> Result<(),String> {
+            let database=otd_core::config::configured_tablets()?;
+            let endpoints=linux::enumerate(&database).map_err(|error|error.to_string())?.into_iter().map(|device|device.endpoint).collect::<Vec<_>>();
+            otd_platform::daemon::prepare_connected(&database,&endpoints)
+        }
+        fn discover(&self) -> Result<Vec<otd_platform::daemon::Device>,String> {
+            let database=otd_core::config::configured_tablets()?;
+            let mut endpoints=linux::enumerate(&database).map_err(|error|error.to_string())?.into_iter().map(|device|device.endpoint).collect::<Vec<_>>();
+            let custom=otd_platform::managed_source::endpoints(&database)?;endpoints.extend(custom.iter().map(|(endpoint,_)|endpoint.clone()));
+            otd_platform::daemon::discover(&database,&endpoints).map(|devices|devices.into_iter().filter(|device|self.tablet.as_deref().is_none_or(|name|device.configuration.name==name)&&self.profile.as_ref().and_then(|profile|profile.device_path.as_deref()).is_none_or(|path|device.endpoint.path==path)).map(|mut device|{
+                device.custom_endpoint=custom.iter().find(|(endpoint,_)|endpoint.path==device.endpoint.path&&endpoint.physical_id==device.endpoint.physical_id).map(|(_,token)|*token);
+                device.auxiliary_custom_endpoint=device.auxiliary.as_ref().and_then(|(aux,_)|custom.iter().find(|(endpoint,_)|endpoint.path==aux.path&&endpoint.physical_id==aux.physical_id).map(|(_,token)|*token));device
+            }).collect())
+        }
+        fn screen(&self) -> Result<otd_core::mapping::Rect,String> { Ok(match self.screen{Some(screen)=>crate::displays::explicit(screen),None=>crate::displays::discover()?}.virtual_screen) }
+        fn inventory(&self) -> Result<serde_json::Value,String> {
+            let database=otd_core::config::configured_tablets()?;
+            let devices=linux::enumerate(&database).map_err(|error|error.to_string())?;
+            let mut inventory=linux::rpc_inventory(&devices).as_array().cloned().ok_or("Native inventory is not an array")?;inventory.extend(otd_platform::managed_source::inventory()?);Ok(serde_json::json!(inventory))
+        }
+        fn run(&self,device:otd_platform::daemon::Device,profile:Profile,context:otd_platform::daemon::WorkerContext) -> Result<(),String> {
+            let database=otd_core::config::configured_tablets()?;
+            let devices=linux::enumerate(&database).map_err(|error|error.to_string())?;
+            let actual=devices.iter().find(|actual|actual.endpoint.path==device.endpoint.path&&actual.endpoint.physical_id==device.endpoint.physical_id);
+            if actual.is_none()&&device.custom_endpoint.is_none(){return Err("Exact physical endpoint disconnected before preparation".into());}
+            let auxiliary=device.auxiliary.as_ref().and_then(|(endpoint,identifier)|{let native=devices.iter().find(|candidate|candidate.endpoint.path==endpoint.path&&candidate.endpoint.physical_id==endpoint.physical_id);
+                (native.is_some()||device.auxiliary_custom_endpoint.is_some()).then_some((SourceEndpoint{endpoint,native,custom:device.auxiliary_custom_endpoint},identifier.clone()))});
+            let selected=RunSelection {device:SourceEndpoint{endpoint:&device.endpoint,native:actual,custom:device.custom_endpoint},spec:TabletSpec::from_configuration(&device.configuration)?,configuration:device.configuration,identifier:device.identifier,auxiliary};
+            let mut displays=StaticDisplays(match self.screen{Some(screen)=>crate::displays::explicit(screen),None=>crate::displays::discover()?});
+            run_session(&selected,&profile,&mut displays,&context.stop,Some(&context)).map_err(|error|match error{SessionError::Fatal(error)|SessionError::Retry(error)=>error.to_string()})
+        }
+        fn device_string(&self,vendor:u16,product:u16,index:u8)->Result<String,String>{
+            let database=otd_core::config::configured_tablets()?;
+            for device in linux::enumerate(&database).map_err(|e|e.to_string())?.iter().filter(|device|device.endpoint.vendor_id==vendor&&device.endpoint.product_id==product){
+                if let Some(value)=otd_platform::shared_devices::device_string(&device.endpoint.path,index){return value;}
+                if let Some(usb)=&device.usb{return linux::usb_string(usb,index).map_err(|e|e.to_string());}
+            }
+            for device in otd_platform::dotnet::custom_devices::snapshot()?.iter().filter(|device|device.vendor==vendor&&device.product==product){return otd_platform::dotnet::custom_devices::device_string(device.endpoint,index);}
+            Err("No endpoint matches the requested vendor/product".into())
+        }
+        fn service_io(&self,request:otd_platform::managed_services::Request) -> Result<serde_json::Value,String> {
+            if matches!(request.operation,otd_platform::managed_services::Operation::InputHold|otd_platform::managed_services::Operation::InputRelease){
+                if request.operation==otd_platform::managed_services::Operation::InputHold&&request.payload["type"]!="renew"{linux::ensure_shared_inputs().map_err(|error|error.to_string())?;}
+                return otd_platform::input_owner::execute(request.operation,request.scope,&request.payload);
+            }
+            otd_platform::shared_devices::execute(request.operation,request.scope,&request.payload)
+        }
     }
 
     /// Waits two seconds between device scans. A stop signal ends the wait:

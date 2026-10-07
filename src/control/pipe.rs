@@ -313,6 +313,17 @@ pub(crate) struct CompatPipe { pipe: Handle }
 // Each instance is moved once to its dedicated worker and never shared.
 unsafe impl Send for CompatPipe {}
 impl CompatPipe {
+    /// A persistent same-user client used by the original-console workflow.
+    /// The caller captures the native daemon PID before connecting, so a
+    /// replacement or another application cannot receive its mutations.
+    pub(crate) fn open_client(name: &str, deadline: Instant, expected_process: Option<u32>) -> io::Result<Self> {
+        if name.is_empty() || name.len() > 200 || name.bytes().any(|byte| byte < 32 || matches!(byte, b'\\' | b'/' | b':')) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid compatibility pipe name"));
+        }
+        let sid = current_sid()?;
+        let endpoint = format!(r"\\.\pipe\{name}");
+        Ok(Self { pipe: connect_named_client(&sid, &endpoint, deadline, expected_process)? })
+    }
     pub(crate) fn instances(name: &str, count: u32) -> io::Result<Vec<Self>> {
         if name.is_empty() || name.len() > 200 || name.bytes().any(|byte| byte < 32 || matches!(byte, b'\\' | b'/' | b':'))
             || !(1..=4).contains(&count) {
@@ -517,6 +528,7 @@ fn write_frame_with_wake(pipe: HANDLE, frame: &[u8], deadline: Instant,
 
 pub(super) fn serve(handler: &mut impl ControlHandler, stop: &AtomicBool) -> io::Result<()> {
     let pipe = create_server(&current_sid()?)?;
+    handler.ready()?;
     while !stop.load(Ordering::Acquire) {
         handler.poll();
         if let Err(error) = connect_server(pipe.0, stop, &mut || handler.poll()) {
@@ -571,7 +583,11 @@ pub(super) fn serve(handler: &mut impl ControlHandler, stop: &AtomicBool) -> io:
 }
 
 fn connect_client(sid: &str, deadline: Instant, expected_process: Option<u32>) -> io::Result<Handle> {
-    let name = wide(&name_for_sid(sid));
+    connect_named_client(sid, &name_for_sid(sid), deadline, expected_process)
+}
+
+fn connect_named_client(sid: &str, endpoint: &str, deadline: Instant, expected_process: Option<u32>) -> io::Result<Handle> {
+    let name = wide(endpoint);
     loop {
         if Instant::now() >= deadline {
             return Err(io::Error::new(

@@ -77,6 +77,18 @@ unsafe static class EndpointProbe
         for (int index = 0; index < 256; index++) queue.Add(new ManagedCommand { Kind = 2, Value = 4 });
         try { queue.Add(default); throw new Exception("Unbounded service queue."); } catch (InvalidOperationException) { }
         try { queue.Take(out _); throw new Exception("Queue overflow was silently dropped."); } catch (InvalidOperationException) { }
+        if (queue.Pending) throw new Exception("Consumed command failure kept an immediate tick due.");
+        config["type_name"] = "SettingsFixture.BackgroundEndpointOutput";
+        using var background = new OutputInstance(config);
+        using var backgroundGraph = new SynchronousGraph([]); backgroundGraph.AttachOutput(background);
+        object actual = Value(background);
+        MethodInfo emit = actual.GetType().GetMethod("EmitBackground")!;
+        var packet = new PenSnapshot { Raw = [1, 2, 3], Position = new System.Numerics.Vector2(100, 100), Pressure = 123, PenButtons = [true] };
+        emit.Invoke(actual, [new IDeviceReport[] {packet}]);
+        if (bindings != 1 || pointers != 1 || backgroundGraph.NextTickMicros() != 0) throw new Exception("Foreign output pipeline crossed a native callback or was stranded.");
+        if (backgroundGraph.Tick(&Callback, 0) != 0 || bindings != 2 || pointers != 2) throw new Exception(backgroundGraph.Error ?? "Background mode replay failed.");
+        emit.Invoke(actual, [Enumerable.Range(0, 65).Select(_ => (IDeviceReport)new PenSnapshot { Raw = [1], Position = new System.Numerics.Vector2(100, 100), PenButtons = [true] }).ToArray()]);
+        if (backgroundGraph.Tick(&Callback, 0) == 0 || backgroundGraph.FailedIndex != -1 || backgroundGraph.NextTickMicros() != -1) throw new Exception("Output overflow must report a mode restart and cease immediate error ticks.");
         Console.WriteLine("Owned managed output/binding lifecycle fixtures passed without input injection.");
     }
 }

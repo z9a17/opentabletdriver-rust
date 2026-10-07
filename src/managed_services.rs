@@ -29,6 +29,8 @@ pub struct SourceSession {
 /// None means unavailable, not a successful fabricated empty value.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Snapshot {
+    pub diagnostic_app_version: Option<String>,
+    pub diagnostic_build_date: Option<String>,
     pub version: u64,
     pub daemon_identity: Option<crate::control::WorkerIdentity>,
     #[serde(default)]
@@ -48,12 +50,13 @@ pub struct Snapshot {
 #[repr(u32)]
 pub enum Operation { Snapshot = 0, Daemon = 1, Detect = 2, DeviceString = 3,
     OpenStream = 4, ReadStream = 5, WriteStream = 6, GetFeature = 7,
-    SetFeature = 8, CloseStream = 9 }
+    SetFeature = 8, CloseStream = 9, DeviceReports = 10, OutputOwner = 11, InputHold = 12, InputRelease = 13 }
 impl Operation {
     fn parse(value: u32) -> Option<Self> { Some(match value {
         0 => Self::Snapshot, 1 => Self::Daemon, 2 => Self::Detect, 3 => Self::DeviceString,
         4 => Self::OpenStream, 5 => Self::ReadStream, 6 => Self::WriteStream,
-        7 => Self::GetFeature, 8 => Self::SetFeature, 9 => Self::CloseStream, _ => return None,
+        7 => Self::GetFeature, 8 => Self::SetFeature, 9 => Self::CloseStream,
+        10 => Self::DeviceReports, 11 => Self::OutputOwner, 12=>Self::InputHold,13=>Self::InputRelease,_ => return None,
     }) }
 }
 #[derive(Clone, Debug)]
@@ -68,6 +71,8 @@ pub struct Request { pub operation: Operation, pub scope: u64, pub payload: Valu
 /// mutations here before their transaction completed.
 pub trait Backend: Send + Sync + 'static {
     fn execute(&self, request: Request) -> Result<Value, String>;
+    fn maintain(&self,_lane:usize) {}
+    fn shutdown(&self,_lane:usize) {}
 }
 struct Ticket { deadline: Instant, reply: Option<Vec<u8>> }
 struct State {
@@ -92,7 +97,7 @@ fn reply(result: Result<Value, String>) -> Vec<u8> {
 /// Own this on the daemon/control lifetime. Starting it does not initialize CLR.
 /// Drop stops admission and fails pending tickets. An executing backend cannot
 /// be undone; backend teardown must wait for its own guarded transaction.
-pub struct Host { engine: Arc<Engine>, worker: Option<std::thread::JoinHandle<()>> }
+pub struct Host { engine: Arc<Engine>, workers: Vec<std::thread::JoinHandle<()>> }
 #[derive(Clone)]
 pub struct Publisher { engine: Arc<Engine> }
 impl Host {
@@ -109,15 +114,31 @@ impl Host {
             snapshot: bytes, version: snapshot.version, daemon_identity: snapshot.daemon_identity, tickets: HashMap::new(),
             source_sessions: snapshot.source_sessions,
             queue: VecDeque::new(), queued_bytes: 0 }), ready: Condvar::new() });
+        let mut workers = Vec::new();
+        for lane in 0..5 {
         let worker = engine.clone();
-        let join = std::thread::Builder::new().name("managed-services".into()).spawn(move || loop {
+        let backend = Arc::clone(&backend);
+        let join = std::thread::Builder::new().name(["managed-services","managed-device-io","managed-output-owner","managed-device-detect","managed-input-owner"][lane].into()).spawn(move || loop {
+            backend.maintain(lane);
             let work = {
                 let Ok(mut state) = worker.state.lock() else { return };
-                while state.queue.is_empty() && !state.stopped {
-                    let Ok(next) = worker.ready.wait(state) else { return }; state = next;
-                }
-                if state.stopped { return; }
-                let (id, size, request) = state.queue.pop_front().unwrap();
+                // A real plugin constructor can ask for shared endpoint I/O
+                // while a daemon operation is constructing it. Give these
+                // requests their own serial owner rather than waiting behind
+                // the constructor's occupied daemon lane.
+                let index = loop {
+                    if state.stopped {drop(state);backend.shutdown(lane);return;}
+                    if let Some(index) = state.queue.iter().position(|(_, _, request)| {
+                        let operation_lane=match request.operation {Operation::Daemon=>0,Operation::Detect=>3,Operation::OutputOwner=>2,Operation::InputHold|Operation::InputRelease=>4,_=>1};
+                        operation_lane==lane
+                    }) { break Some(index); }
+                    if lane==4{
+                        let Ok((next,timeout))=worker.ready.wait_timeout(state,Duration::from_millis(250)) else{return};state=next;
+                        if timeout.timed_out(){break None;}
+                    }else{let Ok(next)=worker.ready.wait(state) else{return};state=next;}
+                };
+                let Some(index)=index else{continue};
+                let (id, size, request) = state.queue.remove(index).unwrap();
                 state.queued_bytes -= size;
                 if !state.tickets.get(&id).is_some_and(|ticket| Instant::now() < ticket.deadline) {
                     state.tickets.remove(&id); continue;
@@ -130,9 +151,18 @@ impl Host {
             if let Ok(mut state) = worker.state.lock() {
                 if !state.stopped { if let Some(ticket) = state.tickets.get_mut(&work.0) { ticket.reply = Some(bytes); } }
             }
-        }).map_err(|e| e.to_string())?;
+        });
+        match join {
+            Ok(join) => workers.push(join),
+            Err(error) => {
+                if let Ok(mut state) = engine.state.lock() { state.stopped = true; engine.ready.notify_all(); }
+                for worker in workers { let _ = worker.join(); }
+                return Err(error.to_string());
+            }
+        }
+        }
         *slot = Some(engine.clone());
-        Ok(Self { engine, worker: Some(join) })
+        Ok(Self { engine, workers })
     }
     pub fn publisher(&self) -> Publisher { Publisher { engine: self.engine.clone() } }
     pub fn publish(&self, snapshot: Snapshot) -> Result<(), String> {
@@ -164,7 +194,7 @@ impl Drop for Host {
         }
         // Never drop this owner on its backend thread or while holding a
         // native transaction lock the backend needs. The daemon owns teardown.
-        if let Some(worker) = self.worker.take() { let _ = worker.join(); }
+        for worker in self.workers.drain(..) { let _ = worker.join(); }
         if let Ok(mut slot) = HOST.get_or_init(|| Mutex::new(None)).lock() {
             if slot.as_ref().is_some_and(|value| Arc::ptr_eq(value, &self.engine)) { *slot = None; }
         }
@@ -191,9 +221,22 @@ unsafe extern "C" fn request(op: u32, scope: u64, input: *const u8, len: u32, ou
     };
     let Ok(mut state) = engine.state.lock() else { return -5 };
     if state.stopped { return -5; }
-    let expected_source = if let Some(value) = payload.get("source_tablet_name") {
-        let Some(name) = value.as_str().filter(|name| !name.is_empty() && name.len() <= 4096) else { return -3 };
-        let mut matches = state.source_sessions.iter().filter(|source| source.tablet == name
+    let mutating=operation==Operation::Daemon&&matches!(payload["method"].as_str(),Some("SetSettings"|"ResetSettings"|"ForceResynchronize"));
+    let expected_source = if payload.get("source_tablet_name").is_some()||(mutating&&payload.get("source_session").is_some()) {
+        let name=if let Some(value)=payload.get("source_tablet_name"){
+            let Some(name)=value.as_str().filter(|name|!name.is_empty()&&name.len()<=4096) else{return -3};Some(name)
+        }else{None};
+        let supplied=payload.get("source_session");
+        let identity=if let Some(supplied)=supplied {
+            if !crate::shared_devices::live_source(supplied){return -6;}
+            let Some(id)=supplied["id"].as_str().filter(|id|!id.is_empty()) else{return -3};
+            // live_source fences the exact retained reader epoch. Its immutable
+            // constructor generation can precede commit or survive rollback;
+            // capture the currently published logical generation below.
+            Some(id)
+        }else{None};
+        let mut matches = state.source_sessions.iter().filter(|source| name.is_none_or(|name|source.tablet == name)
+            && identity.is_none_or(|id|source.id==id)
             && source.connected && source.state == crate::device_sessions::SessionState::Running
             && source.pending_generation.is_none());
         let Some(source) = matches.next() else { return -6 };
@@ -210,7 +253,7 @@ unsafe extern "C" fn request(op: u32, scope: u64, input: *const u8, len: u32, ou
     if operation != Operation::Snapshot {
         let expected_daemon = state.daemon_identity.clone();
         state.queue.push_back((id, len as usize, Request { operation, scope, payload, expected_daemon, expected_source }));
-        state.queued_bytes += len as usize; engine.ready.notify_one();
+        state.queued_bytes += len as usize; engine.ready.notify_all();
     }
     unsafe { *output = id; } 0
 }

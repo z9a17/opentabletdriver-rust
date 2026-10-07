@@ -65,7 +65,7 @@ pub fn enumerate(database: &Database) -> io::Result<Vec<Device>> {
             continue;
         };
         let node = Path::new("/dev").join(entry.file_name());
-        let usb = sysfs::usb_device(&sys);
+        let usb = if id.bus==sysfs::BUS_USB{sysfs::usb_device(&sys)}else{None};
         let mut strings = BTreeMap::new();
         let mut string_errors = BTreeMap::new();
         if let Some(usb) = &usb {
@@ -92,9 +92,11 @@ pub fn enumerate(database: &Database) -> io::Result<Vec<Device>> {
                 physical_id: usb
                     .as_ref()
                     .map(|usb| usb.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
+                    .or_else(||(id.bus==sysfs::BUS_BLUETOOTH).then(||fs::read_to_string(hid.join("uevent")).ok().and_then(|text|sysfs::bluetooth_physical_id(&text))).flatten())
+                    .unwrap_or_else(||hid.to_string_lossy().into_owned()),
                 transport: if id.bus == sysfs::BUS_USB {
                     Transport::UsbHid
+                } else if id.bus==sysfs::BUS_BLUETOOTH{Transport::BluetoothHid
                 } else {
                     Transport::Other
                 },
@@ -118,6 +120,18 @@ pub fn enumerate(database: &Database) -> io::Result<Vec<Device>> {
     }
     devices.sort_by(|a, b| a.endpoint.path.cmp(&b.endpoint.path));
     Ok(devices)
+}
+
+/// Actual descriptor identity exposed by sysfs, not assumed USB string indices.
+pub fn rpc_inventory(devices:&[Device])->serde_json::Value{
+    let mut inventory=otd_platform::daemon::inventory(&devices.iter().map(|device|device.endpoint.clone()).collect::<Vec<_>>());
+    for(value,device)in inventory.as_array_mut().unwrap().iter_mut().zip(devices){
+        let text=|name:&str|device.usb.as_ref().and_then(|usb|fs::read_to_string(usb.join(name)).ok()).map(|text|text.trim_end_matches(['\r','\n']).to_owned());
+        let hid=Path::new(&device.endpoint.path).parent().and_then(Path::parent);
+        let uevent=hid.and_then(|hid|fs::read_to_string(hid.join("uevent")).ok());
+        let field=|prefix:&str|uevent.as_deref().and_then(|uevent|uevent.lines().find_map(|line|line.strip_prefix(prefix))).map(str::to_owned);
+        value["Manufacturer"]=serde_json::json!(text("manufacturer"));value["ProductName"]=serde_json::json!(text("product").or_else(||field("HID_NAME=")));value["SerialNumber"]=serde_json::json!(text("serial").or_else(||field("HID_UNIQ=")));
+    }inventory
 }
 
 fn accessible(node: &Path) -> bool {
@@ -298,6 +312,9 @@ pub struct Hidraw<'a> {
     /// so parsers see the Windows layout.
     offset: usize,
     stop: &'a AtomicBool,
+    services: Option<otd_platform::shared_device_io::ReaderServices>,
+    registration: Option<otd_platform::shared_devices::Registration>,
+    usb: Option<PathBuf>,
 }
 
 impl<'a> Hidraw<'a> {
@@ -314,11 +331,49 @@ impl<'a> Hidraw<'a> {
             buffer: vec![0; (device.endpoint.input_length as usize).max(64) + 1].into(),
             offset: usize::from(!device.uses_report_ids),
             stop,
+            services: None, registration: None, usb: device.usb.clone(),
         })
     }
 
     pub fn file(&self) -> &File {
         &self.file
+    }
+    pub fn attach(&mut self,device:&Device,configuration:&TabletConfiguration,identifier:&DeviceIdentifier,auxiliary:bool,
+        gate:std::sync::Arc<otd_platform::shared_devices::OutputGate>,epoch:Option<u64>)->io::Result<()> {
+        let(io,services)=otd_platform::shared_device_io::SharedIo::new(device.endpoint.output_length,device.endpoint.feature_length)?;
+        let registration=otd_platform::shared_devices::Registration::new(device.endpoint.path.clone(),identifier.parser().into(),auxiliary,io,gate,
+            self.buffer.len(),serde_json::json!({"Properties":configuration,"Identifiers":[identifier]}),serde_json::json!(identifier),serde_json::json!(configuration),epoch).map_err(io::Error::other)?;
+        self.services=Some(services);self.registration=Some(registration);Ok(())
+    }
+    pub fn initialized(&self){if let Some(registration)=&self.registration{registration.endpoint.initialized.store(true,Ordering::Release);}}
+    pub fn tablet(&self,tablet:serde_json::Value){if let Some(registration)=&self.registration{registration.tablet(tablet);}}
+    pub fn waits(&self)->[libc::pollfd;3]{[
+        libc::pollfd{fd:self.file.as_raw_fd(),events:libc::POLLIN,revents:0},
+        libc::pollfd{fd:self.services.as_ref().map_or(-1,|services|services.wake().raw()),events:libc::POLLIN,revents:0},
+        libc::pollfd{fd:self.registration.as_ref().map_or(-1,|registration|registration.endpoint.output.reader_wake().raw()),events:libc::POLLIN,revents:0}]}
+    pub fn wait_pair(primary:&mut Self,auxiliary:Option<&mut Self>,timeout:Duration)->io::Result<()> {
+        let mut waits=[libc::pollfd{fd:-1,events:0,revents:0};6];waits[..3].copy_from_slice(&primary.waits());
+        if let Some(auxiliary)=auxiliary{waits[3..].copy_from_slice(&auxiliary.waits());}
+        let result=unsafe{libc::poll(waits.as_mut_ptr(),waits.len() as libc::nfds_t,timeout.min(Duration::from_secs(1)).as_micros().div_ceil(1000) as i32)};
+        if result<0{let error=io::Error::last_os_error();if error.kind()!=io::ErrorKind::Interrupted{return Err(error);}}Ok(())
+    }
+    fn services(&mut self){
+        if let Some(mut services)=self.services.take(){let file=&self.file;let usb=&self.usb;
+            services.drain(|kind,data|match kind{
+                otd_platform::shared_device_io::RequestKind::String(index)=>{*data=usb_string(usb.as_deref().ok_or_else(||io::Error::new(io::ErrorKind::Unsupported,"USB string descriptors are unavailable for this transport"))?,index)?.into_bytes();Ok(())},
+                otd_platform::shared_device_io::RequestKind::Report(operation)=>{
+                    use otd_platform::managed_services::Operation;
+                    match operation{
+                        Operation::WriteStream=>{(&*file).write_all(data)},
+                        Operation::GetFeature|Operation::SetFeature=>{
+                            let request=ioc(READ_WRITE,b'H',if operation==Operation::GetFeature{0x07}else{0x06},data.len());
+                            let result=unsafe{libc::ioctl(file.as_raw_fd(),request as _,data.as_mut_ptr())};
+                            if result<0{Err(io::Error::last_os_error())}else{if operation==Operation::GetFeature{data.truncate(result as usize);}Ok(())}
+                        },_=>Err(io::Error::new(io::ErrorKind::InvalidInput,"Unsupported device report operation")),
+                    }
+                },
+            });self.services=Some(services);
+        }
     }
 }
 
@@ -332,6 +387,10 @@ fn access_error(node: &str, error: io::Error) -> io::Error {
 }
 
 impl ReportSource for Hidraw<'_> {
+    fn shared_output(&self)->bool{true}
+    fn native_output_enabled(&self)->bool{self.registration.as_ref().is_none_or(|registration|registration.endpoint.output.native_enabled())}
+    fn output_started(&self){if let Some(registration)=&self.registration{registration.endpoint.output.start();}}
+    fn output_acknowledged(&self,enabled:bool){if let Some(registration)=&self.registration{registration.endpoint.output.acknowledge(enabled);}}
     fn label(&self) -> &str {
         &self.label
     }
@@ -341,16 +400,15 @@ impl ReportSource for Hidraw<'_> {
     }
 
     fn next(&mut self, timeout: Duration) -> io::Result<Read<'_>> {
+        self.services();
         if self.stop.load(Ordering::Acquire) {
             return Ok(Read::Ended);
         }
-        let mut poll = libc::pollfd {
-            fd: self.file.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
+        let mut waits=[libc::pollfd{fd:self.file.as_raw_fd(),events:libc::POLLIN,revents:0},
+            libc::pollfd{fd:self.services.as_ref().map_or(-1,|services|services.wake().raw()),events:libc::POLLIN,revents:0},
+            libc::pollfd{fd:self.registration.as_ref().map_or(-1,|registration|registration.endpoint.output.reader_wake().raw()),events:libc::POLLIN,revents:0}];
         // SAFETY: one valid pollfd.
-        let queued = unsafe { libc::poll(&mut poll, 1, 0) } > 0;
+        let queued = unsafe { libc::poll(waits.as_mut_ptr(), 3, 0) } > 0;
         if !queued {
             // SIGINT and SIGTERM end the wait: the driver has one thread, and
             // poll is never restarted after a signal handler (signal(7)). The
@@ -362,7 +420,7 @@ impl ReportSource for Hidraw<'_> {
                 .as_micros()
                 .div_ceil(1000) as i32;
             // SAFETY: one valid pollfd.
-            match unsafe { libc::poll(&mut poll, 1, wait) } {
+            match unsafe { libc::poll(waits.as_mut_ptr(), 3, wait) } {
                 0 => return Ok(Read::Idle),
                 n if n < 0 => {
                     let error = io::Error::last_os_error();
@@ -375,6 +433,10 @@ impl ReportSource for Hidraw<'_> {
                 _ => {}
             }
         }
+        if waits[1].revents!=0{self.services();}
+        if waits[2].revents!=0{if let Some(registration)=&self.registration{registration.endpoint.output.reader_wake().drain();}return Ok(Read::Idle);}
+        let poll=waits[0];
+        if poll.revents==0{return Ok(Read::Idle);}
         if poll.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
             return Ok(Read::Ended);
         }
@@ -396,6 +458,7 @@ impl ReportSource for Hidraw<'_> {
         if self.offset == 1 {
             self.buffer[0] = 0;
         }
+        if let Some(registration)=&self.registration{registration.publish(&self.buffer[..self.offset+read as usize]);}
         Ok(Read::Report {
             bytes: &self.buffer[..self.offset + read as usize],
             ready,
@@ -405,6 +468,13 @@ impl ReportSource for Hidraw<'_> {
 }
 
 const UI_SET_EVBIT: u32 = ioc(WRITE, b'U', 100, size_of::<libc::c_int>());
+impl otd_platform::managed_source::NativeSource for Hidraw<'_>{
+    fn tablet(&self,value:serde_json::Value){Hidraw::tablet(self,value)}
+    fn initialized(&self){Hidraw::initialized(self)}
+    fn waits(&self)->[libc::pollfd;3]{Hidraw::waits(self)}
+    fn pump_native(&mut self,timeout:Duration)->io::Result<()>{Hidraw::wait_pair(self,None,timeout)}
+}
+impl otd_platform::paired_source::Retire for Hidraw<'_>{}
 const UI_SET_KEYBIT: u32 = ioc(WRITE, b'U', 101, size_of::<libc::c_int>());
 const UI_SET_RELBIT: u32 = ioc(WRITE, b'U', 102, size_of::<libc::c_int>());
 const UI_SET_ABSBIT: u32 = ioc(WRITE, b'U', 103, size_of::<libc::c_int>());
@@ -426,12 +496,15 @@ const BUS_VIRTUAL: u16 = 0x06;
 /// all screens.
 pub struct Uinput {
     file: File,
+    contact_owner:otd_platform::input_owner::Native,
     tip_held: std::cell::Cell<bool>,
     side_left_held: std::cell::Cell<bool>,
 }
 
 impl Uinput {
     pub fn create(relative: bool) -> io::Result<Self> {
+        ensure_shared_inputs()?;
+        let contact_owner=otd_platform::input_owner::Native::new()?;
         let file = OpenOptions::new()
             .write(true)
             .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
@@ -487,7 +560,7 @@ impl Uinput {
         if unsafe { libc::ioctl(fd, UI_DEV_CREATE as _) } < 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(Self { file, tip_held: std::cell::Cell::new(false), side_left_held: std::cell::Cell::new(false) })
+        Ok(Self { file,contact_owner, tip_held: std::cell::Cell::new(false), side_left_held: std::cell::Cell::new(false) })
     }
 
     /// Sends one packet as a single evdev frame, without allocating.
@@ -514,11 +587,6 @@ impl Uinput {
         let tip = if packet.flags & flags::LEFTDOWN != 0 { true }
             else if packet.flags & flags::LEFTUP != 0 { false }
             else { self.tip_held.get() };
-        let was_left = self.tip_held.get() || self.side_left_held.get();
-        let left = tip || self.side_left_held.get();
-        if was_left != left {
-            push(EV_KEY, BTN_LEFT, i32::from(left));
-        }
         push(EV_SYN, 0, 0);
         // SAFETY: `events[..count]` is initialized plain data.
         let bytes = unsafe {
@@ -528,6 +596,7 @@ impl Uinput {
             )
         };
         (&self.file).write_all(bytes)?;
+        if packet.flags&(flags::LEFTDOWN|flags::LEFTUP)!=0{self.contact_owner.hold(otd_platform::input_owner::Code::Button(0),tip)?;}
         self.tip_held.set(tip);
         Ok(())
     }
@@ -602,9 +671,12 @@ impl VirtualKeyboard {
             }
         };
         set(UI_SET_EVBIT, EV_KEY)?;
-        for code in crate::keymap::key_codes() {
+        // Exact original EventCode values include media and non-HID keys.
+        for code in 1..768u16 {
             set(UI_SET_KEYBIT, code)?;
         }
+        // Libinput recognizes the shared mouse-button owner as a pointer too.
+        set(UI_SET_EVBIT,EV_REL)?;set(UI_SET_RELBIT,0)?;set(UI_SET_RELBIT,1)?;
         // SAFETY: plain-data struct; zero is a valid value.
         let mut setup: libc::uinput_setup = unsafe { std::mem::zeroed() };
         setup.id.bustype = BUS_VIRTUAL;
@@ -643,31 +715,34 @@ impl Drop for VirtualKeyboard {
 pub fn action_sink(
     pointer: Option<std::rc::Rc<Uinput>>,
     keyboard: Option<VirtualKeyboard>,
-) -> Box<dyn ActionSink> {
+) -> io::Result<Box<dyn ActionSink>> {
+    if pointer.is_some()||keyboard.is_some(){ensure_shared_inputs()?;}
+    let owner=otd_platform::input_owner::Native::new()?;
     let scroll_pointer = pointer.clone();
     let supports_mouse = pointer.is_some();
     let supports_keys = keyboard.is_some();
     let actions = LocalActions::new(
-        move |transition: ActionTransition| match transition.action {
-            Action::Mouse(button) => pointer
-                .as_ref()
-                .ok_or_else(|| io::Error::other("no virtual pointer for mouse buttons"))?
-                .send_button(button, transition.pressed),
-            Action::Key(key) => keyboard
-                .as_ref()
-                .ok_or_else(|| io::Error::other("no virtual keyboard for keys"))?
-                .send_key(key, transition.pressed),
-        },
+        move |transition: ActionTransition|{let code=match transition.action{
+            Action::Mouse(button)=>otd_platform::input_owner::Code::Button(match button{MouseButton::Left=>0,MouseButton::Right=>1,MouseButton::Middle=>2,MouseButton::Backward=>3,MouseButton::Forward=>4}),
+            Action::Key(key)=>otd_platform::input_owner::Code::Key(crate::keymap::key_code(key).ok_or_else(||io::Error::new(io::ErrorKind::Unsupported,"No evdev key for this usage"))?),
+        };let action=match transition.action{Action::Key(key)=>key.usage() as u32,Action::Mouse(_)=>0x10000+code_index(code)};owner.hold_action(action,code,transition.pressed,None)},
         move |action| match action {
             Action::Mouse(_) => supports_mouse,
             Action::Key(key) => supports_keys && crate::keymap::key_code(key).is_some(),
         },
     );
     match scroll_pointer {
-        Some(pointer) => Box::new(actions.with_scroll(move |pulse| pointer.send_scroll(pulse))),
-        None => Box::new(actions),
+        Some(pointer) => Ok(Box::new(actions.with_scroll(move |pulse| pointer.send_scroll(pulse)))),
+        None => Ok(Box::new(actions)),
     }
 }
+pub fn ensure_shared_inputs()->io::Result<()>{otd_platform::input_owner::ensure(||{
+    let keyboard=VirtualKeyboard::create()?;Ok(Box::new(move|code,held,_position|write_key(&keyboard.file,match code{
+        otd_platform::input_owner::Code::Key(code)=>code,
+        otd_platform::input_owner::Code::Button(button)=>[0x110,0x111,0x112,0x113,0x114][button as usize],
+    },held)))
+})}
+fn code_index(code:otd_platform::input_owner::Code)->u32{match code{otd_platform::input_owner::Code::Key(code)=>code as u32,otd_platform::input_owner::Code::Button(button)=>button as u32}}
 
 impl Drop for Uinput {
     fn drop(&mut self) {

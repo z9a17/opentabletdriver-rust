@@ -125,6 +125,13 @@ static class ServiceClient
         } finally { Release(ticket); }
     }
     static unsafe void Release(ulong ticket) => callbacks.Release(ticket);
+    internal static void RequireIoAllowed()
+    {
+        // I/O has a separate native worker lane, so cold dependency injection
+        // can open tee streams. A report callback must never wait on itself.
+        if (ReportDepth != 0 || SynchronousGraph.CurrentReport != null)
+            throw new InvalidOperationException("Synchronous endpoint I/O cannot wait inside a managed report callback.");
+    }
     internal static void RequireBlockingAllowed()
     {
         if (ReportDepth != 0 || SetupDepth != 0 || SynchronousGraph.CurrentReport != null)

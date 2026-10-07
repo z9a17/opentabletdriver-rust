@@ -59,3 +59,19 @@ public sealed class ConcreteReportFilter : IPositionedPipelineElement<IDeviceRep
     public event Action<IDeviceReport> Emit;
     public void Consume(IDeviceReport report) { if (report is not StatefulReport) throw new InvalidOperationException("Original concrete report type was replaced."); LastReport = report; Emit?.Invoke(report); }
 }
+
+public sealed class BackgroundEndpointOutput : AbsoluteOutputMode
+{
+    public override IAbsolutePointer Pointer { get; set; }
+    protected override IAbsolutePositionReport Transform(IAbsolutePositionReport report) { report.Position += new Vector2(20, 30); return report; }
+    public void EmitBackground(IDeviceReport[] reports)
+    {
+        Exception failure = null;
+        var worker = new Thread(() => {
+            try { foreach (var report in reports) Read(report); }
+            catch (Exception error) { failure = error; }
+        });
+        worker.Start(); worker.Join();
+        if (failure != null) throw failure;
+    }
+}

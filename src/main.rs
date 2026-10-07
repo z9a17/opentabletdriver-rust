@@ -1,6 +1,7 @@
 pub mod action_output;
 mod area_cli;
 mod binding_presets;
+mod cli;
 mod companions;
 mod control;
 mod daemon;
@@ -14,6 +15,12 @@ mod experimental;
 mod dotnet;
 mod managed_host;
 mod managed_services;
+mod managed_inputs;
+mod plugin_manager;
+mod shared_devices;
+mod custom_devices;
+mod global_tools;
+mod tool_host;
 mod hid;
 mod original_driver;
 mod output;
@@ -56,10 +63,12 @@ fn usage() -> &'static str {
   opentabletdriver-rust.exe start [--config driver.toml | --otd-settings settings.json]
   opentabletdriver-rust.exe restart [--config driver.toml | --otd-settings settings.json]
   opentabletdriver-rust.exe configuration
-  opentabletdriver-rust.exe save FILE [--replace] | save-defaults | stdio
+  opentabletdriver-rust.exe save FILE.json | save-defaults | stdio
+  opentabletdriver-rust.exe native-save FILE [--replace] | native-save-defaults | native-stdio
   opentabletdriver-rust.exe load FILE | preset NAME | savepreset NAME
-  opentabletdriver-rust.exe getallsettings|getoutputmode|getareas|getsensitivity|getbindings|getmiscsettings|getfilters|gettools
-  opentabletdriver-rust.exe listbindings | listoutputmodes | listpresets | listdisplays
+  opentabletdriver-rust.exe getoutputmode|getareas|getsensitivity|getbindings|getmiscsettings|getfilters TABLET
+  opentabletdriver-rust.exe getallsettings | getallsettingsjson | gettools
+  opentabletdriver-rust.exe listbindings | listoutputmodes | listfilters | listtools | listpresets | listdisplays
   opentabletdriver-rust.exe status | stop | shutdown | debug
   opentabletdriver-rust.exe profiles list|preview|import|export|select|get|set ...
   opentabletdriver-rust.exe devices list|select|profile|apply|start|stop|save|persist ...
@@ -80,11 +89,16 @@ fn usage() -> &'static str {
   opentabletdriver-rust.exe --version
 
 Without a profile argument, use the saved Rust driver.toml, then OTD settings if present.
+Original Console commands use the running daemon's JSON collection; explicit .toml load/save stays native.
+Native presets use the presets subcommands. Original stdio uses text; native-stdio uses JSON lines.
+The explicit original RPC listener defaults to OpenTabletDriver.Daemon and requires .NET 8+.
+Registered types/default constructors and managed plugins also require .NET 8+.
 OTD_RUST_PORTABLE_DIR selects portable storage and disables automatic OTD import.
 Capture does not inject cursor input. Plugin inspection/checks load trusted executable code."
 }
 
 enum Command {
+    OriginalConsole(Vec<String>),
     Decode(Vec<String>),
     Devices(Vec<String>),
     Diagnostics(Vec<String>),
@@ -155,6 +169,16 @@ fn parse_args() -> Result<Command, String> {
             })
         };
     };
+    // Keep explicit TOML saves/loads and their native subcommands available;
+    // every original command otherwise talks to the daemon collection.
+    let remainder:Vec<String>=args.collect();
+    let native_file=matches!(command.as_str(),"load"|"save") && remainder.first().is_some_and(|file|
+        std::path::Path::new(file).extension().is_some_and(|ext|ext.eq_ignore_ascii_case("toml")));
+    if cli::recognizes(&command) && !native_file {
+        return Ok(Command::OriginalConsole(std::iter::once(command).chain(remainder).collect()));
+    }
+    let command=match command.as_str(){"native-save"=>"save","native-save-defaults"=>"save-defaults","native-stdio"=>"stdio",other=>other}.to_owned();
+    let mut args=remainder.into_iter();
     match command.as_str() {
         "devices" => Ok(Command::Devices(args.collect())),
         "diagnostics" => Ok(Command::Diagnostics(args.collect())),
@@ -686,9 +710,7 @@ fn run(
     capture_seconds: Option<u64>,
 ) -> Result<(), String> {
     let profile = load_runtime_profile(config.as_ref(), otd_settings.as_ref())?;
-    if capture_seconds.is_none() && let Err(error) = experimental::apply_saved(false) {
-        eprintln!("Experimental driver CPU affinity was not applied: {error}");
-    }
+    if capture_seconds.is_none(){return daemon::serve_profile(profile);}
     let stop_event = Event::create(true).map_err(|e| format!("stop event failed: {e}"))?;
     let stop_handle = stop_event.raw() as usize;
     ctrlc::set_handler(move || {
@@ -856,6 +878,7 @@ fn main() {
         std::process::exit(1);
     }
     let result = match command {
+        Ok(Command::OriginalConsole(args)) => cli::run(args),
         Ok(Command::Decode(args)) => decode_cli::run(args),
         Ok(Command::Devices(args)) => device_cli::run(args),
         Ok(Command::Plugins(args)) => plugin_catalog::run(args),
@@ -980,6 +1003,7 @@ fn main() {
         }) => run(config, otd_settings, Some(seconds)),
         Ok(Command::Help) => {
             println!("{}", usage());
+            println!("\n{}", cli::usage());
             println!("\n{}", profile_cli::usage());
             println!("\n{}", area_cli::usage());
             println!("\n{}", diagnostics::usage());

@@ -279,6 +279,14 @@ impl Handle {
         }
         Ok(id)
     }
+    pub(crate) fn preparation_generation(&self,id:&str,primary:bool)->Result<u64,String>{
+        let mut registry=self.registry.lock().map_err(|_|"device registry poisoned")?;
+        let entry=registry.entries.get_mut(id).ok_or("unknown device session")?;
+        if primary&&entry.snapshot.pending_generation.is_none(){
+            entry.snapshot.pending_generation=Some(entry.snapshot.device_generation.checked_add(1).ok_or("device generation exhausted")?);
+        }
+        Ok(entry.snapshot.pending_generation.unwrap_or(entry.snapshot.device_generation))
+    }
     pub(crate) fn find<'a>(&self, id: &str, devices: &'a [Candidate], database: &Database) -> Result<Option<SelectedDevice<'a>>, String> {
         let key = self.registry.lock().map_err(|_| "device registry poisoned")?.entries.get(id).ok_or("unknown device session")?.key.clone();
         for device in devices {
@@ -485,7 +493,12 @@ fn bounded(mut value: String) -> String {
     value
 }
 
-thread_local! { static DEBUG_KEY: RefCell<Option<String>> = const { RefCell::new(None) }; }
+thread_local! {
+    static DEBUG_KEY: RefCell<Option<String>> = const { RefCell::new(None) };
+    static SOURCE_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
+}
+pub(crate) fn set_source_generation(generation: u64) { SOURCE_GENERATION.with(|value| value.set(generation.max(1))); }
+pub(crate) fn source_generation() -> u64 { SOURCE_GENERATION.with(std::cell::Cell::get) }
 pub(crate) fn set_debug_key(id: &str) { DEBUG_KEY.with(|key| *key.borrow_mut() = Some(id.to_owned())); }
 pub(crate) fn debug_key() -> Option<String> { DEBUG_KEY.with(|key| key.borrow().clone()) }
 

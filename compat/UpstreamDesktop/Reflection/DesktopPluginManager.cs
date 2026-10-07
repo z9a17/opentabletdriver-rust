@@ -41,7 +41,12 @@ namespace OpenTabletDriver.Desktop.Reflection
 
         protected List<DesktopPluginContext> Plugins { get; } = new List<DesktopPluginContext>();
 
-        public IReadOnlyCollection<DesktopPluginContext> GetLoadedPlugins() => Plugins;
+        // Internal native-owner hooks preserve the original public contracts.
+        internal Func<string, object[], object> HostedOperation;
+        internal Func<string, object[], Task<object>> HostedAsyncOperation;
+        internal Func<IReadOnlyCollection<DesktopPluginContext>> HostedContexts;
+        internal void NotifyHostedAssembliesChanged() => AssembliesChanged?.Invoke(this, EventArgs.Empty);
+        public IReadOnlyCollection<DesktopPluginContext> GetLoadedPlugins() => HostedContexts?.Invoke() ?? Plugins;
 
         public event EventHandler AssembliesChanged;
 
@@ -70,6 +75,7 @@ namespace OpenTabletDriver.Desktop.Reflection
 
         public void Load()
         {
+            if (HostedOperation != null) { HostedOperation("LoadPlugins", Array.Empty<object>()); return; }
             foreach (var dir in PluginDirectory.GetDirectories())
                 LoadPlugin(dir);
 
@@ -137,6 +143,7 @@ namespace OpenTabletDriver.Desktop.Reflection
 
         public bool InstallPlugin(string filePath)
         {
+            if (HostedOperation != null) return (bool)HostedOperation("InstallPlugin", new object[] { filePath });
             var file = new FileInfo(filePath);
             if (!file.Exists)
                 return false;
@@ -180,6 +187,7 @@ namespace OpenTabletDriver.Desktop.Reflection
 
         public async Task<bool> DownloadPlugin(PluginMetadata metadata)
         {
+            if (HostedAsyncOperation != null) return (bool)await HostedAsyncOperation("DownloadPlugin", new object[] { metadata }).ConfigureAwait(false);
             string sourcePath = Path.Join(TemporaryDirectory.FullName, metadata.Name);
             string targetPath = Path.Join(PluginDirectory.FullName, metadata.Name);
             string metadataPath = Path.Join(targetPath, "metadata.json");
@@ -207,6 +215,7 @@ namespace OpenTabletDriver.Desktop.Reflection
 
         public bool InstallPlugin(DirectoryInfo target, DirectoryInfo source)
         {
+            if (HostedOperation != null) return (bool)HostedOperation("InstallPluginDirectory", new object[] { target.FullName, source.FullName });
             Log.Write("Plugin", $"Installing plugin '{target.Name}'");
             source.CopyTo(target);
             LoadPlugin(target);
@@ -215,6 +224,7 @@ namespace OpenTabletDriver.Desktop.Reflection
 
         public bool UninstallPlugin(DesktopPluginContext plugin)
         {
+            if (HostedOperation != null) return plugin != null && (bool)HostedOperation("UninstallPlugin", new object[] { plugin.Directory.FullName });
             if (plugin == null)
                 return false;
 
@@ -232,6 +242,7 @@ namespace OpenTabletDriver.Desktop.Reflection
 
         public bool UpdatePlugin(DesktopPluginContext plugin, DirectoryInfo source)
         {
+            if (HostedOperation != null) return plugin != null && (bool)HostedOperation("UpdatePluginDirectory", new object[] { plugin.Directory.FullName, source.FullName });
             var targetDir = new DirectoryInfo(plugin.Directory.FullName);
             if (UninstallPlugin(plugin))
                 return InstallPlugin(targetDir, source);
@@ -240,6 +251,7 @@ namespace OpenTabletDriver.Desktop.Reflection
 
         public bool UnloadPlugin(DesktopPluginContext context)
         {
+            if (HostedOperation != null) return context != null && (bool)HostedOperation("UnloadPluginContext", new object[] { context.Directory.FullName });
             Log.Write("Plugin", $"Unloading plugin '{context.FriendlyName}'", LogLevel.Debug);
             Plugins.Remove(context);
             AssembliesChanged?.Invoke(this, EventArgs.Empty);
@@ -248,6 +260,8 @@ namespace OpenTabletDriver.Desktop.Reflection
 
         public bool RemoveAllTypesForAssembly(Assembly asm)
         {
+            if (HostedOperation != null) return (bool)HostedOperation("RemovePluginAssembly", new object[] {
+                asm.FullName, (System.Runtime.Loader.AssemblyLoadContext.GetLoadContext(asm) as DesktopPluginContext)?.Directory.FullName });
             try
             {
                 var types = pluginTypes.Where(t => t.Assembly == asm)

@@ -37,6 +37,7 @@ impl DeviceStringPattern {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Transport {
     UsbHid,
+    BluetoothHid,
     WinUsb,
     Other,
 }
@@ -77,7 +78,7 @@ pub enum Rejection {
 /// Configuration attributes supply defaults; identifier attributes win.
 pub fn matches(endpoint: &Endpoint, candidate: &Match<'_>) -> Result<(), Rejection> {
     let id = candidate.identifier;
-    if !matches!(endpoint.transport, Transport::UsbHid | Transport::WinUsb) {
+    if !matches!(endpoint.transport, Transport::UsbHid | Transport::BluetoothHid | Transport::WinUsb) {
         return Err(Rejection::UnsupportedTransport);
     }
     if endpoint.vendor_id != id.vendor_id().unwrap_or_default()
@@ -420,6 +421,13 @@ mod tests {
             ep.strings.insert(5, serial.into());
             assert_eq!(matches(&ep, &candidate), Ok(()), "serial {serial:?}");
         }
+    }
+
+    #[test]
+    fn bluetooth_hid_uses_the_same_actual_identifier_constraints() {
+        let mut ep=endpoint("bluetooth-pen","bluetooth-parent",192);ep.transport=Transport::BluetoothHid;
+        assert!(select(Database::builtin(),&[ep.clone()]).is_some());
+        ep.input_length=1;assert!(select(Database::builtin(),&[ep]).is_none());
     }
 
     #[test]

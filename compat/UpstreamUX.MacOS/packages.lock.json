@@ -1,0 +1,196 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net8.0": {
+      "Eto.Platform.Mac64": {
+        "type": "Direct",
+        "requested": "[2.5.10, )",
+        "resolved": "2.5.10",
+        "contentHash": "4QaBEY+uRHh/pd9l9wfk6o1CYBtm6pYuscocuiur43BXczfwJqoAt+1s8I27qT0nd376zrTbaBtS7RpKVoDf+w==",
+        "dependencies": {
+          "Eto.Forms": "2.5.10"
+        }
+      },
+      "Eto.Forms": {
+        "type": "Transitive",
+        "resolved": "2.5.10",
+        "contentHash": "eIHTPwktPT67qw1sv65Lnb75+0Llzwf6Z6O3r48Ls3v6nhjhDJIqniETgicaUNfexQYyoyDg5QuX9sYQusoiUg==",
+        "dependencies": {
+          "System.ComponentModel.Annotations": "4.7.0"
+        }
+      },
+      "HidSharpCore": {
+        "type": "Transitive",
+        "resolved": "1.3.0",
+        "contentHash": "R+eunrl7X65gdYYsle6r1Cxa/OmdOBjV5HuIvw2nbSCcSsWuYFgMuQQFeB7if7P+fX3rI/zfUqpYaXwKvy9Mng=="
+      },
+      "JetBrains.Annotations": {
+        "type": "Transitive",
+        "resolved": "2025.2.4",
+        "contentHash": "TwbgxAkXxY+vNEhNVx/QXjJ4vqxmepOjsgRvvImQPbHkHMMb4W+ahL3laMsxXKtNT7iMy+E1B3xkqao2hf1n3A=="
+      },
+      "MessagePack": {
+        "type": "Transitive",
+        "resolved": "2.5.192",
+        "contentHash": "Jtle5MaFeIFkdXtxQeL9Tu2Y3HsAQGoSntOzrn6Br/jrl6c8QmG22GEioT5HBtZJR0zw0s46OnKU8ei2M3QifA==",
+        "dependencies": {
+          "MessagePack.Annotations": "2.5.192",
+          "Microsoft.NET.StringTools": "17.6.3"
+        }
+      },
+      "MessagePack.Annotations": {
+        "type": "Transitive",
+        "resolved": "2.5.192",
+        "contentHash": "jaJuwcgovWIZ8Zysdyf3b7b34/BrADw4v82GaEZymUhDd3ScMPrYd/cttekeDteJJPXseJxp04yTIcxiVUjTWg=="
+      },
+      "Microsoft.Extensions.DependencyInjection": {
+        "type": "Transitive",
+        "resolved": "10.0.1",
+        "contentHash": "zerXV0GAR9LCSXoSIApbWn+Dq1/T+6vbXMHGduq1LoVQRHT0BXsGQEau0jeLUBUcsoF/NaUT8ADPu8b+eNcIyg==",
+        "dependencies": {
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.1"
+        }
+      },
+      "Microsoft.Extensions.DependencyInjection.Abstractions": {
+        "type": "Transitive",
+        "resolved": "10.0.1",
+        "contentHash": "oIy8fQxxbUsSrrOvgBqlVgOeCtDmrcynnTG+FQufcUWBrwyPfwlUkCDB2vaiBeYPyT+20u9/HeuHeBf+H4F/8g=="
+      },
+      "Microsoft.NET.StringTools": {
+        "type": "Transitive",
+        "resolved": "17.6.3",
+        "contentHash": "N0ZIanl1QCgvUumEL1laasU0a7sOE5ZwLZVTn0pAePnfhq8P7SvTjF8Axq+CnavuQkmdQpGNXQ1efZtu5kDFbA=="
+      },
+      "Microsoft.VisualStudio.Threading.Only": {
+        "type": "Transitive",
+        "resolved": "17.13.61",
+        "contentHash": "vl5a2URJYCO5m+aZZtNlAXAMz28e2pUotRuoHD7RnCWOCeoyd8hWp5ZBaLNYq4iEj2oeJx5ZxiSboAjVmB20Qg==",
+        "dependencies": {
+          "Microsoft.VisualStudio.Validation": "17.8.8"
+        }
+      },
+      "Microsoft.VisualStudio.Validation": {
+        "type": "Transitive",
+        "resolved": "17.8.8",
+        "contentHash": "rWXThIpyQd4YIXghNkiv2+VLvzS+MCMKVRDR0GAMlflsdo+YcAN2g2r5U1Ah98OFjQMRexTFtXQQ2LkajxZi3g=="
+      },
+      "Nerdbank.Streams": {
+        "type": "Transitive",
+        "resolved": "2.12.87",
+        "contentHash": "oDKOeKZ865I5X8qmU3IXMyrAnssYEiYWTobPGdrqubN3RtTzEHIv+D6fwhdcfrdhPJzHjCkK/ORztR/IsnmA6g==",
+        "dependencies": {
+          "Microsoft.VisualStudio.Threading.Only": "17.13.61",
+          "Microsoft.VisualStudio.Validation": "17.8.8",
+          "System.IO.Pipelines": "8.0.0"
+        }
+      },
+      "Newtonsoft.Json": {
+        "type": "Transitive",
+        "resolved": "13.0.4",
+        "contentHash": "pdgNNMai3zv51W5aq268sujXUyx7SNdE2bj1wZcWjAQrKMFZV260lbqYop1d2GM67JI1huLRwxo9ZqnfF/lC6A=="
+      },
+      "Octokit": {
+        "type": "Transitive",
+        "resolved": "14.0.0",
+        "contentHash": "jGOuTH1l+TCpJH+fwYOp7USzHDuGfN1jKbLz3J2COwyn+wL08eynvpnM6rY2qkzIEXum3PN2p2QkP3BW/p9Qcw=="
+      },
+      "OpenTabletDriver.Configurations": {
+        "type": "Transitive",
+        "resolved": "0.6.7",
+        "contentHash": "n1/cRPLnqRLb5PV0RzxPeFqVEuK9kmlncb44bXsRcmYfDIVsdOCkbfoA/Jv1ZUsqvJdaH+FmpIE1LCxXfr2oyw==",
+        "dependencies": {
+          "Newtonsoft.Json": "13.0.4",
+          "OpenTabletDriver.Plugin": "0.6.7"
+        }
+      },
+      "OpenTabletDriver.Native": {
+        "type": "Transitive",
+        "resolved": "0.6.7",
+        "contentHash": "ajxIF9DG+SROD3hqe7YBppvNkLcD4JtZ7v+MtiM+nf7o9LWhyO0Cly1+7JsVEoP99JRoM+JGUISMQpVnIwyc9A=="
+      },
+      "OpenTabletDriver.Plugin": {
+        "type": "Transitive",
+        "resolved": "0.6.7",
+        "contentHash": "jszqDn5QZzD9P1IB63rUo2x++KAGJ11ft+gX1KJq3T37BNNz9f/CjU/gxCuivlGHoPb9pyxijM/Ka0lCrxaC8Q==",
+        "dependencies": {
+          "JetBrains.Annotations": "2025.2.4",
+          "Newtonsoft.Json": "13.0.4",
+          "System.ComponentModel.Annotations": "5.0.0"
+        }
+      },
+      "SharpZipLib": {
+        "type": "Transitive",
+        "resolved": "1.4.2",
+        "contentHash": "yjj+3zgz8zgXpiiC3ZdF/iyTBbz2fFvMxZFEBPUcwZjIvXOf37Ylm+K58hqMfIBt5JgU/Z2uoUS67JmTLe973A=="
+      },
+      "StreamJsonRpc": {
+        "type": "Transitive",
+        "resolved": "2.22.23",
+        "contentHash": "Ahq6uUFPnU9alny5h4agyX74th3PRq3NQCRNaDOqWcx20WT06mH/wENSk5IbHDc8BmfreQVEIBx5IXLBbsLFIA==",
+        "dependencies": {
+          "MessagePack": "2.5.192",
+          "Microsoft.VisualStudio.Threading.Only": "17.13.61",
+          "Microsoft.VisualStudio.Validation": "17.8.8",
+          "Nerdbank.Streams": "2.12.87",
+          "Newtonsoft.Json": "13.0.3",
+          "System.IO.Pipelines": "8.0.0"
+        }
+      },
+      "System.CommandLine": {
+        "type": "Transitive",
+        "resolved": "2.0.1",
+        "contentHash": "GLc43eDFq8KbpxIb7UhTwV0vC5CzB0NspJvfFbfhoW4O057xCJXuO18KLpVn9x3JykQn2mRske6+I6JXHwqmDg=="
+      },
+      "System.ComponentModel.Annotations": {
+        "type": "Transitive",
+        "resolved": "5.0.0",
+        "contentHash": "dMkqfy2el8A8/I76n2Hi1oBFEbG1SfxD2l5nhwXV3XjlnOmwxJlQbYpJH4W51odnU9sARCSAgv7S3CyAFMkpYg=="
+      },
+      "System.IO.Pipelines": {
+        "type": "Transitive",
+        "resolved": "8.0.0",
+        "contentHash": "FHNOatmUq0sqJOkTx+UF/9YK1f180cnW5FVqnQMvYUN0elp6wFzbtPSiqbo1/ru8ICp43JM1i7kKkk6GsNGHlA=="
+      },
+      "WaylandNET": {
+        "type": "Transitive",
+        "resolved": "0.2.0",
+        "contentHash": "AOrAtt9bK21t1wXTWWWK6pWTmxZXbrfZWd1MSrZt1EobGUxrIduIbceOrnSgmkULrgsLBwcwmxnDCApNQroQfA=="
+      },
+      "opentabletdriver": {
+        "type": "Project",
+        "dependencies": {
+          "HidSharpCore": "[1.3.0, 1.3.0]",
+          "Microsoft.Extensions.DependencyInjection": "[10.0.1, 10.0.1]",
+          "Newtonsoft.Json": "[13.0.4, 13.0.4]",
+          "OpenTabletDriver.Configurations": "[0.6.7, 0.6.7]",
+          "OpenTabletDriver.Native": "[0.6.7, 0.6.7]",
+          "OpenTabletDriver.Plugin": "[0.6.7, 0.6.7]"
+        }
+      },
+      "opentabletdriver.desktop": {
+        "type": "Project",
+        "dependencies": {
+          "JetBrains.Annotations": "[2025.2.4, 2025.2.4]",
+          "Octokit": "[14.0.0, 14.0.0]",
+          "OpenTabletDriver": "[0.6.7, )",
+          "OpenTabletDriver.Configurations": "[0.6.7, 0.6.7]",
+          "OpenTabletDriver.Native": "[0.6.7, 0.6.7]",
+          "SharpZipLib": "[1.4.2, 1.4.2]",
+          "StreamJsonRpc": "[2.22.23, 2.22.23]",
+          "System.CommandLine": "[2.0.1, 2.0.1]",
+          "WaylandNET": "[0.2.0, 0.2.0]"
+        }
+      },
+      "opentabletdriver.ux": {
+        "type": "Project",
+        "dependencies": {
+          "Eto.Forms": "[2.5.10, )",
+          "JetBrains.Annotations": "[2025.2.4, )",
+          "OpenTabletDriver.Desktop": "[0.6.7, )"
+        }
+      }
+    },
+    "net8.0/osx-arm64": {},
+    "net8.0/osx-x64": {}
+  }
+}

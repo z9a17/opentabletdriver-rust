@@ -8,10 +8,16 @@
 //! PluginMetadataCollection}.cs and DesktopPluginManager.cs at 736003e.
 
 use std::fs;
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
+#[cfg(unix)]
+use crate::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+#[cfg(windows)]
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+#[cfg(unix)]
+const CREATE_NO_WINDOW:u32=0;
 
 use serde::{Deserialize, Serialize};
 
@@ -112,10 +118,14 @@ impl PluginMetadata {
     }
 }
 
+#[cfg(windows)]
 fn system_tool(name: &str) -> PathBuf {
     let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
     PathBuf::from(root).join("System32").join(name)
 }
+
+#[cfg(unix)]
+fn system_tool(name:&str)->PathBuf{crate::update::system_tool(name)}
 
 fn extract(archive: &Path, into: &Path) -> Result<(), String> {
     fs::create_dir_all(into).map_err(|error| error.to_string())?;
@@ -140,6 +150,7 @@ fn extract(archive: &Path, into: &Path) -> Result<(), String> {
 fn extract_plugin(archive: &Path, into: &Path) -> Result<(), String> {
     extract_plugin_with_cancel(archive, into, None)
 }
+#[cfg(windows)]
 fn extract_plugin_with_cancel(archive: &Path, into: &Path, cancel: Option<&std::sync::atomic::AtomicBool>) -> Result<(), String> {
     let output = crate::download::run(Command::new(system_tool("WindowsPowerShell/v1.0/powershell.exe"))
         .creation_flags(CREATE_NO_WINDOW)
@@ -154,6 +165,15 @@ fn extract_plugin_with_cancel(archive: &Path, into: &Path, cancel: Option<&std::
         Err(format!("cannot extract plugin ZIP {}: {}", archive.display(),
             String::from_utf8_lossy(&output.stderr).trim()))
     }
+}
+
+#[cfg(unix)]
+fn extract_plugin_with_cancel(archive:&Path,into:&Path,cancel:Option<&std::sync::atomic::AtomicBool>)->Result<(),String>{
+    let executable=std::env::current_exe().map_err(|error|error.to_string())?;
+    let helper=executable.parent().ok_or("Executable directory unavailable")?.join("OtdArchiveTools.dll");
+    if !helper.is_file(){return Err("Validated portable ZIP extractor is absent; install the complete distribution".into());}
+    let output=crate::download::run(Command::new("dotnet").arg(helper).arg("extract-plugin").arg(archive).arg(into),cancel)?;
+    if output.status.success(){Ok(())}else{Err(format!("cannot extract plugin ZIP {}: {}",archive.display(),String::from_utf8_lossy(&output.stderr)))}
 }
 
 fn json_files(directory: &Path, found: &mut Vec<PathBuf>) {
@@ -452,7 +472,7 @@ fn install_file_into_with_cancel(file: &Path, root: &Path, work: &Path, cancel: 
         .map(|extension| extension.to_string_lossy().to_ascii_lowercase());
     match extension.as_deref() {
         Some("zip") => extract_plugin_with_cancel(file, &staged, cancel)?,
-        Some("dll") => {
+        Some("dll" | "so" | "dylib") if cfg!(unix) || file.extension().is_some_and(|ext|ext.eq_ignore_ascii_case("dll")) => {
             fs::create_dir_all(&staged).map_err(|error| error.to_string())?;
             let copied = staged.join(file.file_name().unwrap_or_default());
             fs::copy(file, copied)
@@ -469,11 +489,20 @@ fn install_file_into_with_cancel(file: &Path, root: &Path, work: &Path, cancel: 
 
 /// Moves a staged plugin folder to `root/<plugin name>` with its metadata.
 fn place(entry: &PluginMetadata, staged: &Path, root: &Path) -> Result<PathBuf, String> {
+    place_guarded(entry,staged,root,None)
+}
+fn place_guarded(entry: &PluginMetadata, staged: &Path, root: &Path,
+    expected: Option<&Option<Vec<(PathBuf,String)>>>) -> Result<PathBuf,String> {
     if entry.folder().is_empty() || internal_folder(&entry.folder()) {
         return Err("plugin name conflicts with a reserved installation folder".into());
     }
     let _lock = crate::update::transaction::InstallLock::acquire(root, ".otd-plugins.lock")?;
     recover_locked(root)?;
+    if let Some(expected)=expected {
+        let target=root.join(entry.folder());
+        let actual=if target.exists(){Some(plugin_directory_stamp(&target)?)}else{None};
+        if &actual!=expected {return Err("Plugin target changed during staging; refresh before updating or installing".into());}
+    }
     let local = crate::update::unique_directory(root, ".otd-plugin-stage")?;
     let result = (|| {
         copy_tree(staged, &local)?;
@@ -535,6 +564,107 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
     }
     Ok(())
 }
+/// Original Desktop's directory overload, using the same guarded installation
+/// transaction as archives. Sources may not contain links or unbounded trees.
+pub(crate) fn install_directory(target: &Path, source: &Path, update: bool,
+    cancel: Option<&std::sync::atomic::AtomicBool>) -> Result<PathBuf, String> {
+    crate::download::cancelled(cancel)?;
+    let root = plugins_directory()?;
+    fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+    let root = root.canonicalize().map_err(|error| error.to_string())?;
+    let name = target.file_name().and_then(|name| name.to_str()).ok_or("Plugin target needs a Unicode directory name")?;
+    if name.is_empty() || internal_folder(name) || Path::new(name).components().count() != 1 {
+        return Err("Plugin target is a reserved or invalid directory".into());
+    }
+    let parent = target.parent().ok_or("Plugin target has no parent")?.canonicalize().map_err(|error| error.to_string())?;
+    if parent != root { return Err("Plugin target must be directly inside the native plugin directory".into()); }
+    let target = root.join(name);
+    if fs::symlink_metadata(&target).is_ok_and(|entry| entry.file_type().is_symlink()) {
+        return Err("Plugin target cannot be a filesystem link".into());
+    }
+    if update != target.exists() { return Err(if update { "Updated plugin is no longer installed" } else { "Plugin target already exists; use UpdatePlugin" }.into()); }
+    let expected=if update {Some(plugin_directory_stamp(&target)?)}else{None};
+    if fs::symlink_metadata(source).map_err(|error| error.to_string())?.file_type().is_symlink() {
+        return Err("Plugin source cannot be a filesystem link".into());
+    }
+    let source = source.canonicalize().map_err(|error| error.to_string())?;
+    if !source.is_dir() || source.starts_with(&target) || target.starts_with(&source) {
+        return Err("Plugin source must be a separate directory".into());
+    }
+    let metadata_file = source.join("metadata.json");
+    let mut entry = if metadata_file.exists() {
+        let bytes = fs::read(&metadata_file).map_err(|error| error.to_string())?;
+        if bytes.len() > 1048576 { return Err("Plugin metadata exceeds 1 MiB".into()); }
+        serde_json::from_slice::<PluginMetadata>(&bytes).map_err(|error| format!("Invalid source plugin metadata: {error}"))?
+    } else if update {
+        serde_json::from_slice::<PluginMetadata>(&fs::read(target.join("metadata.json")).map_err(|error| error.to_string())?)
+            .map_err(|error| format!("Cannot establish installed plugin identity: {error}"))?
+    } else {
+        PluginMetadata { name:name.into(), owner:"Local file".into(), description:format!("Installed from {}",source.display()),
+            plugin_version:"0.0.0.0".into(), supported_driver_version:None,max_supported_driver_version:None,
+            repository_url:None,download_url:None,compression_format:None,sha256:None,wiki_url:None,license_identifier:None }
+    };
+    if entry.folder() != name { return Err("Source plugin identity does not match its requested target directory".into()); }
+    // Preserve actual source identity rather than renaming catalog-owned plugins.
+    entry.name = entry.name.trim().to_owned();
+    let work = crate::update::temporary_work("otd-plugin-directory")?;
+    let staged = work.join("plugin");
+    let result = (|| {
+        let mut files = 0usize; let mut bytes = 0u64;
+        copy_bounded_plugin(&source, &staged, 0, &mut files, &mut bytes, cancel)?;
+        if dlls(&staged).is_empty() { return Err("Plugin source contains no DLL".into()); }
+        crate::download::cancelled(cancel)?;
+        place_guarded(&entry, &staged, &root,Some(&expected))
+    })();
+    let _ = fs::remove_dir_all(&work);
+    result
+}
+fn plugin_directory_stamp(directory:&Path)->Result<Vec<(PathBuf,String)>,String> {
+    fn walk(root:&Path,path:&Path,depth:usize,bytes:&mut u64,stamp:&mut Vec<(PathBuf,String)>)->Result<(),String> {
+        if depth>32 || stamp.len()>4096 {return Err("Installed plugin tree exceeds snapshot bounds".into());}
+        let metadata=fs::symlink_metadata(path).map_err(|error|error.to_string())?;
+        if metadata.file_type().is_symlink(){return Err("Installed plugin cannot contain filesystem links".into());}
+        let relative=path.strip_prefix(root).map_err(|error|error.to_string())?.to_owned();
+        if metadata.is_dir(){
+            stamp.push((relative,String::new()));
+            let mut entries:Vec<_>=fs::read_dir(path).map_err(|error|error.to_string())?
+                .collect::<Result<Vec<_>,_>>().map_err(|error|error.to_string())?;
+            if entries.len()+stamp.len()>4096{return Err("Installed plugin has too many entries".into());}
+            entries.sort_by_key(|entry|entry.file_name());
+            for entry in entries {walk(root,&entry.path(),depth+1,bytes,stamp)?;}
+        }else if metadata.is_file(){
+            *bytes=bytes.checked_add(metadata.len()).ok_or("Installed plugin size exhausted")?;
+            if *bytes>268435456{return Err("Installed plugin exceeds 256 MiB".into());}
+            stamp.push((relative,crate::update::sha256(path)?));
+        }else{return Err("Installed plugin contains unsupported special files".into());}
+        Ok(())
+    }
+    let mut stamp=Vec::new();let mut bytes=0;
+    walk(directory,directory,0,&mut bytes,&mut stamp)?;Ok(stamp)
+}
+fn copy_bounded_plugin(source: &Path, destination: &Path, depth: usize, files: &mut usize,
+    bytes: &mut u64, cancel: Option<&std::sync::atomic::AtomicBool>) -> Result<(), String> {
+    if depth > 32 { return Err("Plugin directory nesting exceeds 32".into()); }
+    fs::create_dir_all(destination).map_err(|error| error.to_string())?;
+    for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
+        crate::download::cancelled(cancel)?;
+        let entry = entry.map_err(|error| error.to_string())?;
+        let kind = entry.file_type().map_err(|error| error.to_string())?;
+        *files = files.checked_add(1).ok_or("Plugin file counter exhausted")?;
+        if *files > 4096 { return Err("Plugin source exceeds 4096 entries".into()); }
+        let target = destination.join(entry.file_name());
+        if kind.is_dir() { copy_bounded_plugin(&entry.path(), &target, depth + 1, files, bytes, cancel)?; }
+        else if kind.is_file() {
+            let length = entry.metadata().map_err(|error| error.to_string())?.len();
+            *bytes = bytes.checked_add(length).ok_or("Plugin size counter exhausted")?;
+            if *bytes > 268435456 { return Err("Plugin source exceeds 256 MiB".into()); }
+            let copied = fs::copy(entry.path(), &target).map_err(|error| error.to_string())?;
+            if copied != length { return Err("Plugin source changed during staging".into()); }
+        } else { return Err("Plugin source cannot contain filesystem links or special files".into()); }
+    }
+    Ok(())
+}
+
 /// Removes an installed plugin's folder.
 pub fn uninstall(folder: &Path) -> Result<(), String> {
     let root = plugins_directory()?;
@@ -568,7 +698,7 @@ pub fn dlls(folder: &Path) -> Vec<PathBuf> {
                 walk(&path, found);
             } else if path
                 .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("dll"))
+                .is_some_and(|e| e.eq_ignore_ascii_case("dll") || cfg!(unix) && (e.eq_ignore_ascii_case("so") || e.eq_ignore_ascii_case("dylib")))
             {
                 found.push(path);
             }

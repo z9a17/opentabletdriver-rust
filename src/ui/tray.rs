@@ -1,6 +1,6 @@
 //! Notification-area icon, as in OpenTabletDriver's UX: it stays while the
-//! panel runs, a click brings the panel back, and its menu offers Show Window
-//! and Close. Minimizing the panel hides it here.
+//! panel runs, a click brings the panel back, and its menu offers Show Window,
+//! Presets and Close. Minimizing the panel hides it here.
 use windows_sys::Win32::UI::Shell::{
     NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_INFO, NIIF_RESPECT_QUIET_TIME,
     NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NIN_BALLOONUSERCLICK, NIN_SELECT, NINF_KEY,
@@ -106,6 +106,8 @@ fn menu(window: HWND, (x, y): (i32, i32)) {
         return;
     };
     let menu = unsafe { CreatePopupMenu() };
+    with_app(|app| presets::append_menu(menu, app));
+    unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null()) };
     append(menu, MF_STRING, CMD_SHOW, "Show Window");
     append(
         menu,

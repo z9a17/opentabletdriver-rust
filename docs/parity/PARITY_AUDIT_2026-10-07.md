@@ -1,5 +1,7 @@
 # Parity implementation audit, 2026-10-07
 
+Historical 0.17.1 checkpoint. For current source completion and deferred validation, use [the 0.18 implementation report](IMPLEMENTATION_0.18.md).
+
 Baseline: OpenTabletDriver 0.6.7, revision
 `736003ed72c8bbb28033b039d5a0bb76c344145c`.
 Windows is the current priority. The owner deferred native Linux/macOS work

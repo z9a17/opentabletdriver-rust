@@ -1,10 +1,15 @@
-# Linux command-line runtime
+# Linux runtime and original desktop frontend
 
-`opentabletdriver-rust-linux` reads a USB tablet through hidraw and uses the
+`opentabletdriver-rust-linux` reads USB/Bluetooth HID tablets through hidraw and uses the
 portable Rust core, pinned upstream device database and report parsers. It
 creates a uinput pointer for mouse output or a virtual tablet for Artist Mode.
-The Linux package contains this CLI, setup files and source notices. It does
-not contain the Windows panel, a daemon or a managed plugin host.
+The Linux package includes the native multi-device daemon, original Gtk frontend,
+original Console client, managed plugin host, setup files and source notices.
+It uses GNU dynamic linking. Native input with native display discovery or an
+explicit `--screen` needs no .NET runtime; the original
+frontend, Console and managed plugins need the x64 .NET 8 runtime, and the
+frontend additionally needs GTK3. Explicit network operations need system curl.
+Keep the adjacent managed assemblies and the `data/compat` directory intact.
 
 Implementation and hardware validation are separate. The connected Wacom
 PTH-660 was identified through read-only sysfs metadata, including its 192-byte
@@ -96,7 +101,29 @@ files are preserved.
 ./opentabletdriver-rust-linux run
 ./opentabletdriver-rust-linux run --screen 2560x1440
 ./opentabletdriver-rust-linux run --profile ~/profile.toml --tablet "Wacom PTH-660"
+./opentabletdriver-rust-linux ui
+./opentabletdriver-rust-linux original-console --help
+./opentabletdriver-rust-linux update --check
+./opentabletdriver-rust-linux plugins installed
 ```
+
+`ui` launches the adjacent original Gtk assembly. Its watchdog launches the
+packaged `OpenTabletDriver.Daemon` forwarder, which owns a separate native Rust
+daemon and its lifetime. To run original Console operations without the frontend,
+start `./opentabletdriver-rust-linux daemon --upstream-rpc` in another terminal.
+The original listener uses `OpenTabletDriver.Daemon`; `--upstream-pipe NAME`
+selects a custom endpoint for clients that support it. Plain `run` owns the native
+daemon services without enabling that original listener. Native `status`,
+`start`, `stop`, `shutdown`, `detect`, `request` and `console` commands use the
+separate native control channel. Start only one driver owner at a time.
+
+`otd` is an alias for `original-console`; both forward arguments to the packaged
+original Console assembly and need .NET 8. Original operations need the running
+original listener or the frontend's watchdog. Native installation commands are
+`update [--check | check | install]` and
+`plugins catalog|installed|install NAME|install-file PATH|remove NAME`.
+Plugin ZIP extraction also uses a packaged .NET 8 helper. Registered type
+discovery, default-store construction and original RPC hosting need .NET 8.
 
 Capture is bounded to 1 through 60 seconds and 100,000 reports. It initializes
 the tablet according to its configuration, then logs decoded/raw report
@@ -109,25 +136,33 @@ information, so review it before sharing.
 Run discovers monitor rectangles once at startup from Hyprland's `hyprctl`,
 Sway's `swaymsg` or X11's `xrandr`. Hyprland uses logical desktop coordinates,
 including output scaling and rotation. Sway provides its logical rectangles.
-Xwayland's monitor list is not used for a Wayland session. Other compositors
-need `--screen WIDTHxHEIGHT`; there is no assumed 1920x1080 desktop. Explicit
-`--screen` describes a single rectangle at the origin. Restart after changing
+Xwayland's monitor list is not used for a Wayland session. Other Wayland
+compositors use the original display-provider fallback, which needs .NET 8.
+If discovery fails, supply `--screen WIDTHxHEIGHT`; there is no assumed desktop
+size. Explicit `--screen` bypasses display discovery and describes a single
+rectangle at the origin. Restart after changing
 display topology, scale or rotation. Compositor device-to-output assignment can
 still affect how a virtual tablet maps; validate mapping in your desktop.
 
 Without `--profile`, run imports `~/.config/OpenTabletDriver/settings.json`,
 or the equivalent path under `$XDG_CONFIG_HOME`, if a profile exists for the
-detected tablet. Otherwise it uses the native defaults. Enabled external
-plugins produce a precise unsupported-runtime error. Disable them explicitly
-or pass a native TOML profile. The built-in Radial Follow filter is available.
+detected tablet. Otherwise it uses the defaults for that tablet. Original
+settings collections retain disconnected profile rows and global tools; live
+changes use the daemon-owned lifecycle. An explicit native profile takes
+precedence for its selected model. Installed managed filters, output modes,
+bindings, tools, parsers and device providers use the shared .NET host. Their
+platform and external-driver prerequisites still apply; unsupported dependencies
+are reported rather than ignored. The built-in Radial Follow filter is available.
 Capture uses native defaults and does not import or execute plugins.
 
 Missing permissions are reported as errors rather than retried indefinitely.
-Run waits for a supported tablet and rescans every two seconds after disconnect.
-Ctrl+C or SIGTERM cancels the session and destroys its virtual output device.
+Run waits for supported tablets and owns independent primary/auxiliary sessions.
+Disconnect/reconfigure retires only the affected worker. Shared input ownership
+prevents one tablet or managed scope from releasing another's held actions.
+Ctrl+C or SIGTERM drains the owned sessions, tools and virtual input devices.
 
-While a session drives output, its report loop runs at real-time priority
-(`SCHED_FIFO` 40), so busy CPUs do not delay pen input
+While a session drives output, its report loop requests real-time priority
+(`SCHED_FIFO` 40) to reduce competition from ordinary scheduled work
 ([measurements](../../docs/REALTIME_SCHEDULING_2026-10-05.md)). This needs an
 rtprio limit, which audio packages often grant to a group such as `audio`,
 `realtime` or `pipewire`. Check yours with `ulimit -r`. If it is 0, add a file
@@ -154,12 +189,21 @@ their configured tip and eraser thresholds. Default barrel bindings emit
 `BTN_STYLUS`, `BTN_STYLUS2` and `BTN_STYLUS3` on the virtual tablet. Explicit
 mouse or key bindings use separate virtual pointer/keyboard output as needed.
 
-Pad buttons, auxiliary collections, multiple simultaneous
-tablets, Bluetooth, topology changes while running, a desktop UI, a persistent
-daemon and external plugin hosting remain open. Parser availability alone does
-not establish hardware support for every database entry. X02/X03 acceptance
-also requires physical input/output, replug, cancellation and suspend/resume
-evidence for each claimed transport and desktop.
+Pad/wheel bindings, auxiliary endpoints, simultaneous tablets, original desktop
+workflows and managed hosting are implemented in source. Native TOML keys retain
+physical positions; imported original bindings retain the pinned Evdev names and
+aliases. They persist with the `evdev:` key prefix when saved as native TOML.
+The original Console retains the upstream command names and collection workflows.
+Native `plugins` and `update` commands perform explicit installation/update work;
+they do not run as part of passive discovery.
+
+Native Linux input, Gtk/Wayland/X11 behavior, plugin binaries and hardware remain
+unqualified. Parser availability does not establish working transport,
+initialization or output for every database entry, including Bluetooth devices.
+Restart after changing display topology. Replug, cancellation, held-input
+failure cleanup, sleep/wake and simultaneous-tablet behavior still need native
+acceptance. No tests, format/Clippy/check suites, runtime, frontend, plugin or
+hardware sessions were run for this source update.
 
 The setup rules follow [upstream generate-rules.sh at the pinned revision](https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/generate-rules.sh).
 The opt-in per-tablet libinput rule deliberately avoids

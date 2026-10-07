@@ -12,11 +12,18 @@
 
 use std::fs;
 use std::io;
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
+#[cfg(unix)]
+use crate::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
+#[cfg(windows)]
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+#[cfg(unix)]
+const CREATE_NO_WINDOW:u32=0;
+#[path="update/transaction.rs"]
 pub(crate) mod transaction;
 
 pub const REPOSITORY: &str = "z9a17/opentabletdriver-rust";
@@ -65,12 +72,24 @@ pub fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
 }
 
 pub fn current_version() -> (u64, u64, u64) {
-    parse_version(env!("CARGO_PKG_VERSION")).expect("the package version is numeric")
+    #[cfg(windows)]let text=env!("CARGO_PKG_VERSION");
+    #[cfg(unix)]let text=env!("OTD_RELEASE_VERSION");
+    parse_version(text).expect("the package version is numeric")
 }
 
+#[cfg(windows)]
 pub(crate) fn system_tool(name: &str) -> PathBuf {
     let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
     PathBuf::from(root).join("System32").join(name)
+}
+
+#[cfg(unix)]
+pub(crate) fn system_tool(name:&str)->PathBuf{crate::update::system_tool(name)}
+fn package_suffix()->&'static str{
+    #[cfg(windows)]{ "-win-x64.zip" }
+    #[cfg(target_os="linux")]{ "-linux-x64.tar.gz" }
+    #[cfg(all(target_os="macos",target_arch="x86_64"))]{ "-macos-x64.tar.gz" }
+    #[cfg(all(target_os="macos",target_arch="aarch64"))]{ "-macos-arm64.tar.gz" }
 }
 
 /// The latest published release, from the GitHub API.
@@ -136,9 +155,9 @@ fn parse_release(body: &[u8]) -> Result<Release, String> {
         })
     };
     let (package_name, package_url, package_api_url) =
-        asset("-win-x64.zip").ok_or_else(|| format!("{tag} has no Windows package"))?;
+        asset(package_suffix()).ok_or_else(|| format!("{tag} has no {} package",package_suffix()))?;
     let (_, checksum_url, checksum_api_url) =
-        asset("-win-x64.zip.sha256").ok_or_else(|| format!("{tag} has no package checksum"))?;
+        asset(&format!("{}.sha256",package_suffix())).ok_or_else(|| format!("{tag} has no package checksum"))?;
     let within = |url: Option<String>, prefix: &str| {
         url.filter(|url| url.starts_with(prefix))
             .ok_or_else(|| format!("{tag} has an unexpected download location"))
@@ -158,6 +177,7 @@ fn parse_release(body: &[u8]) -> Result<Release, String> {
 }
 
 /// SHA-256 of a file, as lowercase hex, with the Windows CNG provider.
+#[cfg(windows)]
 pub fn sha256(path: &Path) -> Result<String, String> {
     use std::io::Read;
     use windows_sys::Win32::Security::Cryptography::{
@@ -204,6 +224,8 @@ pub fn sha256(path: &Path) -> Result<String, String> {
     Ok(text)
 }
 
+#[cfg(unix)]
+pub fn sha256(path:&Path)->Result<String,String>{crate::update::sha256(path)}
 /// Every file under `root`, relative to it.
 fn files(root: &Path, directory: &Path, found: &mut Vec<PathBuf>) -> io::Result<()> {
     for entry in fs::read_dir(directory)? {
@@ -224,6 +246,93 @@ fn files(root: &Path, directory: &Path, found: &mut Vec<PathBuf>) -> io::Result<
 /// Downloads, verifies and installs `release` into `install`, reporting each
 /// step. Failures attempt rollback; blocked recovery preserves the journal
 /// and its backups for the next startup.
+#[cfg(windows)]
+pub fn install(release: &Release, install: &Path, progress: &dyn Fn(&str)) -> Result<(), String> {
+    // The global managed tool owner outlives tablet sessions. Every native
+    // installer must reserve the same daemon drain used by the original RPC
+    // updater before touching DLLs; a missing daemon never starts implicitly.
+    use crate::control::{self, Command as ControlCommand, Reply, Request};
+    use std::time::{Duration, Instant};
+    let endpoint = control::endpoint_name().map_err(|error| error.to_string())?;
+    let process = control::pipe::CompatPipe::server_process_id(&endpoint)
+        .map_err(|error| format!("Update installation requires the existing native daemon: {error}. Check for updates remains available offline."))?;
+    let call = |command| -> Result<Reply, String> {
+        let response = control::request_owned(&Request::new(1, command), Duration::from_secs(5), process)
+            .map_err(|error| error.to_string())?;
+        match response.reply {
+            Reply::Error { error } => Err(error.message),
+            reply => Ok(reply),
+        }
+    };
+    let expected = match call(ControlCommand::Status)? {
+        Reply::Status { status } => status.identity(),
+        _ => return Err("unexpected daemon status before update".into()),
+    };
+    let token = match call(ControlCommand::BeginUpdate { expected })? {
+        Reply::UpdateAccepted { token } => token,
+        _ => return Err("unexpected update reservation reply".into()),
+    };
+    let mut exit = false;
+    let result = (|| -> Result<(), String> {
+        progress("Waiting for tablet sessions and global tools to release their resources...");
+        let deadline = Instant::now() + Duration::from_secs(45);
+        loop {
+            match call(ControlCommand::UpdateStatus { token: token.clone() })? {
+                Reply::UpdateState { token: actual, ready, error } if actual == token => {
+                    if let Some(error) = error { return Err(error); }
+                    if ready { break; }
+                }
+                _ => return Err("unexpected update reservation state".into()),
+            }
+            if Instant::now() >= deadline { return Err("update resource drain timed out".into()); }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        match install_with_cancel(release, install, progress, None) {
+            Ok(()) => { exit = true; Ok(()) }
+            Err(error) => match recover_for_daemon(install) {
+                // A download/preflight failure never replaced installed files.
+                // Cancellation releases the reservation and restores tools.
+                Ok(false) => Err(error),
+                Ok(true) => {
+                    exit = true;
+                    Err(format!("{error}; interrupted update recovered; daemon will exit before restored files are used"))
+                }
+                Err(recovery) => {
+                    exit = true;
+                    Err(format!("{error}; update recovery failed: {recovery}; daemon will exit and preserve recovery files"))
+                }
+            },
+        }
+    })();
+    let cleanup = (|| -> Result<(), String> {
+        // Cancellation completes only after the daemon's tool dispatcher has
+        // restored the exact pre-update configuration. Busy is an ownership
+        // receipt still pending, not permission to repeat any installation.
+        let deadline = Instant::now() + Duration::from_secs(40);
+        loop {
+            let response = control::request_owned(&Request::new(1, ControlCommand::FinishUpdate {
+                token: token.clone(), success: exit,
+            }), Duration::from_secs(5), process).map_err(|error| error.to_string())?;
+            match response.reply {
+                Reply::ShutdownAccepted if exit => return Ok(()),
+                Reply::UpdateCancelled if !exit => return Ok(()),
+                Reply::Error { error } if !exit && matches!(error.code, control::ErrorCode::Busy) => {
+                    if Instant::now() >= deadline { return Err(format!("global tool restoration timed out: {}", error.message)); }
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                Reply::Error { error } => return Err(error.message),
+                _ => return Err("unexpected update ownership completion reply".to_owned()),
+            }
+        }
+    })().map_err(|error|format!("update ownership cleanup failed: {error}; the daemon may still be reserved; inspect its status before restarting"));
+    match (result, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(error), Err(cleanup)) => Err(format!("{error}; {cleanup}")),
+    }
+}
+// Portable services own their reservation around this shared installer.
+#[cfg(unix)]
 pub fn install(release: &Release, install: &Path, progress: &dyn Fn(&str)) -> Result<(), String> {
     install_with_cancel(release, install, progress, None)
 }
@@ -269,11 +378,13 @@ pub(crate) fn install_with_cancel(release: &Release, install: &Path, progress: &
         if !status.success() {
             return Err("the package could not be extracted".into());
         }
-        let root = extracted.join(release.package_name.trim_end_matches(".zip"));
+        let stem=release.package_name.strip_suffix(".zip").or_else(||release.package_name.strip_suffix(".tar.gz")).ok_or("Unsupported package archive")?;
+        let root = extracted.join(stem);
         let root = if root.is_dir() { root } else { extracted };
-        if !root.join("opentabletdriver-rust.exe").is_file() {
-            return Err("the package does not contain opentabletdriver-rust.exe".into());
-        }
+        #[cfg(windows)]let executable="opentabletdriver-rust.exe";
+        #[cfg(target_os="linux")]let executable="opentabletdriver-rust-linux";
+        #[cfg(target_os="macos")]let executable="opentabletdriver-rust-macos";
+        if !root.join(executable).is_file(){return Err(format!("The package does not contain {executable}"));}
         let mut new_files = Vec::new();
         files(&root, &root, &mut new_files).map_err(|error| error.to_string())?;
         progress(&format!("Installing {} files...", new_files.len()));
@@ -311,10 +422,12 @@ pub(crate) fn recover_for_daemon(install: &Path) -> Result<bool, String> {
     transaction::startup(install)
 }
 
+#[cfg(windows)]
 pub(crate) fn temporary_work(prefix: &str) -> Result<PathBuf, String> {
     unique_directory(&std::env::temp_dir(), prefix)
 }
 
+#[cfg(windows)]
 pub(crate) fn unique_directory(root: &Path, prefix: &str) -> Result<PathBuf, String> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     fs::create_dir_all(root).map_err(|error| error.to_string())?;
@@ -327,6 +440,10 @@ pub(crate) fn unique_directory(root: &Path, prefix: &str) -> Result<PathBuf, Str
     fs::create_dir(&path).map_err(|error| error.to_string())?;
     Ok(path)
 }
+#[cfg(unix)]
+pub(crate) fn temporary_work(prefix:&str)->Result<PathBuf,String>{crate::update::temporary_work(prefix)}
+#[cfg(unix)]
+pub(crate) fn unique_directory(root:&Path,prefix:&str)->Result<PathBuf,String>{crate::update::unique_directory(root,prefix)}
 /// `update [--check]`: prints whether a newer release exists and installs it.
 pub fn run(check_only: bool) -> Result<(), String> {
     let release = latest()?;
@@ -351,7 +468,7 @@ pub fn run(check_only: bool) -> Result<(), String> {
     install(&release, &folder, &|line| println!("{line}"))
 }
 
-#[cfg(test)]
+#[cfg(all(test,windows))]
 mod tests {
     use super::*;
 
@@ -427,7 +544,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test,windows))]
 mod live {
     use super::*;
 

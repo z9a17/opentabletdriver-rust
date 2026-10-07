@@ -19,14 +19,29 @@ namespace OtdCompat;
 
 // Real interface providers over host-owned readers/state. Concrete upstream
 // Driver/InputDevice/RootHub are deliberately never constructed as empty stubs.
-sealed class ManagedProviders : IDriver, IDeviceConfigurationProvider, IReportParserProvider,
+sealed partial class ManagedProviders : IDriver, IDeviceConfigurationProvider, IReportParserProvider,
     IDeviceHubsProvider, ICompositeDeviceHub, IDriverDaemon, IDisposable
 {
+    internal ManagedProviders(JObject? sourceSession = null) { this.sourceSession = sourceSession?.DeepClone() as JObject; }
+    readonly JObject? sourceSession;
+    HostedCore? core;
+    HostedCore Core {
+        get {
+            lock (gate) {
+                if (core != null) return core;
+                var created = new HostedCore(this, scope, lifetime.Token, sourceSession);
+                core = created; // Parser dependency injection sees this same concrete Driver.
+                try { created.Refresh(); return created; }
+                catch { core = null; created.Dispose(); throw; }
+            }
+        }
+    }
     static long nextScope;
     readonly ulong scope = checked((ulong)Interlocked.Increment(ref nextScope));
     readonly CancellationTokenSource lifetime = new();
     readonly List<ProviderParser> parsers = [];
     readonly object gate = new();
+    internal object Sync => gate;
     EventHandler<IEnumerable<TabletReference>>? tabletsChanged;
     EventHandler<DevicesChangedEventArgs>? devicesChanged;
     EventHandler<LogMessage>? message;
@@ -34,6 +49,7 @@ sealed class ManagedProviders : IDriver, IDeviceConfigurationProvider, IReportPa
     Task? monitor;
     bool disposed;
     HostedNativeHub? nativeHub;
+    OpenTabletDriver.ComponentProviders.DeviceHubsProvider? concreteHubs;
     DesktopDeviceConfigurationProvider? desktopConfigurations;
     OpenTabletDriver.Configurations.DeviceConfigurationProvider? builtinConfigurations;
     DesktopReportParserProvider? desktopParsers;
@@ -42,7 +58,13 @@ sealed class ManagedProviders : IDriver, IDeviceConfigurationProvider, IReportPa
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         if (!ServiceClient.Available) return null;
-        if (type == typeof(IDriver) || type == typeof(IDeviceConfigurationProvider)
+        if (type == typeof(OpenTabletDriver.ComponentProviders.DeviceHubsProvider))
+            return concreteHubs ??= new OpenTabletDriver.ComponentProviders.DeviceHubsProvider(DeviceHubs);
+        if (type == typeof(OpenTabletDriver.Driver) || type == typeof(IDriver)) return Core.Driver;
+        if (type == typeof(OpenTabletDriver.InputDeviceTree)) return Core.SelectedTree();
+        if (type == typeof(OpenTabletDriver.InputDevice)) return Core.SelectedInput();
+        if (type == typeof(OpenTabletDriver.Devices.RootHub) || type == typeof(ICompositeDeviceHub) || type == typeof(IDeviceHub)) return Core.Root;
+        if (type == typeof(IDeviceConfigurationProvider)
             || type == typeof(IReportParserProvider) || type == typeof(IDeviceHubsProvider)
             || type == typeof(IDeviceHub) || type == typeof(ICompositeDeviceHub) || type == typeof(IDriverDaemon)) return this;
         if (type == typeof(PluginManager) || type == typeof(DesktopPluginManager)
@@ -73,10 +95,10 @@ sealed class ManagedProviders : IDriver, IDeviceConfigurationProvider, IReportPa
     public IEnumerable<TabletReference> Tablets => OwnedRead<TabletReference[]>("tablets");
     public IEnumerable<TabletConfiguration> TabletConfigurations => OwnedRead<TabletConfiguration[]>("configurations");
     public IEnumerable<IDeviceHub> DeviceHubs { get { lifetime.Token.ThrowIfCancellationRequested(); return [nativeHub ??= new HostedNativeHub(this)]; } }
-    public void ConnectDeviceHub<T>() where T : IDeviceHub => throw new NotSupportedException("Custom managed hubs require an explicit native reader-owner integration.");
-    public void ConnectDeviceHub(IDeviceHub instance) => throw new NotSupportedException("Custom managed hubs require an explicit native reader-owner integration.");
-    public void DisconnectDeviceHub<T>() where T : IDeviceHub => throw new NotSupportedException("The native reader owner controls attached device hubs.");
-    public void DisconnectDeviceHub(IDeviceHub instance) => throw new NotSupportedException("The native reader owner controls attached device hubs.");
+    public void ConnectDeviceHub<T>() where T : IDeviceHub => Core.Root.ConnectDeviceHub<T>();
+    public void ConnectDeviceHub(IDeviceHub instance) => Core.Root.ConnectDeviceHub(instance);
+    public void DisconnectDeviceHub<T>() where T : IDeviceHub => Core.Root.DisconnectDeviceHub<T>();
+    public void DisconnectDeviceHub(IDeviceHub instance) => Core.Root.DisconnectDeviceHub(instance);
     public IEnumerable<IDeviceEndpoint> GetDevices() { lifetime.Token.ThrowIfCancellationRequested(); return Endpoints(ServiceClient.Snapshot()); }
     IDeviceEndpoint[] Endpoints(JObject snapshot) => Require(snapshot, "devices").Children()
         .Select(data => (IDeviceEndpoint)new HostedEndpoint((JObject)data, scope, lifetime.Token)).ToArray();
@@ -91,7 +113,7 @@ sealed class ManagedProviders : IDriver, IDeviceConfigurationProvider, IReportPa
     {
         lock (gate) { ObjectDisposedException.ThrowIf(disposed, this);
             if (parsers.Count >= 256) throw new InvalidOperationException("Provider scope exceeds 256 owned parser instances.");
-            var parser = new ProviderParser(name); parsers.Add(parser); return parser; }
+            var parser = new ProviderParser(name, this); parsers.Add(parser); return parser; }
     }
     public event EventHandler<IEnumerable<TabletReference>> TabletsChanged {
         add { lock (gate) { ObjectDisposedException.ThrowIf(disposed, this); tabletsChanged += value; StartMonitor(); } }
@@ -109,11 +131,10 @@ sealed class ManagedProviders : IDriver, IDeviceConfigurationProvider, IReportPa
         add { lock (gate) { ObjectDisposedException.ThrowIf(disposed, this); resynchronize += value; StartMonitor(); } }
         remove { lock (gate) resynchronize -= value; }
     }
-    // A debug stream requires a source lease, not a sampled snapshot. Until
-    // native delivery is connected, reject subscriptions and enable requests.
+    EventHandler<DebugReportData>? deviceReport;
     public event EventHandler<DebugReportData> DeviceReport {
-        add => throw new NotSupportedException("Managed daemon debug event delivery is not connected to a full-rate source lease.");
-        remove { }
+        add { lock (gate) { ObjectDisposedException.ThrowIf(disposed, this); deviceReport += value; } }
+        remove { lock (gate) deviceReport -= value; }
     }
     void StartMonitor() {
         if (monitor != null) return;
@@ -157,12 +178,13 @@ sealed class ManagedProviders : IDriver, IDeviceConfigurationProvider, IReportPa
         }
     }
     static void Notify(Action callback) { try { callback(); } catch (Exception) { /* isolate third-party event handlers */ } }
-    async Task<JToken> Call(string method, params object?[] parameters)
+    internal async Task<JToken> Call(string method, params object?[] parameters)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         if (ServiceClient.SetupDepth != 0)
             throw new InvalidOperationException("Queued daemon operations cannot be awaited during plugin construction/dependency loading; the native setup transaction owns this scope.");
         JObject payload = new() { ["method"] = method, ["params"] = JArray.FromObject(parameters) };
+        if (sourceSession != null) payload["source_session"] = sourceSession.DeepClone();
         if (ServiceClient.BindingOwner is { } owner) {
             payload["source_binding_owner"] = owner;
             payload["source_tablet_name"] = ServiceClient.BindingTablet;
@@ -176,7 +198,7 @@ sealed class ManagedProviders : IDriver, IDeviceConfigurationProvider, IReportPa
             // completion must never let a retired scope admit a new mutation.
             ObjectDisposedException.ThrowIf(disposed, this);
             lifetime.Token.ThrowIfCancellationRequested();
-            var cancellation = method is "SetSettings" or "ResetSettings" or "ForceResynchronize"
+            var cancellation = method is "SetSettings" or "ResetSettings" or "ForceResynchronize" or "FinishUpdate"
                 ? CancellationToken.None : lifetime.Token;
             completion = ServiceClient.Request(1, scope, payload, cancellation);
         }
@@ -200,13 +222,18 @@ sealed class ManagedProviders : IDriver, IDeviceConfigurationProvider, IReportPa
     public Task<Settings> GetSettings() => Cached<Settings>("settings");
     public async Task ResetSettings() => await Call("ResetSettings").ConfigureAwait(false);
     public Task<AppInfo> GetApplicationInfo() { try { return Task.FromResult(HostedDesktop.Application); } catch (Exception error) { return Task.FromException<AppInfo>(error); } }
-    public Task SetTabletDebug(bool enabled) => enabled
-        ? Task.FromException(new NotSupportedException("Managed daemon debug event source lease is unavailable."))
-        : Call("SetTabletDebug", false);
+    public Task SetTabletDebug(bool enabled) => ConfigureDebug(enabled);
     public async Task<string> RequestDeviceString(int vendor, int product, int index) => (await Call("RequestDeviceString", vendor, product, index).ConfigureAwait(false)).Value<string>()!;
     public Task<IEnumerable<LogMessage>> GetCurrentLog() => Cached<IEnumerable<LogMessage>>("logs");
-    public Task<DiagnosticInfo> GetDiagnosticInfo() => Task.FromException<DiagnosticInfo>(new NotSupportedException(
-        "Original DiagnosticInfo requires a managed entry assembly; native hosting supplies diagnostics through the native/RPC endpoint instead."));
+    public Task<DiagnosticInfo> GetDiagnosticInfo()
+    {
+        try {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            DiagnosticInfo.HostedAppVersion = () => Read<string>("diagnostic_app_version");
+            DiagnosticInfo.HostedBuildDate = () => Read<string>("diagnostic_build_date");
+            return Task.FromResult(new DiagnosticInfo(Read<LogMessage[]>("logs"), Read<SerializedDeviceEndpoint[]>("devices")));
+        } catch (Exception error) { return Task.FromException<DiagnosticInfo>(error); }
+    }
     public async Task<SerializedUpdateInfo?> CheckForUpdates() => (await Call("CheckForUpdates").ConfigureAwait(false)).ToObject<SerializedUpdateInfo>();
     public async Task InstallUpdate() => await Call("InstallUpdate").ConfigureAwait(false);
     public async Task ForceResynchronize() => await Call("ForceResynchronize").ConfigureAwait(false);
@@ -214,12 +241,18 @@ sealed class ManagedProviders : IDriver, IDeviceConfigurationProvider, IReportPa
     {
         lock (gate) {
             if (disposed) return; disposed = true; lifetime.Cancel();
-            tabletsChanged = null; devicesChanged = null; message = null; resynchronize = null;
+            tabletsChanged = null; devicesChanged = null; message = null; resynchronize = null; deviceReport = null;
+            debugRetirement=ManagedRetirements.Current;
+            CancelDebug();
+            ManagedRetirements.Track(StopDisposedDebug());
+            if (monitor != null) ManagedRetirements.Track(monitor);
+            if (debugDelivery != null) ManagedRetirements.Track(debugDelivery);
             List<Exception>? failures = null;
             foreach (var parser in parsers) {
                 try { parser.Dispose(); } catch (Exception error) { (failures ??= []).Add(error); }
             }
             parsers.Clear();
+            try {core?.Dispose();} catch(Exception error) {(failures ??= []).Add(error);}
             if (failures != null) throw new AggregateException("Provider parser disposal failed.", failures);
         }
         // No join of plugin event handlers here: a handler may be waiting on
@@ -238,11 +271,13 @@ sealed class ProviderParser : IReportParser<IDeviceReport>, IDisposable
 {
     readonly object gate = new();
     readonly RegistryGeneration? generation;
-    readonly HostServices services = new();
+    readonly HostServices services;
     readonly IReportParser<IDeviceReport> parser;
     bool disposed;
-    internal ProviderParser(string name)
+    internal ProviderParser(string name, ManagedProviders? owner = null, JObject? sourceSession = null)
     {
+        services = new HostServices(input: sourceSession != null || owner == null ? null : owner.Get);
+        if (sourceSession != null) services.ConfigureSource(new JObject { ["source_session"] = sourceSession });
         var selected = InstalledRegistry.AcquireParser(name); generation = selected.Generation;
         object? value = null;
         try { value = HostServices.Construct(selected.Type) ?? throw new InvalidOperationException("Cannot construct original report parser.");
@@ -256,7 +291,7 @@ sealed class ProviderParser : IReportParser<IDeviceReport>, IDisposable
     } }
 }
 
-sealed class HostedEndpoint(JObject data, ulong scope, CancellationToken cancellation) : IDeviceEndpoint
+sealed partial class HostedEndpoint(JObject data, ulong scope, CancellationToken cancellation) : OpenTabletDriver.IHostedDeviceEndpoint
 {
     T Property<T>(string name) => data[name] is { Type: not JTokenType.Null } value ? value.ToObject<T>()!
         : throw new NotSupportedException($"Cached endpoint '{DevicePath}' has no '{name}' metadata.");
@@ -269,16 +304,17 @@ sealed class HostedEndpoint(JObject data, ulong scope, CancellationToken cancell
     public string ProductName => Property<string>(nameof(ProductName));
     public string FriendlyName => Property<string>(nameof(FriendlyName));
     public string SerialNumber => Property<string>(nameof(SerialNumber));
+    internal bool Auxiliary => data.Value<bool>("auxiliary");
     public string DevicePath => data.Value<string>(nameof(DevicePath)) ?? throw new InvalidOperationException("Endpoint has no actual path.");
     public bool CanOpen => Property<bool>(nameof(CanOpen));
     public IDictionary<string, string> DeviceAttributes => Property<Dictionary<string, string>>(nameof(DeviceAttributes));
-    public IDeviceEndpointStream Open() => throw new NotSupportedException("Native reader sharing/stream I/O owner has not been registered; a second HID handle will not be opened.");
+    public IDeviceEndpointStream Open() => HostedSharedStream.Open(data, scope, cancellation);
     public string GetDeviceString(byte index)
     {
         cancellation.ThrowIfCancellationRequested();
         if (data["DeviceStrings"] is JObject strings && strings[index.ToString(System.Globalization.CultureInfo.InvariantCulture)] is { } cached)
             return cached.Value<string>()!;
-        ServiceClient.RequireBlockingAllowed();
+        ServiceClient.RequireIoAllowed();
         return ServiceClient.Request(3, scope, new JObject { ["path"] = DevicePath, ["index"] = index }, cancellation)
             .GetAwaiter().GetResult().Value<string>()!;
     }
@@ -290,6 +326,7 @@ static class HostedDesktop
     static AppInfo? application;
     static HostPluginManager? manager;
     internal static AppInfo Application { get { Configure(); return application!; } }
+    internal static object? AdditionalService(Type type) { lock(Gate) return manager?.AdditionalService(type); }
     internal static HostPluginManager Manager { get { Configure(); return manager!; } }
     internal static void Configure()
     {
@@ -315,12 +352,22 @@ sealed class HostPluginManager : DesktopPluginManager
 {
     readonly HostServices services = new();
     readonly TypeInfo[] builtinTypes;
+    readonly HashSet<Type> defaultServices = [];
+    readonly ManagedProviders operations = new();
+    DesktopPluginContext[] contexts = [];
     static readonly ConditionalWeakTable<object, ConstructedLease> constructed = new();
     internal HostPluginManager(AppInfo info) : base(new DirectoryInfo(info.PluginDirectory), new DirectoryInfo(info.TrashDirectory), new DirectoryInfo(info.TemporaryDirectory)) {
         builtinTypes = pluginTypes.ToArray(); ResetServices();
+        HostedContexts = () => Volatile.Read(ref contexts);
+        HostedOperation = (method, args) => {
+            ServiceClient.RequireBlockingAllowed();
+            return operations.Call(method, args).GetAwaiter().GetResult().ToObject<object>()!;
+        };
+        HostedAsyncOperation = async (method, args) => (await operations.Call(method, args).ConfigureAwait(false)).ToObject<object>()!;
     }
     internal void RefreshTypes(RegistryGeneration registry) {
-        pluginTypes = new ConcurrentBag<TypeInfo>(builtinTypes.Concat(registry.Entries.Select(entry => entry.Type.GetTypeInfo())).Distinct());
+        pluginTypes = new ConcurrentBag<TypeInfo>(builtinTypes.Where(type => !registry.ExcludedAssemblies.Contains(type.Assembly.Location)).Concat(registry.Entries.Select(entry => entry.Type.GetTypeInfo())).Distinct());
+        Volatile.Write(ref contexts, registry.Contexts.Cast<DesktopPluginContext>().ToArray());
     }
     public override void ResetServices() {
         // Clear the actual pinned ServiceManager dictionary; a base call would
@@ -332,12 +379,23 @@ sealed class HostPluginManager : DesktopPluginManager
         // Delegates keep their real scope; Reset never changes reader ownership.
         AddService<IServiceProvider>(() => services);
         AddService<IDriver>(() => (IDriver)services.GetService(typeof(IDriver))!);
+        AddService<OpenTabletDriver.Driver>(() => (OpenTabletDriver.Driver)services.GetService(typeof(OpenTabletDriver.Driver))!);
+        AddService<OpenTabletDriver.InputDeviceTree>(() => (OpenTabletDriver.InputDeviceTree)services.GetService(typeof(OpenTabletDriver.InputDeviceTree))!);
+        AddService<OpenTabletDriver.InputDevice>(() => (OpenTabletDriver.InputDevice)services.GetService(typeof(OpenTabletDriver.InputDevice))!);
+        AddService<OpenTabletDriver.Devices.RootHub>(() => (OpenTabletDriver.Devices.RootHub)services.GetService(typeof(OpenTabletDriver.Devices.RootHub))!);
         AddService<IDriverDaemon>(() => (IDriverDaemon)services.GetService(typeof(IDriverDaemon))!);
         AddService<IDeviceConfigurationProvider>(() => (IDeviceConfigurationProvider)services.GetService(typeof(IDeviceConfigurationProvider))!);
         AddService<IReportParserProvider>(() => (IReportParserProvider)services.GetService(typeof(IReportParserProvider))!);
+        AddService<OpenTabletDriver.ComponentProviders.DeviceHubsProvider>(() => (OpenTabletDriver.ComponentProviders.DeviceHubsProvider)services.GetService(typeof(OpenTabletDriver.ComponentProviders.DeviceHubsProvider))!);
         AddService<IDeviceHubsProvider>(() => (IDeviceHubsProvider)services.GetService(typeof(IDeviceHubsProvider))!);
         AddService<IDeviceHub>(() => (IDeviceHub)services.GetService(typeof(IDeviceHub))!);
         AddService<ICompositeDeviceHub>(() => (ICompositeDeviceHub)services.GetService(typeof(ICompositeDeviceHub))!);
+        AddService<OpenTabletDriver.Plugin.Timers.ITimer>(() => (OpenTabletDriver.Plugin.Timers.ITimer)services.GetService(typeof(OpenTabletDriver.Plugin.Timers.ITimer))!);
+        AddService<OpenTabletDriver.Plugin.Platform.Pointer.IAbsolutePointer>(() => (OpenTabletDriver.Plugin.Platform.Pointer.IAbsolutePointer)services.GetService(typeof(OpenTabletDriver.Plugin.Platform.Pointer.IAbsolutePointer))!);
+        AddService<OpenTabletDriver.Plugin.Platform.Pointer.IRelativePointer>(() => (OpenTabletDriver.Plugin.Platform.Pointer.IRelativePointer)services.GetService(typeof(OpenTabletDriver.Plugin.Platform.Pointer.IRelativePointer))!);
+        AddService<OpenTabletDriver.Plugin.Platform.Keyboard.IVirtualKeyboard>(() => (OpenTabletDriver.Plugin.Platform.Keyboard.IVirtualKeyboard)services.GetService(typeof(OpenTabletDriver.Plugin.Platform.Keyboard.IVirtualKeyboard))!);
+        AddService<OpenTabletDriver.Plugin.Platform.Pointer.IPressureHandler>(() => (OpenTabletDriver.Plugin.Platform.Pointer.IPressureHandler)services.GetService(typeof(OpenTabletDriver.Plugin.Platform.Pointer.IPressureHandler))!);
+        AddService<OpenTabletDriver.Plugin.Platform.Keyboard.IVirtualPad>(() => (OpenTabletDriver.Plugin.Platform.Keyboard.IVirtualPad)services.GetService(typeof(OpenTabletDriver.Plugin.Platform.Keyboard.IVirtualPad))!);
         AddService<OpenTabletDriver.Plugin.Platform.Display.IVirtualScreen>(() =>
             (OpenTabletDriver.Plugin.Platform.Display.IVirtualScreen)services.GetService(typeof(OpenTabletDriver.Plugin.Platform.Display.IVirtualScreen))!);
         AddService<PluginManager>(() => this);
@@ -351,7 +409,11 @@ sealed class HostPluginManager : DesktopPluginManager
             (OpenTabletDriver.Configurations.DeviceConfigurationProvider)services.GetService(typeof(OpenTabletDriver.Configurations.DeviceConfigurationProvider))!);
         AddService<OpenTabletDriver.Configurations.ReportParserProvider>(() =>
             (OpenTabletDriver.Configurations.ReportParserProvider)services.GetService(typeof(OpenTabletDriver.Configurations.ReportParserProvider))!);
+        defaultServices.Clear();
+        defaultServices.UnionWith(((Dictionary<Type,Func<object>>)field.GetValue(this)!).Keys);
     }
+    internal object? AdditionalService(Type type) => defaultServices.Contains(type) ? null : GetService(type);
+
     public override T ConstructObject<T>(string name, object[] args)
     {
         using var setup = ServiceClient.Setup();
@@ -371,15 +433,19 @@ sealed class HostPluginManager : DesktopPluginManager
     public override IReadOnlyCollection<TypeInfo> GetChildTypes<T>() => base.GetChildTypes<T>()
         .Concat(InstalledRegistry.TypeSnapshot().Where(type => typeof(T).IsAssignableFrom(type)).Select(type => type.GetTypeInfo()))
         .Distinct().ToArray();
-    sealed class ConstructedLease(HostServices services, RegistryGeneration generation)
+    internal static void ReleaseConstructed(object value) {
+        if (constructed.TryGetValue(value,out var lease)) { constructed.Remove(value); lease.Dispose(); }
+    }
+    sealed class ConstructedLease(HostServices services, RegistryGeneration generation) : IDisposable
     {
         // Caller owns plugin IDisposable; this lease keeps its real dependencies
         // loaded until the returned object itself is no longer reachable.
-        ~ConstructedLease() {
-            // Third-party IDisposable errors remain visible during explicit
-            // cleanup, but must never escape the CLR finalizer thread.
-            try { services.Dispose(); } catch (Exception) { }
-            try { InstalledRegistry.Release(generation); } catch (Exception) { }
+        int disposed;
+        public void Dispose() {
+            if (Interlocked.Exchange(ref disposed,1)!=0) return;
+            try { services.Dispose(); } finally { InstalledRegistry.Release(generation); }
+            GC.SuppressFinalize(this);
         }
+        ~ConstructedLease() { try { Dispose(); } catch (Exception) { } }
     }
 }

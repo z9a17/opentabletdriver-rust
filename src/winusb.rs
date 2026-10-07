@@ -69,6 +69,20 @@ impl Interface {
     }
 
     pub fn input_length(&self) -> u16 { self.input.map_or(0, |(_, length)| length) }
+    pub fn service_string(&self,index:u8,stop:&Event)->io::Result<String>{self.string_with_stop(index,Some(stop))}
+    /// The separate device-service lane uses the native reader's interface;
+    /// input keeps its own OVERLAPPED and never waits on a control transfer.
+    pub fn service(&self,operation:crate::managed_services::Operation,data:&mut [u8],stop:&Event)->io::Result<()> {
+        use crate::managed_services::Operation;
+        let count=match operation {
+            Operation::GetFeature=>self.control(0xa1,1,0x0300|u16::from(data[0]),u16::from(self.number),data,Some(stop),5000)?,
+            Operation::SetFeature=>self.control(0x21,9,0x0300|u16::from(data[0]),u16::from(self.number),data,Some(stop),5000)?,
+            Operation::WriteStream=>{let (pipe,_)=self.output.ok_or_else(||io::Error::new(io::ErrorKind::Unsupported,"WinUSB has no output pipe"))?;
+                self.transfer(Some(stop),5000,|overlapped|unsafe{WinUsb_WritePipe(self.raw,pipe,data.as_ptr(),data.len()as u32,ptr::null_mut(),overlapped)!=0})?as usize},
+            _=>return Err(io::Error::new(io::ErrorKind::InvalidInput,"Not a WinUSB service operation")),
+        };
+        if count!=data.len(){return Err(io::Error::new(io::ErrorKind::UnexpectedEof,"Partial WinUSB service report"));}Ok(())
+    }
     /// Drop cached input only after the old reader has drained its requests.
     pub fn flush_input(&self) -> io::Result<()> {
         let pipe = self.input.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "WinUSB interface has no input pipe"))?.0;
@@ -306,7 +320,7 @@ fn inspect(path: &[u16], instance: u32, database: Option<&Database>) -> io::Resu
             "FeatureReportLength":endpoint.feature_length,"CanOpen":true,"DeviceAttributes":attributes})
     } else { serde_json::Value::Null };
     let candidate = Candidate { path: path.to_vec(), vendor, product, input_length: interface.input_length(),
-        usage_page: metadata.as_ref().map_or(0, |m| m.usage_page), usage: metadata.as_ref().map_or(0, |m| m.usage), endpoint };
+        usage_page: metadata.as_ref().map_or(0, |m| m.usage_page), usage: metadata.as_ref().map_or(0, |m| m.usage), endpoint, managed_endpoint:None };
     Ok((candidate, rpc))
 }
 

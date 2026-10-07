@@ -115,7 +115,6 @@ impl App {
         // A confirmed update restart freezes the editor until it succeeds or
         // fails; keep profile-changing completions queued during that interval.
         if self.closing || self.update_restart_pending { return None; }
-        let mut dialog = None;
         while let Ok(event) = self.background_rx.try_recv() {
             match event {
                 BackgroundResult::Managed { guard, result } => managed_settings::inspected(self, guard, result),
@@ -303,6 +302,20 @@ impl App {
                         self.refresh_tablets(announce || again);
                     }
                 }
+                BackgroundResult::Original { generation,revision,result } => {
+                    self.original_pending=false;
+                    match result {
+                        Ok((message,profile))=>{
+                            if let Some(profile)=profile {
+                                if generation==self.metadata_generation&&revision==self.edit_revision&&!self.closing&&!self.update_restart_pending {self.replace_profile(*profile,None,true);}
+                                else{self.log(Level::Warning,"Original settings","The collection was applied; newer editor changes were kept.");}
+                            }
+                            self.log(Level::Info,"Original settings",message);
+                            self.refresh_presets();
+                        }
+                        Err(error)=>self.log(Level::Error,"Original settings",error),
+                    }
+                }
                 BackgroundResult::Import {
                     generation,
                     edit_revision,
@@ -328,17 +341,22 @@ impl App {
                         Err(error) => self.log(Level::Error, "Settings", error),
                     }
                 }
-                BackgroundResult::Strings(text) => {
-                    self.device_strings_pending = false;
-                    self.log(Level::Info, "Device strings", text.clone());
-                    dialog = Some(text);
-                }
                 BackgroundResult::Presets(result) => {
                     self.preset_scan_pending = false;
                     self.presets_loaded = true;
                     match result {
                         Ok(names) => self.preset_names = names,
                         Err(error) => self.log(Level::Warning, "Presets", error),
+                    }
+                }
+                BackgroundResult::OriginalDiagnostics { token, result } => {
+                    self.diagnostics_pending=false;
+                    if token!=self.managed_token || self.closing || self.update_restart_pending { continue; }
+                    match result {
+                        Ok(DiagnosticExport::Clipboard(text)) if copy_to_clipboard(self.hwnd,&text)=>self.log(Level::Info,"UI","Copied original daemon diagnostics, including environment variables and console logs, to the clipboard."),
+                        Ok(DiagnosticExport::Clipboard(_))=>self.log(Level::Error,"UI","Cannot open the clipboard."),
+                        Ok(DiagnosticExport::Saved(path))=>self.log(Level::Info,"UI",format!("Saved original daemon diagnostics to {}. This export includes environment variables and console logs.",path.display())),
+                        Err(error)=>self.log(Level::Error,"UI",format!("Cannot export original daemon diagnostics: {error}")),
                     }
                 }
                 BackgroundResult::Diagnostics(result) => {
@@ -352,16 +370,7 @@ impl App {
                 }
             }
         }
-        dialog
-    }
-
-    pub(super) fn read_device_strings(&mut self) {
-        if self.device_strings_pending {
-            return;
-        }
-        self.device_strings_pending = self.background("device-strings", || {
-            BackgroundResult::Strings(commands::device_string_report())
-        });
+        None
     }
 
     pub(super) fn add_plugin_folder(&mut self, folder: PathBuf, name: String) {
@@ -505,6 +514,26 @@ impl App {
                     None => Ok(DiagnosticExport::Clipboard(text)),
                 });
             BackgroundResult::Diagnostics(result)
+        });
+    }
+
+    pub(super) fn export_original_diagnostics(&mut self,path:Option<PathBuf>) {
+        if self.closing || self.update_restart_pending { return; }
+        if self.diagnostics_pending { self.log(Level::Info,"UI","A diagnostic export is already running.");return; }
+        let token=self.managed_token;
+        let expected=self.daemon_instance.clone();
+        self.diagnostics_pending=self.background("original-diagnostic-export",move||{
+            let result=(||{
+                let mut client=crate::cli::Client::connect()?;
+                if expected.as_ref().is_some_and(|expected|expected!=client.instance()){return Err("daemon changed before original diagnostic export".into());}
+                let value=client.call("GetDiagnosticInfo",serde_json::json!([]))?;
+                let text=serde_json::to_string_pretty(&value).map_err(|error|error.to_string())?;
+                match path {
+                    Some(path)=>{otd_core::storage::save(&path,text.as_bytes(),otd_core::storage::SaveMode::CreateNew)?;Ok(DiagnosticExport::Saved(path))},
+                    None=>Ok(DiagnosticExport::Clipboard(text)),
+                }
+            })();
+            BackgroundResult::OriginalDiagnostics{token,result}
         });
     }
 

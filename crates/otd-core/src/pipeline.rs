@@ -11,7 +11,7 @@ use crate::decoders::DecodedInput;
 use crate::mapping::Mapper;
 use crate::output::buttons::{ActionSink, ButtonOutput};
 use crate::output::pen::{PenOutput, PenSample, PenSink};
-use crate::output::{MouseOutput, MousePacket};
+use crate::output::{MouseAttributes, MouseOutput, MousePacket};
 use crate::plugins::{DispatchInput, Filters, PipelineRuntime};
 use crate::protocol::PenReport;
 use crate::radial_follow::RadialFollowSmoothingTabletSpace;
@@ -436,12 +436,16 @@ impl ReportPipeline {
     ) -> io::Result<bool> {
         self.desired_contact = false;
         if let Some(holds) = &mut self.managed_pen_holds { holds.fill((0, 0)); }
+        // Attempt all cleanup even if one optional pointer handler fails.
+        let attributes = self.buttons.pointer_attributes(MouseAttributes { reset: true, ..MouseAttributes::default() });
         let pen = self.pen.as_mut().map_or(Ok(false), PenOutput::release);
         let mouse = self.output.release_all(send);
         let buttons = self.buttons.release_all();
-        let result = match (pen, mouse, buttons) {
-            (Ok(pen), Ok(mouse), Ok(buttons)) => Ok(pen || mouse || buttons),
-            (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => Err(error),
+        let pointer = self.buttons.flush_pointer();
+        let result = match (attributes, pen, mouse, buttons, pointer) {
+            (Ok(()), Ok(pen), Ok(mouse), Ok(buttons), Ok(())) => Ok(pen || mouse || buttons),
+            (Err(error), _, _, _, _) | (_, Err(error), _, _, _) | (_, _, Err(error), _, _)
+                | (_, _, _, Err(error), _) | (_, _, _, _, Err(error)) => Err(error),
         };
         // Display-change/session cleanup also calls this outside process_report.
         // A failed release there must be retried before the graph can resume.
@@ -621,10 +625,44 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
                 "nonfinite post-transform output",
             ));
         }
+        // A positional report can still be rejected by the final absolute
+        // mapping. Share this exact eligibility with stationary-pointer flush,
+        // so clipping cannot replay the previous cursor position.
+        let mapped = if self.pipeline.pen.is_none() && self.pipeline.relative.is_none()
+            && kind == ReportKind::Data && position.is_some() {
+            if let Some((x, y)) = self.unfiltered_raw {
+                self.mapper.and_then(|mapper| mapper.map(x, y))
+            } else {
+                position.and_then(|(x, y)| self.mapper.and_then(|mapper| mapper.normalize_pixels(x, y)))
+            }
+        } else { None };
+        let has_position = kind == ReportKind::Data && if self.pipeline.relative.is_some() {
+            position.is_some()
+        } else { mapped.is_some() };
+        if self.pipeline.pen.is_none() {
+            // Original ThresholdBindingState rewrites pressure before output.
+            // Avoid a second remap when the managed binding path already did it.
+            let policy = self.pipeline.contact;
+            let (enabled, percent, raw) = if self.pipeline.is_eraser {
+                (policy.eraser_enabled, policy.eraser_threshold_percent, policy.eraser_threshold_raw)
+            } else { (policy.tip_enabled, policy.tip_threshold_percent, policy.tip_threshold_raw) };
+            let pressure = values.pressure.map(|pressure| {
+                if threshold_contact.is_none() && enabled && (percent.is_some() || raw.is_some()) {
+                    policy.threshold_report(pressure, self.pipeline.max_pressure, self.pipeline.is_eraser).1
+                } else { pressure }
+            });
+            self.pipeline.buttons.pointer_attributes(MouseAttributes {
+                has_position,
+                pressure: if policy.disable_pressure { None } else { pressure.map(|raw| raw as f32 / self.pipeline.max_pressure.max(1) as f32) },
+                tilt: if self.pipeline.contact.disable_tilt { None } else { values.tilt },
+                eraser: values.eraser,
+                reset: kind == ReportKind::OutOfRange,
+            })?;
+        }
         if kind == ReportKind::Data && position.is_none() && values.pressure.is_none() {
             // Tool/aux/wheel/touch packets remain visible to filters, but must
             // not replay an old pointer position or emit unrelated contact.
-            return Ok(());
+            return self.pipeline.buttons.flush_pointer();
         }
         let contact = self.pipeline.desired_contact;
         // Side buttons follow the report after the pointer has moved, so a
@@ -677,18 +715,13 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
                 .output
                 .emit_relative(delta, contact, &mut *self.send)?
         } else {
-            let mapped = if let Some((x, y)) = self.unfiltered_raw {
-                self.mapper.and_then(|mapper| mapper.map(x, y))
-            } else {
-                position
-                    .and_then(|(x, y)| self.mapper.and_then(|mapper| mapper.normalize_pixels(x, y)))
-            };
             self.pipeline
                 .output
                 .emit_mapped(mapped, contact, &mut *self.send)?
         };
         self.stats.packets += u64::from(emitted);
-        self.pipeline.buttons.apply(wanted)
+        self.pipeline.buttons.apply(wanted)?;
+        self.pipeline.buttons.flush_pointer()
     }
 }
 
@@ -720,18 +753,27 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> Runtime<'_, F> {
             && (command.kind == 0 || command.kind != 3 && command.flags & 1 != 0) { return Ok(()); }
         match command.kind {
             0 => {
-                if command.flags & !63 != 0 || !command.x.is_finite() || !command.y.is_finite() || command.tilt.iter().any(|value| !value.is_finite()) {
+                if command.flags & !127 != 0 || !command.x.is_finite() || !command.y.is_finite() || command.tilt.iter().any(|value| !value.is_finite()) {
                     return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid managed pointer command"));
                 }
                 if command.flags & 32 != 0 { self.stats.packets += u64::from(self.pipeline.release_all(&mut *self.send)?); return Ok(()); }
+                let fraction = f32::from_bits(command.value);
+                if command.flags & 4 != 0 && (!fraction.is_finite() || !(0.0..=1.0).contains(&fraction)) { return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid managed pressure fraction")); }
+                if self.pipeline.pen.is_none() {
+                    self.pipeline.buttons.pointer_attributes(MouseAttributes {
+                        has_position: command.flags & 2 != 0,
+                        pressure: (command.flags & 4 != 0).then_some(fraction),
+                        tilt: (command.flags & 8 != 0).then_some(command.tilt),
+                        eraser: (command.flags & 64 != 0).then_some(command.flags & 16 != 0),
+                        reset: false,
+                    })?;
+                }
                 let managed = self.managed_pen_actions();
                 let native_contact = if self.pipeline.is_eraser { self.pipeline.managed_eraser_binding.is_none() } else { self.pipeline.managed_tip_binding.is_none() };
                 let contact = self.pipeline.desired_contact && native_contact || managed & 3 != 0;
                 let position = (f64::from(command.x), f64::from(command.y));
                 let emitted = if let Some(pen) = &mut self.pipeline.pen {
                     if command.flags & 1 != 0 { return Err(io::Error::new(io::ErrorKind::Unsupported, "relative managed pointer cannot use the native absolute pen backend")); }
-                    let fraction = f32::from_bits(command.value);
-                    if command.flags & 4 != 0 && (!fraction.is_finite() || !(0.0..=1.0).contains(&fraction)) { return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid managed pressure fraction")); }
                     let pressure = (command.flags & 4 != 0).then(|| (fraction * self.pipeline.max_pressure as f32).round() as u32);
                     let barrel = (managed >> 2) | self.pipeline.buttons.barrel(self.pipeline.buttons.wanted(None, true));
                     if command.flags & 2 != 0 {
@@ -748,6 +790,7 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> Runtime<'_, F> {
                     self.pipeline.output.emit_mapped(Some(mapped), contact, &mut *self.send)?
                 };
                 self.stats.packets += u64::from(emitted);
+                self.pipeline.buttons.flush_pointer()?;
             }
             1 | 2 => {
                 let action = if command.kind == 1 { match command.value { 1 => Some(MouseButton::Left), 2 => Some(MouseButton::Middle), 3 => Some(MouseButton::Right), 4 => Some(MouseButton::Backward), 5 => Some(MouseButton::Forward), _ => None }.map(Action::Mouse) }

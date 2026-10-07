@@ -5,6 +5,8 @@
 
 use std::io;
 use std::ptr;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{
@@ -67,9 +69,10 @@ fn initialization_writes(identifier: &DeviceIdentifier) -> bool {
 /// cancels a pending read and waits for it, so the buffer is never freed
 /// while the read can still write to it.
 struct Reader {
-    // Rust drops fields in declaration order; WinUSB must be freed first.
-    winusb: Option<crate::winusb::Interface>,
-    handle: OwnedHandle,
+    shared: crate::shared_devices::Registration,
+    custom:Option<crate::custom_devices::Reader>,
+    custom_length:Option<usize>,
+    custom_ready:Option<Instant>,
     event: Event,
     buffer: Box<[u8]>,
     operation: OVERLAPPED,
@@ -81,13 +84,28 @@ impl Reader {
         candidate: &Candidate,
         identifier: &DeviceIdentifier,
         driver_access: bool,
+        configuration: &otd_core::tablets::TabletConfiguration,
+        output: Arc<crate::shared_devices::OutputGate>,
+        auxiliary: bool,
+        epoch: Option<u64>,
     ) -> io::Result<Self> {
-        let handle = if driver_access && initialization_writes(identifier) {
-            candidate.open(true)?
+        let event = Event::create(true)?;
+        let custom=if let Some(endpoint)=candidate.managed_endpoint {
+            let wake=Arc::clone(&output);
+            Some(crate::custom_devices::Reader::open(endpoint,usize::from(candidate.input_length),Arc::new(move||{let _=wake.signal();}))?)
+        }else{None};
+        let io=if let Some(reader)=&custom {
+            crate::shared_devices::SharedIo::new_custom(reader.handle(),candidate.endpoint.output_length,candidate.endpoint.feature_length)?
+        }else{
+        let handle = if driver_access {
+            match candidate.open(true) {
+                Ok(handle) => handle,
+                Err(error) if initialization_writes(identifier) => return Err(error),
+                Err(_) => candidate.open_read()?,
+            }
         } else {
             candidate.open_read()?
         };
-        let event = Event::create(true)?;
         let winusb = if candidate.endpoint.transport == otd_core::endpoint_match::Transport::WinUsb {
             let interface = crate::winusb::Interface::open(&handle)?;
             if interface.input_length() != candidate.input_length || interface.input_length() == 0 {
@@ -96,13 +114,21 @@ impl Reader {
             }
             Some(interface)
         } else { None };
+        crate::shared_devices::SharedIo::new(handle, winusb, candidate.endpoint.output_length,
+            candidate.endpoint.feature_length)?
+        };
+        let shared = crate::shared_devices::Registration::new(candidate.path_text(), identifier.parser().to_owned(),
+            auxiliary, Arc::new(io), output, usize::from(candidate.input_length.max(1)),
+            serde_json::json!({"Properties":configuration,"Identifiers":[identifier]}),
+            serde_json::to_value(identifier).map_err(io::Error::other)?,
+            serde_json::to_value(configuration).map_err(io::Error::other)?, epoch).map_err(io::Error::other)?;
         Ok(Self {
             operation: OVERLAPPED {
                 hEvent: event.raw(),
                 ..Default::default()
             },
-            winusb,
-            handle,
+            shared,
+            custom,custom_length:None,custom_ready:None,
             event,
             // ReadFile needs room for the collection's whole input report.
             buffer: vec![0; usize::from(candidate.input_length.max(1))].into_boxed_slice(),
@@ -113,6 +139,12 @@ impl Reader {
     /// Starts a read unless one is pending. `true` means a report was
     /// already waiting in the HID class driver and is complete.
     fn start(&mut self) -> io::Result<bool> {
+        if let Some(custom)=&mut self.custom {
+            let report=custom.poll_report(&mut self.buffer)?;
+            self.custom_length=report.map(|(length,_)|length);
+            self.custom_ready=report.map(|(_,ready)|ready);
+            return Ok(self.custom_length.is_some());
+        }
         if self.pending {
             return Ok(false);
         }
@@ -122,7 +154,7 @@ impl Reader {
             hEvent: self.event.raw(),
             ..Default::default()
         };
-        if let Some(winusb) = &self.winusb {
+        if let Some(winusb) = &self.shared.endpoint.io.winusb {
             if unsafe { ResetEvent(self.event.raw()) } == 0 { return Err(io::Error::last_os_error()); }
             let immediate = unsafe { winusb.read(&mut self.buffer, &self.operation) }?;
             self.pending = !immediate;
@@ -130,7 +162,7 @@ impl Reader {
         }
         let started = unsafe {
             ReadFile(
-                self.handle.raw(),
+                self.shared.endpoint.io.native_handle()?.raw(),
                 self.buffer.as_mut_ptr(),
                 self.buffer.len() as u32,
                 ptr::null_mut(),
@@ -150,11 +182,12 @@ impl Reader {
 
     /// The length of a completed read, or `None` if it was cancelled.
     fn finish(&mut self) -> io::Result<Option<usize>> {
+        if self.custom.is_some() {return Ok(self.custom_length.take());}
         self.pending = false;
         let mut transferred = 0u32;
-        let completion = if let Some(winusb) = &self.winusb {
+        let completion = if let Some(winusb) = &self.shared.endpoint.io.winusb {
             winusb.completed(&self.operation, false).map(|length| { transferred = length; })
-        } else if unsafe { GetOverlappedResult(self.handle.raw(), &self.operation, &mut transferred, 0) } == 0 {
+        } else if unsafe { GetOverlappedResult(self.shared.endpoint.io.native_handle()?.raw(), &self.operation, &mut transferred, 0) } == 0 {
             Err(io::Error::last_os_error())
         } else { Ok(()) };
         if let Err(error) = completion {
@@ -176,22 +209,42 @@ impl Reader {
         if !self.pending {
             return;
         }
-        if let Some(winusb) = &self.winusb {
+        if let Some(winusb) = &self.shared.endpoint.io.winusb {
             winusb.cancel(&self.operation);
             self.pending = false;
             return;
         }
-        unsafe { CancelIoEx(self.handle.raw(), &self.operation) };
+        let Ok(handle)=self.shared.endpoint.io.native_handle()else{return;};
+        unsafe { CancelIoEx(handle.raw(), &self.operation) };
         let mut ignored = 0;
         // Cancellation is only a request; wait before reusing the buffer.
-        unsafe { GetOverlappedResult(self.handle.raw(), &self.operation, &mut ignored, 1) };
+        unsafe { GetOverlappedResult(handle.raw(), &self.operation, &mut ignored, 1) };
         self.pending = false;
     }
 
     fn initialize(&self, candidate: &Candidate, identifier: &DeviceIdentifier,
         configuration: &otd_core::tablets::TabletConfiguration, stop: &Event) -> io::Result<()> {
-        if let Some(winusb) = &self.winusb { winusb.initialize(candidate, identifier, configuration, stop) }
-        else { hid::initialize(candidate, &self.handle, identifier, configuration, stop) }
+        let result = if self.custom.is_some() {self.initialize_custom(identifier,configuration,stop)}
+        else if let Some(winusb) = &self.shared.endpoint.io.winusb { winusb.initialize(candidate, identifier, configuration, stop) }
+        else { hid::initialize(candidate, self.shared.endpoint.io.native_handle()?, identifier, configuration, stop) };
+        if result.is_ok() { self.shared.endpoint.initialized.store(true, Ordering::Release); }
+        result
+    }
+    fn initialize_custom(&self,identifier:&DeviceIdentifier,configuration:&otd_core::tablets::TabletConfiguration,stop:&Event)->io::Result<()> {
+        let delay=configuration.attributes.as_ref().and_then(|attributes|attributes.get("FeatureInitDelayMs"))
+            .map(|text|text.parse::<u32>().map_err(io::Error::other)).transpose()?.unwrap_or(0);
+        if delay==u32::MAX {return Err(io::Error::other("Infinite custom initialization delay is unsupported"));}
+        let cancelled=||if unsafe{WaitForSingleObject(stop.raw(),0)}==WAIT_OBJECT_0 {Err(io::Error::new(io::ErrorKind::Interrupted,"Custom initialization cancelled"))}else{Ok(())};
+        for index in identifier.initialization_strings.iter().flatten() {cancelled()?;self.shared.endpoint.io.string(*index)?;}
+        for report in identifier.feature_init_report.iter().flatten().filter(|report|!report.0.is_empty()) {
+            cancelled()?;
+            match unsafe{WaitForSingleObject(stop.raw(),delay)} {WAIT_TIMEOUT=>{},WAIT_OBJECT_0=>return Err(io::Error::new(io::ErrorKind::Interrupted,"Custom initialization cancelled")),_=>return Err(io::Error::last_os_error())}
+            self.shared.endpoint.io.service(crate::managed_services::Operation::SetFeature,&mut report.0.clone())?;
+        }
+        for report in identifier.output_init_report.iter().flatten().filter(|report|!report.0.is_empty()) {cancelled()?;
+            self.shared.endpoint.io.service(crate::managed_services::Operation::WriteStream,&mut report.0.clone())?;
+        }
+        Ok(())
     }
 }
 
@@ -214,6 +267,7 @@ struct HidSource<'a> {
     /// Created on the first short wait; sessions without timer-driven
     /// filters never wait less than a second and never create it.
     timer: Option<OwnedHandle>,
+    output: Arc<crate::shared_devices::OutputGate>,
 }
 
 fn opened_identifiers(primary: &DeviceIdentifier, auxiliary: Option<&DeviceIdentifier>,
@@ -234,14 +288,20 @@ impl<'a> HidSource<'a> {
         driver_access: bool,
     ) -> io::Result<Self> {
         let candidate = selected.pen;
-        let pen = Reader::open(candidate, &selected.identifier, driver_access)?;
+        let output = crate::shared_devices::OutputGate::new()?;
+        let pen = Reader::open(candidate, &selected.identifier, driver_access, &selected.configuration, Arc::clone(&output), false, None)?;
         let auxiliary = selected.auxiliary.as_ref().and_then(|(endpoint, identifier)| {
-            Reader::open(endpoint, identifier, driver_access)
+            Reader::open(endpoint, identifier, driver_access, &selected.configuration, Arc::clone(&output), true, Some(pen.shared.endpoint.epoch))
                 .inspect_err(|error| {
                     eprintln!("Auxiliary collection not opened; express keys and wheels do nothing: {error}");
                 })
                 .ok()
         });
+        let tablet = serde_json::json!({"Properties":selected.configuration,
+            "Identifiers":opened_identifiers(&selected.identifier, selected.auxiliary.as_ref().map(|(_,id)|id), auxiliary.is_some())});
+        pen.shared.tablet(tablet.clone());
+        if let Some(reader)=&auxiliary { reader.shared.tablet(tablet); }
+        crate::managed_host::publish_owned_devices();
         Ok(Self {
             label: format!(
                 "HID input length {}, usage {:04x}:{:04x}",
@@ -253,6 +313,7 @@ impl<'a> HidSource<'a> {
             pen,
             auxiliary,
             timer: None,
+            output,
         })
     }
 
@@ -318,7 +379,7 @@ impl<'a> HidSource<'a> {
         if !hid::parser_supported(identifier.parser()) && plugins.is_none() {
             crate::plugins::load_parser_registry().map_err(io::Error::other)?;
         }
-        match plugins { Some(plugins) => plugins.source_decoder(identifier.parser(), selected.spec),
+        match plugins { Some(plugins) => plugins.source_decoder_for_endpoint(identifier.parser(), selected.spec,true),
             None => RuntimeDecoder::for_parser(identifier.parser(), selected.spec) }.map(Some).map_err(io::Error::other)
     }
 
@@ -367,13 +428,14 @@ impl<'a> HidSource<'a> {
     /// An asynchronous completion came from that wait, where Stop has
     /// precedence, so it needs no second check.
     fn pen_report(&mut self, queued: bool) -> io::Result<Read<'_>> {
-        let ready = Instant::now();
+        let ready = self.pen.custom_ready.take().unwrap_or_else(Instant::now);
         let Some(length) = self.pen.finish()? else {
             return Ok(Read::Ended);
         };
         if queued && self.stopped()? {
             return Ok(Read::Ended);
         }
+        self.pen.shared.publish(&self.pen.buffer[..length]);
         Ok(Read::Report {
             bytes: &self.pen.buffer[..length],
             ready,
@@ -382,7 +444,7 @@ impl<'a> HidSource<'a> {
     }
 
     fn auxiliary_report(&mut self, queued: bool) -> io::Result<Read<'_>> {
-        let ready = Instant::now();
+        let ready = self.auxiliary.as_mut().and_then(|reader|reader.custom_ready.take()).unwrap_or_else(Instant::now);
         let finished = self.auxiliary.as_mut().map(Reader::finish);
         match finished {
             Some(Ok(Some(length))) => {
@@ -390,11 +452,11 @@ impl<'a> HidSource<'a> {
                     return Ok(Read::Ended);
                 }
                 match &self.auxiliary {
-                    Some(reader) => Ok(Read::Auxiliary {
+                    Some(reader) => { reader.shared.publish(&reader.buffer[..length]); Ok(Read::Auxiliary {
                         bytes: &reader.buffer[..length],
                         ready,
                         queued,
-                    }),
+                    }) },
                     None => Ok(Read::Idle),
                 }
             }
@@ -412,6 +474,9 @@ impl<'a> HidSource<'a> {
 }
 
 impl ReportSource for HidSource<'_> {
+    fn native_output_enabled(&self) -> bool { self.output.native_enabled() }
+    fn output_started(&self) { self.output.start(); }
+    fn output_acknowledged(&self, enabled: bool) { self.output.acknowledge(enabled); }
     fn shared_output(&self) -> bool {
         true
     }
@@ -428,6 +493,10 @@ impl ReportSource for HidSource<'_> {
     // check of its own: the wait below sees it first, and a synchronous
     // completion checks it in `pen_report`/`auxiliary_report`.
     fn next(&mut self, timeout: Duration) -> io::Result<Read<'_>> {
+        if unsafe { WaitForSingleObject(self.output.event(), 0) } == WAIT_OBJECT_0 {
+            if unsafe { ResetEvent(self.output.event()) } == 0 { return Err(io::Error::last_os_error()); }
+            if self.output.transition_pending() { return Ok(Read::Idle); }
+        }
         if self.pen.start()? {
             // The report was already waiting in the HID class driver.
             return self.pen_report(true);
@@ -450,7 +519,7 @@ impl ReportSource for HidSource<'_> {
         // Stop first, so it takes precedence when several are signaled. The
         // rare auxiliary reports come before the pen's, so a pen stream
         // cannot starve them.
-        let mut handles = [ptr::null_mut(); 5];
+        let mut handles = [ptr::null_mut(); 6];
         let mut count = 0;
         let mut add = |handle: HANDLE| {
             handles[count] = handle;
@@ -458,6 +527,7 @@ impl ReportSource for HidSource<'_> {
             count - 1
         };
         add(self.stop.raw());
+        let output_change = add(self.output.event());
         let auxiliary = self
             .auxiliary
             .as_ref()
@@ -481,6 +551,14 @@ impl ReportSource for HidSource<'_> {
                 wait(&handles[..waited], millis)
             };
             match result {
+                Ok(Some(index)) if index == output_change => {
+                    if unsafe { ResetEvent(self.output.event()) } == 0 { return Err(io::Error::last_os_error()); }
+                    if !self.output.transition_pending() {
+                        if self.pen.custom.is_some() && self.pen.start()? {return self.pen_report(false);}
+                        if let Some(reader)=&mut self.auxiliary {if reader.custom.is_some() && reader.start()? {return self.auxiliary_report(false);}}
+                    }
+                    return Ok(Read::Idle);
+                }
                 Ok(Some(index)) if index == pen => return self.pen_report(false),
                 Ok(Some(index)) if Some(index) == auxiliary => {
                     return self.auxiliary_report(false);
@@ -699,6 +777,10 @@ impl<'a> PreparedSession<'a> {
         self.source.identifiers(self.selected)
     }
 
+    pub fn retire(&mut self)->io::Result<()> {
+        retire_custom_readers(&mut self.source)
+    }
+
     pub fn activate(&mut self) -> io::Result<()> {
         if !self.selected.pen.is_present() {
             return Err(io::Error::new(
@@ -713,15 +795,16 @@ impl<'a> PreparedSession<'a> {
         // quiesced, so the replacement cannot replay its already-processed
         // pen/button reports.
         // https://learn.microsoft.com/windows-hardware/drivers/ddi/hidsdi/nf-hidsdi-hidd_flushqueue
-        for reader in std::iter::once(&self.source.pen)
-            .chain(self.source.auxiliary.iter())
+        for reader in std::iter::once(&mut self.source.pen)
+            .chain(self.source.auxiliary.iter_mut())
         {
-            if let Some(interface) = &reader.winusb {
+            if let Some(custom)=&mut reader.custom {custom.flush()?;continue;}
+            if let Some(interface) = &reader.shared.endpoint.io.winusb {
                 interface.flush_input()?;
                 continue;
             }
             if !unsafe {
-                windows_sys::Win32::Devices::HumanInterfaceDevice::HidD_FlushQueue(reader.handle.raw())
+                windows_sys::Win32::Devices::HumanInterfaceDevice::HidD_FlushQueue(reader.shared.endpoint.io.native_handle()?.raw())
             } {
                 return Err(io::Error::last_os_error());
             }
@@ -787,8 +870,19 @@ impl<'a> PreparedSession<'a> {
         output
             .finish()
             .map_err(otd_core::session::cleanup_failure)?;
+        retire_custom_readers(&mut source).map_err(otd_core::session::cleanup_failure)?;
         result
     }
+}
+
+fn retire_custom_readers(source:&mut HidSource<'_>)->io::Result<()> {
+    let mut failure=None;
+    for reader in std::iter::once(&mut source.pen).chain(source.auxiliary.iter_mut()) {
+        if let Some(custom)=&mut reader.custom {
+            if let Err(error)=custom.close(std::time::Duration::from_secs(3)){failure.get_or_insert(error);}
+        }
+    }
+    failure.map_or(Ok(()),Err)
 }
 
 pub fn wait_for_retry(notification: &Notification, stop_event: &Event) -> io::Result<bool> {

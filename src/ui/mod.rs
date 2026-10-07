@@ -29,15 +29,18 @@ mod debugger_capture;
 mod device_controls;
 mod draw;
 mod experimental;
+mod guide;
 mod layout;
 mod model;
 mod managed_settings;
 mod paint;
+mod original_settings;
 mod plugin_manager;
 mod presets;
 mod property_validation;
 mod shortcut;
 mod startup;
+mod string_reader;
 mod theme;
 mod tray;
 mod updates;
@@ -154,6 +157,7 @@ const CMD_SAVE_LOG: u16 = 265;
 const CMD_EXPORT_DIAGNOSTICS: u16 = 266;
 const CMD_COPY_DIAGNOSTICS: u16 = 267;
 const CMD_DEVICE_STRINGS: u16 = 268;
+const CMD_GUIDE:u16=269;
 const CMD_CLEAR_LOG: u16 = 262;
 const CMD_AUTOSTART: u16 = 263;
 const CMD_SHOW: u16 = 270;
@@ -721,14 +725,15 @@ enum BackgroundResult {
         errors: Vec<String>,
         aliases: Vec<(PathBuf, PathBuf)>,
     },
+    Original { generation:u64,revision:u64,result:Result<(String,Option<Box<Profile>>),String> },
     Import {
         generation: u64,
         edit_revision: u64,
         result: Result<Box<Profile>, String>,
     },
-    Strings(String),
     Presets(Result<Vec<String>, String>),
     Diagnostics(Result<DiagnosticExport, String>),
+    OriginalDiagnostics { token:u64, result:Result<DiagnosticExport,String> },
 }
 
 enum DiagnosticExport {
@@ -777,8 +782,8 @@ struct App {
     background_tx: std::sync::mpsc::Sender<BackgroundResult>,
     background_rx: std::sync::mpsc::Receiver<BackgroundResult>,
     device_scan: background::DeviceScan,
-    device_strings_pending: bool,
     import_pending: bool,
+    original_pending: bool,
     diagnostics_pending: bool,
     connected_tablets: Vec<String>,
     device_sessions: Vec<crate::device_sessions::SessionSnapshot>,
@@ -812,6 +817,7 @@ struct App {
     tablet_choices: Vec<String>,
     /// The presets listed in the last File menu, by command offset.
     preset_choices: Vec<String>,
+    preset_page: usize,
     /// Worker cache; it never changes the command mapping of an open menu.
     preset_names: Vec<String>,
     preset_scan_pending: bool,
@@ -1220,6 +1226,13 @@ unsafe extern "system" fn window_proc(
         }
         WM_AUTOSTART => {
             with_app(App::auto_start);
+            let first_setup=with_app(|app|!app.closing&&!app.update_restart_pending
+                &&app.profile_snapshot.as_ref().is_none_or(|snapshot|!snapshot.exists())
+                &&app.editor.profile.imported_otd.is_none()).unwrap_or(false);
+            if first_setup&&!START_IN_TRAY.load(std::sync::atomic::Ordering::Relaxed)
+                &&unsafe{IsWindowVisible(window)}!=0&&unsafe{IsIconic(window)}==0 {
+                unsafe{PostMessageW(window,WM_COMMAND,CMD_GUIDE as usize,0);}
+            }
             0
         }
         WM_SHOW_PANEL => {

@@ -32,6 +32,7 @@ sealed class CommandQueue : IDisposable
     string? failure;
     public uint Owner { get; set; }
     public bool Pending { get { lock (gate) return count != 0 || failure != null; } }
+    public int PendingCount { get { lock (gate) return failure != null ? Math.Max(1, count) : count; } }
     public void Add(ManagedCommand command)
     {
         lock (gate)
@@ -47,7 +48,11 @@ sealed class CommandQueue : IDisposable
     {
         lock (gate)
         {
-            if (failure != null) throw new InvalidOperationException(failure);
+            if (failure != null)
+            {
+                string error = failure; failure = null; count = 0; closed = true;
+                throw new InvalidOperationException(error);
+            }
             if (count == 0) { command = default; return false; }
             command = entries[head]; head = (head + 1) % entries.Length; count--; return true;
         }
@@ -71,7 +76,7 @@ sealed class SessionPointer(CommandQueue queue, bool relative, bool pen) : IAbso
         lock (stateGate) { state.Value = BitConverter.SingleToUInt32Bits(percentage); state.Flags |= 4; dirty = true; }
     }
     public void SetTilt(Vector2 tilt) { lock (stateGate) { state.TiltX = tilt.X; state.TiltY = tilt.Y; state.Flags |= 8; dirty = true; } }
-    public void SetEraser(bool eraser) { lock (stateGate) { state.Flags = (state.Flags & ~16u) | (eraser ? 16u : 0); dirty = true; } }
+    public void SetEraser(bool eraser) { lock (stateGate) { state.Flags = (state.Flags & ~16u) | (eraser ? 16u : 0) | 64u; dirty = true; } }
     // Synthetic Windows pointer injection has no physical hover-distance field.
     // Expose that optional provider only when a backend actually supports it.
     public void SetHoverDistance(uint distance) => throw new NotSupportedException("The native Windows pointer backend has no hover-distance injection field.");
@@ -115,6 +120,7 @@ sealed class SessionKeyboard(CommandQueue queue, JObject keys) : IVirtualKeyboar
     void Key(string key, bool pressed)
     {
         if (!names.TryGetValue(key, out uint usage)) throw new NotSupportedException($"Unsupported Windows key '{key}'.");
+        if (usage == 0) return;
         queue.Add(new() { Kind = 2, Value = usage, Flags = pressed ? 1u : 0u });
     }
 }
@@ -151,7 +157,7 @@ abstract class EndpointInstance : IDisposable
         }
         services = new HostServices(() => { CheckThread(); var timer = new SessionTimer(); timers.Add(timer); return timer; },
             type => type == typeof(IVirtualKeyboard) ? keyboard :
-                actualPointer != null && IsPointerService(type) && type.IsInstanceOfType(actualPointer) ? actualPointer : Pointer.Resolve(type));
+                actualPointer != null && IsPointerService(type) && type.IsInstanceOfType(actualPointer) ? actualPointer : Pointer.Resolve(type), authoritativeInput: true);
         object? value = null;
         try
         {
@@ -161,6 +167,7 @@ abstract class EndpointInstance : IDisposable
             if (!contract.IsAssignableFrom(type)) throw new NotSupportedException($"'{type.FullName}' does not implement {contract.Name}.");
             value = HostServices.Construct(type) ?? throw new InvalidOperationException("Cannot construct plugin.");
             Value = value;
+            services.ConfigureSource(config);
             services.Inject(type, value);
             Instance.ApplySettings(type, value, config["settings"] as JObject ?? new JObject());
             HostServices.Complete(type, value, Tablet);

@@ -140,6 +140,7 @@ const KEYS: &[(u16, u16)] = &[
     (0x72, 193), // KEY_F23
     (0x73, 194), // KEY_F24
     (0x75, 138), // KEY_HELP
+    (0x9c,355), // KEY_CLEAR, original EvdevVirtualKeyboard.
     (0xe0, 29),  // KEY_LEFTCTRL
     (0xe1, 42),  // KEY_LEFTSHIFT
     (0xe2, 56),  // KEY_LEFTALT
@@ -148,10 +149,18 @@ const KEYS: &[(u16, u16)] = &[
     (0xe5, 54),  // KEY_RIGHTSHIFT
     (0xe6, 100), // KEY_RIGHTALT
     (0xe7, 126), // KEY_RIGHTMETA
+    (0x10b5,163), // KEY_NEXTSONG
+    (0x10b6,165), // KEY_PREVIOUSSONG
+    (0x10b7,166), // KEY_STOPCD
+    (0x10cd,164), // KEY_PLAYPAUSE
+    (0x10e2,113), // KEY_MUTE
+    (0x10e9,115), // KEY_VOLUMEUP
+    (0x10ea,114), // KEY_VOLUMEDOWN
 ];
 
 /// The evdev key code for a usage, if this backend can press it.
 pub fn key_code(key: KeyboardUsage) -> Option<u16> {
+    if let Some(code)=key.linux_event_code(){return Some(code);}
     KEYS.binary_search_by_key(&key.usage(), |(usage, _)| *usage)
         .ok()
         .map(|index| KEYS[index].1)
@@ -159,7 +168,7 @@ pub fn key_code(key: KeyboardUsage) -> Option<u16> {
 
 /// Every key code the virtual keyboard declares.
 pub fn key_codes() -> impl Iterator<Item = u16> {
-    KEYS.iter().map(|(_, code)| *code)
+    KEYS.iter().map(|(_, code)| *code).chain(otd_core::keys::linux_names().filter_map(|(_,code)|(code!=0).then_some(code)))
 }
 
 #[cfg(test)]
@@ -186,7 +195,7 @@ mod tests {
     #[test]
     fn the_table_is_sorted_and_free_of_duplicates() {
         assert!(KEYS.windows(2).all(|pair| pair[0].0 < pair[1].0));
-        let mut codes: Vec<_> = key_codes().collect();
+        let mut codes: Vec<_> = KEYS.iter().map(|(_,code)|*code).collect();
         codes.sort_unstable();
         codes.dedup();
         assert_eq!(codes.len(), KEYS.len());
@@ -194,7 +203,7 @@ mod tests {
 
     #[test]
     fn unknown_usages_are_not_pressed() {
-        for usage in [0x32, 0x66, 0x9c, 0xe8, 0x100] {
+        for usage in [0x32, 0x66, 0xe8, 0x100] {
             assert_eq!(key(usage), None, "{usage:#x}");
         }
     }

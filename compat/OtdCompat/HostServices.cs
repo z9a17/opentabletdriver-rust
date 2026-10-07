@@ -1,4 +1,5 @@
 using System.Numerics;
+using Newtonsoft.Json.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using OpenTabletDriver.Plugin.Attributes;
@@ -12,24 +13,33 @@ namespace OtdCompat;
 // Exact-Type lookup matches Desktop/Reflection/ServiceManager at 736003ed.
 // Missing services return null; they must never become fabricated devices,
 // drivers or no-op input providers. Each plugin owns its service scope.
-sealed class HostServices(Func<ITimer>? timer = null, Func<Type, object?>? input = null) : IServiceProvider, IDisposable
+sealed class HostServices(Func<ITimer>? timer = null, Func<Type, object?>? input = null, bool authoritativeInput = false) : IServiceProvider, IDisposable
 {
     IVirtualScreen? display;
+    OriginalInputServices? originalInputs;
     ManagedProviders? providers;
     int disposed;
+    JObject? sourceSession;
+    internal void ConfigureSource(JObject config) { sourceSession = config["source_session"] as JObject; }
     public bool ProviderInjected { get; private set; }
     public object? GetService(Type serviceType)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
         if (serviceType == typeof(IServiceProvider)) return this;
-        if (serviceType == typeof(ITimer)) return timer?.Invoke();
+        if (serviceType == typeof(ITimer) && timer != null) return timer.Invoke();
         if (serviceType == typeof(IVirtualScreen) && OperatingSystem.IsWindows())
             return display ??= new WindowsScreen();
         if (input?.Invoke(serviceType) is { } value) return value;
-        return (providers ??= new ManagedProviders()).Get(serviceType);
+        // Bound output/binding scopes already own typed native input queues.
+        // Global tools and concrete Core construction use real pinned providers.
+        if (!authoritativeInput && (originalInputs ??= new OriginalInputServices()).Get(serviceType) is { } original) return original;
+        return (providers ??= new ManagedProviders(sourceSession)).Get(serviceType) ?? HostedDesktop.AdditionalService(serviceType);
     }
 
-    public void Dispose() { if (Interlocked.Exchange(ref disposed, 1) == 0) providers?.Dispose(); }
+    public void Dispose() {
+        if (Interlocked.Exchange(ref disposed, 1) != 0) return;
+        try { providers?.Dispose(); } finally { originalInputs?.Dispose(); }
+    }
 
     internal void Inject(Type type, object value)
     {

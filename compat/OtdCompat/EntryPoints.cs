@@ -40,7 +40,7 @@ public unsafe struct FilterApi
 
 // Share the official OTD interface assembly with plugins, but resolve each
 // plugin's other managed/native dependencies from its own directory.
-sealed class PluginContext(string path, bool inspect = false) : AssemblyLoadContext(isCollectible: true)
+sealed class PluginContext(string path, bool inspect = false) : OpenTabletDriver.Desktop.Reflection.DesktopPluginContext(new DirectoryInfo(Path.GetDirectoryName(Path.GetFullPath(path))!), hosted: true)
 {
     readonly AssemblyDependencyResolver resolver = new(path);
     readonly string directory = Path.GetDirectoryName(path)!;
@@ -52,8 +52,8 @@ sealed class PluginContext(string path, bool inspect = false) : AssemblyLoadCont
             return typeof(OpenTabletDriver.Configurations.ReportParserProvider).Assembly;
         if (name.Name == typeof(OpenTabletDriver.Driver).Assembly.GetName().Name)
             return typeof(OpenTabletDriver.Driver).Assembly;
-        if (name.Name == typeof(OpenTabletDriver.Interop.SystemInterop).Assembly.GetName().Name)
-            return typeof(OpenTabletDriver.Interop.SystemInterop).Assembly;
+        if (name.Name == typeof(OpenTabletDriver.Native.Windows.Windows).Assembly.GetName().Name)
+            return typeof(OpenTabletDriver.Native.Windows.Windows).Assembly;
         if (name.Name == typeof(OpenTabletDriver.Desktop.Contracts.IDriverDaemon).Assembly.GetName().Name)
             return typeof(OpenTabletDriver.Desktop.Contracts.IDriverDaemon).Assembly;
         string? dependency = resolver.ResolveAssemblyToPath(name);
@@ -69,7 +69,7 @@ sealed class PluginContext(string path, bool inspect = false) : AssemblyLoadCont
         string? identity = AssemblyName.GetAssemblyName(file).FullName;
         foreach (Assembly shared in new[] { typeof(ITabletReport).Assembly,
             typeof(OpenTabletDriver.Configurations.ReportParserProvider).Assembly,
-            typeof(OpenTabletDriver.Driver).Assembly, typeof(OpenTabletDriver.Interop.SystemInterop).Assembly,
+            typeof(OpenTabletDriver.Driver).Assembly, typeof(OpenTabletDriver.Native.Windows.Windows).Assembly,
             typeof(OpenTabletDriver.Desktop.Contracts.IDriverDaemon).Assembly })
             if (shared.FullName == identity) return shared;
         var loaded = Assemblies.FirstOrDefault(assembly => assembly.FullName == identity);
@@ -156,6 +156,9 @@ sealed class Instance : IDisposable
     int emissionCount;
     int consuming;
     int asyncEmission;
+    int disposed;
+    Action<IDeviceReport?>? asyncSink;
+    Action? asyncReset;
     Action<IDeviceReport>? graphContinuation;
     // Timers injected into [Resolved] ITimer members. The report thread fires
     // them, so timer emissions continue the graph on the thread that owns it.
@@ -185,6 +188,7 @@ sealed class Instance : IDisposable
                     throw new InvalidOperationException("Pipeline timers must be acquired on the graph's owning thread.");
                 var timer = new SessionTimer(); timers.Add(timer); return timer;
             });
+            services.ConfigureSource(config);
             services.Inject(type, created);
             providerTimers = services.ProviderInjected;
             ApplySettings(type, created, config["settings"] as JObject ?? new JObject());
@@ -294,10 +298,24 @@ sealed class Instance : IDisposable
         return new TabletReference(configuration, identifiers);
     }
 
+    // Installed once after graph construction, detached before graph retirement.
+    // Legacy sample-only callers retain their explicit unsupported-async result.
+    internal void AttachAsyncSink(Action<IDeviceReport?>? sink, Action? reset = null)
+    {
+        Volatile.Write(ref asyncReset, reset);
+        Volatile.Write(ref asyncSink, sink);
+        if (sink != null) Interlocked.Exchange(ref asyncEmission, 0);
+    }
+
     void OnEmit(IDeviceReport? value)
     {
+        if (Volatile.Read(ref disposed) != 0) return;
         if (Environment.CurrentManagedThreadId != ownerThread || Volatile.Read(ref consuming) == 0)
-        { Interlocked.Exchange(ref asyncEmission, 1); return; }
+        {
+            if (Volatile.Read(ref asyncSink) is { } sink) sink(value);
+            else Interlocked.Exchange(ref asyncEmission, 1);
+            return;
+        }
         if (graphContinuation is { } continuation)
         {
             continuation(value ?? throw new InvalidOperationException("A filter emitted a null report."));
@@ -341,8 +359,8 @@ sealed class Instance : IDisposable
     public void ConsumeGraph(IDeviceReport report, Action<IDeviceReport> continuation)
     {
         using var reportScope = ServiceClient.Report();
-        if (Environment.CurrentManagedThreadId != ownerThread || Volatile.Read(ref asyncEmission) != 0)
-            throw new NotSupportedException("Asynchronous plugin emissions require the P05 scheduler.");
+        if (Environment.CurrentManagedThreadId != ownerThread)
+            throw new InvalidOperationException("Graph consumption must run on its owning thread.");
         // Owner-thread state, as in TickGraph: no locked instruction per report.
         if (consuming != 0)
             throw new InvalidOperationException("Reentrant consumption of the same filter is unsupported.");
@@ -351,8 +369,6 @@ sealed class Instance : IDisposable
         try
         {
             filter.Consume(report);
-            if (Volatile.Read(ref asyncEmission) != 0)
-                throw new NotSupportedException("Asynchronous plugin emissions require the P05 scheduler.");
         }
         finally
         {
@@ -407,6 +423,7 @@ sealed class Instance : IDisposable
     public void Reset(ReadOnlySpan<byte> raw)
     {
         using var reportScope = ServiceClient.Report();
+        Volatile.Read(ref asyncReset)?.Invoke();
         // OTD filters receive a range-loss report; they decide how to reset.
         // A fresh boxed struct and raw array keep retained loss reports stable.
         byte[] ownedRaw = new byte[raw.Length];
@@ -421,6 +438,8 @@ sealed class Instance : IDisposable
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref disposed, 1) != 0) return;
+        AttachAsyncSink(null);
         filter.Emit -= OnEmit;
         try { HostServices.DisposePlugin(filter); }
         finally
@@ -507,6 +526,7 @@ sealed class ToolInstance : IDisposable
                 throw new NotSupportedException($"'{type.FullName}' is not an OpenTabletDriver tool.");
             created = HostServices.Construct(type) ?? throw new InvalidOperationException("Cannot construct tool");
             tool = (OpenTabletDriver.Plugin.ITool)created;
+            services.ConfigureSource(config);
             services.Inject(type, created);
             Instance.ApplySettings(type, created, config["settings"] as JObject ?? new JObject());
             HostServices.Complete(type, created, tablet: null);
@@ -517,7 +537,7 @@ sealed class ToolInstance : IDisposable
         {
             try { HostServices.DisposePlugin(created); }
             catch (Exception error) { Console.Error.WriteLine($".NET tool cleanup failed: {error.GetBaseException().Message}"); }
-            finally { services.Dispose(); context.Unload(); }
+            finally { try { services.Dispose(); } finally { context.Unload(); } }
             throw;
         }
     }
@@ -526,7 +546,7 @@ sealed class ToolInstance : IDisposable
     {
         using var setup = ServiceClient.Setup();
         try { tool.Dispose(); }
-        finally { services.Dispose(); context.Unload(); }
+        finally { try { services.Dispose(); } finally { context.Unload(); } }
     }
 }
 

@@ -72,6 +72,7 @@ unsafe class GraphProbe
     static void Main(string[] args)
     {
         System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
+        if (args.Length > 2 && args[2] == "background") { BackgroundProbe.Run(args); return; }
         if (args.Length > 2 && args[2] == "contracts") { Contracts(args); return; }
         if (args.Length > 2 && args[2] == "registry") { RegistryProbe.Run(args); return; }
         if (args.Length > 2 && args[2] == "endpoints") { EndpointProbe.Run(args); return; }
@@ -134,7 +135,7 @@ unsafe class GraphProbe
             for (int i = 0; i < 10000; i++) graph.NextTickMicros();
             for (int trial = 0; trial < 3; trial++) {
                 long allocated = GC.GetAllocatedBytesForCurrentThread(), started = Stopwatch.GetTimestamp();
-                for (int i = 0; i < 100000; i++) if (graph.NextTickMicros() != -1) throw new Exception("Late timer should remain stopped");
+                for (int i = 0; i < 100000; i++) if (graph.NextTickMicros() is < 0 or > 10_000) throw new Exception("Late timer must retain bounded background-emission polling");
                 long elapsed = Stopwatch.GetTimestamp() - started, used = GC.GetAllocatedBytesForCurrentThread() - allocated;
                 Console.WriteLine($"deadline_with_timer trial={trial} bytes/query={used / 100000.0:F1} ns/query={elapsed * 1e9 / Stopwatch.Frequency / 100000:F1}");
             }

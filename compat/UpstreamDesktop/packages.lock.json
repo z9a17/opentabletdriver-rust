@@ -14,20 +14,6 @@
         "resolved": "14.0.0",
         "contentHash": "jGOuTH1l+TCpJH+fwYOp7USzHDuGfN1jKbLz3J2COwyn+wL08eynvpnM6rY2qkzIEXum3PN2p2QkP3BW/p9Qcw=="
       },
-      "OpenTabletDriver": {
-        "type": "Direct",
-        "requested": "[0.6.7, 0.6.7]",
-        "resolved": "0.6.7",
-        "contentHash": "8A6Nm8bpJ3GqiiwAb4p4lWGJspSLYgRP4yzB/dPGCoqwyvtslONXK5CCKCMjtodIgH9x6p7Z7YWQHUeJUDF0NA==",
-        "dependencies": {
-          "HidSharpCore": "1.3.0",
-          "Microsoft.Extensions.DependencyInjection": "10.0.1",
-          "Newtonsoft.Json": "13.0.4",
-          "OpenTabletDriver.Configurations": "0.6.7",
-          "OpenTabletDriver.Native": "0.6.7",
-          "OpenTabletDriver.Plugin": "0.6.7"
-        }
-      },
       "OpenTabletDriver.Configurations": {
         "type": "Direct",
         "requested": "[0.6.7, 0.6.7]",
@@ -160,7 +146,22 @@
         "type": "Transitive",
         "resolved": "8.0.0",
         "contentHash": "FHNOatmUq0sqJOkTx+UF/9YK1f180cnW5FVqnQMvYUN0elp6wFzbtPSiqbo1/ru8ICp43JM1i7kKkk6GsNGHlA=="
+      },
+      "opentabletdriver": {
+        "type": "Project",
+        "dependencies": {
+          "HidSharpCore": "[1.3.0, 1.3.0]",
+          "Microsoft.Extensions.DependencyInjection": "[10.0.1, 10.0.1]",
+          "Newtonsoft.Json": "[13.0.4, 13.0.4]",
+          "OpenTabletDriver.Configurations": "[0.6.7, 0.6.7]",
+          "OpenTabletDriver.Native": "[0.6.7, 0.6.7]",
+          "OpenTabletDriver.Plugin": "[0.6.7, 0.6.7]"
+        }
       }
-    }
+    },
+    "net8.0/linux-x64": {},
+    "net8.0/osx-arm64": {},
+    "net8.0/osx-x64": {},
+    "net8.0/win-x64": {}
   }
 }

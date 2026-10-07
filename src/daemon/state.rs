@@ -122,7 +122,13 @@ pub(super) struct Daemon {
     upstream_logs: VecDeque<(control::UpstreamLogMessage, usize)>,
     upstream_log_bytes: usize,
     update_reservation: Option<String>,
+    plugin_update: Option<crate::plugin_manager::UpdateReservation>,
+    tool_drain: Option<crate::tool_host::Completion>,
+    tool_resume: Option<crate::tool_host::Completion>,
     next_update: u64,
+    foreground_profile: Option<Profile>,
+    hosted_pipe:Option<String>,
+    hosted_rpc:Option<crate::dotnet::HostedRpc>,
 }
 
 impl Daemon {
@@ -157,7 +163,13 @@ impl Daemon {
             upstream_logs: VecDeque::new(),
             upstream_log_bytes: 0,
             update_reservation: None,
+            plugin_update: None,
+            tool_drain: None,
+            tool_resume: None,
             next_update: 0,
+            foreground_profile: None,
+            hosted_pipe:None,
+            hosted_rpc:None,
         }
     }
     fn log(&mut self, mut line: String) {
@@ -194,6 +206,14 @@ impl Daemon {
     }
     pub(super) fn scheduling_warning(&mut self, error: String) {
         self.log(format!("Experimental driver CPU affinity was not applied: {error}"));
+    }
+    pub(super) fn foreground(&mut self, profile: Profile) {
+        self.foreground_profile=Some(profile);
+    }
+    pub(super) fn host_rpc(&mut self,pipe:&str){self.hosted_pipe=Some(pipe.to_owned());}
+    pub(super) fn stop_hosted_rpc(&mut self)->Result<(),String>{
+        if let Some(rpc)=&mut self.hosted_rpc {rpc.stop()?;}
+        self.hosted_rpc=None;Ok(())
     }
     pub(crate) fn device_sessions(&self) -> Option<crate::device_sessions::Handle> {
         self.devices.as_ref().map(crate::companions::Supervisor::handle)
@@ -308,6 +328,7 @@ impl Daemon {
     fn update_ready(&self) -> bool {
         !self.stopping && self.worker.is_none() && self.pending.is_none()
             && self.retiring.is_none() && self.devices.is_none() && self.ownership.is_none()
+            && self.tool_drain.as_ref().is_some_and(|completion|matches!(completion.result(),Some(Ok(()))))
     }
     fn check_update_token(&self, token: &str) -> Result<(), ControlError> {
         if self.update_reservation.as_deref() != Some(token) {
@@ -389,6 +410,9 @@ impl Daemon {
         text: String,
         initial: bool,
     ) -> Result<Reply, ControlError> {
+        self.begin_with_saved(profile,text,initial,true)
+    }
+    fn begin_with_saved(&mut self,profile:Profile,text:String,initial:bool,prefer_saved:bool)->Result<Reply,ControlError>{
         if self.cancelled.load(Ordering::Acquire)
             || self.stopping
             || self.pending.is_some()
@@ -417,7 +441,7 @@ impl Daemon {
                 .map_err(|error| ControlError::new(ErrorCode::StartFailed, error))?);
         }
         let device_handle = self.devices.as_ref().unwrap().handle();
-        let worker = match Worker::spawn(profile.clone(), device_handle, initial && !device_start) {
+        let worker = match Worker::spawn(profile.clone(), device_handle, prefer_saved && initial && !device_start) {
             Ok(worker) => worker,
             Err(error) => {
                 if initial && !device_start {
@@ -1027,6 +1051,19 @@ mod upstream_log_tests {
 }
 
 impl ControlHandler for Daemon {
+    fn ready(&mut self)->std::io::Result<()>{
+        if let Some(pipe)=self.hosted_pipe.take(){
+            crate::original_driver::ensure_stopped()?;
+            self.hosted_rpc=Some(crate::dotnet::HostedRpc::start(&pipe).map_err(std::io::Error::other)?);
+        }
+        if let Some(profile)=self.foreground_profile.take(){
+            crate::plugins::validate_runtime_profile(&profile).map_err(std::io::Error::other)?;
+            profile.validate_filter_execution().map_err(std::io::Error::other)?;
+            let text=profile.to_toml().map_err(std::io::Error::other)?;
+            self.begin_with_saved(profile,text,true,false).map_err(|error|std::io::Error::other(error.message))?;
+        }
+        Ok(())
+    }
     fn poll(&mut self) {
         otd_core::debug::capture_poll();
         if self.cancelled.load(Ordering::Acquire)
@@ -1110,21 +1147,25 @@ impl ControlHandler for Daemon {
             Command::BeginUpdate { expected } => {
                 self.check_identity(&expected)?;
                 if self.update_reservation.is_some() { return Err(ControlError::new(ErrorCode::Busy, "another update is already reserved")); }
+                let plugin_update = crate::plugin_manager::reserve_update()
+                    .map_err(|error| ControlError::new(ErrorCode::Busy, error))?;
                 self.next_update = self.next_update.checked_add(1)
                     .ok_or_else(|| ControlError::new(ErrorCode::Internal, "update reservation sequence exhausted"))?;
                 let token = format!("{}:update:{}", self.instance, self.next_update);
+                self.tool_drain=Some(crate::tool_host::suspend().map_err(|error|ControlError::new(ErrorCode::StopFailed,error))?);
                 self.update_reservation = Some(token.clone());
+                self.plugin_update = Some(plugin_update);
                 if let Err(error) = self.stop_all() {
-                    self.update_reservation = None;
-                    return Err(ControlError::new(ErrorCode::StopFailed, error));
+                    self.remember_cleanup_error(error);
                 }
                 self.log("Update reserved; all tablet sessions and global tools are draining before installation.".into());
                 Ok(Reply::UpdateAccepted { token })
             }
             Command::UpdateStatus { token } => {
                 self.check_update_token(&token)?;
+                let tool_error=self.tool_drain.as_ref().and_then(|completion|completion.result()).and_then(Result::err);
                 Ok(Reply::UpdateState { token, ready: self.update_ready() && self.cleanup_error.is_none(),
-                    error: self.cleanup_error.clone() })
+                    error: self.cleanup_error.clone().or(tool_error) })
             }
             Command::FinishUpdate { token, success } => {
                 self.check_update_token(&token)?;
@@ -1135,7 +1176,17 @@ impl ControlHandler for Daemon {
                     self.log("Update staged and response delivered; shutting down the reserved daemon.".into());
                     Ok(Reply::ShutdownAccepted)
                 } else {
+                    if self.tool_resume.is_none(){self.tool_resume=Some(crate::tool_host::resume_previous()
+                        .map_err(|error|ControlError::new(ErrorCode::StopFailed,error))?);}
+                    match self.tool_resume.as_ref().and_then(|completion|completion.result()) {
+                        None=>return Err(ControlError::new(ErrorCode::Busy,"Global tool restoration is pending; retry FinishUpdate with this token")),
+                        Some(Err(error))=>return Err(ControlError::new(ErrorCode::StopFailed,format!("Global tool restoration failed: {error}"))),
+                        Some(Ok(()))=>{}
+                    }
                     self.update_reservation = None;
+                    self.plugin_update = None;
+                    self.tool_drain=None;
+                    self.tool_resume=None;
                     self.log("Update cancelled. Tablet input remains stopped; Start driver explicitly resumes it.".into());
                     Ok(Reply::UpdateCancelled)
                 }

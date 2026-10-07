@@ -24,6 +24,8 @@ pub type Callback = Box<dyn FnMut(u32, &PresetName) -> io::Result<()>>;
 struct Sink { inner: Box<dyn ActionSink>, request: Callback, inhibit: Option<u32> }
 pub fn wrap(inner: Box<dyn ActionSink>, request: Callback, inhibit: Option<u32>) -> Box<dyn ActionSink> { Box::new(Sink { inner, request, inhibit }) }
 impl ActionSink for Sink {
+    fn pointer_attributes(&mut self, attributes: otd_core::output::MouseAttributes) -> io::Result<()> { self.inner.pointer_attributes(attributes) }
+    fn flush_pointer(&mut self) -> io::Result<()> { self.inner.flush_pointer() }
     fn inhibited_binding(&self) -> Option<u32> { self.inhibit }
     fn supports_presets(&self) -> bool { true }
     fn preset(&mut self, owner: u32, name: &PresetName) -> io::Result<()> { (self.request)(owner, name) }

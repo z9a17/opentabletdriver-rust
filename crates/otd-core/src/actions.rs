@@ -26,6 +26,10 @@ pub struct ActionOwner {
 }
 
 /// Keyboard/Keypad usage ID from USB HID usage page 0x07, not an OS key code.
+/// The seven pinned media controls use `0x1000 | consumer_usage` as a synthetic
+/// domain within the existing u16 command ABI; they are not page-0x07 usages.
+/// Original logical keys use `0x2000 | VK`, `0x4000 | CGKeyCode`, or
+/// `0x8000 | evdev` in that same ABI.
 ///
 /// Values 0..=3 are reserved/no-key/error reports and cannot be held. Other IDs
 /// retain their portable identity; an adapter must reject unsupported usages.
@@ -42,8 +46,58 @@ impl KeyboardUsage {
     }
 
     pub const fn is_modifier(self) -> bool {
-        self.0 >= 0xe0 && self.0 <= 0xe7
+        (self.0 >= 0xe0 && self.0 <= 0xe7)
+            || matches!(self.windows_virtual_code(), Some(0x10..=0x12 | 0x5b..=0x5c | 0xa0..=0xa5))
+            || matches!(self.macos_virtual_code(),Some(54..=56 | 58..=62))
+            || matches!(self.linux_event_code(),Some(29 | 42 | 54 | 56 | 97 | 100 | 125 | 126))
     }
+
+    /// Original Windows keys are logical virtual keys; native usages remain
+    /// physical keys. This synthetic domain retains the u16 command ABI.
+    pub const fn windows_virtual_key(code: u16) -> Option<Self> {
+        if code > 0 && code <= 255 { Some(Self(0x2000 | code)) } else { None }
+    }
+    pub const fn windows_virtual_code(self) -> Option<u16> {
+        if self.0 > 0x2000 && self.0 <= 0x20ff { Some(self.0 & 0xff) } else { None }
+    }
+
+    /// CGKeyCode zero is the real A key; original None is handled as no-op
+    /// by the name resolver and must never erase this encoded identity.
+    pub const fn macos_virtual_key(code:u16)->Option<Self>{if code<128{Some(Self(0x4000|code))}else{None}}
+    pub const fn macos_virtual_code(self)->Option<u16>{if self.0>=0x4000&&self.0<0x4080{Some(self.0&0x7f)}else{None}}
+    pub const fn linux_event_key(code:u16)->Option<Self>{if code>0&&code<768{Some(Self(0x8000|code))}else{None}}
+    pub const fn linux_event_code(self)->Option<u16>{if self.0>0x8000&&self.0<0x8300{Some(self.0&0x3ff)}else{None}}
+
+    pub const fn consumer_key(self) -> Option<ConsumerKey> {
+        match self.0 {
+            0x10e2 => Some(ConsumerKey::Mute),
+            0x10e9 => Some(ConsumerKey::VolumeUp),
+            0x10ea => Some(ConsumerKey::VolumeDown),
+            0x10cd => Some(ConsumerKey::PlayPause),
+            0x10b6 => Some(ConsumerKey::PreviousSong),
+            0x10b5 => Some(ConsumerKey::NextSong),
+            0x10b7 => Some(ConsumerKey::StopSong),
+            _ => None,
+        }
+    }
+}
+
+/// The consumer controls exposed by the pinned original Windows keyboard.
+/// Adapters retain this identity for shared holds and select their actual
+/// platform key code; platforms may reject controls absent from their API.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u16)]
+pub enum ConsumerKey {
+    Mute = 0xe2,
+    VolumeUp = 0xe9,
+    VolumeDown = 0xea,
+    PlayPause = 0xcd,
+    PreviousSong = 0xb6,
+    NextSong = 0xb5,
+    StopSong = 0xb7,
+}
+impl ConsumerKey {
+    pub const fn keyboard_usage(self) -> KeyboardUsage { KeyboardUsage(0x1000 | self as u16) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

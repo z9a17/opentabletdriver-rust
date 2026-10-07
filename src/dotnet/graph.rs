@@ -382,8 +382,9 @@ impl Graph {
         if context.is_null() {
             return Err(super::last_error());
         }
-        // -2 means no injected timers exist. -1 merely means stopped, and
-        // must still be polled after a plugin starts its timer in Consume.
+        // -2 means neither timers nor background emissions are possible.
+        // Managed filters always retain polling capability, including ones
+        // which start a timer or emit from another thread after construction.
         let timer_capability = super::bridge()?
             .graph_next_tick
             .is_some_and(|query| unsafe { query(context) } != -2);
@@ -398,7 +399,7 @@ impl Graph {
         self.timer_capability = true;
         Ok(())
     }
-    /// Time until the next filter timer tick, or `None` without timers.
+    /// Time until a timer/background-emission tick, or `None` when idle.
     pub fn next_tick(&self) -> Option<std::time::Duration> {
         if !self.timer_capability {
             return None;
@@ -409,7 +410,7 @@ impl Graph {
             .map(std::time::Duration::from_micros)
     }
 
-    /// Fires due filter timers.
+    /// Replays owned background reports and fires due filter timers.
     ///
     /// # Safety
     /// As for `dispatch`: `scope` must be valid for every invocation of

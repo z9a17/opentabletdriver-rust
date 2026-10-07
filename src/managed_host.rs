@@ -22,6 +22,7 @@ struct NativeBackend {
 }
 
 pub struct Owner {
+    tools:Option<crate::tool_host::Owner>,
     host: Option<Host>,
     stop: Arc<AtomicBool>,
     observer: Option<JoinHandle<()>>,
@@ -36,6 +37,8 @@ impl Owner {
         // Malformed optional compatibility settings must not stop a native-only
         // driver. Their unavailable provider returns an explicit error later.
         let snapshot = Snapshot { version: 1, daemon_identity: Some(identity),
+            diagnostic_app_version: Some(env!("CARGO_PKG_VERSION").into()),
+            diagnostic_build_date: Some(env!("OTD_BUILD_DATE").into()),
             settings: crate::upstream_rpc::initial_original_settings().ok(),
             application_info: crate::upstream_rpc::original_application_info().ok(),
             configurations, tablets: Some(json!([])), ..Snapshot::default() };
@@ -66,11 +69,14 @@ impl Owner {
             }
         }).map_err(|error| error.to_string())?;
         let _ = backend.observer_thread.set(observer.thread().clone());
-        Ok(Self { host: Some(host), stop, observer: Some(observer), backend })
+        let tools=crate::tool_host::Owner::start()?;
+        if let Some(settings)=crate::upstream_rpc::cached_original_settings() {crate::tool_host::initialize_document((*settings).clone())?;}
+        Ok(Self { tools:Some(tools),host: Some(host), stop, observer: Some(observer), backend })
     }
 }
 impl Drop for Owner {
     fn drop(&mut self) {
+        drop(self.tools.take());
         self.stop.store(true, Ordering::Release);
         if let Some(observer) = self.observer.take() {
             observer.thread().unpark();
@@ -106,7 +112,7 @@ fn call(command: Command) -> Result<Reply, String> {
 impl NativeBackend {
     fn prime_metadata(&self) -> Result<(), String> {
         let mut state = self.published.lock().map_err(|_| "Managed snapshot lock poisoned")?;
-        state.snapshot.devices = crate::hid::enumerate_service_devices().ok().map(|devices| json!(devices));
+        state.snapshot.devices = service_devices().ok().map(|devices| json!(devices));
         state.last_devices = Some(Instant::now());
         state.snapshot.settings = crate::upstream_rpc::initial_original_settings().ok();
         state.snapshot.resynchronize = crate::upstream_rpc::original_resynchronize_epoch();
@@ -139,7 +145,7 @@ impl NativeBackend {
             state.projection_pending = false;
         }
         if force_devices || state.last_devices.is_none_or(|last| last.elapsed() >= Duration::from_secs(3)) {
-            state.snapshot.devices = crate::hid::enumerate_service_devices().ok().map(|devices| json!(devices));
+            state.snapshot.devices = service_devices().ok().map(|devices| json!(devices));
             state.last_devices = Some(Instant::now());
         }
         state.snapshot.logs = match call(Command::GetUpstreamLog) {
@@ -158,7 +164,23 @@ impl NativeBackend {
     fn daemon(&self, request: &Request) -> Result<Value, String> {
         let method = request.payload["method"].as_str().ok_or("Managed daemon request needs method")?;
         let params = request.payload.get("params").cloned().unwrap_or_else(|| json!([]));
+        if let Some(result) = crate::plugin_manager::invoke(method, &params, Some(&self.stopped))? { return Ok(result); }
         match method {
+            "InstallUpdate"=>crate::upstream_rpc::install_hosted_update(&params),
+            "FinishUpdate"=>crate::upstream_rpc::finish_hosted_update(),
+            "ForceResynchronize" if request.expected_source.is_some()=>{
+                let (id,generation)=request.expected_source.as_ref().unwrap();
+                if !request.payload.get("source_session").is_some_and(crate::shared_devices::live_source){
+                    return Err("Original source reader retired before resynchronization".into());
+                }
+                let sessions=match call(Command::ListDeviceSessions)?{Reply::DeviceSessions{sessions,..}=>sessions,_=>return Err("Unexpected source session reply".into())};
+                if !sessions.iter().any(|session|session.id==*id&&session.device_generation==*generation
+                    &&session.connected&&session.pending_generation.is_none()
+                    &&session.state==crate::device_sessions::SessionState::Running){
+                    return Err("Original source generation changed before resynchronization".into());
+                }
+                crate::upstream_rpc::invoke_original(method,&params)
+            }
             "SetSettings" | "ResetSettings" => {
                 let expected = request.expected_daemon.clone().ok_or("Native daemon identity unavailable; refresh before changing settings")?;
                 let settings = if method == "ResetSettings" { Value::Null } else {
@@ -174,14 +196,13 @@ impl NativeBackend {
                     request.expected_source.clone())?;
                 Ok(Value::Null)
             }
-            "SetTabletDebug" => Err("Managed IDriverDaemon.DeviceReport subscriptions are not supplied yet; use the native/full-rate RPC recording endpoint".into()),
-            "InstallUpdate" => Err("Managed update installation requires a persistent update owner; use the native panel update workflow".into()),
             _ => crate::upstream_rpc::invoke_original(method, &params),
         }
     }
     fn device_string(&self, payload: &Value) -> Result<Value, String> {
         let path = payload["path"].as_str().ok_or("Device string request needs endpoint path")?;
         let index = payload["index"].as_u64().and_then(|index| u8::try_from(index).ok()).ok_or("Device string index must be 0..255")?;
+        if let Some(result)=crate::shared_devices::device_string(path,index) { return result.map(|value|json!(value)); }
         let devices = crate::hid::enumerate_service_devices().map_err(|error| error.to_string())?;
         let device = devices.iter().find(|device| device["DevicePath"].as_str().is_some_and(|candidate| candidate.eq_ignore_ascii_case(path)))
             .ok_or("Device endpoint is no longer present")?;
@@ -194,9 +215,12 @@ impl NativeBackend {
     }
 }
 impl Backend for NativeBackend {
+    fn maintain(&self,lane:usize){if lane==4{crate::managed_inputs::maintain();}}
+    fn shutdown(&self,lane:usize){if lane==4{crate::managed_inputs::shutdown();}}
     fn execute(&self, request: Request) -> Result<Value, String> {
         if self.stopped.load(Ordering::Acquire) { return Err("Managed native owner is stopping".into()); }
         let result = match request.operation {
+            Operation::InputHold|Operation::InputRelease=>return crate::managed_inputs::execute(request.operation,request.scope,&request.payload),
             Operation::Daemon => self.daemon(&request),
             Operation::Detect => crate::upstream_rpc::invoke_original("DetectTablets", &json!([])).and_then(|tablets| {
                 let tablets = tablets.as_array().ok_or("Native detection did not return a tablet collection")?;
@@ -205,14 +229,48 @@ impl Backend for NativeBackend {
             Operation::DeviceString => self.device_string(&request.payload),
             Operation::Snapshot => Err("Snapshot requests are served by the managed service cache".into()),
             Operation::OpenStream | Operation::ReadStream | Operation::WriteStream | Operation::GetFeature
-                | Operation::SetFeature | Operation::CloseStream => Err("Plugin-owned endpoint streams and feature/write access are not supplied by this native owner; native session readers retain endpoint ownership".into()),
+                | Operation::SetFeature | Operation::CloseStream | Operation::DeviceReports | Operation::OutputOwner =>
+                    return crate::shared_devices::execute(request.operation,request.scope,&request.payload),
         };
         // Successful admission was never reported as application. Publish the
         // actual result state before the ticket becomes a completed response.
-        if result.is_ok() {
+        if result.is_ok() && matches!(request.operation, Operation::Daemon | Operation::Detect) {
             self.refresh(true, matches!(request.operation, Operation::Detect), true)
                 .map_err(|error| format!("Managed operation completed, but state refresh failed: {error}; query state before retrying"))?;
         }
         result
     }
+}
+pub fn publish_owned_devices() {
+    if let Some(backend)=CURRENT.get_or_init(||Mutex::new(Weak::new())).lock().ok().and_then(|value|value.upgrade()) {
+        if let Ok(devices)=service_devices() { if let Ok(mut state)=backend.published.lock() {
+            state.snapshot.devices=Some(json!(devices));
+            state.snapshot.version=state.snapshot.version.saturating_add(1);
+            if let Some(publisher)=&state.publisher {let _=publisher.publish(state.snapshot.clone());}
+        } }
+    }
+}
+fn service_devices()->Result<Vec<Value>,String> {
+    let discovered=crate::hid::enumerate_service_devices().map_err(|error|error.to_string())?;
+    let mut devices=Vec::new();
+    let owned=crate::shared_devices::owned_metadata();
+    // Current and prepared readers can share an endpoint path. Keep each
+    // concrete reader generation available for exact scoped dependency lookup.
+    for device in &discovered {
+        if !owned.iter().any(|owned|device["DevicePath"].as_str().zip(owned["DevicePath"].as_str())
+            .is_some_and(|(a,b)|a.eq_ignore_ascii_case(b))) {devices.push(device.clone());}
+    }
+    for owned in owned {
+        if let Some(device)=discovered.iter().find(|device|device["DevicePath"].as_str().zip(owned["DevicePath"].as_str())
+            .is_some_and(|(a,b)|a.eq_ignore_ascii_case(b))) {
+            let mut device=device.clone();
+            if let Some(object)=device.as_object_mut() { object.extend(owned.as_object().unwrap().clone()); object.insert("CanOpen".into(),json!(true)); }
+            devices.push(device);
+        } else {
+            let mut device=owned;
+            if let Some(object)=device.as_object_mut(){object.insert("CanOpen".into(),json!(true));}
+            devices.push(device);
+        }
+    }
+    Ok(devices)
 }

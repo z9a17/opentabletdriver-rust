@@ -118,7 +118,11 @@ namespace OpenTabletDriver.Desktop.Interop
             _ => null
         };
 
-        public static IVirtualScreen VirtualScreen => virtualScreen ??= CurrentPlatform switch
+        public static IVirtualScreen VirtualScreen => virtualScreen ??= CreateHostedDisplaySnapshot();
+
+        // Cold, read-only host enumeration uses a fresh original provider without
+        // replacing the public cached screen or constructing any input service.
+        internal static IVirtualScreen CreateHostedDisplaySnapshot() => CurrentPlatform switch
         {
             PluginPlatform.Windows => new WindowsDisplay(),
             PluginPlatform.Linux => ConstructLinuxDisplay(),

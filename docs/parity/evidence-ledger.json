@@ -13,7 +13,7 @@
       "release": null,
       "evidence": [],
       "blockers": [
-        "The registry identifies 25 Partial parser types, including 23 new stateless dispatchers. Live execution remains PTH-660; remaining parser coverage and current execution evidence are open."
+        "Pinned/current catalogs, override validation, native referenced parsers and original parser extensions; current hardware qualification is pending. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-02": {
@@ -52,7 +52,7 @@
         }
       ],
       "blockers": [
-        "Live Windows matching is now implemented for the supported PTH-660 path; new matching/ambiguity/override behavior has no current hardware validation."
+        "Endpoint metadata/string/attribute matching and actual opened identifiers on Windows, Linux and macOS; device-specific matching evidence is pending. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-03": {
@@ -62,7 +62,7 @@
       "release": null,
       "evidence": [],
       "blockers": [
-        "Selected HID initialization is implemented; current hardware validation is pending. Partial failures abort the session, and synchronous HID string/feature calls cannot be cancelled in flight."
+        "Real existing-handle feature/output/string initialization with failure cleanup; cancellation is bounded by the underlying platform call. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-04": {
@@ -87,7 +87,7 @@
         }
       ],
       "blockers": [
-        "Live physical identity now pairs PTH-660 collections, but auxiliary reading and current physical pairing evidence remain open."
+        "Independent paired primary/auxiliary sources, physical identity and mixed native/custom endpoints; physical pairing evidence is pending. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-05": {
@@ -96,7 +96,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Independent device profiles, pipelines, generations and guarded selected-device controls; simultaneous hardware qualification is pending. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
+      ]
     },
     "CAP-06": {
       "state": "open",
@@ -104,7 +106,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Windows HID/WinUSB, Linux hidraw, macOS IOKit and original custom hubs; wireless/transport hardware qualification is pending. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
+      ]
     },
     "CAP-07": {
       "state": "open",
@@ -112,7 +116,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Cancellation, reconnect supervision, prepare/retire/activate and retained cleanup failures; sleep and repeated-reconnect evidence is pending. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
+      ]
     },
     "CAP-08": {
       "state": "open",
@@ -121,7 +127,7 @@
       "release": null,
       "evidence": [],
       "blockers": [
-        "Bounded native report types and owned managed pen reports are implemented; wider reports, non-position mutation propagation and current integration/hardware evidence remain open."
+        "Native report values, actual original parser reports, concrete managed type identity, owned raw data and downstream mutations. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-09": {
@@ -131,7 +137,7 @@
       "release": null,
       "evidence": [],
       "blockers": [
-        "Bounded report values and offline auxiliary/mouse/wheel/touch decoders are implemented. Live auxiliary reading, routing/output and current report/hardware evidence remain open."
+        "Auxiliary, mouse/puck, analog, wheel and touch report routing, unchanged output/binding extensions and source-aware debugging. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-10": {
@@ -156,7 +162,7 @@
         }
       ],
       "blockers": [
-        "23 additional stateless dispatchers and 27 offline decoder names are implemented. New differential, malformed-input, captured-report and hardware evidence remain open; historical IntuosV2 checks do not cover these paths."
+        "Native parser variants plus unchanged original parser registry/DI, bounded malformed/unknown handling; current differential/hardware checks are unrun. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-11": {
@@ -181,7 +187,9 @@
           "fixture_sha256": "bcf1eef659a1964e41883abf36c4f399df41f59c81ff9981c04eb395cbd0a19d"
         }
       ],
-      "blockers": []
+      "blockers": [
+        "Absolute areas, rotation, clipping and limiting shared with platform output; current display/hardware evidence is pending. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
+      ]
     },
     "CAP-12": {
       "state": "open",
@@ -205,7 +213,9 @@
           "fixture_sha256": "bcf1eef659a1964e41883abf36c4f399df41f59c81ff9981c04eb395cbd0a19d"
         }
       ],
-      "blockers": []
+      "blockers": [
+        "Relative sensitivity, rotation, carry and reset semantics; current behavior/hardware checks are unrun. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
+      ]
     },
     "CAP-13": {
       "state": "open",
@@ -228,7 +238,7 @@
         }
       ],
       "blockers": [
-        "Cross-platform display implementation is source reviewed; native Linux/macOS and current topology/DPI evidence remain open."
+        "Platform display discovery and original virtual-screen services; native topology/DPI/application qualification is pending. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-14": {
@@ -267,7 +277,7 @@
         }
       ],
       "blockers": [
-        "Native threshold/drag policies are source reviewed; unchanged binding extensions and current execution/hardware evidence remain open."
+        "Adaptive contact/eraser thresholds, drag policies and native/original binding routes; current physical validation is pending. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-15": {
@@ -291,7 +301,7 @@
         }
       ],
       "blockers": [
-        "Native button/chord/wheel/scroll implementations are source reviewed; extension bindings, all-device routing and runtime evidence remain open."
+        "Pen/auxiliary/mouse/wheel/scroll/chord routes with platform writers and original logical key handling; current OS delivery evidence is pending. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-16": {
@@ -300,7 +310,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Native guarded preset/toggle actions, original PresetBinding and unchanged managed binding types, including foreground service ownership. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
+      ]
     },
     "CAP-17": {
       "state": "open",
@@ -324,7 +336,7 @@
         }
       ],
       "blockers": [
-        "Fixed-capacity shared action ownership and a Windows adapter are implemented as foundations. Integration with all bindings and current failure/cleanup execution evidence remain open."
+        "Shared acknowledged native/original key/button/contact ownership, per-binding aliases, retained failed releases and cold idle retries. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-18": {
@@ -333,7 +345,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Native Windows/Linux/macOS mouse/keyboard/scroll plus original platform services, media keys and scoped holds; OS delivery evidence is pending. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
+      ]
     },
     "CAP-19": {
       "state": "open",
@@ -341,7 +355,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Pressure/tilt/eraser/proximity policy and actual supported pointer capabilities, flush/reset and unchanged output modes. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
+      ]
     },
     "CAP-20": {
       "state": "open",
@@ -349,7 +365,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Native Linux Artist Mode and actual original virtual-tablet/pad services; native Linux application/hardware checks are unrun. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
+      ]
     },
     "CAP-21": {
       "state": "open",
@@ -357,7 +375,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Native synthetic pen and unchanged managed output-mode hosting; original Ink/VMulti plugins keep their external-driver prerequisites and remain unqualified. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
+      ]
     },
     "CAP-22": {
       "state": "open",
@@ -366,7 +386,7 @@
       "release": null,
       "evidence": [],
       "blockers": [
-        "Schema-1 profiles preserve complete OTD source documents and profile collections; full executable settings/tool coverage and current round-trip execution evidence remain open."
+        "Native revisions and original full profile/tool/store collections, retained disconnected rows and exact registry constructor defaults. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-23": {
@@ -376,7 +396,7 @@
       "release": null,
       "evidence": [],
       "blockers": [
-        "New imports honor Enable and preserve source/unknown values. Broader filter/store execution and current migration execution evidence remain open; historical evidence does not cover the new schema."
+        "Disabled entries/order/unknown data preserved; actual omitted/null constructor defaults and explicit unsupported projections. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-24": {
@@ -386,7 +406,7 @@
       "release": null,
       "evidence": [],
       "blockers": [
-        "Candidate preparation, quiesce, first-read commit and pre-commit rollback are implemented. Broader upstream apply/reset semantics and current runtime/cancellation/rollback execution evidence remain open; hardware writes and trusted plugin side effects are not undone."
+        "Guarded runtime apply/reset, candidate retirement/activation/rollback and source-scoped resynchronization; behavior checks are unrun. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-25": {
@@ -396,7 +416,7 @@
       "release": null,
       "evidence": [],
       "blockers": [
-        "Backup/conflict/recovery/portable relocation and offline named preset list/show/save/export are implemented. GUI selection, preset activation/bindings and current storage/crash/permission execution evidence remain open."
+        "Native/original presets and full collection load/save/default/reset/import/export with portable paths, revision/conflict guards and backups. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-26": {
@@ -406,7 +426,7 @@
       "release": null,
       "evidence": [],
       "blockers": [
-        "Shared conversions/validation, CLI previews and a graphical preview/unsaved-area conversion dialog are implemented. Upstream behavioral comparison, interactive/DPI and current execution evidence remain open."
+        "Shared area conversions, locks and numeric validation in CLI/native panel and original Unix frontends. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-27": {
@@ -416,7 +436,7 @@
       "release": null,
       "evidence": [],
       "blockers": [
-        "GUI now attaches/reconnects to the persistent daemon and detaches on close. Protocol-v1 migration is explicit; current lifecycle, startup-race and output-cleanup execution validation remain open."
+        "Separate native daemon ownership, foreground services, hidden panel startup, cleanup and owner-requested close policy. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-28": {
@@ -426,7 +446,7 @@
       "release": null,
       "evidence": [],
       "blockers": [
-        "Project protocol v2 adds guarded restart/configuration and background GUI reconnect. Upstream RPC/subscriptions and current IPC/security execution evidence remain open."
+        "Original RpcHost/Instance/service/events plus private native control/Console channels; unchanged-client integration is unrun. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-29": {
@@ -450,7 +470,7 @@
         }
       ],
       "blockers": [
-        "Guarded saves, active settings and Rust stdio are implemented; full upstream command/RPC equivalence and current execution evidence remain open."
+        "Pinned original command names/parameters, persistent Console, native aliases and packaged original Unix Console; see CLI_COMMAND_MATRIX.md. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-30": {
@@ -474,7 +494,7 @@
         }
       ],
       "blockers": [
-        "Full-rate capture, sampled fallback, diagnostics and indexed strings are source reviewed; runtime/performance/hardware and upstream TXT compatibility remain open."
+        "Native capture/logs, original typed diagnostics file/clipboard, source-scoped report events and cancellable device-string dialog. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-31": {
@@ -484,7 +504,7 @@
       "release": null,
       "evidence": [],
       "blockers": [
-        "The bounded 0.16.3 disconnected-canvas correction is documented in docs/DISCONNECTED_TABLET_AREA.md. Broader U02 conversion/lock, interactive UI and physical reconnect evidence remain open; no full capability verification is claimed."
+        "Windows native area/display editors and original Unix frontend editors; absent hardware leaves the tablet preview empty. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-32": {
@@ -508,7 +528,7 @@
         }
       ],
       "blockers": [
-        "Typed tools, pen policies, mouse buttons and scroll controls are source reviewed; interactive theme/DPI and hardware evidence remain open."
+        "Windows output/pen/aux/mouse/wheel/filter/tool editors and original Gtk/Eto controls; current UI qualification is pending. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-33": {
@@ -562,7 +582,7 @@
         }
       ],
       "blockers": [
-        "Historical tests cover labels, units, tooltips, null editing, filter ordering and filter defaults. The v0.7.14 omitted-property, enum/scalar validation, per-property default and JSON-switch additions compiled and were statically reviewed, but no local tests or interactive UI checks were run at the owner's request. Actions, dynamic validation and broader plugin controls remain open. Native DLLs do not expose a defaults contract."
+        "Actual registered class/default/property/choice/action metadata and typed editors; owner-requested Windows presentation exclusions remain documented. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-34": {
@@ -571,7 +591,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Detected physical-session selection and per-device settings/visibility; interactive multi-device evidence is pending. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
+      ]
     },
     "CAP-35": {
       "state": "open",
@@ -579,7 +601,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Setup/help guide, paginated tray presets, opt-in startup, watchdog/reconnect and guarded update UI; interactive evidence is pending. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
+      ]
     },
     "CAP-36": {
       "state": "open",
@@ -587,7 +611,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Native Windows panel plus pinned Gtk/macOS Eto frontends and RID-correct launchers; native UI/accessibility qualification is pending. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
+      ]
     },
     "CAP-37": {
       "state": "open",
@@ -611,7 +637,7 @@
         }
       ],
       "blockers": [
-        "Broader assembly dependencies, supported plugin categories, catalog-wide unchanged binaries, and cross-platform discovery remain open."
+        "Actual pinned public helper assemblies, installed registry/dependency contexts, platform/ignore rules and leased generations; unchanged corpus execution is unrun. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-38": {
@@ -680,7 +706,7 @@
         }
       ],
       "blockers": [
-        "Scoped exact-Type provider/display/timer injection is source reviewed; real driver/device/input services and unchanged DLL execution remain open."
+        "Original constructor stores/defaults, property/field injection, additional registered services and dependency callbacks. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-39": {
@@ -690,7 +716,7 @@
       "release": null,
       "evidence": [],
       "blockers": [
-        "Managed graph retains emitted object identity and supported capability mutations downstream. Concrete input vendor types, general binding output and current managed performance/integration evidence remain open."
+        "Concrete original parser/report types, owned raw/data fields, synchronous identity/mutations and bounded async concrete snapshots. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-40": {
@@ -700,7 +726,7 @@
       "release": null,
       "evidence": [],
       "blockers": [
-        "Synchronous zero/one/multiple Emit graph, post-filter contact and relative PostTransform are implemented. Current suppression/multi-emission/error/plugin execution evidence and general binding integration remain open."
+        "PreTransform/PostTransform zero/one/multiple traversal, managed output pipeline elements and owner-thread downstream continuations. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-41": {
@@ -724,7 +750,7 @@
         }
       ],
       "blockers": [
-        "Managed async/timer infrastructure is present; arbitrary timer/thread lifetime, unchanged binary corpus and performance evidence remain open."
+        "Timer and foreign-thread emission scheduling with owned bounded FIFO, ordering, generation invalidation and explicit overflow cleanup; runtime fixtures are unrun. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-42": {
@@ -748,7 +774,7 @@
         }
       ],
       "blockers": [
-        "Tools load/init/dispose and have a typed editor; unchanged output-mode and binding/state-binding contracts remain missing."
+        "Unchanged output modes, bindings/state bindings and tools through actual services, scoped input ownership and exact retirement receipts. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-43": {
@@ -757,7 +783,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Actual Driver/InputDeviceTree/InputDevice/RootHub/hub providers, source readers, shared streams/I/O, custom endpoints and original platform services. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
+      ]
     },
     "CAP-44": {
       "state": "open",
@@ -780,7 +808,7 @@
         }
       ],
       "blockers": [
-        "Bounded local/online archive and full-identity catalog workflows are source reviewed; runtime installation and binary execution evidence remain open."
+        "Shared bounded local/catalog install/update/remove, original manager methods, journal recovery, locked preconditions and fresh registry publication. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-45": {
@@ -789,7 +817,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Leased registry/context reload and actual reader/timer/callback/tool/output retirement receipts, including failed constructors; fault/timeout checks are unrun. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
+      ]
     },
     "CAP-46": {
       "state": "open",
@@ -849,7 +879,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "GNU Linux multi-device daemon, hidraw/uinput Artist Mode, original managed services/Gtk UX/Console, auxiliary/custom endpoints and setup; native acceptance is unrun. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
+      ]
     },
     "CAP-48": {
       "state": "open",
@@ -872,7 +904,7 @@
         }
       ],
       "blockers": [
-        "Indexed USB strings, layout refresh and native scroll are source reviewed; macOS GUI/daemon/plugins/drawing and native hardware/runtime evidence remain open. No native macOS test machine is available to the owner."
+        "Both macOS architectures, native IOKit/CoreGraphics, managed services/Eto UX/Console, auxiliary/custom sources and original mouse/keyboard contracts; native acceptance is unrun. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
       ]
     },
     "CAP-49": {
@@ -881,7 +913,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Four platform packages with managed dependency closure, scoped setup and guarded resource-draining updater; installed update/launch checks are unrun. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
+      ]
     },
     "CAP-50": {
       "state": "open",
@@ -889,7 +923,9 @@
       "pull_request": null,
       "release": null,
       "evidence": [],
-      "blockers": []
+      "blockers": [
+        "Same-merged-commit archives, architecture/hash/source/dependency/license provenance; CI and acceptance suites are disabled/deferred by owner instruction. Current release acceptance remains deferred; see docs/parity/IMPLEMENTATION_0.18.md."
+      ]
     },
     "CAP-51": {
       "state": "open",

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
@@ -14,6 +15,15 @@ namespace OpenTabletDriver.Desktop.Diagnostics
 {
     public class DiagnosticInfo
     {
+        internal static Func<string> HostedAppVersion;
+        internal static Func<string> HostedBuildDate;
+        private static string GetBuildDate()
+        {
+            if (Assembly.GetEntryAssembly() == null && HostedBuildDate != null) return HostedBuildDate();
+            var attribute = typeof(BuildDateAttribute).Assembly.GetCustomAttribute<BuildDateAttribute>();
+            if (attribute != null) return attribute.BuildDate;
+            return HostedBuildDate?.Invoke() ?? throw new InvalidOperationException("Build provenance is unavailable.");
+        }
         public DiagnosticInfo(IEnumerable<LogMessage> log, IEnumerable<SerializedDeviceEndpoint> devices)
         {
             ConsoleLog = log;
@@ -24,7 +34,7 @@ namespace OpenTabletDriver.Desktop.Diagnostics
         public string AppVersion { private set; get; } = GetAppVersion();
 
         [JsonProperty("Build Date")]
-        public string BuildDate { private set; get; } = typeof(BuildDateAttribute).Assembly.GetCustomAttribute<BuildDateAttribute>().BuildDate;
+        public string BuildDate { private set; get; } = GetBuildDate();
 
         [JsonProperty("Operating System")]
         public static OSInfo OperatingSystem => OSInfo.GetOSInfo();
@@ -40,7 +50,10 @@ namespace OpenTabletDriver.Desktop.Diagnostics
 
         private static string GetAppVersion()
         {
-            string version = Assembly.GetEntryAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>().InformationalVersion;
+            var entry = Assembly.GetEntryAssembly();
+            if (entry == null)
+                return HostedAppVersion?.Invoke() ?? throw new InvalidOperationException("Native application provenance is unavailable.");
+            string version = entry.GetCustomAttribute<AssemblyInformationalVersionAttribute>().InformationalVersion;
             return $"OpenTabletDriver v{version}";
         }
 

@@ -73,6 +73,11 @@ pub enum Read<'a> {
 
 /// A device endpoint that delivers input reports.
 pub trait ReportSource {
+    /// A hosted original OutputMode may take exclusive authority after native
+    /// actions have been released. Sources wake next() when this changes.
+    fn native_output_enabled(&self) -> bool { true }
+    fn output_started(&self) {}
+    fn output_acknowledged(&self, _enabled: bool) {}
     fn shared_output(&self) -> bool {
         false
     }
@@ -438,20 +443,32 @@ pub fn run_gated_with_endpoints(
     if !gate()? {
         return Ok(());
     }
+    source.output_started();
+    let mut native_output = true;
+    source.output_acknowledged(native_output);
 
     eprintln!("Tablet connected: {}", source.label());
     status("Tablet connected; receiving pen input");
     let outcome = (|| -> io::Result<()> {
         loop {
+            let requested_output = source.native_output_enabled();
+            if requested_output != native_output {
+                pipeline.release_all(&mut send).map_err(|error| io::Error::other(OutputCleanupError(error)))?;
+                filters.reset();
+                decoder.reset();
+                if let Some(decoder)=auxiliary.as_deref_mut() { decoder.reset(); }
+                native_output=requested_output;
+                source.output_acknowledged(native_output);
+            }
             // Timer-driven filters tick on this thread, between reads.
             let filter_tick = match mode {
-                Mode::Driver if pipeline.is_relative() || layout.mapper.is_some() => {
+                Mode::Driver if native_output && (pipeline.is_relative() || layout.mapper.is_some()) => {
                     filters.next_tick()
                 }
                 Mode::Driver => None,
                 Mode::Capture { .. } => None,
             };
-            let binding_tick = if matches!(mode, Mode::Driver) { pipeline.next_binding_tick(source.now()) } else { None };
+            let binding_tick = if native_output && matches!(mode, Mode::Driver) { pipeline.next_binding_tick(source.now()) } else { None };
             let mut tick = filter_tick.into_iter().chain(binding_tick).min();
             if pipeline.needs_cleanup() || tick.is_some_and(|wait| wait.is_zero()) {
                 let mut output = |packet| {
@@ -488,10 +505,10 @@ pub fn run_gated_with_endpoints(
                 // Always reach the input/stop poll after one tick, even if a
                 // slow or failed timer still reports an overdue deadline.
                 let filter_tick = match mode {
-                    Mode::Driver if pipeline.is_relative() || layout.mapper.is_some() => filters.next_tick(),
+                    Mode::Driver if native_output && (pipeline.is_relative() || layout.mapper.is_some()) => filters.next_tick(),
                     _ => None,
                 };
-                let binding_tick = if matches!(mode, Mode::Driver) { pipeline.next_binding_tick(source.now()) } else { None };
+                let binding_tick = if native_output && matches!(mode, Mode::Driver) { pipeline.next_binding_tick(source.now()) } else { None };
                 tick = filter_tick.into_iter().chain(binding_tick).min();
             }
             let timeout = match mode {
@@ -553,6 +570,7 @@ pub fn run_gated_with_endpoints(
             }
             counters.read += 1;
             crate::debug::record_at(bytes, ready, from_auxiliary);
+            if !native_output && matches!(mode, Mode::Driver) { continue; }
             let decoded = match auxiliary.as_deref_mut() {
                 Some(decoder) if from_auxiliary => decoder.decode_input(bytes),
                 _ => decoder.decode_input(bytes),

@@ -8,6 +8,10 @@ use std::io;
 use std::ptr;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use otd_platform::shared_device_io::{ReaderServices,ServiceCall,RequestKind,SharedIo};
+use otd_platform::shared_devices::{Registration,OutputGate};
+use otd_platform::managed_services::Operation;
 use std::time::{Duration, Instant};
 
 use otd_core::display::{DisplayFingerprint, DisplaySnapshot};
@@ -26,7 +30,7 @@ const QUEUE: usize = 32;
 const UTF8: u32 = 0x0800_0100;
 const LISTEN_EVENT: u32 = 1;
 
-struct Owned(ffi::Ref);
+pub(crate) struct Owned(pub(crate) ffi::Ref);
 impl Drop for Owned {
     fn drop(&mut self) {
         if !self.0.is_null() {
@@ -150,6 +154,15 @@ fn check_discovery(stop: Option<&AtomicBool>, deadline: Option<Instant>) -> io::
 
 /// Enumerates services without opening unrelated keyboards or pointing devices.
 /// Registry IDs identify live endpoints; the USB parent identifies the tablet.
+/// Actual IOKit HID properties preserve null when the endpoint omits one.
+pub fn rpc_inventory(devices:&[Device])->serde_json::Value{
+    let mut inventory=otd_platform::daemon::inventory(&devices.iter().map(|device|device.endpoint.clone()).collect::<Vec<_>>());
+    for(value,device)in inventory.as_array_mut().unwrap().iter_mut().zip(devices){let hid=device.handle.0.cast_mut();
+        value["Transport"]=serde_json::json!(string(property(hid,"Transport")));
+        value["Manufacturer"]=serde_json::json!(string(property(hid,"Manufacturer")));value["ProductName"]=serde_json::json!(string(property(hid,"Product")));value["SerialNumber"]=serde_json::json!(string(property(hid,"SerialNumber")));
+    }inventory
+}
+
 pub fn enumerate(database: &Database, stop: Option<&AtomicBool>, deadline: Option<Instant>) -> io::Result<Vec<Device>> {
     let mut iterator = 0;
     // SAFETY: IOServiceMatching returns a dictionary consumed by matching.
@@ -166,7 +179,9 @@ pub fn enumerate(database: &Database, stop: Option<&AtomicBool>, deadline: Optio
         let handle = Owned(unsafe { ffi::IOHIDDeviceCreate(ptr::null(), service.0) }.cast_const());
         if handle.0.is_null() { continue; }
         let hid = handle.0.cast_mut();
-        if string(property(hid, "Transport")).as_deref() != Some("USB") { continue; }
+        let transport_name=string(property(hid,"Transport"));
+        let transport=match transport_name.as_deref(){Some("USB")=>Transport::UsbHid,
+            Some("Bluetooth"|"BluetoothLowEnergy")=>Transport::BluetoothHid,_=>continue};
         let Some(vendor) = number(property(hid, "VendorID")).and_then(|id| u16::try_from(id).ok()) else { continue; };
         let Some(product) = number(property(hid, "ProductID")).and_then(|id| u16::try_from(id).ok()) else { continue; };
         let data = property(hid, "ReportDescriptor");
@@ -179,7 +194,13 @@ pub fn enumerate(database: &Database, stop: Option<&AtomicBool>, deadline: Optio
         let mut registry_id = 0;
         if unsafe { ffi::IORegistryEntryGetRegistryEntryID(service.0, &mut registry_id) } != 0 { continue; }
         let mut attributes = BTreeMap::new();
-        let mut physical_id = format!("hid:{registry_id}");
+        // Apple's PhysicalDeviceUniqueID is the actual physical identity,
+        // unlike a display name or serial alone. Absent identity keeps endpoint
+        // registry IDs separate rather than merging distinct Bluetooth tablets.
+        let mut physical_id=if transport==Transport::BluetoothHid{
+            string(property(hid,"PhysicalDeviceUniqueID")).filter(|id|!id.is_empty())
+                .map(|id|format!("bluetooth:{id}")).unwrap_or_else(||format!("hid:{registry_id}"))
+        }else{format!("hid:{registry_id}")};
         let mut usb_parent = None;
         // Traverse only the retained parent chain, collecting actual interface
         // and USB-device identity; never assume descriptor string indices.
@@ -188,7 +209,7 @@ pub fn enumerate(database: &Database, stop: Option<&AtomicBool>, deadline: Optio
             if let Some(interface) = number(registry_property(current.0, "bInterfaceNumber").0) {
                 attributes.entry("USB_INTERFACE_NUMBER".into()).or_insert_with(|| interface.to_string());
             }
-            if number(registry_property(current.0, "idVendor").0).is_some() {
+            if transport==Transport::UsbHid&&number(registry_property(current.0, "idVendor").0).is_some() {
                 let mut parent_id = 0;
                 if unsafe { ffi::IORegistryEntryGetRegistryEntryID(current.0, &mut parent_id) } == 0 {
                     physical_id = format!("usb:{parent_id}");
@@ -203,7 +224,7 @@ pub fn enumerate(database: &Database, stop: Option<&AtomicBool>, deadline: Optio
         let mut device = Device {
             endpoint: Endpoint {
                 path: format!("IOHID:{registry_id}"), physical_id,
-                transport: Transport::UsbHid, vendor_id: vendor, product_id: product,
+                transport, vendor_id: vendor, product_id: product,
                 // Access is checked again immediately before opening. Unknown
                 // TCC status must not prevent discovery or permission requests.
                 can_open: unsafe { ffi::IOHIDCheckAccess(LISTEN_EVENT) } != 1,
@@ -211,7 +232,7 @@ pub fn enumerate(database: &Database, stop: Option<&AtomicBool>, deadline: Optio
                 feature_length: lengths.feature, strings: BTreeMap::new(),
                 attributes: Some(attributes),
             },
-            name: string(property(hid, "Product")).unwrap_or_else(|| "USB HID device".into()),
+            name: string(property(hid, "Product")).unwrap_or_else(|| "HID device".into()),
             handle, uses_report_ids: lengths.uses_report_ids, usb_parent, string_error: None,
         };
         // Request only indices declared by plausible configured tablet endpoints.
@@ -291,6 +312,12 @@ pub struct HidSource<'a> {
     // Buffers passed to asynchronous init calls stay alive through close even
     // on a timeout/stop. No subsequent write is issued before completion.
     pending_writes: Vec<Vec<u8>>,
+    services:Option<ReaderServices>, registration:Option<Registration>,
+    service:Option<Box<PendingService>>,
+}
+struct PendingService {call:ServiceCall,length:isize,offset:usize,done:bool,result:i32}
+unsafe extern "C" fn service_completed(context:*mut c_void,result:i32,_:*mut c_void,_:u32,_:u32,_:*mut u8,length:isize){
+    let pending=unsafe{&mut *context.cast::<PendingService>()};pending.result=result;pending.length=length;pending.done=true;
 }
 
 impl<'a> HidSource<'a> {
@@ -314,7 +341,7 @@ impl<'a> HidSource<'a> {
                 write_done: false, write_result: 0,
             })),
             input: Box::new(UnsafeCell::new([0; MAX_REPORT])), delivery: [0; MAX_REPORT],
-            run_loop: unsafe { ffi::CFRunLoopGetCurrent() }, pending_writes: Vec::new(),
+            run_loop: unsafe { ffi::CFRunLoopGetCurrent() }, pending_writes: Vec::new(),services:None,registration:None,service:None,
         };
         let context = source.callbacks.get().cast();
         // SAFETY: callbacks and input are stable heap allocations, retained
@@ -325,6 +352,50 @@ impl<'a> HidSource<'a> {
             ffi::IOHIDDeviceScheduleWithRunLoop(hid, source.run_loop, ffi::kCFRunLoopDefaultMode);
         }
         Ok(source)
+    }
+
+    pub fn attach(&mut self,configuration:&TabletConfiguration,identifier:&DeviceIdentifier,auxiliary:bool,gate:Arc<OutputGate>,epoch:Option<u64>)->io::Result<()> {
+        let(io,services)=SharedIo::new(self.device.endpoint.output_length,self.device.endpoint.feature_length)?;
+        let registration=Registration::new(self.device.endpoint.path.clone(),identifier.parser().into(),auxiliary,io,gate,
+            self.device.endpoint.input_length as usize,serde_json::json!({"Properties":configuration,"Identifiers":[identifier]}),
+            serde_json::json!(identifier),serde_json::json!(configuration),epoch).map_err(io::Error::other)?;
+        self.services=Some(services);self.registration=Some(registration);Ok(())
+    }
+    pub fn initialized(&self){if let Some(registration)=&self.registration{registration.endpoint.initialized.store(true,Ordering::Release);}}
+    pub fn tablet(&self,tablet:serde_json::Value){if let Some(registration)=&self.registration{registration.tablet(tablet);}}
+    pub fn wait_pair(primary:&mut Self,_auxiliary:Option<&mut Self>,timeout:Duration)->io::Result<()>{
+        // Both endpoints are scheduled on this same CFRunLoop. One pump services
+        // their independent fixed queues and callback contexts.
+        primary.pump(timeout.min(Duration::from_millis(50)));Ok(())
+    }
+    fn service_requests(&mut self)->io::Result<()> {
+        if let Some(pending)=&self.service {
+            if pending.done {
+                let mut pending=self.service.take().expect("checked service");
+                let result=if pending.result!=0{Err(native_error("HID service callback",pending.result))}else if pending.length<0||pending.length as usize+pending.offset>pending.call.data.len(){Err(io::Error::new(io::ErrorKind::InvalidData,"HID service returned an invalid length"))}else{Ok(())};
+                if matches!(pending.call.kind,RequestKind::Report(Operation::GetFeature)){pending.call.data.truncate(pending.length.max(0) as usize+pending.offset);}
+                pending.call.finish(result);
+            }else if Instant::now()>=pending.call.deadline {
+                // Close/unschedule in Drop happens before the retained call's
+                // buffer is freed. Never reuse a timed-out callback context.
+                return Err(io::Error::new(io::ErrorKind::TimedOut,"HID service callback timed out; reader retired safely"));
+            }else{return Ok(());}
+        }
+        let Some(call)=self.services.as_mut().and_then(ReaderServices::next)else{return Ok(());};
+        if let RequestKind::String(index)=call.kind {
+            let mut call=call;let result=self.device.indexed_string_checked(index,||check_discovery(Some(self.stop),Some(call.deadline)))
+                .map(|value|{call.data=value.into_bytes();});call.finish(result);return Ok(());
+        }
+        let operation=match call.kind{RequestKind::Report(operation)=>operation,RequestKind::String(_)=>unreachable!()};
+        if !matches!(operation,Operation::WriteStream|Operation::GetFeature|Operation::SetFeature){call.finish(Err(io::Error::new(io::ErrorKind::InvalidInput,"Invalid HID service operation")));return Ok(());}
+        let offset=usize::from(!self.device.uses_report_ids);
+        if call.data.is_empty()||offset>call.data.len()||(!self.device.uses_report_ids&&call.data[0]!=0){call.finish(Err(io::Error::new(io::ErrorKind::InvalidInput,"Invalid unnumbered HID report")));return Ok(());}
+        let mut pending=Box::new(PendingService{length:(call.data.len()-offset) as isize,call,offset,done:false,result:0});
+        let context=(&mut *pending as *mut PendingService).cast();let hid=self.device.handle.0.cast_mut();
+        let result=unsafe{if operation==Operation::GetFeature {
+            ffi::IOHIDDeviceGetReportWithCallback(hid,2,isize::from(pending.call.data[0]),pending.call.data.as_mut_ptr().add(offset),&mut pending.length,1000.0,Some(service_completed),context)
+        }else{ffi::IOHIDDeviceSetReportWithCallback(hid,if operation==Operation::SetFeature{2}else{1},isize::from(pending.call.data[0]),pending.call.data.as_ptr().add(offset),pending.length,1000.0,Some(service_completed),context)}};
+        if result!=0{pending.call.finish(Err(native_error("submitting HID service",result)));}else{self.service=Some(pending);}Ok(())
     }
 
     // Callbacks run only while pump()/unschedule is inside native code. Never
@@ -413,13 +484,19 @@ impl<'a> HidSource<'a> {
 }
 
 impl ReportSource for HidSource<'_> {
+    fn shared_output(&self)->bool{true}
     fn label(&self) -> &str { &self.label }
     fn now(&self) -> Instant { Instant::now() }
+    fn native_output_enabled(&self)->bool{self.registration.as_ref().is_none_or(|registration|registration.endpoint.output.native_enabled())}
+    fn output_started(&self){if let Some(registration)=&self.registration{registration.endpoint.output.start();}}
+    fn output_acknowledged(&self,enabled:bool){if let Some(registration)=&self.registration{registration.endpoint.output.acknowledge(enabled);}}
     fn next(&mut self, timeout: Duration) -> io::Result<Read<'_>> {
         let queued = self.state().count > 0;
         let deadline = Instant::now() + timeout;
         loop {
             if self.stopped() { return Ok(Read::Ended); }
+            self.service_requests()?;
+            if let Some(registration)=&self.registration{if registration.endpoint.output.reader_wake().take_signal(){return Ok(Read::Idle);}}
             if self.state().error != 0 { return Err(native_error("HID report callback", self.state().error)); }
             if self.state().overflow { return Err(io::Error::new(io::ErrorKind::InvalidData, "macOS HID callback queue overflow or oversized report; session stopped instead of silently losing reports")); }
             if self.state().count > 0 {
@@ -432,6 +509,7 @@ impl ReportSource for HidSource<'_> {
                 self.delivery[..length].copy_from_slice(&slot.bytes[..length]);
                 state.head = (state.head + 1) % QUEUE;
                 state.count -= 1;
+                if let Some(registration)=&self.registration{registration.publish(&self.delivery[..length]);}
                 return Ok(Read::Report { bytes: &self.delivery[..length], ready, queued });
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -532,9 +610,10 @@ impl Displays for NativeDisplays {
 }
 
 pub struct Mouse {
-    _source: Owned, moved: Owned, dragged: Owned, down: Owned, up: Owned,
+    _source: Owned, attributes:otd_core::output::MouseAttributes, position_emitted:bool,
+    contact_owner:otd_platform::input_owner::Native,
     geometry: Rc<Cell<Rect>>, contact: bool, last_absolute: Option<ffi::Point>,
-    last_position: Option<ffi::Point>, buttons: u8, modifiers: u8, pending_clear_flags: u64,
+    last_position: Option<ffi::Point>, buttons: u8, modifiers: u8, synthetic_flags:u64, pending_clear_flags: u64,
     clear_flags_deadline: Option<Instant>,
 }
 
@@ -552,27 +631,21 @@ impl Mouse {
         unsafe {
             ffi::CGEventSetFlags(event.0, flags);
             ffi::CGEventSetTimestamp(event.0, event_timestamp()?);
-            ffi::CGEventPost(0, event.0);
+            ffi::post_event(event.0);
         }
         Ok(())
     }
 
     pub fn new(geometry: Rc<Cell<Rect>>) -> io::Result<Self> {
         output_permission()?;
-        // SAFETY: private CGEvent source and distinct reusable mouse event
-        // objects avoid changing a union between incompatible event families.
+        ensure_shared_inputs()?;
+        let contact_owner=otd_platform::input_owner::Native::new()?;
+        // A private source serves scroll events; the shared pointer creates
+        // fresh native events so tablet union fields never leak between types.
         let source = Owned(unsafe { ffi::CGEventSourceCreate(-1) });
         if source.0.is_null() { return Err(io::Error::other("cannot create CoreGraphics event source")); }
-        let create = |kind| Owned(unsafe { ffi::CGEventCreateMouseEvent(source.0, kind, ffi::Point::default(), 0) });
-        let moved = create(5);
-        let dragged = create(6);
-        let down = create(1);
-        let up = create(2);
-        if [moved.0, dragged.0, down.0, up.0].iter().any(|event| event.is_null()) {
-            return Err(io::Error::other("cannot create CoreGraphics mouse events"));
-        }
-        Ok(Self { _source: source, moved, dragged, down, up, geometry, contact: false, last_absolute: None,
-            last_position: None, buttons: 0, modifiers: 0, pending_clear_flags: 0, clear_flags_deadline: None })
+        Ok(Self { _source: source, attributes:Default::default(),position_emitted:false,contact_owner, geometry, contact: false, last_absolute: None,
+            last_position: None, buttons: 0, modifiers: 0, synthetic_flags:0, pending_clear_flags: 0, clear_flags_deadline: None })
     }
 
     pub fn send(&mut self, packet: MousePacket) -> io::Result<()> {
@@ -603,48 +676,41 @@ impl Mouse {
         };
         let contact = if packet.flags & flags::LEFTDOWN != 0 { true }
             else if packet.flags & flags::LEFTUP != 0 { false } else { self.contact };
-        let was_left = self.contact || self.buttons & 1 != 0;
-        let left = contact || self.buttons & 1 != 0;
-        if !moving && was_left == left {
-            self.contact = contact;
-            return Ok(());
-        }
-        let (event, kind, button) = if !was_left && left { (self.down.0, 1, 0) }
-            else if was_left && !left { (self.up.0, 2, 0) }
-            else if left { (self.dragged.0, 6, 0) }
-            else if self.buttons & 2 != 0 { (self.dragged.0, 7, 1) }
-            else if self.buttons & 0x1c != 0 { (self.dragged.0, 27, (self.buttons & 0x1c).trailing_zeros()) }
-            else { (self.moved.0, 5, 0) };
-        let mut clock = libc::timespec { tv_sec: 0, tv_nsec: 0 };
-        // SAFETY: writable timespec, nanoseconds since boot as required by
-        // CGEventTimestamp. Refresh timestamps on the reusable event objects.
-        if unsafe { libc::clock_gettime(libc::CLOCK_UPTIME_RAW, &mut clock) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let timestamp = (clock.tv_sec as u64).saturating_mul(1_000_000_000).saturating_add(clock.tv_nsec as u64);
-        // SAFETY: valid reusable event; public fields 4/5 are delta X/Y,
-        // 1 is click state, 3 is button number.
-        let event_flags = self.event_flags();
-        unsafe {
-            ffi::CGEventSetType(event, kind);
-            ffi::CGEventSetLocation(event, position);
-            ffi::CGEventSetDoubleValueField(event, 4, delta.x);
-            ffi::CGEventSetDoubleValueField(event, 5, delta.y);
-            ffi::CGEventSetIntegerValueField(event, 3, i64::from(button));
-            ffi::CGEventSetIntegerValueField(event, 1, i64::from(kind == 1 || kind == 2));
-            ffi::CGEventSetFlags(event, event_flags);
-            ffi::CGEventSetTimestamp(event, timestamp);
-            ffi::CGEventPost(0, event);
-        }
-        self.contact = contact;
-        self.last_position = Some(position);
-        if moving { self.last_absolute = absolute.then_some(position); }
-        // CGEventPost has no return value; TCC acceptance/application delivery
-        // remains a physical macOS validation gate, not an acknowledged write.
+        let mut edge=false;
+        if packet.flags&(flags::LEFTDOWN|flags::LEFTUP)!=0{edge=self.contact_owner.hold_pointer(0,otd_platform::input_owner::Code::Button(0),contact,
+            otd_platform::input_owner::PointerContext{position:Some((position.x,position.y)),click_position:Some(if absolute{(position.x,position.y)}else{(delta.x,delta.y)}),delta:Some((delta.x,delta.y)),attributes:Some(self.attributes)})?;}
+        if moving&&!edge{let flags=self.event_flags();crate::pointer::movement(position,delta,if absolute{position}else{delta},self.attributes,flags)?;}
+        self.position_emitted|=moving||edge;
+        self.contact=contact;self.last_position=Some(position);
+        if moving{self.last_absolute=absolute.then_some(position);}
+        // CoreGraphics has no delivery acknowledgement; native validation is deferred.
         Ok(())
     }
 
+    fn set_attributes(&mut self,attributes:otd_core::output::MouseAttributes)->io::Result<()>{
+        crate::pointer::attributes(attributes)?;
+        self.position_emitted=false;self.attributes.has_position=attributes.has_position;
+        if let Some(pressure)=attributes.pressure{self.attributes.pressure=Some(pressure);}
+        if let Some(tilt)=attributes.tilt{self.attributes.tilt=Some(tilt);}
+        if let Some(eraser)=attributes.eraser{self.attributes.eraser=Some(eraser);}
+        if attributes.reset{self.contact_owner.release()?;self.contact=false;self.last_absolute=None;}
+        Ok(())
+    }
+    fn flush_attributes(&mut self)->io::Result<()>{
+        if self.attributes.has_position&&!self.position_emitted{
+            // Assigned stationary positions emit tablet values. Pure auxiliary
+            // or pressure-only reports have no pending position to Flush.
+            let position=if let Some(position)=self.last_absolute{position}else{let query=Owned(unsafe{ffi::CGEventCreate(ptr::null())});if query.0.is_null(){return Err(io::Error::other("Cannot query stationary relative cursor"));}unsafe{ffi::CGEventGetLocation(query.0)}};
+            let flags=self.event_flags();crate::pointer::movement(position,ffi::Point::default(),if self.last_absolute.is_some(){position}else{ffi::Point::default()},self.attributes,flags)?;self.position_emitted=true;
+        }Ok(())
+    }
+
     fn event_flags(&mut self) -> u64 {
+        let modifiers=otd_platform::input_owner::key_mask([59,56,58,55,62,60,61,54]);
+        let extras=otd_platform::input_owner::key_mask([57,114,63,768,768,768,768,768]);
+        let synthetic=crate::keymap::modifier_flags(modifiers)|crate::keymap::auxiliary_flags(extras);
+        let released=self.synthetic_flags&!synthetic;self.modifiers=modifiers;self.synthetic_flags=synthetic;
+        if released!=0{self.pending_clear_flags|=released;self.clear_flags_deadline=Some(Instant::now()+Duration::from_millis(50));}
         // CGEventSourceFlagsState can lag behind a posted release. Suppress
         // released synthetic flags while its snapshot catches up. Bound this
         // to 50 ms so a newly pressed physical modifier cannot stay masked.
@@ -654,73 +720,12 @@ impl Mouse {
             self.pending_clear_flags = 0;
             self.clear_flags_deadline = None;
         }
-        (observed & !self.pending_clear_flags) | crate::keymap::modifier_flags(self.modifiers)
+        (observed & !self.pending_clear_flags) | self.synthetic_flags
     }
 
-    fn send_action(&mut self, transition: ActionTransition) -> io::Result<()> {
-        match transition.action {
-            Action::Key(key) => {
-                let code = crate::keymap::key_code(key).ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "unsupported macOS keyboard usage"))?;
-                // Fresh native keyboard events translate the current key code;
-                // successful Rust-owned processing still allocates no heap.
-                let event = Owned(unsafe { ffi::CGEventCreateKeyboardEvent(self._source.0, code, transition.pressed) });
-                if event.0.is_null() { return Err(io::Error::other("cannot create CoreGraphics keyboard event")); }
-                let timestamp = event_timestamp()?;
-                let old_flags = crate::keymap::modifier_flags(self.modifiers);
-                if key.is_modifier() {
-                    let bit = 1 << (key.usage() - 0xe0);
-                    if transition.pressed { self.modifiers |= bit; } else { self.modifiers &= !bit; }
-                }
-                let released_flags = old_flags & !crate::keymap::modifier_flags(self.modifiers);
-                self.pending_clear_flags |= released_flags;
-                if released_flags != 0 { self.clear_flags_deadline = Some(Instant::now() + Duration::from_millis(50)); }
-                let event_flags = self.event_flags();
-                unsafe {
-                    ffi::CGEventSetIntegerValueField(event.0, 8, 0); // no autorepeat
-                    ffi::CGEventSetFlags(event.0, event_flags);
-                    ffi::CGEventSetTimestamp(event.0, timestamp);
-                    ffi::CGEventPost(0, event.0);
-                }
-            }
-            Action::Mouse(button) => {
-                let number = match button { MouseButton::Left => 0, MouseButton::Right => 1,
-                    MouseButton::Middle => 2, MouseButton::Backward => 3, MouseButton::Forward => 4 };
-                let next = if transition.pressed { self.buttons | (1 << number) } else { self.buttons & !(1 << number) };
-                let was_pressed = self.buttons & (1 << number) != 0 || number == 0 && self.contact;
-                let pressed = next & (1 << number) != 0 || number == 0 && self.contact;
-                if was_pressed == pressed { self.buttons = next; return Ok(()); }
-                let position = match self.last_position {
-                    Some(position) => position,
-                    None => {
-                        let query = Owned(unsafe { ffi::CGEventCreate(ptr::null()) });
-                        if query.0.is_null() { return Err(io::Error::other("cannot query current cursor position")); }
-                        unsafe { ffi::CGEventGetLocation(query.0) }
-                    }
-                };
-                let kind = match (number, pressed) { (0, true) => 1, (0, false) => 2,
-                    (1, true) => 3, (1, false) => 4, (_, true) => 25, (_, false) => 26 };
-                let event = if pressed { self.down.0 } else { self.up.0 };
-                let timestamp = event_timestamp()?;
-                let event_flags = self.event_flags();
-                unsafe {
-                    ffi::CGEventSetType(event, kind);
-                    ffi::CGEventSetLocation(event, position);
-                    ffi::CGEventSetIntegerValueField(event, 3, i64::from(number));
-                    ffi::CGEventSetIntegerValueField(event, 1, 1);
-                    ffi::CGEventSetDoubleValueField(event, 4, 0.0);
-                    ffi::CGEventSetDoubleValueField(event, 5, 0.0);
-                    ffi::CGEventSetFlags(event, event_flags);
-                    ffi::CGEventSetTimestamp(event, timestamp);
-                    ffi::CGEventPost(0, event);
-                }
-                self.buttons = next;
-            }
-        }
-        Ok(())
-    }
 }
 
-fn event_timestamp() -> io::Result<u64> {
+pub(crate) fn event_timestamp() -> io::Result<u64> {
     let mut clock = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     if unsafe { libc::clock_gettime(libc::CLOCK_UPTIME_RAW, &mut clock) } != 0 {
         return Err(io::Error::last_os_error());
@@ -730,9 +735,56 @@ fn event_timestamp() -> io::Result<u64> {
 
 /// Shares native pointer state with tip output so one hold cannot release the
 /// other's left button, and drag events see the held side buttons/modifiers.
-pub fn action_sink(mouse: Rc<RefCell<Mouse>>) -> Box<dyn ActionSink> {
-    let scroll = Rc::clone(&mouse);
-    Box::new(LocalActions::new(move |transition| mouse.borrow_mut().send_action(transition),
-        |action| match action { Action::Mouse(_) => true, Action::Key(key) => crate::keymap::key_code(key).is_some() })
-        .with_scroll(move |pulse| scroll.borrow_mut().send_scroll(pulse)))
+pub fn action_sink(mouse: Rc<RefCell<Mouse>>) -> io::Result<Box<dyn ActionSink>> {
+    ensure_shared_inputs()?;let owner=otd_platform::input_owner::Native::new()?;
+    let scroll=Rc::clone(&mouse);let setter=Rc::clone(&mouse);let flush=Rc::clone(&mouse);
+    Ok(Box::new(LocalActions::new(move |transition:ActionTransition|{
+        let code=match transition.action{Action::Key(key)=>otd_platform::input_owner::Code::Key(crate::keymap::key_code(key).ok_or_else(||io::Error::new(io::ErrorKind::Unsupported,"Unsupported macOS keyboard usage"))?),
+            Action::Mouse(button)=>otd_platform::input_owner::Code::Button(match button{MouseButton::Left=>0,MouseButton::Right=>1,MouseButton::Middle=>2,MouseButton::Backward=>3,MouseButton::Forward=>4})};
+        let action=match transition.action{Action::Key(key)=>key.usage() as u32,Action::Mouse(_)=>0x10000+match code{otd_platform::input_owner::Code::Button(button)=>button as u32,_=>unreachable!()}};
+        if matches!(code,otd_platform::input_owner::Code::Button(_)){
+            let mut mouse=mouse.borrow_mut();let context=otd_platform::input_owner::PointerContext{position:None,click_position:if mouse.last_absolute.is_some(){None}else{Some((0.0,0.0))},delta:None,attributes:Some(mouse.attributes)};
+            let emitted=owner.hold_pointer(action,code,transition.pressed,context)?;mouse.position_emitted|=emitted;Ok(())
+        }else{owner.hold_action(action,code,transition.pressed,None)}
+    }, |action| match action { Action::Mouse(_) => true, Action::Key(key) => crate::keymap::key_code(key).is_some() })
+        .with_scroll(move |pulse| scroll.borrow_mut().send_scroll(pulse))
+        .with_pointer_attributes(move|attributes|setter.borrow_mut().set_attributes(attributes))
+        .with_pointer_flush(move||flush.borrow_mut().flush_attributes())))
 }
+impl otd_platform::managed_source::NativeSource for HidSource<'_>{
+    fn tablet(&self,value:serde_json::Value){HidSource::tablet(self,value)}
+    fn initialized(&self){HidSource::initialized(self)}
+    fn waits(&self)->[libc::pollfd;3]{[libc::pollfd{fd:-1,events:0,revents:0},
+        libc::pollfd{fd:self.services.as_ref().map_or(-1,|services|services.wake().raw()),events:libc::POLLIN,revents:0},
+        libc::pollfd{fd:self.registration.as_ref().map_or(-1,|registration|registration.endpoint.output.reader_wake().raw()),events:libc::POLLIN,revents:0}]}
+    fn pump_native(&mut self,timeout:Duration)->io::Result<()>{self.pump(timeout.min(Duration::from_millis(50)));Ok(())}
+}
+impl otd_platform::paired_source::Retire for HidSource<'_>{}
+
+// CGEvent objects can be posted from any thread. The shared owner mutex is the
+// sole accessor; no CFRunLoop or tablet-thread resource is borrowed here.
+struct SharedInput {source:Owned,modifiers:u8,extra_flags:u64,clear:u64,clear_until:Option<Instant>}
+unsafe impl Send for SharedInput {}
+impl SharedInput {
+    fn flags(&mut self)->u64{let observed=unsafe{ffi::CGEventSourceFlagsState(1)};self.clear&=observed;if self.clear_until.is_some_and(|until|Instant::now()>=until){self.clear=0;self.clear_until=None;}(observed&!self.clear)|crate::keymap::modifier_flags(self.modifiers)|self.extra_flags}
+    fn send(&mut self,code:otd_platform::input_owner::Code,held:bool,position:Option<otd_platform::input_owner::PointerContext>)->io::Result<()>{
+        let timestamp=event_timestamp()?;
+        match code{
+            otd_platform::input_owner::Code::Key(code)=>{
+                let event=Owned(unsafe{ffi::CGEventCreateKeyboardEvent(self.source.0,code,held)});if event.0.is_null(){return Err(io::Error::other("Cannot create original keyboard event"));}
+                let old=crate::keymap::modifier_flags(self.modifiers)|self.extra_flags;
+                if let Some(bit)=[59,56,58,55,62,60,61,54].iter().position(|modifier|*modifier==code){if held{self.modifiers|=1<<bit;}else{self.modifiers&=!(1<<bit);}}
+                let auxiliary=match code{57=>1<<16,114=>1<<22,63=>1<<23,_=>0};if held{self.extra_flags|=auxiliary;}else{self.extra_flags&=!auxiliary;}
+                let released=old&!(crate::keymap::modifier_flags(self.modifiers)|self.extra_flags);if released!=0{self.clear|=released;self.clear_until=Some(Instant::now()+Duration::from_millis(50));}
+                let flags=self.flags();unsafe{ffi::CGEventSetIntegerValueField(event.0,8,0);ffi::CGEventSetFlags(event.0,flags);ffi::CGEventSetTimestamp(event.0,timestamp);ffi::post_event(event.0);}
+            },
+            otd_platform::input_owner::Code::Button(button)=>{
+                let flags=self.flags();crate::pointer::button(button,held,position,flags)?;
+            }
+        }Ok(())
+    }
+}
+pub fn ensure_shared_inputs()->io::Result<()>{otd_platform::input_owner::ensure(||{
+    output_permission()?;crate::pointer::ensure()?;let source=Owned(unsafe{ffi::CGEventSourceCreate(-1)});if source.0.is_null(){return Err(io::Error::other("Cannot create shared event source"));}
+    let mut writer=SharedInput{source,modifiers:0,extra_flags:0,clear:0,clear_until:None};Ok(Box::new(move|code,held,position|writer.send(code,held,position)))
+})}

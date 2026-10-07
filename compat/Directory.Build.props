@@ -1,0 +1,7 @@
+<Project>
+  <PropertyGroup>
+    <!-- One lock file retains every distribution RID; per-platform restores
+         never silently rewrite the dependency graph selected by another build. -->
+    <RuntimeIdentifiers>win-x64;linux-x64;osx-x64;osx-arm64</RuntimeIdentifiers>
+  </PropertyGroup>
+</Project>
