@@ -91,7 +91,7 @@ fn call(command: Command) -> Result<Reply, String> {
 impl NativeBackend {
     fn prime_metadata(&self) -> Result<(), String> {
         let mut state = self.published.lock().map_err(|_| "Managed snapshot lock poisoned")?;
-        state.snapshot.devices = crate::hid::enumerate_rpc_devices().ok().map(|devices| json!(devices));
+        state.snapshot.devices = crate::hid::enumerate_service_devices().ok().map(|devices| json!(devices));
         state.last_devices = Some(Instant::now());
         state.snapshot.settings = crate::upstream_rpc::initial_original_settings().ok();
         state.snapshot.resynchronize = crate::upstream_rpc::original_resynchronize_epoch();
@@ -120,7 +120,7 @@ impl NativeBackend {
             state.projection_pending = false;
         }
         if force_devices || state.last_devices.is_none_or(|last| last.elapsed() >= Duration::from_secs(3)) {
-            state.snapshot.devices = crate::hid::enumerate_rpc_devices().ok().map(|devices| json!(devices));
+            state.snapshot.devices = crate::hid::enumerate_service_devices().ok().map(|devices| json!(devices));
             state.last_devices = Some(Instant::now());
         }
         state.snapshot.logs = match call(Command::GetUpstreamLog) {
@@ -162,7 +162,7 @@ impl NativeBackend {
     fn device_string(&self, payload: &Value) -> Result<Value, String> {
         let path = payload["path"].as_str().ok_or("Device string request needs endpoint path")?;
         let index = payload["index"].as_u64().and_then(|index| u8::try_from(index).ok()).ok_or("Device string index must be 0..255")?;
-        let devices = crate::hid::enumerate_rpc_devices().map_err(|error| error.to_string())?;
+        let devices = crate::hid::enumerate_service_devices().map_err(|error| error.to_string())?;
         let device = devices.iter().find(|device| device["DevicePath"].as_str().is_some_and(|candidate| candidate.eq_ignore_ascii_case(path)))
             .ok_or("Device endpoint is no longer present")?;
         let vendor = device["VendorID"].as_u64().and_then(|value| u16::try_from(value).ok()).ok_or("Endpoint vendor ID unavailable")?;
