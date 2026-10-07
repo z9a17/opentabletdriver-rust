@@ -2,6 +2,8 @@
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod descriptor;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod usb;
 #[cfg(target_os = "macos")]
 mod ffi;
 #[cfg(target_os = "macos")]
@@ -13,6 +15,7 @@ mod realtime;
 
 const USAGE: &str = "OpenTabletDriver Rust macOS CLI\n\
 Usage: opentabletdriver-rust-macos list\n\
+       opentabletdriver-rust-macos device-strings VID PID INDEX [INDEX ...]\n\
        opentabletdriver-rust-macos displays\n\
        opentabletdriver-rust-macos run [--profile FILE] [--tablet NAME] [--screen WIDTHxHEIGHT]\n\
        opentabletdriver-rust-macos capture [--profile FILE] [--tablet NAME] [--seconds N] [--limit N]\n\
@@ -70,6 +73,7 @@ mod app {
             if args.next().is_some() { return Err(crate::USAGE.into()); }
             return if command == "list" { list() } else { display_list() };
         }
+        if command == "device-strings" { return device_strings(args.collect()); }
         if command != "run" && command != "capture" { return Err(crate::USAGE.into()); }
         let capture = command == "capture";
         let mut options = Options { profile: None, tablet: None, screen: None, seconds: 10, limit: 2000 };
@@ -102,7 +106,7 @@ mod app {
 
     fn list() -> Result<(), String> {
         let database = otd_core::config::configured_tablets()?;
-        let devices = macos::enumerate().map_err(|error| error.to_string())?;
+        let devices = macos::enumerate(&database).map_err(|error| error.to_string())?;
         if devices.is_empty() { println!("No USB HID endpoints."); }
         for device in &devices {
             let endpoint = &device.endpoint;
@@ -112,10 +116,34 @@ mod app {
                 endpoint.path, endpoint.vendor_id, endpoint.product_id,
                 endpoint.input_length, endpoint.output_length, endpoint.feature_length,
                 if endpoint.can_open { "" } else { " (Input Monitoring denied)" },
-                found.map_or_else(|| "no matching configuration (indexed USB string predicates are unsupported)".into(),
+                found.map_or_else(|| device.string_error.clone().unwrap_or_else(|| "no matching configuration".into()),
                     |found| format!("{} ({:?}, {:?})", found.configuration.name, found.role, found.parser)),
                 device.name);
         }
+        Ok(())
+    }
+
+    fn device_strings(arguments: Vec<String>) -> Result<(), String> {
+        if arguments.len() < 3 { return Err(crate::USAGE.into()); }
+        let id = |value: &str| -> Result<u16, String> {
+            let value = value.trim_start_matches("0x").trim_start_matches("0X");
+            u16::from_str_radix(value, 16).map_err(|_| "use hexadecimal VID and PID".into())
+        };
+        let (vendor, product) = (id(&arguments[0])?, id(&arguments[1])?);
+        let indices: Vec<u8> = arguments[2..].iter().map(|value| value.parse::<u8>()
+            .ok().filter(|index| *index != 0).ok_or_else(|| "string indices must be between 1 and 255".to_owned()))
+            .collect::<Result<_, _>>()?;
+        let database = otd_core::config::configured_tablets()?;
+        let devices = macos::enumerate(&database).map_err(|error| error.to_string())?;
+        let mut physical = std::collections::BTreeSet::new();
+        for device in devices.iter().filter(|device| device.endpoint.vendor_id == vendor && device.endpoint.product_id == product) {
+            if !physical.insert(&device.endpoint.physical_id) { continue; }
+            for index in &indices {
+                let value = device.indexed_string(*index).map_err(|error| format!("{}: {error}", device.endpoint.path))?;
+                println!("{} string {index}: {value}", device.endpoint.path);
+            }
+        }
+        if physical.is_empty() { return Err(format!("no USB device {vendor:04x}:{product:04x}")); }
         Ok(())
     }
 
@@ -142,7 +170,8 @@ mod app {
                 match endpoint_match::matches(&device.endpoint, &found) {
                     Ok(()) => {}
                     Err(endpoint_match::Rejection::MissingString(index)) => {
-                        unsupported = Some(format!("{} requires USB string descriptor {index} for matching; indexed USB string operations are not implemented by the macOS backend", found.configuration.name));
+                        unsupported = Some(format!("{} requires USB string descriptor {index} for matching: {}", found.configuration.name,
+                            device.string_error.as_deref().unwrap_or("the descriptor is unavailable")));
                         continue;
                     }
                     Err(_) => continue,
@@ -175,7 +204,7 @@ mod app {
         let mut waiting = false;
         while !STOP.load(Ordering::Acquire) {
             if deadline.is_some_and(|deadline| Instant::now() >= deadline) { return Err("capture deadline elapsed before a supported tablet was available".into()); }
-            let devices = macos::enumerate().map_err(|error| error.to_string())?;
+            let devices = macos::enumerate(&database).map_err(|error| error.to_string())?;
             let device_path = requested_profile.as_ref().and_then(|profile| profile.device_path.as_deref());
             let Some(selected) = select(&devices, &database, tablet.as_deref(), device_path)? else {
                 if !waiting { eprintln!("Waiting for {}.", tablet.as_deref().unwrap_or("a supported USB tablet")); waiting = true; }

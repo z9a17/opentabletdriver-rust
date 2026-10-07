@@ -17,7 +17,7 @@ use otd_core::endpoint_match::{Endpoint, Transport};
 use otd_core::mapping::Rect;
 use otd_core::output::{MousePacket, flags};
 use otd_core::session::{Displays, Read, ReportSource};
-use otd_core::tablets::{DeviceIdentifier, TabletConfiguration};
+use otd_core::tablets::{Database, DeviceIdentifier, TabletConfiguration};
 
 use crate::{descriptor, ffi};
 
@@ -121,11 +121,21 @@ pub struct Device {
     pub name: String,
     handle: Owned,
     uses_report_ids: bool,
+    usb_parent: Option<IoObject>,
+    pub string_error: Option<String>,
+}
+
+impl Device {
+    pub fn indexed_string(&self, index: u8) -> io::Result<String> {
+        let service = self.usb_parent.as_ref().ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported,
+            "USB parent service is unavailable for indexed string requests"))?;
+        crate::usb::Strings::open(service.0)?.read(index)
+    }
 }
 
 /// Enumerates services without opening unrelated keyboards or pointing devices.
 /// Registry IDs identify live endpoints; the USB parent identifies the tablet.
-pub fn enumerate() -> io::Result<Vec<Device>> {
+pub fn enumerate(database: &Database) -> io::Result<Vec<Device>> {
     let mut iterator = 0;
     // SAFETY: IOServiceMatching returns a dictionary consumed by matching.
     let matching = unsafe { ffi::IOServiceMatching(c"IOHIDDevice".as_ptr()) };
@@ -154,6 +164,7 @@ pub fn enumerate() -> io::Result<Vec<Device>> {
         if unsafe { ffi::IORegistryEntryGetRegistryEntryID(service.0, &mut registry_id) } != 0 { continue; }
         let mut attributes = BTreeMap::new();
         let mut physical_id = format!("hid:{registry_id}");
+        let mut usb_parent = None;
         // Traverse only the retained parent chain, collecting actual interface
         // and USB-device identity; never assume descriptor string indices.
         let mut current = service;
@@ -166,13 +177,14 @@ pub fn enumerate() -> io::Result<Vec<Device>> {
                 if unsafe { ffi::IORegistryEntryGetRegistryEntryID(current.0, &mut parent_id) } == 0 {
                     physical_id = format!("usb:{parent_id}");
                 }
+                usb_parent = Some(current);
                 break;
             }
             let mut parent = 0;
             if unsafe { ffi::IORegistryEntryGetParentEntry(current.0, c"IOService".as_ptr(), &mut parent) } != 0 { break; }
             current = IoObject(parent);
         }
-        devices.push(Device {
+        let mut device = Device {
             endpoint: Endpoint {
                 path: format!("IOHID:{registry_id}"), physical_id,
                 transport: Transport::UsbHid, vendor_id: vendor, product_id: product,
@@ -184,8 +196,30 @@ pub fn enumerate() -> io::Result<Vec<Device>> {
                 attributes: Some(attributes),
             },
             name: string(property(hid, "Product")).unwrap_or_else(|| "USB HID device".into()),
-            handle, uses_report_ids: lengths.uses_report_ids,
-        });
+            handle, uses_report_ids: lengths.uses_report_ids, usb_parent, string_error: None,
+        };
+        // Request only indices declared by plausible configured tablet endpoints.
+        // Never open unrelated keyboards/mice or guess descriptor indices.
+        let indices: std::collections::BTreeSet<u8> = database.find(vendor, product)
+            .filter(|candidate| otd_core::endpoint_match::matches_report_lengths(&device.endpoint, candidate.identifier))
+            .flat_map(|candidate| candidate.identifier.device_strings.iter().flat_map(BTreeMap::keys))
+            .filter_map(|index| index.parse::<u8>().ok()).collect();
+        if !indices.is_empty() {
+            let result = (|| -> io::Result<()> {
+                let parent = device.usb_parent.as_ref().ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported,
+                    "USB parent service is unavailable for indexed string matching"))?;
+                let mut strings = crate::usb::Strings::open(parent.0)?;
+                for index in indices {
+                    match strings.read(index) {
+                        Ok(value) => { device.endpoint.strings.insert(index, value); }
+                        Err(error) => { device.string_error.get_or_insert_with(|| error.to_string()); }
+                    }
+                }
+                Ok(())
+            })();
+            if let Err(error) = result { device.string_error = Some(error.to_string()); }
+        }
+        devices.push(device);
     }
     devices.sort_by(|a, b| a.endpoint.path.cmp(&b.endpoint.path));
     Ok(devices)
@@ -285,9 +319,12 @@ impl<'a> HidSource<'a> {
     }
 
     pub fn initialize(&mut self, identifier: &DeviceIdentifier, configuration: &TabletConfiguration, capture_deadline: Option<Instant>) -> io::Result<()> {
-        if identifier.initialization_strings.as_ref().is_some_and(|strings| !strings.is_empty()) {
-            return Err(io::Error::new(io::ErrorKind::Unsupported,
-                "this tablet requires USB initialization string requests, which the macOS CLI backend does not implement; refusing partial initialization"));
+        for index in identifier.initialization_strings.iter().flatten() {
+            if self.stopped() { return Err(io::Error::new(io::ErrorKind::Interrupted, "initialization cancelled")); }
+            if capture_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "capture deadline elapsed during string initialization"));
+            }
+            self.device.indexed_string(*index)?;
         }
         let delay = configuration.attributes.as_ref().and_then(|a| a.get("FeatureInitDelayMs"))
             .map(|text| text.parse::<u32>().map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid FeatureInitDelayMs")))
@@ -400,6 +437,8 @@ pub struct NativeDisplays {
     explicit: Option<Rect>,
     pub geometry: Rc<Cell<Rect>>,
     last: DisplayFingerprint,
+    layout: [Rect; 32],
+    changed: bool,
 }
 
 fn active_displays() -> io::Result<([Rect; 32], usize, Rect)> {
@@ -436,28 +475,36 @@ fn active_displays() -> io::Result<([Rect; 32], usize, Rect)> {
 
 impl NativeDisplays {
     pub fn new(explicit: Option<Rect>) -> io::Result<Self> {
-        let (screen, monitors) = if let Some(rectangle) = explicit { (rectangle, 1) }
-            else { let (_, count, screen) = active_displays()?; (screen, count as i32) };
+        let (layout, monitors, screen) = if let Some(rectangle) = explicit {
+            let mut layout = [rectangle; 32];
+            layout[1..].fill(Rect { left: 0, top: 0, right: 0, bottom: 0 });
+            (layout, 1, rectangle)
+        } else { let (layout, count, screen) = active_displays()?; (layout, count as i32, screen) };
         Ok(Self { explicit, geometry: Rc::new(Cell::new(screen)),
-            last: DisplayFingerprint { virtual_screen: screen, monitors } })
+            last: DisplayFingerprint { virtual_screen: screen, monitors }, layout, changed: false })
     }
 }
 
 impl Displays for NativeDisplays {
     fn fingerprint(&mut self) -> DisplayFingerprint {
         if self.explicit.is_none() {
-            if let Ok((_, count, screen)) = active_displays() {
+            if let Ok((layout, count, screen)) = active_displays() {
+                self.changed |= layout != self.layout;
+                self.layout = layout;
                 self.last = DisplayFingerprint { virtual_screen: screen, monitors: count as i32 };
                 self.geometry.set(screen);
             }
         }
         self.last
     }
+    fn topology_changed(&mut self) -> bool { self.changed }
     fn snapshot(&mut self) -> Result<DisplaySnapshot, String> {
         if let Some(screen) = self.explicit { return Ok(DisplaySnapshot { virtual_screen: screen, monitors: vec![screen] }); }
         let (rectangles, count, screen) = active_displays().map_err(|error| error.to_string())?;
         self.geometry.set(screen);
         self.last = DisplayFingerprint { virtual_screen: screen, monitors: count as i32 };
+        self.layout = rectangles;
+        self.changed = false;
         Ok(DisplaySnapshot { virtual_screen: screen, monitors: rectangles[..count].to_vec() })
     }
 }
