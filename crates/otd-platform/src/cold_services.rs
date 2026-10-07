@@ -1,18 +1,26 @@
 //! Slow original service calls run outside native transaction dispatch. A
 //! successful update reserves all owners until the actual response is flushed.
-use std::{collections::{BTreeMap,VecDeque},sync::{Arc,Mutex,atomic::{AtomicBool,AtomicU64,Ordering}},time::Duration};
+use std::{collections::{BTreeMap,VecDeque},sync::{Arc,Condvar,Mutex,atomic::{AtomicBool,AtomicU64,Ordering}},time::{Duration,Instant}};
 use serde_json::{Value,json};
 use crate::{daemon::{Command,Handle,Platform},control::WorkerIdentity};
 #[derive(Default)]
-struct Update {checked:Option<crate::update::Release>,busy:bool,token:Option<String>,staged:bool}
-pub(crate) struct Services {platform:Arc<dyn Platform>,pub(crate) stopped:Arc<AtomicBool>,update:Mutex<Update>,debug:Mutex<Option<Debug>>}
+struct Update {checked:Option<crate::update::Release>,busy:bool,token:Option<String>,staged:bool,plugin_calls:usize}
+pub(crate) struct Services {platform:Arc<dyn Platform>,pub(crate) stopped:Arc<AtomicBool>,update:Mutex<Update>,plugins_done:Condvar,debug:Mutex<Option<Debug>>}
+struct PluginCall<'a>(&'a Services);
+impl Drop for PluginCall<'_>{fn drop(&mut self){if let Ok(mut update)=self.0.update.lock(){update.plugin_calls=update.plugin_calls.saturating_sub(1);self.0.plugins_done.notify_all();}}}
 impl Services {
-    pub(crate) fn new(platform:Arc<dyn Platform>,stopped:Arc<AtomicBool>)->Self{Self{platform,stopped,update:Mutex::new(Update::default()),debug:Mutex::new(None)}}
-    pub(crate) fn allow_plugin_call(&self,method:&str)->Result<(),String>{
-        if matches!(method,"LoadPlugins"|"InstallPlugin"|"DownloadPlugin"|"UninstallPlugin"|"InstallPluginDirectory"|"UpdatePluginDirectory"|"UnloadPluginContext"|"RemovePluginAssembly")&&self.update.lock().map_err(|_|"Update service poisoned")?.busy{return Err("Update reservation blocks plugin mutations".into());}Ok(())
-    }
+    pub(crate) fn new(platform:Arc<dyn Platform>,stopped:Arc<AtomicBool>)->Self{Self{platform,stopped,update:Mutex::new(Update::default()),plugins_done:Condvar::new(),debug:Mutex::new(None)}}
     pub(crate) fn invoke(&self,handle:&Handle,method:&str,params:&Value,expected:Option<WorkerIdentity>)->Result<Option<Value>,String>{
         let args=params.as_array().ok_or("Original method params must be a positional array")?;
+        if matches!(method,"LoadPlugins"|"InstallPlugin"|"DownloadPlugin"|"UninstallPlugin"|"InstallPluginDirectory"|"UpdatePluginDirectory"|"UnloadPluginContext"|"RemovePluginAssembly"){
+            // Admission is shared by native and managed clients. Reserve the
+            // call without holding the mutex through CLR/plugin callbacks.
+            let mut update=self.update.lock().map_err(|_|"Update service poisoned")?;
+            if update.busy{return Err("Update reservation blocks plugin mutations".into());}
+            update.plugin_calls=update.plugin_calls.checked_add(1).ok_or("Plugin admission count exhausted")?;
+            drop(update);let _admission=PluginCall(self);
+            return crate::plugin_manager::invoke(method,params,Some(&self.stopped));
+        }
         match method{
             "CheckForUpdates"=>{if !args.is_empty(){return Err("CheckForUpdates takes no arguments".into());}
                 let release=crate::update::latest_with_cancel(Some(&self.stopped))?;let available=release.version>crate::update::current_version();
@@ -44,7 +52,13 @@ impl Services {
     fn install(&self,handle:&Handle,expected:Option<WorkerIdentity>)->Result<(),String>{
         let release={let mut update=self.update.lock().map_err(|_|"Update service poisoned")?;
             if update.busy{return Err("Another update owns staging; query native update state".into());}
-            let release=update.checked.take().ok_or("No checked newer update; call CheckForUpdates first")?;update.busy=true;release};
+            if update.checked.is_none(){return Err("No checked newer update; call CheckForUpdates first".into());}
+            update.busy=true;let deadline=Instant::now()+Duration::from_secs(60);
+            while update.plugin_calls!=0{
+                if self.stopped.load(Ordering::Acquire)||Instant::now()>=deadline{update.busy=false;return Err("Update admission could not drain existing plugin mutations".into());}
+                update=self.plugins_done.wait_timeout(update,Duration::from_millis(250)).map_err(|_|"Update service poisoned")?.0;
+            }
+            update.checked.take().unwrap()};
         let mut token=None;let mut cleanup_complete=false;
         let install=std::env::current_exe().map_err(|error|error.to_string()).and_then(|path|path.parent().map(std::path::Path::to_owned).ok_or("Install directory unavailable".into()));
         let result=(||{

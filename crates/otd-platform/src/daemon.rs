@@ -509,8 +509,6 @@ impl crate::managed_services::Backend for Services {
         match request.operation {
             Operation::Daemon=>{
                 let method=request.payload["method"].as_str().ok_or("Managed request method is missing")?.to_owned();
-                self.handle.cold.allow_plugin_call(&method)?;
-                if let Some(value)=crate::plugin_manager::invoke(&method,&request.payload.get("params").cloned().unwrap_or(json!([])),Some(&self.handle.cold.stopped))?{return Ok(value);}
                 let binding_owner=request.payload.get("source_binding_owner").map(|value|value.as_u64().and_then(|value|u32::try_from(value).ok()).ok_or("Invalid source binding owner")).transpose()?;
                 self.handle.call(Command::Original {expected:request.expected_daemon,source:request.expected_source,binding_owner,method,params:request.payload.get("params").cloned().unwrap_or(json!([]))})
             },
