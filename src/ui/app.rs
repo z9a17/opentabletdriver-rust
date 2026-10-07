@@ -2148,7 +2148,7 @@ impl App {
     /// Persistence must also work for disconnected displays or other tablets.
     /// Check runtime requirements before stopping an existing worker.
     fn validate_start(&self, profile: &Profile) -> Result<(), String> {
-        profile.validate_runtime_tablet()?;
+        crate::plugins::validate_runtime_profile(profile)?;
         profile.validate_filter_execution()?;
         if profile.relative.is_none() {
             displays_for_driver(self.process_dpi)?.mapper(profile)?;
@@ -2219,7 +2219,7 @@ impl App {
             self.background("settings-import", move || BackgroundResult::Import {
                 generation,
                 edit_revision,
-                result: crate::hid::connected_tablets()
+                result: crate::hid::connected_tablets_for_import()
                     .and_then(|names| {
                         let names = background::import_tablet_order(names, selected_tablet.as_deref());
                         crate::plugins::load_original_profile(&names)

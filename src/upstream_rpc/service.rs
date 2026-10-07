@@ -254,7 +254,7 @@ impl Connection {
                 return Err(Error::unsupported("SetSettings",&diagnostic.message));
             }
             let profile = profile.for_tablet(otd_core::spec::TabletSpec::from_configuration(&session.properties)?)?;
-            profile.validate_runtime_tablet()?;
+            crate::plugins::validate_runtime_profile(&profile)?;
             if profile.relative.is_none() { displays.mapper(&profile)?; }
             let replacement = profile.to_toml()?;
             let encoded = serde_json::to_vec(&replacement).map_err(|error| Error::invalid(error.to_string()))?;

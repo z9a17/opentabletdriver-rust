@@ -337,7 +337,7 @@ impl Debugger {
                         && self.spec.as_ref().is_none_or(|(known, _)| known != name)
                     {
                         self.spec =
-                            Some((name.clone(), otd_core::config::runtime_tablet(name).ok()));
+                            Some((name.clone(), otd_core::config::spec_for_tablet(name).ok()));
                     }
                     if self.statistics.observe(&report) {
                         if let Some(recorder) = &self.recorder {

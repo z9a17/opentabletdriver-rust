@@ -852,7 +852,7 @@ pub fn spec_for_tablet(name: &str) -> Result<TabletSpec, String> {
     spec_for_tablet_in(name, configured_tablets()?.as_ref())
 }
 
-fn spec_for_tablet_in(name: &str, database: &crate::tablets::Database) -> Result<TabletSpec, String> {
+pub fn spec_for_tablet_in(name: &str, database: &crate::tablets::Database) -> Result<TabletSpec, String> {
     let configuration = database.entries().iter()
         .filter_map(crate::tablets::Entry::usable)
         .find(|configuration| configuration.name == name)

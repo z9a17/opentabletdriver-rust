@@ -654,6 +654,23 @@ pub fn connected_tablets() -> Result<Vec<String>, String> {
     Ok(names)
 }
 
+/// Explicit original-settings import also considers matched tablets whose
+/// parser is supplied by an installed plugin. This lookup is metadata-only;
+/// actual parser availability is checked at explicit Apply/Start.
+pub fn connected_tablets_for_import() -> Result<Vec<String>, String> {
+    let database = crate::config::configured_tablets()?;
+    let mut names = Vec::new();
+    for device in enumerate_with_database(&database).map_err(|error| error.to_string())? {
+        if let Some((name, Role::Digitizer, _)) = identify(&device, &database)
+            && crate::config::spec_for_tablet_in(&name, &database).is_ok()
+            && !names.contains(&name)
+        {
+            names.push(name);
+        }
+    }
+    Ok(names)
+}
+
 /// Pure cached support check; no CLR initialization or plugin construction.
 pub fn parser_supported(name: &str) -> bool {
     parser_support(name) != ParserSupport::Missing || crate::dotnet::installed_report_parser(name)

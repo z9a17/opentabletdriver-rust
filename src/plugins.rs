@@ -53,9 +53,11 @@ pub fn load_parser_registry() -> Result<(), String> {
 pub fn import_otd_with_installed(text: &str, source: &Path, connected: &[String]) -> Result<crate::config::Profile, String> {
     let document = crate::config::OtdSettingsDocument::from_json(text, source)?;
     let profiles = document.profiles();
+    let database = crate::config::configured_tablets()?;
     let selected = connected.iter().find_map(|name| profiles.iter().find(|profile| &profile.tablet == name))
         .or_else(|| profiles.iter().find(|profile| profile.tablet == "Wacom PTH-660"))
         .or_else(|| profiles.iter().find(|profile| profile.runtime_tablet_supported))
+        .or_else(|| profiles.iter().find(|profile| crate::config::spec_for_tablet_in(&profile.tablet, &database).is_ok()))
         .ok_or("OpenTabletDriver settings have no profile for a tablet this driver supports")?.index;
     import_otd_selected_with_installed(text, source, selected)
 }

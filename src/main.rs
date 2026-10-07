@@ -664,14 +664,14 @@ fn show_settings(config: Option<PathBuf>, otd_settings: Option<PathBuf>) -> Resu
 fn load_runtime_profile(config: Option<&PathBuf>, otd_settings: Option<&PathBuf>) -> Result<Profile, String> {
     if let Some(path) = otd_settings {
         let text = std::fs::read_to_string(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-        return plugins::import_otd_with_installed(&text, path, &hid::connected_tablets()?);
+        return plugins::import_otd_with_installed(&text, path, &hid::connected_tablets_for_import()?);
     }
     if config.is_none() && std::env::var_os("OTD_RUST_PORTABLE_DIR").is_none() {
         let native = otd_core::storage::data_directory()?.join("driver.toml");
         if !native.try_exists().map_err(|error| format!("cannot inspect {}: {error}", native.display()))?
             && let Some(original) = config::otd_settings_path()
             && original.try_exists().map_err(|error| format!("cannot inspect {}: {error}", original.display()))? {
-            return plugins::load_original_profile(&hid::connected_tablets()?);
+            return plugins::load_original_profile(&hid::connected_tablets_for_import()?);
         }
     }
     load_profile(config, otd_settings)
@@ -703,7 +703,8 @@ fn drive(
 ) -> Result<(), String> {
     let configured_tablets = check_tablet_configurations()?;
     let database = configured_tablets.as_ref();
-    profile.validate_runtime_tablet_in(database)?;
+    plugins::prepare_parser_registry(&profile, database)?;
+    profile.validate_runtime_tablet_in_with_parser_support(database, &dotnet::installed_report_parser)?;
     profile.validate_filter_execution()?;
     let tablet_name = profile.tablet_name()?;
     if tablet_name.is_some() && profile.relative.is_none() {
@@ -754,7 +755,7 @@ fn drive(
             }
             let devices = hid::enumerate_with_database(database)
                 .map_err(|e| format!("HID discovery failed: {e}"))?;
-            let Some(selected) = hid::select_device(
+            let Some(selected) = hid::select_device_for_start(
                 &devices,
                 database,
                 profile.device_path.as_deref(),
@@ -906,7 +907,7 @@ fn main() {
             config,
             otd_settings,
         }) => load_runtime_profile(config.as_ref(), otd_settings.as_ref()).and_then(|profile| {
-            profile.validate_runtime_tablet()?;
+            plugins::validate_runtime_profile(&profile)?;
             daemon::call(control::Command::Start {
                 profile_toml: Some(profile.to_toml()?),
             })

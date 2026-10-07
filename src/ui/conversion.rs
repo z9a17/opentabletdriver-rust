@@ -439,7 +439,8 @@ pub(super) fn open(window: HWND) {
         if app.editor.mode() != OutputMode::Absolute {
             return Err("Area conversion is available in Absolute Mode.".into());
         }
-        app.editor.profile.validate_runtime_tablet()?;
+        let database = crate::config::configured_tablets()?;
+        app.editor.profile.validate_runtime_tablet_in_with_parser_support(database.as_ref(), &crate::dotnet::installed_report_parser)?;
         // Do not discard an invalid field while replacing the visible area.
         app.checked_profile()?;
         Ok((

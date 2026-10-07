@@ -317,7 +317,7 @@ impl Daemon {
             None => crate::load_runtime_profile(None, None),
         }
         .and_then(|profile| {
-            profile.validate_runtime_tablet()?;
+            crate::plugins::validate_runtime_profile(&profile)?;
             profile.validate_filter_execution()?;
             if profile.tablet_name()?.is_some() && profile.relative.is_none() {
                 crate::display::read_snapshot()?.mapper(&profile)?;
