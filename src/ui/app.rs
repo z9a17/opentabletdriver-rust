@@ -2545,10 +2545,6 @@ impl App {
                                 }
                             }
                             self.load_active_profile(*profile);
-                            if self.selected_device.as_ref().is_some_and(|device| !device.profile_saved) {
-                                self.dirty = true;
-                                self.update_title();
-                            }
                             self.log(Level::Info, "Settings", "Loaded the daemon's active configuration. Save writes it to the local profile file.");
                         }
                     }
