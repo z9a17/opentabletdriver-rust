@@ -40,7 +40,7 @@ impl Owner {
             application_info: crate::upstream_rpc::original_application_info().ok(),
             configurations, tablets: Some(json!([])), ..Snapshot::default() };
         let stop = Arc::new(AtomicBool::new(false));
-        let backend = Arc::new(NativeBackend { stopped: Arc::clone(&stop), activated: AtomicBool::new(false),
+        let backend = Arc::new(NativeBackend { stopped: Arc::clone(&stop), activated: AtomicBool::new(crate::dotnet::initialized()),
             observer_thread: OnceLock::new(), published: Mutex::new(Published {
             publisher: None, snapshot: snapshot.clone(), last_devices: None, sessions: Vec::new(),
             retained: crate::upstream_rpc::cached_original_settings(),
