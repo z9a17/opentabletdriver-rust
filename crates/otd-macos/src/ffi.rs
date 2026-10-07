@@ -86,3 +86,14 @@ unsafe extern "C" {
     pub fn CGEventSetTimestamp(event: Ref, timestamp: u64);
     pub fn CGEventPost(tap: u32, event: Ref);
 }
+
+// NSEvent is loaded from AppKit; the selector is read-only and creates no UI.
+#[link(name = "AppKit", kind = "framework")]
+unsafe extern "C" {}
+#[link(name = "objc")]
+unsafe extern "C" {
+    pub fn objc_getClass(name:*const c_char)->Ref;
+    pub fn sel_registerName(name:*const c_char)->Ref;
+    #[link_name="objc_msgSend"]
+    pub fn objc_msgSend_double(receiver:Ref,selector:Ref)->f64;
+}

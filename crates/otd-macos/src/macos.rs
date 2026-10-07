@@ -30,7 +30,7 @@ const QUEUE: usize = 32;
 const UTF8: u32 = 0x0800_0100;
 const LISTEN_EVENT: u32 = 1;
 
-struct Owned(ffi::Ref);
+pub(crate) struct Owned(pub(crate) ffi::Ref);
 impl Drop for Owned {
     fn drop(&mut self) {
         if !self.0.is_null() {
@@ -601,7 +601,7 @@ impl Displays for NativeDisplays {
 }
 
 pub struct Mouse {
-    _source: Owned, moved: Owned, dragged: Owned, down: Owned, up: Owned,
+    _source: Owned, attributes:otd_core::output::MouseAttributes, position_emitted:bool,
     contact_owner:otd_platform::input_owner::Native,
     geometry: Rc<Cell<Rect>>, contact: bool, last_absolute: Option<ffi::Point>,
     last_position: Option<ffi::Point>, buttons: u8, modifiers: u8, synthetic_flags:u64, pending_clear_flags: u64,
@@ -631,19 +631,11 @@ impl Mouse {
         output_permission()?;
         ensure_shared_inputs()?;
         let contact_owner=otd_platform::input_owner::Native::new()?;
-        // SAFETY: private CGEvent source and distinct reusable mouse event
-        // objects avoid changing a union between incompatible event families.
+        // A private source serves scroll events; the shared pointer creates
+        // fresh native events so tablet union fields never leak between types.
         let source = Owned(unsafe { ffi::CGEventSourceCreate(-1) });
         if source.0.is_null() { return Err(io::Error::other("cannot create CoreGraphics event source")); }
-        let create = |kind| Owned(unsafe { ffi::CGEventCreateMouseEvent(source.0, kind, ffi::Point::default(), 0) });
-        let moved = create(5);
-        let dragged = create(6);
-        let down = create(1);
-        let up = create(2);
-        if [moved.0, dragged.0, down.0, up.0].iter().any(|event| event.is_null()) {
-            return Err(io::Error::other("cannot create CoreGraphics mouse events"));
-        }
-        Ok(Self { _source: source, moved, dragged, down, up, contact_owner, geometry, contact: false, last_absolute: None,
+        Ok(Self { _source: source, attributes:Default::default(),position_emitted:false,contact_owner, geometry, contact: false, last_absolute: None,
             last_position: None, buttons: 0, modifiers: 0, synthetic_flags:0, pending_clear_flags: 0, clear_flags_deadline: None })
     }
 
@@ -675,46 +667,32 @@ impl Mouse {
         };
         let contact = if packet.flags & flags::LEFTDOWN != 0 { true }
             else if packet.flags & flags::LEFTUP != 0 { false } else { self.contact };
-        if packet.flags&(flags::LEFTDOWN|flags::LEFTUP)!=0{self.contact_owner.hold_at(otd_platform::input_owner::Code::Button(0),contact,Some((position.x,position.y)))?;}
-        self.buttons=otd_platform::input_owner::buttons();let left=self.buttons&1!=0;
-        if !moving {
-            self.contact = contact;
-            self.last_position=Some(position);if moving{self.last_absolute=absolute.then_some(position);}
-            return Ok(());
-        }
-        // Shared ownership emits contact edges. Every moving packet still
-        // updates the cursor even if another input scope changes its buttons.
-        let (event, kind, button) = if left { (self.dragged.0, 6, 0) }
-            else if self.buttons & 2 != 0 { (self.dragged.0, 7, 1) }
-            else if self.buttons & 0x1c != 0 { (self.dragged.0, 27, (self.buttons & 0x1c).trailing_zeros()) }
-            else { (self.moved.0, 5, 0) };
-        let mut clock = libc::timespec { tv_sec: 0, tv_nsec: 0 };
-        // SAFETY: writable timespec, nanoseconds since boot as required by
-        // CGEventTimestamp. Refresh timestamps on the reusable event objects.
-        if unsafe { libc::clock_gettime(libc::CLOCK_UPTIME_RAW, &mut clock) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let timestamp = (clock.tv_sec as u64).saturating_mul(1_000_000_000).saturating_add(clock.tv_nsec as u64);
-        // SAFETY: valid reusable event; public fields 4/5 are delta X/Y,
-        // 1 is click state, 3 is button number.
-        let event_flags = self.event_flags();
-        unsafe {
-            ffi::CGEventSetType(event, kind);
-            ffi::CGEventSetLocation(event, position);
-            ffi::CGEventSetDoubleValueField(event, 4, delta.x);
-            ffi::CGEventSetDoubleValueField(event, 5, delta.y);
-            ffi::CGEventSetIntegerValueField(event, 3, i64::from(button));
-            ffi::CGEventSetIntegerValueField(event, 1, i64::from(kind == 1 || kind == 2));
-            ffi::CGEventSetFlags(event, event_flags);
-            ffi::CGEventSetTimestamp(event, timestamp);
-            ffi::CGEventPost(0, event);
-        }
-        self.contact = contact;
-        self.last_position = Some(position);
-        if moving { self.last_absolute = absolute.then_some(position); }
-        // CGEventPost has no return value; TCC acceptance/application delivery
-        // remains a physical macOS validation gate, not an acknowledged write.
+        let mut edge=false;
+        if packet.flags&(flags::LEFTDOWN|flags::LEFTUP)!=0{edge=self.contact_owner.hold_pointer(0,otd_platform::input_owner::Code::Button(0),contact,
+            otd_platform::input_owner::PointerContext{position:Some((position.x,position.y)),click_position:Some(if absolute{(position.x,position.y)}else{(delta.x,delta.y)}),delta:Some((delta.x,delta.y)),attributes:Some(self.attributes)})?;}
+        if moving&&!edge{let flags=self.event_flags();crate::pointer::movement(position,delta,if absolute{position}else{delta},self.attributes,flags)?;}
+        self.position_emitted|=moving||edge;
+        self.contact=contact;self.last_position=Some(position);
+        if moving{self.last_absolute=absolute.then_some(position);}
+        // CoreGraphics has no delivery acknowledgement; native validation is deferred.
         Ok(())
+    }
+
+    fn set_attributes(&mut self,attributes:otd_core::output::MouseAttributes)->io::Result<()>{
+        self.position_emitted=false;self.attributes.has_position=attributes.has_position;
+        if let Some(pressure)=attributes.pressure{self.attributes.pressure=Some(pressure);}
+        if let Some(tilt)=attributes.tilt{self.attributes.tilt=Some(tilt);}
+        if let Some(eraser)=attributes.eraser{self.attributes.eraser=Some(eraser);}
+        if attributes.reset{self.contact_owner.release()?;self.contact=false;self.last_absolute=None;}
+        crate::pointer::attributes(attributes)
+    }
+    fn flush_attributes(&mut self)->io::Result<()>{
+        if self.attributes.has_position&&!self.position_emitted{
+            // Assigned stationary positions emit tablet values. Pure auxiliary
+            // or pressure-only reports have no pending position to Flush.
+            let position=if let Some(position)=self.last_absolute{position}else{let query=Owned(unsafe{ffi::CGEventCreate(ptr::null())});if query.0.is_null(){return Err(io::Error::other("Cannot query stationary relative cursor"));}unsafe{ffi::CGEventGetLocation(query.0)}};
+            let flags=self.event_flags();crate::pointer::movement(position,ffi::Point::default(),if self.last_absolute.is_some(){position}else{ffi::Point::default()},self.attributes,flags)?;self.position_emitted=true;
+        }Ok(())
     }
 
     fn event_flags(&mut self) -> u64 {
@@ -735,70 +713,9 @@ impl Mouse {
         (observed & !self.pending_clear_flags) | self.synthetic_flags
     }
 
-    fn send_action(&mut self, transition: ActionTransition) -> io::Result<()> {
-        match transition.action {
-            Action::Key(key) => {
-                let code = crate::keymap::key_code(key).ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "unsupported macOS keyboard usage"))?;
-                // Fresh native keyboard events translate the current key code;
-                // successful Rust-owned processing still allocates no heap.
-                let event = Owned(unsafe { ffi::CGEventCreateKeyboardEvent(self._source.0, code, transition.pressed) });
-                if event.0.is_null() { return Err(io::Error::other("cannot create CoreGraphics keyboard event")); }
-                let timestamp = event_timestamp()?;
-                let old_flags = crate::keymap::modifier_flags(self.modifiers);
-                if key.is_modifier() {
-                    let bit = 1 << (key.usage() - 0xe0);
-                    if transition.pressed { self.modifiers |= bit; } else { self.modifiers &= !bit; }
-                }
-                let released_flags = old_flags & !crate::keymap::modifier_flags(self.modifiers);
-                self.pending_clear_flags |= released_flags;
-                if released_flags != 0 { self.clear_flags_deadline = Some(Instant::now() + Duration::from_millis(50)); }
-                let event_flags = self.event_flags();
-                unsafe {
-                    ffi::CGEventSetIntegerValueField(event.0, 8, 0); // no autorepeat
-                    ffi::CGEventSetFlags(event.0, event_flags);
-                    ffi::CGEventSetTimestamp(event.0, timestamp);
-                    ffi::CGEventPost(0, event.0);
-                }
-            }
-            Action::Mouse(button) => {
-                let number = match button { MouseButton::Left => 0, MouseButton::Right => 1,
-                    MouseButton::Middle => 2, MouseButton::Backward => 3, MouseButton::Forward => 4 };
-                let next = if transition.pressed { self.buttons | (1 << number) } else { self.buttons & !(1 << number) };
-                let was_pressed = self.buttons & (1 << number) != 0 || number == 0 && self.contact;
-                let pressed = next & (1 << number) != 0 || number == 0 && self.contact;
-                if was_pressed == pressed { self.buttons = next; return Ok(()); }
-                let position = match self.last_position {
-                    Some(position) => position,
-                    None => {
-                        let query = Owned(unsafe { ffi::CGEventCreate(ptr::null()) });
-                        if query.0.is_null() { return Err(io::Error::other("cannot query current cursor position")); }
-                        unsafe { ffi::CGEventGetLocation(query.0) }
-                    }
-                };
-                let kind = match (number, pressed) { (0, true) => 1, (0, false) => 2,
-                    (1, true) => 3, (1, false) => 4, (_, true) => 25, (_, false) => 26 };
-                let event = if pressed { self.down.0 } else { self.up.0 };
-                let timestamp = event_timestamp()?;
-                let event_flags = self.event_flags();
-                unsafe {
-                    ffi::CGEventSetType(event, kind);
-                    ffi::CGEventSetLocation(event, position);
-                    ffi::CGEventSetIntegerValueField(event, 3, i64::from(number));
-                    ffi::CGEventSetIntegerValueField(event, 1, 1);
-                    ffi::CGEventSetDoubleValueField(event, 4, 0.0);
-                    ffi::CGEventSetDoubleValueField(event, 5, 0.0);
-                    ffi::CGEventSetFlags(event, event_flags);
-                    ffi::CGEventSetTimestamp(event, timestamp);
-                    ffi::CGEventPost(0, event);
-                }
-                self.buttons = next;
-            }
-        }
-        Ok(())
-    }
 }
 
-fn event_timestamp() -> io::Result<u64> {
+pub(crate) fn event_timestamp() -> io::Result<u64> {
     let mut clock = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     if unsafe { libc::clock_gettime(libc::CLOCK_UPTIME_RAW, &mut clock) } != 0 {
         return Err(io::Error::last_os_error());
@@ -810,15 +727,19 @@ fn event_timestamp() -> io::Result<u64> {
 /// other's left button, and drag events see the held side buttons/modifiers.
 pub fn action_sink(mouse: Rc<RefCell<Mouse>>) -> io::Result<Box<dyn ActionSink>> {
     ensure_shared_inputs()?;let owner=otd_platform::input_owner::Native::new()?;
-    let scroll = Rc::clone(&mouse);
+    let scroll=Rc::clone(&mouse);let setter=Rc::clone(&mouse);let flush=Rc::clone(&mouse);
     Ok(Box::new(LocalActions::new(move |transition:ActionTransition|{
         let code=match transition.action{Action::Key(key)=>otd_platform::input_owner::Code::Key(crate::keymap::key_code(key).ok_or_else(||io::Error::new(io::ErrorKind::Unsupported,"Unsupported macOS keyboard usage"))?),
             Action::Mouse(button)=>otd_platform::input_owner::Code::Button(match button{MouseButton::Left=>0,MouseButton::Right=>1,MouseButton::Middle=>2,MouseButton::Backward=>3,MouseButton::Forward=>4})};
         let action=match transition.action{Action::Key(key)=>key.usage() as u32,Action::Mouse(_)=>0x10000+match code{otd_platform::input_owner::Code::Button(button)=>button as u32,_=>unreachable!()}};
-        owner.hold_action(action,code,transition.pressed,None)
-    },
-        |action| match action { Action::Mouse(_) => true, Action::Key(key) => crate::keymap::key_code(key).is_some() })
-        .with_scroll(move |pulse| scroll.borrow_mut().send_scroll(pulse))))
+        if matches!(code,otd_platform::input_owner::Code::Button(_)){
+            let mut mouse=mouse.borrow_mut();let context=otd_platform::input_owner::PointerContext{position:None,click_position:if mouse.last_absolute.is_some(){None}else{Some((0.0,0.0))},delta:None,attributes:Some(mouse.attributes)};
+            let emitted=owner.hold_pointer(action,code,transition.pressed,context)?;mouse.position_emitted|=emitted;Ok(())
+        }else{owner.hold_action(action,code,transition.pressed,None)}
+    }, |action| match action { Action::Mouse(_) => true, Action::Key(key) => crate::keymap::key_code(key).is_some() })
+        .with_scroll(move |pulse| scroll.borrow_mut().send_scroll(pulse))
+        .with_pointer_attributes(move|attributes|setter.borrow_mut().set_attributes(attributes))
+        .with_pointer_flush(move||flush.borrow_mut().flush_attributes())))
 }
 impl otd_platform::managed_source::NativeSource for HidSource<'_>{
     fn tablet(&self,value:serde_json::Value){HidSource::tablet(self,value)}
@@ -832,11 +753,11 @@ impl otd_platform::paired_source::Retire for HidSource<'_>{}
 
 // CGEvent objects can be posted from any thread. The shared owner mutex is the
 // sole accessor; no CFRunLoop or tablet-thread resource is borrowed here.
-struct SharedInput {source:Owned,down:Owned,up:Owned,modifiers:u8,extra_flags:u64,clear:u64,clear_until:Option<Instant>}
+struct SharedInput {source:Owned,modifiers:u8,extra_flags:u64,clear:u64,clear_until:Option<Instant>}
 unsafe impl Send for SharedInput {}
 impl SharedInput {
     fn flags(&mut self)->u64{let observed=unsafe{ffi::CGEventSourceFlagsState(1)};self.clear&=observed;if self.clear_until.is_some_and(|until|Instant::now()>=until){self.clear=0;self.clear_until=None;}(observed&!self.clear)|crate::keymap::modifier_flags(self.modifiers)|self.extra_flags}
-    fn send(&mut self,code:otd_platform::input_owner::Code,held:bool,position:Option<(f64,f64)>)->io::Result<()>{
+    fn send(&mut self,code:otd_platform::input_owner::Code,held:bool,position:Option<otd_platform::input_owner::PointerContext>)->io::Result<()>{
         let timestamp=event_timestamp()?;
         match code{
             otd_platform::input_owner::Code::Key(code)=>{
@@ -848,16 +769,12 @@ impl SharedInput {
                 let flags=self.flags();unsafe{ffi::CGEventSetIntegerValueField(event.0,8,0);ffi::CGEventSetFlags(event.0,flags);ffi::CGEventSetTimestamp(event.0,timestamp);ffi::CGEventPost(0,event.0);}
             },
             otd_platform::input_owner::Code::Button(button)=>{
-                let point=match position{Some((x,y))=>ffi::Point{x,y},None=>{let query=Owned(unsafe{ffi::CGEventCreate(ptr::null())});if query.0.is_null(){return Err(io::Error::other("Cannot query cursor for original mouse binding"));}unsafe{ffi::CGEventGetLocation(query.0)}}};
-                let kind=match(button,held){(0,true)=>1,(0,false)=>2,(1,true)=>3,(1,false)=>4,(_,true)=>25,(_,false)=>26};let event=if held{self.down.0}else{self.up.0};let flags=self.flags();
-                unsafe{ffi::CGEventSetType(event,kind);ffi::CGEventSetLocation(event,point);ffi::CGEventSetIntegerValueField(event,3,button.into());ffi::CGEventSetIntegerValueField(event,1,1);ffi::CGEventSetDoubleValueField(event,4,0.0);ffi::CGEventSetDoubleValueField(event,5,0.0);ffi::CGEventSetFlags(event,flags);ffi::CGEventSetTimestamp(event,timestamp);ffi::CGEventPost(0,event);}
+                let flags=self.flags();crate::pointer::button(button,held,position,flags)?;
             }
         }Ok(())
     }
 }
 pub fn ensure_shared_inputs()->io::Result<()>{otd_platform::input_owner::ensure(||{
-    output_permission()?;let source=Owned(unsafe{ffi::CGEventSourceCreate(-1)});if source.0.is_null(){return Err(io::Error::other("Cannot create shared event source"));}
-    let down=Owned(unsafe{ffi::CGEventCreateMouseEvent(source.0,1,ffi::Point::default(),0)});let up=Owned(unsafe{ffi::CGEventCreateMouseEvent(source.0,2,ffi::Point::default(),0)});
-    if down.0.is_null()||up.0.is_null(){return Err(io::Error::other("Cannot create shared mouse events"));}
-    let mut writer=SharedInput{source,down,up,modifiers:0,extra_flags:0,clear:0,clear_until:None};Ok(Box::new(move|code,held,position|writer.send(code,held,position)))
+    output_permission()?;crate::pointer::ensure()?;let source=Owned(unsafe{ffi::CGEventSourceCreate(-1)});if source.0.is_null(){return Err(io::Error::other("Cannot create shared event source"));}
+    let mut writer=SharedInput{source,modifiers:0,extra_flags:0,clear:0,clear_until:None};Ok(Box::new(move|code,held,position|writer.send(code,held,position)))
 })}

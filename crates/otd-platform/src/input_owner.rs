@@ -10,15 +10,19 @@ impl Code {fn index(self)->io::Result<usize>{match self{Self::Key(code)if code<7
 #[derive(Clone,Copy,PartialEq,Eq)]
 enum Owner {Native(u64,u32),Managed(u64)}
 #[derive(Clone,Copy)]
-struct Hold {owner:Owner,index:usize}
-type Writer=Box<dyn FnMut(Code,bool,Option<(f64,f64)>)->io::Result<()>+Send>;
-struct State {holds:[Option<Hold>;4096],desired:[usize;773],emitted:[bool;773],positions:[Option<(f64,f64)>;773],writer:Option<Writer>,leases:BTreeMap<u64,Instant>}
+struct Hold {owner:Owner,index:usize,context:Option<PointerContext>}
+/// Copy-only event context carried with ownership transitions and pending retries.
+#[derive(Clone,Copy)]
+pub struct PointerContext {pub position:Option<(f64,f64)>,pub click_position:Option<(f64,f64)>,pub delta:Option<(f64,f64)>,pub attributes:Option<otd_core::output::MouseAttributes>}
+type Writer=Box<dyn FnMut(Code,bool,Option<PointerContext>)->io::Result<()>+Send>;
+struct State {holds:[Option<Hold>;4096],desired:[usize;773],emitted:[bool;773],positions:[Option<PointerContext>;773],writer:Option<Writer>,leases:BTreeMap<u64,Instant>}
 impl State {
-    fn hold(&mut self,owner:Owner,code:Code,held:bool,position:Option<(f64,f64)>)->io::Result<()>{
+    fn hold(&mut self,owner:Owner,code:Code,held:bool,position:Option<PointerContext>)->io::Result<()>{
         let index=code.index()?;let existing=self.holds.iter().position(|hold|hold.is_some_and(|hold|hold.owner==owner&&hold.index==index));
-        if held&&existing.is_none(){let slot=self.holds.iter_mut().find(|slot|slot.is_none()).ok_or_else(||io::Error::other("Shared input owner capacity reached"))?;*slot=Some(Hold{owner,index});self.desired[index]+=1;}
-        else if !held{if let Some(slot)=existing{self.holds[slot]=None;self.desired[index]-=1;}}
-        if self.emitted[index]!=(self.desired[index]!=0){self.positions[index]=position;}
+        if held&&existing.is_none(){let slot=self.holds.iter_mut().find(|slot|slot.is_none()).ok_or_else(||io::Error::other("Shared input owner capacity reached"))?;*slot=Some(Hold{owner,index,context:position});self.desired[index]+=1;}
+        else if !held{if let Some(slot)=existing{let removed=self.holds[slot].take().unwrap();self.desired[index]-=1;if position.is_none(){self.positions[index]=removed.context;}}}
+        else if let Some(slot)=existing{if position.is_some(){self.holds[slot].as_mut().unwrap().context=position;}}
+        if self.emitted[index]!=(self.desired[index]!=0){if position.is_some(){self.positions[index]=position;}}
         match self.flush(){
             // An unrelated pending failure must not hide this accepted prefix
             // from LocalActions, otherwise it cannot release what was sent.
@@ -38,8 +42,8 @@ impl State {
             }
         }}}Ok(())
     }
-    fn release(&mut self,owner:Owner)->io::Result<()>{for hold in &mut self.holds{if hold.is_some_and(|hold|hold.owner==owner){let index=hold.take().unwrap().index;self.desired[index]-=1;}}self.flush()}
-    fn release_native(&mut self,id:u64)->io::Result<()>{for hold in &mut self.holds{if hold.is_some_and(|hold|matches!(hold.owner,Owner::Native(owner,_)if owner==id)){let index=hold.take().unwrap().index;self.desired[index]-=1;}}self.flush()}
+    fn release(&mut self,owner:Owner)->io::Result<()>{for hold in &mut self.holds{if hold.is_some_and(|hold|hold.owner==owner){let removed=hold.take().unwrap();self.desired[removed.index]-=1;self.positions[removed.index]=removed.context;}}self.flush()}
+    fn release_native(&mut self,id:u64)->io::Result<()>{for hold in &mut self.holds{if hold.is_some_and(|hold|matches!(hold.owner,Owner::Native(owner,_)if owner==id)){let removed=hold.take().unwrap();self.desired[removed.index]-=1;self.positions[removed.index]=removed.context;}}self.flush()}
 }
 static STATE:OnceLock<Mutex<State>>=OnceLock::new();
 fn state()->&'static Mutex<State>{STATE.get_or_init(||Mutex::new(State{holds:[None;4096],desired:[0;773],emitted:[false;773],positions:[None;773],writer:None,leases:BTreeMap::new()}))}
@@ -53,7 +57,8 @@ impl Native {
     pub fn hold_at(&self,code:Code,held:bool,position:Option<(f64,f64)>)->io::Result<()>{self.hold_action(0,code,held,position)}
     /// LocalActions merges bindings per portable action. Preserve that action's
     /// identity here: two distinct portable keys can alias one OS key code.
-    pub fn hold_action(&self,action:u32,code:Code,held:bool,position:Option<(f64,f64)>)->io::Result<()>{state().lock().map_err(|_|io::Error::other("Shared input ownership poisoned"))?.hold(Owner::Native(self.id,action),code,held,position)}
+    pub fn hold_action(&self,action:u32,code:Code,held:bool,position:Option<(f64,f64)>)->io::Result<()>{state().lock().map_err(|_|io::Error::other("Shared input ownership poisoned"))?.hold(Owner::Native(self.id,action),code,held,position.map(|position|PointerContext{position:Some(position),click_position:None,delta:None,attributes:None}))}
+    pub fn hold_pointer(&self,action:u32,code:Code,held:bool,context:PointerContext)->io::Result<bool>{let mut state=state().lock().map_err(|_|io::Error::other("Shared input ownership poisoned"))?;let index=code.index()?;let before=state.emitted[index];state.hold(Owner::Native(self.id,action),code,held,Some(context))?;Ok(before!=state.emitted[index])}
     pub fn release(&self)->io::Result<()>{state().lock().map_err(|_|io::Error::other("Shared input ownership poisoned"))?.release_native(self.id)}
 }
 impl Drop for Native {fn drop(&mut self){if let Err(error)=self.release(){eprintln!("Shared native input cleanup failed: {error}");}}}

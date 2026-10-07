@@ -10,6 +10,8 @@ mod ffi;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
+mod pointer;
+#[cfg(target_os = "macos")]
 mod keymap;
 #[cfg(target_os = "macos")]
 mod realtime;

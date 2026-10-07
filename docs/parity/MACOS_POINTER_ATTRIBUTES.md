@@ -33,3 +33,16 @@ the retained attributes, CGEvent fields, stationary flush and double-click state
 This source hook was reviewed; no tests, suites, builds, daemon, GUI, plugin or
 hardware execution were performed. Platform wiring and package compilation are
 owned by the platform peer and release integrator respectively.
+
+Native macOS wiring is in `crates/otd-macos/src/pointer.rs`. Actual system
+NSEvent double-click intervals and the pinned eight-pixel queued-position
+comparison determine click counts. Relative-mode queued coordinates are deltas,
+as in the original; this narrow baseline quirk is retained. Button edges carry
+click counts; fresh subsequent move events keep their original default count.
+Mouse and tablet pressure, tilt (including inverted Y), eraser/pen device
+capability/proximity fields are posted for ordinary modes. Repeated stationary
+positions flush metadata; attribute-only packets do not fabricate motion.
+Shared OS-code ownership suppresses duplicate held edges and preserves copied
+pointer context for a pending final release after a reader has retired. Fresh
+CoreGraphics events avoid subtype union contamination without Rust report-path
+heap allocations. TCC/output delivery and native macOS behavior remain unrun.
