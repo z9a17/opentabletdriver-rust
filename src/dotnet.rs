@@ -1,10 +1,13 @@
 //! On-demand CoreCLR hosting using Microsoft's nethost/hostfxr API. Rust-only
 //! profiles never initialize .NET. Managed calls are direct function pointers;
 //! there is no JSON serialization or interprocess message per pen report.
-use crate::plugins::{Library, wide};
+use crate::plugins::{HostChar, Library, wide};
 use otd_plugin_api::{FilterApi, Sample};
 use std::ffi::{OsStr, OsString, c_void};
+#[cfg(windows)]
 use std::os::windows::ffi::OsStringExt;
+#[cfg(unix)]
+use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -120,35 +123,40 @@ mod package_tests {
 }
 
 fn load_bridge() -> Result<Bridge, String> {
-    type GetHostPath = unsafe extern "system" fn(*mut u16, *mut usize, *const c_void) -> i32;
-    type Initialize = unsafe extern "C" fn(*const u16, *const c_void, *mut *mut c_void) -> i32;
+    type GetHostPath = unsafe extern "system" fn(*mut HostChar, *mut usize, *const c_void) -> i32;
+    type Initialize = unsafe extern "C" fn(*const HostChar, *const c_void, *mut *mut c_void) -> i32;
     type GetDelegate = unsafe extern "C" fn(*mut c_void, i32, *mut *mut c_void) -> i32;
     type Close = unsafe extern "C" fn(*mut c_void) -> i32;
     type LoadAssembly = unsafe extern "system" fn(
-        *const u16,
-        *const u16,
-        *const u16,
-        *const u16,
+        *const HostChar,
+        *const HostChar,
+        *const HostChar,
+        *const HostChar,
         *mut c_void,
         *mut *mut c_void,
     ) -> i32;
     let directory = bridge_dir()?;
-    let nethost = Library::load(&directory.join("nethost.dll"))
+    let nethost_name = if cfg!(windows) { "nethost.dll" } else if cfg!(target_os = "macos") { "libnethost.dylib" } else { "libnethost.so" };
+    let nethost = Library::load(&directory.join(nethost_name))
         .map_err(|e| format!(".NET bridge is not installed beside the driver: {e}"))?;
     let get_path: GetHostPath =
         unsafe { std::mem::transmute(nethost.symbol(b"get_hostfxr_path\0")?) };
-    let mut path = vec![0u16; 32_768];
+    let mut path = vec![0 as HostChar; 32_768];
     let mut size = path.len();
     if unsafe { get_path(path.as_mut_ptr(), &mut size, std::ptr::null()) } != 0 {
         return Err(
-            ".NET hosting runtime was not found; install the x64 .NET 8 runtime or newer".into(),
+            format!(".NET hosting runtime was not found; install the {} .NET runtime required by OtdCompat.runtimeconfig.json", std::env::consts::ARCH),
         );
     }
     let length = path
         .iter()
         .position(|c| *c == 0)
         .ok_or("invalid hostfxr path")?;
-    let host = Library::load(Path::new(&OsString::from_wide(&path[..length])))?;
+    #[cfg(windows)]
+    let host_path = OsString::from_wide(&path[..length]);
+    #[cfg(unix)]
+    let host_path = OsString::from_vec(path[..length].to_vec());
+    let host = Library::load(Path::new(&host_path))?;
     let initialize: Initialize =
         unsafe { std::mem::transmute(host.symbol(b"hostfxr_initialize_for_runtime_config\0")?) };
     let get_delegate: GetDelegate =
@@ -185,7 +193,7 @@ fn load_bridge() -> Result<Bridge, String> {
                 assembly.as_ptr(),
                 type_name.as_ptr(),
                 method.as_ptr(),
-                usize::MAX as *const u16,
+                usize::MAX as *const HostChar,
                 std::ptr::null_mut(),
                 &mut entry,
             )

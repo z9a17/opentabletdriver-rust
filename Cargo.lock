@@ -166,6 +166,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "otd-core",
+ "otd-platform",
  "serde_json",
 ]
 
@@ -175,6 +176,18 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "otd-core",
+ "otd-platform",
+]
+
+[[package]]
+name = "otd-platform"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "otd-core",
+ "otd-plugin-api",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

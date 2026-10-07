@@ -6,7 +6,7 @@ license = "GPL-3.0-only"
 description = "User-mode tablet driver using OpenTabletDriver configurations on Windows, Linux and macOS"
 
 [workspace]
-members = ["crates/otd-core", "crates/otd-linux", "crates/otd-macos", "crates/otd-plugin-api", "plugins/ema"]
+members = ["crates/otd-core", "crates/otd-linux", "crates/otd-macos", "crates/otd-platform", "crates/otd-plugin-api", "plugins/ema"]
 # Cargo commands run in the root without -p also cover the core's tests.
 default-members = [".", "crates/otd-core"]
 resolver = "2"

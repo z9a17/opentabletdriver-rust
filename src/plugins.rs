@@ -5,13 +5,20 @@
 use otd_core::tablets::{Database, DeviceIdentifier, Role, TabletConfiguration};
 use otd_plugin_api::{ABI_VERSION, FilterApi, Header, Sample};
 use std::ffi::{OsStr, c_void};
+#[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use std::time::Instant;
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{FreeLibrary, HMODULE};
+#[cfg(windows)]
 use windows_sys::Win32::System::LibraryLoader::{
     GetProcAddress, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
 };
+#[cfg(windows)]
+pub type HostChar = u16;
+#[cfg(unix)]
+pub use crate::library::{HostChar, Library, native_string as wide};
 
 pub use otd_core::plugins::{PipelineStage, PluginConfig, PluginKind};
 #[path = "plugins/graph.rs"]
@@ -34,6 +41,7 @@ pub fn prepare_parser_registry(profile: &crate::config::Profile, database: &Data
 }
 /// One explicit all-tablet startup lookup. Passive supervisor scans remain
 /// cached; an absent optional auxiliary does not start CLR.
+#[cfg(windows)]
 pub fn prepare_connected_parsers(database: &Database) -> Result<(), String> {
     let devices = crate::hid::enumerate_with_database(database).map_err(|error| error.to_string())?;
     let missing = devices.iter().any(|device| database.find(device.vendor, device.product).any(|found|
@@ -254,8 +262,10 @@ pub fn resolve_imported_stores(profile: &mut crate::config::Profile, inspected: 
     *profile = next; Ok(count)
 }
 
+#[cfg(windows)]
 pub struct Library(HMODULE);
 
+#[cfg(windows)]
 pub fn wide(value: &OsStr) -> Result<Vec<u16>, String> {
     let mut result: Vec<_> = value.encode_wide().collect();
     if result.contains(&0) {
@@ -265,6 +275,7 @@ pub fn wide(value: &OsStr) -> Result<Vec<u16>, String> {
     Ok(result)
 }
 
+#[cfg(windows)]
 impl Library {
     pub fn load(path: &Path) -> Result<Self, String> {
         let path = path
@@ -301,6 +312,7 @@ impl Library {
     }
 }
 
+#[cfg(windows)]
 impl Drop for Library {
     fn drop(&mut self) {
         unsafe { FreeLibrary(self.0) };
@@ -493,7 +505,7 @@ impl Plugin {
 /// this choice in Rust so future device selection can supply its own entry.
 fn current_tablet() -> &'static TabletConfiguration {
     Database::builtin()
-        .find(crate::hid::WACOM_VENDOR, crate::hid::PTH660_USB)
+        .find(0x056a, 0x0357)
         .find(|entry| entry.role == Role::Digitizer && entry.configuration.name == "Wacom PTH-660")
         .expect("the pinned database declares the PTH-660")
         .configuration

@@ -1,0 +1,16 @@
+[package]
+name = "otd-platform"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "Shared Unix plugin hosting and native tablet control ownership"
+publish = false
+
+[dependencies]
+otd-core = { path = "../otd-core" }
+otd-plugin-api = { path = "../otd-plugin-api" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.145"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.189"
