@@ -30,8 +30,12 @@ struct UpdateOwnership { token: String, exit: bool }
 impl Connection {
     pub fn new(shared: Arc<Shared>, stop: Arc<AtomicBool>) -> Self {
         let resync_cursor = shared.resynchronize.load(Ordering::Acquire);
-        Self { shared, stop, next_poll: Instant::now(), log_cursor: None,
-            tablet_cursor: None, resync_cursor, update:None, debug:None, debug_sessions:Vec::new() }
+        let mut connection = Self { shared, stop, next_poll: Instant::now(), log_cursor: None,
+            tablet_cursor: None, resync_cursor, update:None, debug:None, debug_sessions:Vec::new() };
+        // Establish the retained-history boundary before reading a request.
+        // A complete/coalesced first frame may never enter an IO wait callback.
+        let _ = connection.establish_log_cursor();
+        connection
     }
     fn call(&self, command: Command) -> Result<Reply, Error> {
         if self.stop.load(Ordering::Acquire) { return Err(Error::failed("daemon is shutting down")); }
@@ -50,6 +54,13 @@ impl Connection {
             Reply::UpstreamLog { instance, sequence, messages } => Ok((instance, sequence, messages)),
             _ => Err(Error::failed("unexpected retained log response")),
         }
+    }
+    fn establish_log_cursor(&mut self) -> Result<(),Error> {
+        if self.log_cursor.is_none() {
+            let (instance,sequence,_) = self.logs()?;
+            self.log_cursor = Some((instance,sequence));
+        }
+        Ok(())
     }
     fn finish_update(&mut self) -> Result<bool, Error> {
         let Some(update) = &self.update else { return Ok(false); };
@@ -284,18 +295,7 @@ impl Connection {
             if let Ok(sessions) = self.session_snapshots() { self.debug_sessions = sessions; }
         }
         if let Ok((instance, sequence, messages)) = self.logs() {
-            if let Some((previous_instance, previous_sequence)) = &self.log_cursor {
-                if previous_instance == &instance {
-                    let available_start = sequence.saturating_sub(messages.len() as u64);
-                    let start = previous_sequence.saturating_sub(available_start).min(messages.len() as u64) as usize;
-                    // Lagging subscribers receive the bounded retained tail.
-                    // Original fields and production timestamps are preserved.
-                    for message in &messages[start..] {
-                        events.push(protocol::event("Message", json!(message)));
-                    }
-                }
-            }
-            self.log_cursor = Some((instance, sequence));
+            events.extend(message_events(&mut self.log_cursor,instance,sequence,&messages));
         }
         if let Ok(tablets) = self.tablets() {
             if self.tablet_cursor.as_ref().is_some_and(|previous| previous != &tablets) {
@@ -403,10 +403,37 @@ fn import_profile(text:&str,path:&Path,index:usize,registry:Option<&crate::dotne
 fn export_settings(profile: &crate::config::Profile) -> Result<String, Error> {
     Ok(profile.to_otd_json()?)
 }
+fn message_events(cursor:&mut Option<(String,u64)>,instance:String,sequence:u64,messages:&[UpstreamLogMessage]) -> Vec<Value> {
+    let mut events = Vec::new();
+    if let Some((previous_instance,previous_sequence)) = cursor.as_ref() {
+        if previous_instance == &instance {
+            let available_start = sequence.saturating_sub(messages.len() as u64);
+            let start = previous_sequence.saturating_sub(available_start).min(messages.len() as u64) as usize;
+            events.extend(messages[start..].iter().map(|message| protocol::event("Message",json!(message))));
+        }
+    }
+    *cursor = Some((instance,sequence));
+    events
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn first_coalesced_write_and_lagging_retained_tail_preserve_original_typed_messages() {
+        let before = UpstreamLogMessage::native("preconnection history".into());
+        let written:UpstreamLogMessage = serde_json::from_value(json!({"Time":"2026-10-07T09:08:07.654+02:00",
+            "Group":null,"Message":"first immediate request","StackTrace":"original trace","Level":3,"Notification":true})).unwrap();
+        // Cursor comes from the read-only construction snapshot, not the first
+        // post-request IO-wait callback. No wait callback is needed to emit it.
+        let mut cursor = Some(("owned daemon".into(),8));
+        let events = message_events(&mut cursor,"owned daemon".into(),9,&[before,written.clone()]);
+        assert_eq!(events,vec![protocol::event("Message",json!(written))]);
+        assert!(message_events(&mut cursor,"owned daemon".into(),9,&[written.clone()]).is_empty());
+        let events = message_events(&mut cursor,"owned daemon".into(),80,&[written.clone()]);
+        assert_eq!(events,vec![protocol::event("Message",json!(written))]);
+        assert!(message_events(&mut cursor,"replacement daemon".into(),1,&[written]).is_empty());
+    }
     #[test]
     fn active_managed_stores_export_without_runtime_paths_or_dropping_settings() {
         let source = json!({"Profiles":[{"Tablet":"Wacom PTH-660",
@@ -460,6 +487,9 @@ fn operating_system() -> Result<Value, Error> {
 }
 impl Service for Connection {
     fn invoke(&mut self, method: &str, params: &Value) -> Result<Value, Error> {
+        // If the constructor raced initial native-pipe startup, establish the
+        // baseline before any first method can append logs or mutate state.
+        if METHODS.contains(&method) { self.establish_log_cursor()?; }
         match method {
             "GetTablets" => { protocol::no_arguments(params)?; self.tablets() },
             "GetSettings" => { protocol::no_arguments(params)?; self.settings() },
@@ -471,6 +501,8 @@ impl Service for Connection {
             "WriteMessage" => {
                 let message: UpstreamLogMessage = serde_json::from_value(protocol::argument(params, "message")?.clone())
                     .map_err(|error| Error::invalid(error.to_string()))?;
+                Request::new(1,Command::WriteMessage { message:message.clone() }).validate()
+                    .map_err(|error| Error::invalid(error.message))?;
                 match self.call(Command::WriteMessage { message })? {
                     Reply::MessageWritten => Ok(Value::Null), _ => Err(Error::failed("unexpected log-write response")),
                 }

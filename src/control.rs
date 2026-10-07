@@ -7,6 +7,7 @@
 //! failure a command may already have taken effect: query status before retrying.
 
 pub(crate) mod pipe;
+mod log_time;
 
 use serde::{Deserialize, Serialize};
 use std::io;
@@ -77,6 +78,9 @@ impl Request {
                 }
             }
             Command::WriteMessage { message } => {
+                if !log_time::valid(&message.time) {
+                    return Err(ControlError::new(ErrorCode::InvalidRequest, "log Time must be a valid ISO or Microsoft JSON DateTime"));
+                }
                 if message.message.as_ref().is_some_and(|value| value.len() > MAX_LOG_LINE_BYTES)
                     || message.group.as_ref().is_some_and(|value| value.len() > 128)
                     || message.time.len() > 64 || message.stack_trace.as_ref().is_some_and(|value| value.len() > 4096)

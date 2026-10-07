@@ -96,3 +96,13 @@ a native duplicate. Native ABI entries, mixed native/managed Radial Follow,
 duplicate-count ambiguity and unmatched active source slots remain errors.
 Runtime DLL paths are omitted from OTD exports. These roundtrip fixtures are
 written but unrun; this is source support, not unchanged-DLL execution evidence.
+
+Log Time is validated natively before append against the ISO/Microsoft JSON
+DateTime wire forms. Calendar/leap-year, fractional precision and epoch-range
+checks prevent invalid timestamps from poisoning original-client deserialization;
+valid text is retained unchanged and no CLR is started. Source reference:
+[Json.NET13.0.3 DateTimeParser](https://github.com/JamesNK/Newtonsoft.Json/blob/13.0.3/Src/Newtonsoft.Json/Utilities/DateTimeParser.cs)
+and [DateTimeUtils](https://github.com/JamesNK/Newtonsoft.Json/blob/13.0.3/Src/Newtonsoft.Json/Utilities/DateTimeUtils.cs).
+The message cursor is established before request dispatch, including a fully
+coalesced first request; prior retained history is suppressed while new writes
+generate events. Timestamp and cursor fixtures are written but unrun.
