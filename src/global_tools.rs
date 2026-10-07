@@ -32,11 +32,11 @@ impl Handle {
     }
     pub fn drain(&self,expected:u64)->Result<Receipt,String>{self.set(expected,Vec::new())}
 }
-pub struct Owner {pub handle:Handle,join:Option<JoinHandle<()>>}
+pub struct Owner {pub handle:Handle,join:Option<JoinHandle<Result<(),String>>>}
 impl Owner {
     /// Teardown can need daemon/device callbacks. The caller keeps those lanes
     /// alive and pumps its control dispatcher until this join is completed.
-    pub fn retire(&mut self)->Result<Option<JoinHandle<()>>,String>{
+    pub fn retire(&mut self)->Result<Option<JoinHandle<Result<(),String>>>,String>{
         if self.join.is_none(){return Ok(None);}
         self.handle.tx.send(Work::Stop).map_err(|_|"Global tool owner stopped before retirement")?;Ok(self.join.take())
     }
@@ -73,12 +73,14 @@ impl Owner {
                     let _=reply.try_send(result);
                 },
             }}drop(tools);
-            if let Err(error)=crate::dotnet::drain_managed_retirements(Duration::from_secs(15)){log(&error);}
+            crate::dotnet::drain_managed_retirements(Duration::from_secs(15))
         }).map_err(|error|error.to_string())?;
         Ok(Self{handle:Handle{tx,state,next},join:Some(join)})
     }
 }
 impl Drop for Owner {fn drop(&mut self){
     // Owner teardown must happen outside a handler that tool disposal needs.
-    if self.join.is_some(){let _=self.handle.tx.send(Work::Stop);if let Some(join)=self.join.take(){let _=join.join();}}
+    if self.join.is_some(){let _=self.handle.tx.send(Work::Stop);if let Some(join)=self.join.take(){
+        match join.join(){Ok(Ok(()))=>{},Ok(Err(error))=>eprintln!("Global tool retirement failed: {error}"),Err(_)=>eprintln!("Global tool owner panicked during retirement")}
+    }}
 }}

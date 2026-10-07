@@ -573,7 +573,7 @@ impl Owner {
                 if let Ok(call)=rx.recv_timeout(Duration::from_millis(50)){
                     let result=state.command(&platform,call.command);let _=call.reply.send(result.map(|value|Completion{value,tools:None}));
                 }
-            }join.join().map_err(|_|"Global tool owner panicked during disposal".to_owned())},Ok(None)=>Ok(()),Err(error)=>Err(error)};
+            }join.join().map_err(|_|"Global tool owner panicked during disposal".to_owned()).and_then(|result|result)},Ok(None)=>Ok(()),Err(error)=>Err(error)};
             state.tools_configured=false;
             // Mandatory physical cleanup proceeds even if a failed tool worker
             // left its generation reservation pending. The error is retained.
