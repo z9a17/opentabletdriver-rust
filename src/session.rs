@@ -14,7 +14,7 @@ use windows_sys::Win32::Storage::FileSystem::ReadFile;
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Threading::{
     CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, INFINITE, SetWaitableTimer,
-    TIMER_ALL_ACCESS, WaitForMultipleObjects, WaitForSingleObject,
+    TIMER_ALL_ACCESS, WaitForMultipleObjects, WaitForSingleObject, ResetEvent,
 };
 
 /// Waits shorter than this use a high-resolution waitable timer: filter timer
@@ -66,6 +66,8 @@ fn initialization_writes(identifier: &DeviceIdentifier) -> bool {
 /// cancels a pending read and waits for it, so the buffer is never freed
 /// while the read can still write to it.
 struct Reader {
+    // Rust drops fields in declaration order; WinUSB must be freed first.
+    winusb: Option<crate::winusb::Interface>,
     handle: OwnedHandle,
     event: Event,
     buffer: Box<[u8]>,
@@ -85,11 +87,20 @@ impl Reader {
             candidate.open_read()?
         };
         let event = Event::create(true)?;
+        let winusb = if candidate.endpoint.transport == otd_core::endpoint_match::Transport::WinUsb {
+            let interface = crate::winusb::Interface::open(&handle)?;
+            if interface.input_length() != candidate.input_length || interface.input_length() == 0 {
+                return Err(io::Error::new(io::ErrorKind::InvalidData,
+                    "WinUSB input pipe changed since device discovery"));
+            }
+            Some(interface)
+        } else { None };
         Ok(Self {
             operation: OVERLAPPED {
                 hEvent: event.raw(),
                 ..Default::default()
             },
+            winusb,
             handle,
             event,
             // ReadFile needs room for the collection's whole input report.
@@ -110,6 +121,12 @@ impl Reader {
             hEvent: self.event.raw(),
             ..Default::default()
         };
+        if let Some(winusb) = &self.winusb {
+            if unsafe { ResetEvent(self.event.raw()) } == 0 { return Err(io::Error::last_os_error()); }
+            let immediate = unsafe { winusb.read(&mut self.buffer, &self.operation) }?;
+            self.pending = !immediate;
+            return Ok(immediate);
+        }
         let started = unsafe {
             ReadFile(
                 self.handle.raw(),
@@ -134,10 +151,12 @@ impl Reader {
     fn finish(&mut self) -> io::Result<Option<usize>> {
         self.pending = false;
         let mut transferred = 0u32;
-        if unsafe { GetOverlappedResult(self.handle.raw(), &self.operation, &mut transferred, 0) }
-            == 0
-        {
-            let error = io::Error::last_os_error();
+        let completion = if let Some(winusb) = &self.winusb {
+            winusb.completed(&self.operation, false).map(|length| { transferred = length; })
+        } else if unsafe { GetOverlappedResult(self.handle.raw(), &self.operation, &mut transferred, 0) } == 0 {
+            Err(io::Error::last_os_error())
+        } else { Ok(()) };
+        if let Err(error) = completion {
             if error.raw_os_error() == Some(ERROR_OPERATION_ABORTED as i32) {
                 return Ok(None);
             }
@@ -156,11 +175,22 @@ impl Reader {
         if !self.pending {
             return;
         }
+        if let Some(winusb) = &self.winusb {
+            winusb.cancel(&self.operation);
+            self.pending = false;
+            return;
+        }
         unsafe { CancelIoEx(self.handle.raw(), &self.operation) };
         let mut ignored = 0;
         // Cancellation is only a request; wait before reusing the buffer.
         unsafe { GetOverlappedResult(self.handle.raw(), &self.operation, &mut ignored, 1) };
         self.pending = false;
+    }
+
+    fn initialize(&self, candidate: &Candidate, identifier: &DeviceIdentifier,
+        configuration: &otd_core::tablets::TabletConfiguration, stop: &Event) -> io::Result<()> {
+        if let Some(winusb) = &self.winusb { winusb.initialize(candidate, identifier, configuration, stop) }
+        else { hid::initialize(candidate, &self.handle, identifier, configuration, stop) }
     }
 }
 
@@ -222,17 +252,15 @@ impl<'a> HidSource<'a> {
         selected: &SelectedDevice<'_>,
         status: &impl Fn(&str),
     ) -> io::Result<()> {
-        hid::initialize(
+        self.pen.initialize(
             selected.pen,
-            &self.pen.handle,
             &selected.identifier,
             &selected.configuration,
             self.stop,
         )?;
         if let (Some(reader), Some((endpoint, identifier))) = (&self.auxiliary, &selected.auxiliary)
-            && let Err(error) = hid::initialize(
+            && let Err(error) = reader.initialize(
                 endpoint,
-                &reader.handle,
                 identifier,
                 &selected.configuration,
                 self.stop,

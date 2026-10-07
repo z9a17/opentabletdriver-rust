@@ -22,6 +22,7 @@ mod runtime;
 mod session;
 mod ui;
 mod update;
+mod winusb;
 
 // The portable core, at the crate paths the Windows modules use.
 use otd_core::tablets::{self, Database, Origin, ParserSupport, Role, Severity};

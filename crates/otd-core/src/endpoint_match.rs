@@ -37,6 +37,7 @@ impl DeviceStringPattern {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Transport {
     UsbHid,
+    WinUsb,
     Other,
 }
 
@@ -76,7 +77,7 @@ pub enum Rejection {
 /// Configuration attributes supply defaults; identifier attributes win.
 pub fn matches(endpoint: &Endpoint, candidate: &Match<'_>) -> Result<(), Rejection> {
     let id = candidate.identifier;
-    if endpoint.transport != Transport::UsbHid {
+    if !matches!(endpoint.transport, Transport::UsbHid | Transport::WinUsb) {
         return Err(Rejection::UnsupportedTransport);
     }
     if endpoint.vendor_id != id.vendor_id().unwrap_or_default()

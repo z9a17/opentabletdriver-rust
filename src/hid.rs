@@ -25,6 +25,7 @@ use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
 use windows_sys::Win32::Devices::HumanInterfaceDevice::{
     HIDD_ATTRIBUTES, HIDP_CAPS, HIDP_STATUS_SUCCESS, HidD_FreePreparsedData, HidD_GetAttributes,
     HidD_GetHidGuid, HidD_GetIndexedString, HidD_GetPreparsedData, HidD_SetFeature, HidP_GetCaps,
+    HidD_GetManufacturerString, HidD_GetProductString, HidD_GetSerialNumberString,
     PHIDP_PREPARSED_DATA,
 };
 use windows_sys::Win32::Foundation::{
@@ -179,9 +180,14 @@ impl Candidate {
     }
 
     pub fn open(&self, write: bool) -> io::Result<OwnedHandle> {
+        open_path(&self.path, write || self.endpoint.transport == Transport::WinUsb)
+    }
+}
+
+pub(crate) fn open_path(path: &[u16], write: bool) -> io::Result<OwnedHandle> {
         let raw = unsafe {
             CreateFileW(
-                self.path.as_ptr(),
+                path.as_ptr(),
                 GENERIC_READ | if write { GENERIC_WRITE } else { 0 },
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
                 ptr::null(),
@@ -191,10 +197,9 @@ impl Candidate {
             )
         };
         OwnedHandle::new(raw)
-    }
 }
 
-struct DeviceInfoSet(HDEVINFO);
+pub(crate) struct DeviceInfoSet(pub(crate) HDEVINFO);
 
 impl Drop for DeviceInfoSet {
     fn drop(&mut self) {
@@ -208,7 +213,7 @@ fn hid_guid() -> GUID {
     guid
 }
 
-fn detail_path(
+pub(crate) fn detail_path(
     set: HDEVINFO,
     interface: &SP_DEVICE_INTERFACE_DATA,
 ) -> io::Result<(Vec<u16>, u32)> {
@@ -265,7 +270,7 @@ fn detail_path(
     Ok((out, device.DevInst))
 }
 
-fn instance_id(instance: u32) -> Option<String> {
+pub(crate) fn instance_id(instance: u32) -> Option<String> {
     let mut buffer = [0u16; 512];
     if unsafe { CM_Get_Device_IDW(instance, buffer.as_mut_ptr(), buffer.len() as u32, 0) }
         != CR_SUCCESS
@@ -303,7 +308,7 @@ fn should_inspect(instance: Option<&str>, database: &Database) -> bool {
 
 // Walk collection/interface ancestors to the physical USB device. Never pair
 // unrelated devices using only VID/PID or a collection path with bits removed.
-fn physical_id(mut instance: u32) -> String {
+pub(crate) fn physical_id(mut instance: u32) -> String {
     for _ in 0..12 {
         let mut buffer = [0u16; 512];
         if unsafe { CM_Get_Device_IDW(instance, buffer.as_mut_ptr(), buffer.len() as u32, 0) }
@@ -340,8 +345,8 @@ fn indexed_string(handle: HANDLE, index: u8) -> io::Result<String> {
     Ok(String::from_utf16_lossy(&buffer[..length]))
 }
 
-fn inspect(path: &[u16], instance: u32, database: &Database) -> Option<Candidate> {
-    if !should_inspect(instance_id(instance).as_deref(), database) {
+fn inspect(path: &[u16], instance: u32, database: Option<&Database>) -> Option<Candidate> {
+    if database.is_some_and(|database| !should_inspect(instance_id(instance).as_deref(), database)) {
         return None;
     }
     let handle = OwnedHandle::new(unsafe {
@@ -365,7 +370,7 @@ fn inspect(path: &[u16], instance: u32, database: &Database) -> Option<Candidate
     if !unsafe { HidD_GetAttributes(handle.raw(), &mut attrs) } {
         return None;
     }
-    database.find(attrs.VendorID, attrs.ProductID).next()?;
+    if let Some(database) = database { database.find(attrs.VendorID, attrs.ProductID).next()?; }
     let mut preparsed: PHIDP_PREPARSED_DATA = 0;
     if !unsafe { HidD_GetPreparsedData(handle.raw(), &mut preparsed) } {
         return None;
@@ -398,7 +403,9 @@ fn inspect(path: &[u16], instance: u32, database: &Database) -> Option<Candidate
         strings: BTreeMap::new(),
         attributes: Some(attributes),
     };
-    read_matching_strings(&mut endpoint, database, |index| indexed_string(handle.raw(), index));
+    if let Some(database) = database {
+        read_matching_strings(&mut endpoint, database, |index| indexed_string(handle.raw(), index));
+    }
     Some(Candidate {
         path: path.to_vec(),
         vendor: attrs.VendorID,
@@ -412,7 +419,7 @@ fn inspect(path: &[u16], instance: u32, database: &Database) -> Option<Candidate
 
 /// Probe only strings used by identifiers whose report sizes fit this
 /// collection. A failed string read is still a missing-string rejection.
-fn read_matching_strings(
+pub(crate) fn read_matching_strings(
     endpoint: &mut Endpoint,
     database: &Database,
     mut read: impl FnMut(u8) -> io::Result<String>,
@@ -463,14 +470,62 @@ pub fn enumerate_with_database(database: &Database) -> io::Result<Vec<Candidate>
             return Err(error);
         }
         if let Ok((path, instance)) = detail_path(set, &interface)
-            && let Some(candidate) = inspect(&path, instance, database)
+            && let Some(candidate) = inspect(&path, instance, Some(database))
         {
             found.push(candidate);
         }
         index += 1;
     }
+    found.extend(crate::winusb::enumerate(database)?);
     found.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(found)
+}
+
+/// Explicit compatibility inventory: all present HID collections, plus the
+/// pinned WinUSB interfaces. It does not apply initialization reports or read
+/// input. Failures remain missing/unavailable endpoint metadata.
+pub fn enumerate_rpc_devices() -> io::Result<Vec<serde_json::Value>> {
+    let guid = hid_guid();
+    let set = unsafe { SetupDiGetClassDevsW(&guid, ptr::null(), ptr::null_mut(),
+        DIGCF_PRESENT | DIGCF_DEVICEINTERFACE) };
+    if set == INVALID_HANDLE_VALUE as isize { return Err(io::Error::last_os_error()); }
+    let _guard = DeviceInfoSet(set);
+    let mut devices = Vec::new();
+    for index in 0.. {
+        let mut interface = SP_DEVICE_INTERFACE_DATA {
+            cbSize: size_of::<SP_DEVICE_INTERFACE_DATA>() as u32, ..Default::default()
+        };
+        if unsafe { SetupDiEnumDeviceInterfaces(set, ptr::null(), &guid, index, &mut interface) } == 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(ERROR_NO_MORE_ITEMS as i32) { break; }
+            return Err(error);
+        }
+        let Ok((path, instance)) = detail_path(set, &interface) else { continue; };
+        let Some(candidate) = inspect(&path, instance, None) else { continue; };
+        let handle = OwnedHandle::new(unsafe { CreateFileW(path.as_ptr(), 0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, ptr::null(), OPEN_EXISTING, 0, ptr::null_mut()) });
+        let text = |getter: unsafe extern "system" fn(HANDLE, *mut c_void, u32) -> bool| {
+            let Ok(handle) = &handle else { return String::new(); };
+            let mut data = [0u16; 256];
+            if !unsafe { getter(handle.raw(), data.as_mut_ptr().cast(), size_of::<[u16; 256]>() as u32) } {
+                return String::new();
+            }
+            let end = data.iter().position(|word| *word == 0).unwrap_or(data.len());
+            String::from_utf16_lossy(&data[..end])
+        };
+        let manufacturer = text(HidD_GetManufacturerString);
+        let product = text(HidD_GetProductString);
+        let serial = text(HidD_GetSerialNumberString);
+        devices.push(serde_json::json!({"DevicePath":candidate.endpoint.path,
+            "Manufacturer":manufacturer,"ProductName":product,"FriendlyName":product,
+            "SerialNumber":serial,"VendorID":candidate.vendor,"ProductID":candidate.product,
+            "InputReportLength":candidate.endpoint.input_length,
+            "OutputReportLength":candidate.endpoint.output_length,
+            "FeatureReportLength":candidate.endpoint.feature_length,
+            "CanOpen":candidate.open_read().is_ok(),"DeviceAttributes":candidate.endpoint.attributes}));
+    }
+    devices.extend(crate::winusb::rpc_devices()?);
+    Ok(devices)
 }
 
 /// A collection's path and its strings by index.
@@ -546,6 +601,7 @@ pub fn read_strings(vendor: u16, product: u16, indices: &[u8]) -> io::Result<Vec
             strings,
         ));
     }
+    found.extend(crate::winusb::read_strings(vendor, product, indices)?);
     Ok(found)
 }
 
@@ -833,20 +889,22 @@ unsafe extern "system" fn notification_callback(
 }
 
 pub struct Notification {
-    registration: HCMNOTIFICATION,
+    registrations: Vec<HCMNOTIFICATION>,
     event: Event,
 }
 
 /// HID interface arrival/removal messages for the panel, including late
 /// collections created after the generic device-tree change broadcast.
-pub struct WindowNotification(HDEVNOTIFY);
+pub struct WindowNotification(Vec<HDEVNOTIFY>);
 
 impl WindowNotification {
     pub fn register(window: HWND) -> io::Result<Self> {
+        let mut this = Self(Vec::with_capacity(3));
+        for guid in [hid_guid(), crate::winusb::INTERFACE_GUIDS[0], crate::winusb::INTERFACE_GUIDS[1]] {
         let filter = DEV_BROADCAST_DEVICEINTERFACE_W {
             dbcc_size: size_of::<DEV_BROADCAST_DEVICEINTERFACE_W>() as u32,
             dbcc_devicetype: DBT_DEVTYP_DEVICEINTERFACE,
-            dbcc_classguid: hid_guid(),
+            dbcc_classguid: guid,
             ..Default::default()
         };
         let registration = unsafe {
@@ -857,23 +915,24 @@ impl WindowNotification {
             )
         };
         if registration.is_null() {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(Self(registration))
+            return Err(io::Error::last_os_error());
         }
+        this.0.push(registration);
+        }
+        Ok(this)
     }
 }
 
 impl Drop for WindowNotification {
     fn drop(&mut self) {
-        unsafe { UnregisterDeviceNotification(self.0) };
+        for registration in &self.0 { unsafe { UnregisterDeviceNotification(*registration) }; }
     }
 }
 
 impl Notification {
     pub fn register() -> io::Result<Self> {
-        let event = Event::create(false)?;
-        let guid = hid_guid();
+        let mut this = Self { registrations: Vec::with_capacity(3), event: Event::create(false)? };
+        for guid in [hid_guid(), crate::winusb::INTERFACE_GUIDS[0], crate::winusb::INTERFACE_GUIDS[1]] {
         let filter = CM_NOTIFY_FILTER {
             cbSize: size_of::<CM_NOTIFY_FILTER>() as u32,
             Flags: 0,
@@ -887,7 +946,7 @@ impl Notification {
         let result = unsafe {
             CM_Register_Notification(
                 &filter,
-                event.raw() as *const c_void,
+                this.event.raw() as *const c_void,
                 Some(notification_callback),
                 &mut registration,
             )
@@ -897,10 +956,9 @@ impl Notification {
                 "CM_Register_Notification failed: {result}"
             )));
         }
-        Ok(Self {
-            registration,
-            event,
-        })
+        this.registrations.push(registration);
+        }
+        Ok(this)
     }
 
     pub fn event(&self) -> HANDLE {
@@ -910,7 +968,7 @@ impl Notification {
 
 impl Drop for Notification {
     fn drop(&mut self) {
-        unsafe { CM_Unregister_Notification(self.registration) };
+        for registration in &self.registrations { unsafe { CM_Unregister_Notification(*registration) }; }
     }
 }
 
