@@ -67,7 +67,12 @@ fn transact(app:&mut App,operation:Operation){
                 Operation::SaveAs(document,path)=>(Some(document),None,false,Some(path)),
                 Operation::Reset=>{client.call("ResetSettings",json!([]))?;(None,None,false,None)},
             };
-            let imported=if let(Some(document),Some(source))=(&document,source){Some(Box::new(crate::plugins::import_otd_with_installed(&document.to_string(),&source,&names)?))}else{None};
+            // A retained original collection can be empty or contain only
+            // disconnected/unknown models. Its optional native editor projection
+            // must not reject the daemon's legitimate offline settings document.
+            let imported:Result<Option<Box<Profile>>,String>=if let(Some(document),Some(source))=(&document,source){
+                crate::plugins::import_otd_with_installed(&document.to_string(),&source,&names).map(|profile|Some(Box::new(profile)))
+            }else{Ok(None)};
             if let Some(path)=&save_as{
                 let bytes=serde_json::to_vec_pretty(document.as_ref().ok_or("settings document missing")?).map_err(|error|error.to_string())?;
                 if bytes.len()>crate::control::MAX_PROFILE_BYTES{return Err("original collection exceeds 128 KiB".into());}
@@ -80,14 +85,22 @@ fn transact(app:&mut App,operation:Operation){
             }else{
                 let document=client.call("GetSettings",json!([]))?;
                 let imported=if document["Profiles"].as_array().is_some_and(|rows|!rows.is_empty()){
-                    crate::plugins::import_otd_with_installed(&document.to_string(),&profile_path,&names)?
-                }else{Profile::default()};
-                return Ok(("Reset the original daemon settings collection to actual defaults. Native profile files are unchanged.".into(),Some(Box::new(imported))));
+                    crate::plugins::import_otd_with_installed(&document.to_string(),&profile_path,&names)
+                }else{Ok(Profile::default())};
+                let message="Reset the original daemon settings collection to actual defaults. Native profile files are unchanged.";
+                return Ok(match imported {
+                    Ok(profile)=>(message.into(),Some(Box::new(profile))),
+                    Err(error)=>(format!("{message} The existing native draft was retained because its projection is unavailable: {error}"),None),
+                });
             }
             if save{client.call("SaveSettings",json!([])).map_err(|error|format!("Collection applied but default-file save failed: {error}"))?;}
-            Ok((if save{"Applied and saved the original default collection; selected native files are unchanged.".into()}
+            let message=if save{"Applied and saved the original default collection; selected native files are unchanged.".into()}
                 else if let Some(path)=save_as{format!("Saved {} and applied the original collection.",path.display())}
-                else{"Applied original settings collection. The draft remains unsaved until explicitly saved.".into()},imported))
+                else{"Applied original settings collection. The draft remains unsaved until explicitly saved.".to_owned()};
+            Ok(match imported {
+                Ok(profile)=>(message,profile),
+                Err(error)=>(format!("{message} The existing native draft was retained because this collection has no editable native projection: {error}"),None),
+            })
         })();BackgroundResult::Original{generation,revision,result}
     });
 }
