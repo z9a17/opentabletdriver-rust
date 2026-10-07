@@ -50,6 +50,7 @@ impl<'a> Source<'a>{
     pub fn close(&mut self)->io::Result<()>{self.registration.endpoint.io.cancel_services();self.reader.close(Duration::from_secs(3))}
 }
 impl ReportSource for Source<'_>{
+    fn shared_output(&self)->bool{true}
     fn label(&self)->&str{&self.label}fn now(&self)->Instant{Instant::now()}
     fn native_output_enabled(&self)->bool{self.registration.endpoint.output.native_enabled()}
     fn output_started(&self){self.registration.endpoint.output.start()}

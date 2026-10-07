@@ -467,6 +467,7 @@ impl<'a> HidSource<'a> {
 }
 
 impl ReportSource for HidSource<'_> {
+    fn shared_output(&self)->bool{true}
     fn label(&self) -> &str { &self.label }
     fn now(&self) -> Instant { Instant::now() }
     fn native_output_enabled(&self)->bool{self.registration.as_ref().is_none_or(|registration|registration.endpoint.output.native_enabled())}

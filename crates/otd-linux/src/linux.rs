@@ -373,6 +373,7 @@ fn access_error(node: &str, error: io::Error) -> io::Error {
 }
 
 impl ReportSource for Hidraw<'_> {
+    fn shared_output(&self)->bool{true}
     fn native_output_enabled(&self)->bool{self.registration.as_ref().is_none_or(|registration|registration.endpoint.output.native_enabled())}
     fn output_started(&self){if let Some(registration)=&self.registration{registration.endpoint.output.start();}}
     fn output_acknowledged(&self,enabled:bool){if let Some(registration)=&self.registration{registration.endpoint.output.acknowledge(enabled);}}

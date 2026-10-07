@@ -297,8 +297,21 @@ mod app {
         }
     }
 
+    struct SourceEndpoint<'a>{endpoint:&'a otd_core::endpoint_match::Endpoint,native:Option<&'a Device>,custom:Option<u64>}
+    impl<'a> SourceEndpoint<'a>{
+        fn open(&self,configuration:&otd_core::tablets::TabletConfiguration,identifier:&otd_core::tablets::DeviceIdentifier,auxiliary:bool,gate:std::sync::Arc<otd_platform::shared_devices::OutputGate>,epoch:Option<u64>,stop:&'a AtomicBool)->std::io::Result<otd_platform::managed_source::Input<'a,Hidraw<'a>>>{
+            if let Some(token)=self.custom{return otd_platform::managed_source::Source::open(token,self.endpoint,configuration,identifier,auxiliary,gate,epoch,stop).map(otd_platform::managed_source::Input::Managed);}
+            let device=self.native.ok_or_else(||std::io::Error::new(std::io::ErrorKind::NotFound,"Exact native endpoint disappeared"))?;
+            let mut source=Hidraw::open(device,format!("{} ({})",configuration.name,self.endpoint.path),stop)?;source.attach(device,configuration,identifier,auxiliary,gate,epoch)?;Ok(otd_platform::managed_source::Input::Native(source))
+        }
+        fn initialize(&self,source:&mut otd_platform::managed_source::Input<'_,Hidraw<'_>>,identifier:&otd_core::tablets::DeviceIdentifier,configuration:&otd_core::tablets::TabletConfiguration,stop:&AtomicBool)->std::io::Result<()>{match source{
+            otd_platform::managed_source::Input::Native(source)=>linux::initialize(self.native.ok_or_else(||std::io::Error::other("Native endpoint metadata missing"))?,source.file(),identifier,configuration,stop),
+            otd_platform::managed_source::Input::Managed(source)=>source.initialize(identifier,configuration,self.endpoint),
+        }}
+    }
+    struct RunSelection<'a>{device:SourceEndpoint<'a>,configuration:otd_core::tablets::TabletConfiguration,identifier:otd_core::tablets::DeviceIdentifier,spec:TabletSpec,auxiliary:Option<(SourceEndpoint<'a>,otd_core::tablets::DeviceIdentifier)>}
     fn run_session(
-        selected: &Selected<'_>,
+        selected: &RunSelection<'_>,
         profile: &Profile,
         displays: &mut StaticDisplays,
         stop: &AtomicBool,
@@ -309,11 +322,6 @@ mod app {
             otd_core::actions::Action::Mouse(_) => true,
             otd_core::actions::Action::Key(key) => crate::keymap::key_code(key).is_some(),
         });
-        let label = format!(
-            "{} ({})",
-            selected.configuration.name,
-            selected.device.node.display()
-        );
 
         // Establish every output resource before initialization writes. Permission
         // failures are fatal; reconnect only retries actual hardware loss.
@@ -340,13 +348,11 @@ mod app {
             Some(std::rc::Rc::new(Uinput::create(pen.is_some() || profile.relative.is_some()).map_err(SessionError::Fatal)?))
         } else { None };
         if let Some(context) = context { context.activate().map_err(|error| SessionError::Fatal(std::io::Error::other(error)))?; }
-        let mut source = Hidraw::open(selected.device, label, stop).map_err(SessionError::hardware)?;
         let gate=otd_platform::shared_devices::OutputGate::new().map_err(SessionError::Fatal)?;
-        source.attach(selected.device,&selected.configuration,&selected.identifier,false,gate.clone(),context.map(|context|context.reader_generation)).map_err(SessionError::Fatal)?;
+        let mut source=selected.device.open(&selected.configuration,&selected.identifier,false,gate.clone(),context.map(|context|context.reader_generation),stop).map_err(SessionError::hardware)?;
         let mut auxiliary=selected.auxiliary.as_ref().and_then(|(device,identifier)|{
-            let opened=(||{let mut auxiliary=Hidraw::open(device,format!("{} auxiliary ({})",selected.configuration.name,device.node.display()),stop)?;
-                auxiliary.attach(device,&selected.configuration,identifier,true,gate.clone(),context.map(|context|context.reader_generation))?;
-                linux::initialize(device,auxiliary.file(),identifier,&selected.configuration,stop)?;auxiliary.initialized();Ok::<_,std::io::Error>(auxiliary)})();
+            let opened=(||{let mut auxiliary=device.open(&selected.configuration,identifier,true,gate.clone(),context.map(|context|context.reader_generation),stop)?;
+                device.initialize(&mut auxiliary,identifier,&selected.configuration,stop)?;auxiliary.initialized();Ok::<_,std::io::Error>(auxiliary)})();
             match opened{Ok(source)=>Some((source,identifier.clone())),Err(error)=>{eprintln!("Auxiliary endpoint unavailable: {error}");None}}
         });
         let mut identifiers=vec![selected.identifier.clone()];if let Some((_,identifier))=&auxiliary{identifiers.push(identifier.clone());}
@@ -361,25 +367,22 @@ mod app {
         let actions = plugins.wrap_action_sink(profile, &selected.configuration, linux::action_sink(pointer.clone(), keyboard).map_err(SessionError::Fatal)?)
             .map_err(|error| SessionError::Fatal(std::io::Error::other(error)))?;
         let actions=match context{Some(context)=>context.actions(actions,profile.binding_inhibit),None=>actions};
-        linux::initialize(
-            selected.device, source.file(), &selected.identifier,
-            &selected.configuration, stop,
-        ).map_err(SessionError::hardware)?;
+        selected.device.initialize(&mut source,&selected.identifier,&selected.configuration,stop).map_err(SessionError::hardware)?;
         source.initialized();
         let _debug = otd_core::debug::Registration::with_selection_key(
             otd_core::debug::Device { name: selected.configuration.name.clone(), parser: selected.identifier.parser().into() },
             selected.device.endpoint.input_length.max(selected.auxiliary.as_ref().map_or(0,|(device,_)|device.endpoint.input_length)) as usize, auxiliary.as_ref().map(|(_,identifier)|identifier.parser().to_owned()), context.map(|context| context.id.clone()));
-        let source=otd_platform::paired_source::PairedSource::new(source,auxiliary.take().map(|(source,_)|source),Hidraw::wait_pair);
+        let source=otd_platform::paired_source::PairedSource::new(source,auxiliary.take().map(|(source,_)|source),otd_platform::managed_source::Input::wait_pair);
         let mut source=otd_platform::daemon::LifecycleSource::new(source,context);
         let _realtime = crate::realtime::RealtimePriority::raise();
         let _tools = context.is_none().then(|| otd_platform::plugins::Tools::start(&profile.plugins, |line| eprintln!("{line}")));
-        if let Some(tablet) = pen {
-            return session::run_gated_with_endpoints(
+        let result=if let Some(tablet) = pen {
+            session::run_gated_with_endpoints(
                 &mut source, displays, profile, Mode::Driver,
                 &mut decoder, auxiliary_decoder.as_mut().map(|decoder|decoder as &mut dyn otd_core::decoders::PenDecoder), &mut plugins, |_| Ok(()), Some(Box::new(tablet)),
                 Some(actions), &|line| eprintln!("{line}"), || Ok(true),
-            ).map_err(SessionError::hardware);
-        }
+            )
+        }else{
         let output = pointer.ok_or_else(|| SessionError::Fatal(std::io::Error::other("mouse output was not created")))?;
         let sender = std::rc::Rc::clone(&output);
         session::run_gated_with_endpoints(
@@ -387,7 +390,9 @@ mod app {
             &mut plugins, move |packet| sender.send(packet), None,
             Some(actions),
             &|line| eprintln!("{line}"), || Ok(true),
-        ).map_err(SessionError::hardware)
+        )};
+        let cleanup=source.source_mut().close(|source|source.close());
+        cleanup.and(result).map_err(SessionError::hardware)
     }
 
     #[derive(Default)]
@@ -402,22 +407,27 @@ mod app {
         }
         fn discover(&self) -> Result<Vec<otd_platform::daemon::Device>,String> {
             let database=otd_core::config::configured_tablets()?;
-            let endpoints=linux::enumerate(&database).map_err(|error|error.to_string())?.into_iter().map(|device|device.endpoint).collect::<Vec<_>>();
-            otd_platform::daemon::discover(&database,&endpoints).map(|devices|devices.into_iter().filter(|device|self.tablet.as_deref().is_none_or(|name|device.configuration.name==name)&&self.profile.as_ref().and_then(|profile|profile.device_path.as_deref()).is_none_or(|path|device.endpoint.path==path)).collect())
+            let mut endpoints=linux::enumerate(&database).map_err(|error|error.to_string())?.into_iter().map(|device|device.endpoint).collect::<Vec<_>>();
+            let custom=otd_platform::managed_source::endpoints(&database)?;endpoints.extend(custom.iter().map(|(endpoint,_)|endpoint.clone()));
+            otd_platform::daemon::discover(&database,&endpoints).map(|devices|devices.into_iter().filter(|device|self.tablet.as_deref().is_none_or(|name|device.configuration.name==name)&&self.profile.as_ref().and_then(|profile|profile.device_path.as_deref()).is_none_or(|path|device.endpoint.path==path)).map(|mut device|{
+                device.custom_endpoint=custom.iter().find(|(endpoint,_)|endpoint.path==device.endpoint.path&&endpoint.physical_id==device.endpoint.physical_id).map(|(_,token)|*token);
+                device.auxiliary_custom_endpoint=device.auxiliary.as_ref().and_then(|(aux,_)|custom.iter().find(|(endpoint,_)|endpoint.path==aux.path&&endpoint.physical_id==aux.physical_id).map(|(_,token)|*token));device
+            }).collect())
         }
         fn screen(&self) -> Result<otd_core::mapping::Rect,String> { Ok(match self.screen{Some(screen)=>crate::displays::explicit(screen),None=>crate::displays::discover()?}.virtual_screen) }
         fn inventory(&self) -> Result<serde_json::Value,String> {
             let database=otd_core::config::configured_tablets()?;
             let endpoints=linux::enumerate(&database).map_err(|error|error.to_string())?.into_iter().map(|device|device.endpoint).collect::<Vec<_>>();
-            Ok(otd_platform::daemon::inventory(&endpoints))
+            let mut inventory=otd_platform::daemon::inventory(&endpoints).as_array().cloned().ok_or("Native inventory is not an array")?;inventory.extend(otd_platform::managed_source::inventory()?);Ok(serde_json::json!(inventory))
         }
         fn run(&self,device:otd_platform::daemon::Device,profile:Profile,context:otd_platform::daemon::WorkerContext) -> Result<(),String> {
             let database=otd_core::config::configured_tablets()?;
             let devices=linux::enumerate(&database).map_err(|error|error.to_string())?;
-            let actual=devices.iter().find(|actual|actual.endpoint.path==device.endpoint.path&&actual.endpoint.physical_id==device.endpoint.physical_id)
-                .ok_or("Exact physical endpoint disconnected before preparation")?;
-            let auxiliary=device.auxiliary.as_ref().and_then(|(endpoint,identifier)|devices.iter().find(|candidate|candidate.endpoint.path==endpoint.path&&candidate.endpoint.physical_id==endpoint.physical_id).map(|candidate|(candidate,identifier.clone())));
-            let selected=Selected {device:actual,spec:TabletSpec::from_configuration(&device.configuration)?,configuration:device.configuration,identifier:device.identifier,auxiliary};
+            let actual=devices.iter().find(|actual|actual.endpoint.path==device.endpoint.path&&actual.endpoint.physical_id==device.endpoint.physical_id);
+            if actual.is_none()&&device.custom_endpoint.is_none(){return Err("Exact physical endpoint disconnected before preparation".into());}
+            let auxiliary=device.auxiliary.as_ref().and_then(|(endpoint,identifier)|{let native=devices.iter().find(|candidate|candidate.endpoint.path==endpoint.path&&candidate.endpoint.physical_id==endpoint.physical_id);
+                (native.is_some()||device.auxiliary_custom_endpoint.is_some()).then_some((SourceEndpoint{endpoint,native,custom:device.auxiliary_custom_endpoint},identifier.clone()))});
+            let selected=RunSelection {device:SourceEndpoint{endpoint:&device.endpoint,native:actual,custom:device.custom_endpoint},spec:TabletSpec::from_configuration(&device.configuration)?,configuration:device.configuration,identifier:device.identifier,auxiliary};
             let mut displays=StaticDisplays(match self.screen{Some(screen)=>crate::displays::explicit(screen),None=>crate::displays::discover()?});
             run_session(&selected,&profile,&mut displays,&context.stop,Some(&context)).map_err(|error|match error{SessionError::Fatal(error)|SessionError::Retry(error)=>error.to_string()})
         }
