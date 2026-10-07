@@ -2259,7 +2259,7 @@ impl App {
     }
 
     pub(super) fn import_otd(&mut self) {
-        if self.import_pending {
+        if self.original_pending||self.import_pending {
             return;
         }
         let generation = self.metadata_generation;

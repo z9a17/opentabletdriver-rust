@@ -5,18 +5,27 @@ use serde_json::{Value, json};
 use crate::control::pipe::CompatPipe;
 use crate::upstream_rpc::protocol;
 
-pub struct Client { pipe:CompatPipe, next:u64, stop:Arc<AtomicBool>, failed:bool }
+pub struct Client { pipe:CompatPipe, next:u64, stop:Arc<AtomicBool>, failed:bool,instance:String }
 impl Client {
     pub fn connect() -> Result<Self,String> {Self::connect_cancellable(Arc::new(AtomicBool::new(false)))}
     pub fn connect_cancellable(stop:Arc<AtomicBool>)->Result<Self,String>{
         if stop.load(Ordering::Acquire){return Err("console request cancelled".into());}
-        crate::daemon::call(crate::control::Command::Status)?;
+        let instance=match crate::daemon::call(crate::control::Command::Status)?{
+            crate::control::Reply::Status{status}=>status.instance,
+            crate::control::Reply::Error{error}=>return Err(error.message),
+            _=>return Err("unexpected daemon status before Console connection".into()),
+        };
         let endpoint=crate::control::endpoint_name().map_err(|error|error.to_string())?;
         let pid=CompatPipe::server_process_id(&endpoint).map_err(|error|error.to_string())?;
         let pipe = CompatPipe::open_client(crate::upstream_rpc::CONSOLE_PIPE,
             Instant::now()+Duration::from_secs(5),Some(pid)).map_err(|error| error.to_string())?;
-        Ok(Self {pipe,next:1,stop,failed:false})
+        match crate::daemon::call(crate::control::Command::Status)?{
+            crate::control::Reply::Status{status} if status.instance==instance=>{},
+            _=>return Err("daemon changed while opening Console connection".into()),
+        }
+        Ok(Self {pipe,next:1,stop,failed:false,instance})
     }
+    pub fn instance(&self)->&str{&self.instance}
     pub fn usable(&self)->bool{!self.failed}
     pub fn call(&mut self,method:&str,params:Value) -> Result<Value,String> {self.call_with_timeout(method,params,Duration::from_secs(120))}
     pub fn call_with_timeout(&mut self,method:&str,params:Value,timeout:Duration)->Result<Value,String>{

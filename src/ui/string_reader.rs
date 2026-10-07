@@ -31,7 +31,7 @@ impl Dialog{
         self.add("BUTTON","Send request",REQUEST,WS_TABSTOP|BS_DEFPUSHBUTTON as u32,rect(288,136,424,168),Kind::Button)?;
         self.add("BUTTON","Dump all",DUMP,WS_TABSTOP|BS_PUSHBUTTON as u32,rect(436,136,580,168),Kind::Button)?;
         self.result=self.add("EDIT","",0,WS_TABSTOP|WS_VSCROLL|ES_MULTILINE as u32|ES_READONLY as u32|ES_AUTOVSCROLL as u32,rect(20,184,580,366),Kind::Field)?;
-        unsafe{SendMessageW(self.result,EM_SETLIMITTEXT,crate::control::MAX_PROFILE_BYTES,0);}
+        unsafe{SendMessageW(self.result,EM_LIMITTEXT,crate::control::MAX_PROFILE_BYTES,0);}
         self.add("BUTTON","Copy",COPY,WS_TABSTOP|BS_PUSHBUTTON as u32,rect(20,388,140,420),Kind::Button)?;
         self.add("BUTTON","Cancel request",CANCEL,WS_TABSTOP|BS_PUSHBUTTON as u32,rect(288,388,424,420),Kind::Button)?;
         self.add("BUTTON","Close",IDCANCEL as u16,WS_TABSTOP|BS_PUSHBUTTON as u32,rect(436,388,580,420),Kind::Button)?;
@@ -96,7 +96,7 @@ unsafe extern "system" fn procedure(window:HWND,message:u32,wp:WPARAM,lp:LPARAM)
         WM_SETTINGCHANGE|WM_SYSCOLORCHANGE=>{with_app(App::apply_theme);},
         WM_NCDESTROY=>{WINDOW.with(|active|{if active.get()==window{active.set(ptr::null_mut());}});if let Ok(state)=unsafe{&*state}.try_borrow(){state.cancel.store(true,Ordering::Release);}unsafe{SetWindowLongPtrW(window,GWLP_USERDATA,0);}return 0;},
         WM_COMMAND if (wp&0xffff)as u16==DEVICE=>{
-            let Ok(state)=unsafe{&*state}.try_borrow()else{return 0;};let devices=state.devices.clone();let anchor=state.device;drop(state);
+            let Ok(view)=unsafe{&*state}.try_borrow()else{return 0;};let devices=view.devices.clone();let anchor=view.device;drop(view);
             let menu=unsafe{CreatePopupMenu()};for(index,device)in devices.iter().enumerate(){commands::append(menu,MF_STRING,index as u16+1,&format!("{} ({}:{})",device["ProductName"].as_str().unwrap_or("Device"),device["VendorID"],device["ProductID"]));}
             let choice=commands::popup(window,menu,anchor);if let Some(device)=choice.checked_sub(1).and_then(|index|devices.get(index as usize)){if let Ok(state)=unsafe{&*state}.try_borrow(){set_text(state.fields[0],&device["VendorID"].to_string());set_text(state.fields[1],&device["ProductID"].to_string());set_text(state.device,device["ProductName"].as_str().unwrap_or("Connected device"));}}return 1;
         },

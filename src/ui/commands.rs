@@ -300,9 +300,12 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                     CMD_OPEN_FOLDER,
                     "Open settings directory...",
                 );
-                append(menu,MF_STRING,original_settings::CMD_LOAD,"Load original settings collection...");
+                append(menu,MF_STRING,original_settings::CMD_LOAD,"Load and apply original settings collection...");
                 append(menu,MF_STRING,original_settings::CMD_EXPORT,"Export original settings collection...");
                 append(menu,if app.original_pending||app.control_busy{MF_GRAYED}else{MF_STRING},original_settings::CMD_APPLY,"Apply original settings collection...");
+                append(menu,if app.original_pending||app.control_busy{MF_GRAYED}else{MF_STRING},original_settings::CMD_SAVE_DEFAULT,"Save original collection as default...");
+                append(menu,if app.original_pending||app.control_busy{MF_GRAYED}else{MF_STRING},original_settings::CMD_RESET,"Reset original collection to defaults...");
+                append(menu,MF_STRING,original_settings::CMD_SAVE_AS,"Save and apply original collection as...");
                 append(menu,MF_STRING,original_settings::CMD_SAVE_PRESET,"Save original collection as preset...");
                 presets::append_menu(menu, app);
                 append(menu, MF_STRING, CMD_SAVE_LOG, "Save console log...");
@@ -564,7 +567,7 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         CMD_PREV_TAB => {
             with_app(|app| app.cycle_tab(-1));
         }
-        original_settings::CMD_LOAD|original_settings::CMD_EXPORT|original_settings::CMD_APPLY|original_settings::CMD_SAVE_PRESET=>original_settings::command(window,id),
+        original_settings::CMD_LOAD|original_settings::CMD_EXPORT|original_settings::CMD_APPLY|original_settings::CMD_SAVE_PRESET|original_settings::CMD_SAVE_DEFAULT|original_settings::CMD_RESET|original_settings::CMD_SAVE_AS=>original_settings::command(window,id),
         CMD_LOAD => {
             if confirm_discard(window) {
                 match file_dialog(window, false, FileKind::Profile, "Load settings") {
