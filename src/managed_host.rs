@@ -164,6 +164,7 @@ impl NativeBackend {
     fn daemon(&self, request: &Request) -> Result<Value, String> {
         let method = request.payload["method"].as_str().ok_or("Managed daemon request needs method")?;
         let params = request.payload.get("params").cloned().unwrap_or_else(|| json!([]));
+        if let Some(result) = crate::plugin_manager::invoke(method, &params, Some(&self.stopped))? { return Ok(result); }
         match method {
             "SetSettings" | "ResetSettings" => {
                 let expected = request.expected_daemon.clone().ok_or("Native daemon identity unavailable; refresh before changing settings")?;
