@@ -14,13 +14,13 @@ The Windows build offers:
 - **Relative mode:** the tablet moves the cursor like a mouse, with sensitivity, rotation and a reset delay.
 - **Pen pressure, tilt and eraser** in drawing apps, through Windows Ink. *Newly added and not yet tried with a real tablet in a drawing app.*
 - **Filters** to smooth the pen: a built-in Radial Follow smoothing filter, native filter DLLs, and supported existing OpenTabletDriver `.NET` filters, unchanged. Arbitrary plugin-owned threads and dependencies remain compatibility limits.
-- **Plugins:** browse and install from OpenTabletDriver's plugin catalog (checked against its SHA-256 hash), or install one from a file.
+- **Plugins:** browse and install from OpenTabletDriver's plugin catalog (checked against its SHA-256 hash), or install one from a file. Supported unchanged output-mode and binding classes have typed settings selectors alongside filters and tools.
 - **Several tablets at once,** each with its own profile.
 - **Native control panel** in OpenTabletDriver's layout, with light and dark themes, configurable accent colors, a tray icon, and a tablet debugger that shows raw and decoded pen data live.
 - **Command line and background service** for scripting: profiles, presets, diagnostics and area conversion all work headless.
 - **Pen side buttons** click or press keys and shortcuts, with right and middle click defaults. The Windows CLI can inspect defaults, edit individual buttons into a new profile and export supported edits back to OTD settings. See [pen side buttons](docs/PEN_BUTTONS.md).
 
-The Windows panel includes pen-button and express-key/wheel binding editors. See [express keys and wheels](docs/EXPRESS_KEYS_AND_WHEELS.md) for supported actions and remaining hardware checks. Scrolling, toggles and preset-switch bindings remain unfinished.
+The Windows panel includes pen, mouse, express-key, wheel and scroll binding editors. See [express keys and wheels](docs/EXPRESS_KEYS_AND_WHEELS.md) and [Windows compatibility workflows](docs/WINDOWS_COMPATIBILITY_0.17.0.md) for supported actions and remaining checks. Complete toggle and preset-switch binding compatibility remains open.
 
 ## Installation
 
@@ -50,7 +50,7 @@ The driver and native panel run without .NET. To use existing OpenTabletDriver `
 3. Open **opentabletdriver-rust-ui.exe** as your normal user. It opens the panel and starts or attaches to a separate hidden daemon process.
 4. Connect your tablet. The panel starts the driver. Set your screen and tablet areas in **Output**, then press **Save** and **Apply**.
 
-Supported settings from an existing OpenTabletDriver installation are imported on first run. The Rust driver refuses to start alongside the original OpenTabletDriver daemon. Current Windows transport support is USB HID; WinUSB-only tablets remain unsupported.
+Supported settings from an existing OpenTabletDriver installation are imported on first run. Explicit runtime imports resolve supported installed managed stores while preserving the original settings document. The Rust driver refuses to start alongside the original OpenTabletDriver daemon. Windows includes USB HID and WinUSB discovery and input transport; compilation and catalog coverage do not establish working hardware for every tablet.
 
 You can create a shortcut to `opentabletdriver-rust-ui.exe`; set its **Start in** field to the extracted folder. Enable **Tablets > Start with Windows** in the panel to launch it at sign-in. Closing the panel shuts down the daemon and waits for its process to exit after input cleanup; minimizing keeps both running in the tray.
 
@@ -58,7 +58,7 @@ Choose **View > Theme > Accent color** to change the blue highlights throughout 
 
 Use the **Experimental** tab to choose GUI and driver CPU affinity. **Save and apply** stores both choices without restarting input; **Reload saved** discards unsaved edits. These choices are separate from tablet profiles. See [experimental settings](docs/EXPERIMENTAL_SETTINGS.md).
 
-**View > Experimental settings** lets you select logical CPUs separately for the GUI and driver. Both default to All CPUs; lists such as `0,2,4-7` are accepted. Save and apply stores the choices without restarting tablet input. [Usage and limits](docs/EXPERIMENTAL_SETTINGS.md).
+Both CPU-affinity choices default to All CPUs; lists such as `0,2,4-7` are accepted. Optional MMCSS Pro Audio scheduling takes effect at the next tablet-input start. [Usage and limits](docs/EXPERIMENTAL_SETTINGS.md).
 
 #### Console, updates and removal
 
@@ -173,6 +173,8 @@ To build the Windows .NET bridge and ZIP, install the .NET 8+ SDK and run `pwsh 
 
 ## Learn more
 
+- [Windows compatibility workflows, 0.17.0](docs/WINDOWS_COMPATIBILITY_0.17.0.md): independent device profiles, managed selectors and upstream RPC
+- [Current parity audit](docs/parity/PARITY_AUDIT_2026-10-07.md): implemented source, remaining gaps and validation boundaries
 - [Update and packaging reliability, 0.15.4](docs/RELIABILITY_0.15.4.md): update lifecycle guards, clipboard preparation and Unix archive permissions
 - [Release 0.15.1](docs/RELEASE_0.15.1.md): pen side buttons, startup update prompts and all-platform packages
 - [Reference](docs/REFERENCE.md): every command, profile format, the daemon and troubleshooting notes

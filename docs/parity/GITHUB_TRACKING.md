@@ -1,8 +1,8 @@
 # GitHub parity tracking
 
-The [roadmap](../FULL_PARITY_PLAN.md) and [work items](WORK_ITEMS.md) are the scope reference. The [evidence ledger](EVIDENCE_LEDGER.md) tracks tested claims. GitHub issues track ownership, PRs and current progress. Check current issue state before taking a task; tracker checkboxes can lag a merged PR.
+The [roadmap](../FULL_PARITY_PLAN.md) and [work items](WORK_ITEMS.md) remain the scope reference. The [evidence ledger](EVIDENCE_LEDGER.md) tracks tested claims. At the owner's request, release 0.17.0 consolidates the broad issues #2-#13 into the checked-in [current audit](PARITY_AUDIT_2026-10-07.md) and stable acceptance backlog. Their closure archives the tracking structure; it does not certify full parity or completed hardware/plugin/platform validation. Historical comments, claims and PR links remain available below.
 
-Start at [parent tracker #13](https://github.com/z9a17/opentabletdriver-rust/issues/13). The [seven GitHub milestones](https://github.com/z9a17/opentabletdriver-rust/milestones) correspond to gates G0-G6. A workstream's issue milestone identifies its primary delivery gate; individual tasks can contribute to other gates.
+Start new continuation work at the current audit and [agent handoff](AGENT_HANDOFF.md). The archived [parent tracker #13](https://github.com/z9a17/opentabletdriver-rust/issues/13) retains the original roadmap history. The [seven milestones](https://github.com/z9a17/opentabletdriver-rust/milestones) correspond to gates G0-G6; administrative issue closure does not close those gates.
 
 | Workstream | Task IDs | GitHub issue |
 | --- | --- | --- |
@@ -18,6 +18,6 @@ Start at [parent tracker #13](https://github.com/z9a17/opentabletdriver-rust/iss
 | Validation and final audit | V01-V06 | [#11](https://github.com/z9a17/opentabletdriver-rust/issues/11) |
 | CI, packaging, licensing and release | R01-R04 | [#12](https://github.com/z9a17/opentabletdriver-rust/issues/12) |
 
-The existing [hardware validation issue #1](https://github.com/z9a17/opentabletdriver-rust/issues/1) remains the evidence thread for F06. Do not close it because a new planning issue exists.
+The historical [hardware validation issue #1](https://github.com/z9a17/opentabletdriver-rust/issues/1) retains earlier observations. Its issue state does not establish current F06 hardware acceptance.
 
-Consult current issue comments and the [agent handoff procedure](AGENT_HANDOFF.md) before claiming a task. F01 was delivered in v0.7.1; F03 is the evidence-ledger work. F06 still needs physical tablet testing.
+Consult the checked-in backlog, historical issue comments and the [agent handoff procedure](AGENT_HANDOFF.md) before claiming a task. F01 was delivered in v0.7.1; F03 is the evidence-ledger work. F06 still needs physical tablet testing.
