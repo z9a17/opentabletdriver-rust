@@ -39,7 +39,7 @@ impl Handle {
     }
 }
 struct Ring { bytes:Box<[u8]>, lengths:Box<[usize]>, sequences:Box<[u64]>,
-    head:usize, count:usize, error:Option<String>, done:bool }
+    ready:Box<[Instant]>,head:usize, count:usize, error:Option<String>, done:bool }
 struct Shared { ring:Mutex<Ring>, attempted:AtomicU64, lost:AtomicU64,
     stopped:AtomicBool, wake:Mutex<Arc<dyn Fn()+Send+Sync>> }
 struct Pump {handle:Arc<Handle>,shared:Arc<Shared>,thread:Mutex<Option<JoinHandle<()>>>,report_length:usize,closing:AtomicBool,leases:AtomicUsize}
@@ -60,13 +60,14 @@ impl Reader {
         let handle=Arc::new(Handle{token,endpoint,closed:AtomicBool::new(false),completion:Mutex::new(None),completed:Condvar::new()});
         let capacity=(RING_BYTES/report_length).clamp(8,256);
         let shared=Arc::new(Shared{ring:Mutex::new(Ring {bytes:vec![0;capacity*report_length].into_boxed_slice(),
-            lengths:vec![0;capacity].into_boxed_slice(),sequences:vec![0;capacity].into_boxed_slice(),head:0,count:0,error:None,done:false}),
+            lengths:vec![0;capacity].into_boxed_slice(),sequences:vec![0;capacity].into_boxed_slice(),ready:vec![Instant::now();capacity].into_boxed_slice(),head:0,count:0,error:None,done:false}),
             attempted:AtomicU64::new(0),lost:AtomicU64::new(0),stopped:AtomicBool::new(false),wake:Mutex::new(wake.clone())});
         let owner=handle.clone();let target=shared.clone();
         let started=std::thread::Builder::new().name("OTD original managed device reader".into()).spawn(move||{
             let mut buffer=vec![0u8;report_length];
             while !target.stopped.load(Ordering::Acquire) {
                 let result=managed::read(owner.token,&mut buffer);
+                let ready=Instant::now();
                 if target.stopped.load(Ordering::Acquire){break;}
                 match result {
                     Ok(length)=>{
@@ -75,7 +76,7 @@ impl Reader {
                             if ring.count==ring.lengths.len(){target.lost.fetch_add(1,Ordering::Relaxed);}
                             else {let index=(ring.head+ring.count)%ring.lengths.len();let offset=index*report_length;
                                 ring.bytes[offset..offset+length].copy_from_slice(&buffer[..length]);ring.lengths[index]=length;
-                                ring.sequences[index]=sequence;ring.count+=1;}
+                                ring.sequences[index]=sequence;ring.ready[index]=ready;ring.count+=1;}
                         } else {target.lost.fetch_add(1,Ordering::Relaxed);}
                     },
                     Err(error)=>{if let Ok(mut ring)=target.ring.lock(){ring.error=Some(error);}break;}
@@ -92,6 +93,11 @@ impl Reader {
     pub fn handle(&self)->Arc<Handle>{self.pump.handle.clone()}
     pub fn lost_reports(&self)->u64{self.pump.shared.lost.load(Ordering::Acquire)}
     pub fn poll(&mut self,output:&mut[u8])->io::Result<Option<usize>> {
+        self.poll_report(output).map(|report|report.map(|(length,_)|length))
+    }
+    /// Completion time belongs to the sole original Read, before native tee
+    /// queuing or a slower consumer. It is retained in preallocated slots.
+    pub fn poll_report(&mut self,output:&mut[u8])->io::Result<Option<(usize,Instant)>> {
         if self.closed{return Err(io::Error::new(io::ErrorKind::BrokenPipe,"Managed reader lease retired"));}
         if self.lost_reports()!=0{return Err(io::Error::new(io::ErrorKind::InvalidData,format!("Managed physical report ring lost {} reports; stream continuity is unavailable",self.lost_reports())));}
         let mut ring=self.pump.shared.ring.lock().map_err(|_|io::Error::other("Managed input ring poisoned"))?;
@@ -100,7 +106,7 @@ impl Reader {
             if length>output.len(){return Err(io::Error::new(io::ErrorKind::InvalidInput,"Native custom report buffer is too small"));}
             if ring.sequences[index]!=self.sequence.saturating_add(1){return Err(io::Error::new(io::ErrorKind::InvalidData,"Managed physical report sequence gap"));}
             let offset=index*self.pump.report_length;output[..length].copy_from_slice(&ring.bytes[offset..offset+length]);
-            self.sequence=ring.sequences[index];ring.head=(index+1)%ring.lengths.len();ring.count-=1;return Ok(Some(length));
+            let ready=ring.ready[index];self.sequence=ring.sequences[index];ring.head=(index+1)%ring.lengths.len();ring.count-=1;return Ok(Some((length,ready)));
         }
         if let Some(error)=&ring.error{return Err(io::Error::new(io::ErrorKind::BrokenPipe,error.clone()));}
         if ring.done{return Err(io::Error::new(io::ErrorKind::BrokenPipe,"Managed physical reader closed"));}
