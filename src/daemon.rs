@@ -31,10 +31,13 @@ pub fn serve_with_rpc(upstream_pipe: Option<&str>) -> Result<(), String> {
         .map_err(|error| format!("upstream RPC endpoint: {error}"))?;
     if let Some(name) = upstream_pipe { println!("Upstream compatibility endpoint: {name}"); }
     let mut daemon = Daemon::new(Arc::clone(&cancelled));
+    let managed_services = crate::managed_host::Owner::start(daemon.identity(), Arc::clone(&cancelled))
+        .map_err(|error| format!("managed service owner: {error}"))?;
     if let Err(error) = crate::experimental::apply_saved(false) {
         daemon.scheduling_warning(error);
     }
     let result = control::serve(&mut daemon, &cancelled).map_err(|error| error.to_string());
+    drop(managed_services);
     let cleanup = daemon.cleanup();
     drop(rpc);
     match (result, cleanup) {

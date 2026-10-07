@@ -185,6 +185,10 @@ Support absolute/relative wheel reports, mode buttons, step counts, threshold ac
 <a id="b04"></a>
 ### B04 - Finish binding policies and preset actions
 
+0.17.1 source increment: native held-action toggles and guarded per-device TOML
+presets, plus the unchanged managed whole-collection JSON PresetBinding provider.
+See [the delivery contract](B04_BINDINGS_0.17.1.md). Acceptance remains unrun.
+
 **Depends on:** B02, B03, C01. **Start:** binding settings/engine; UP-BINDING PresetBinding and threshold states.
 
 Implement drag-only behavior, pressure/tilt disable settings, preset-selection actions and correct state changes when an action replaces its own profile. Integrate managed `IBinding`/`IStateBinding` instances through P06 without duplicate input ownership.
@@ -349,6 +353,11 @@ Support IOutputMode and pointer providers, IBinding/IStateBinding and ITool with
 
 <a id="p07"></a>
 ### P07 - Complete driver, parser, provider and device-service compatibility
+
+0.17.1 source increment: actual original helper assemblies, driver/config/parser/
+device metadata and asynchronous daemon providers with scoped ownership. Concrete
+readers/shared stream I/O and managed DeviceReport remain open. See
+[the provider delivery contract](P07_SERVICES_0.17.1.md); acceptance remains unrun.
 
 **Depends on:** P02, D02, D03, S02. **Start:** adapter assemblies and UP-PLUGIN/UP-DEVICE component interfaces.
 

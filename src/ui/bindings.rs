@@ -19,6 +19,8 @@ const CHOICE_MOUSE: u16 = 20;
 const CHOICE_KEYS: u16 = 30;
 const CHOICE_SCROLL: u16 = 40;
 const CHOICE_MANAGED: u16 = 50;
+const CHOICE_TOGGLE: u16 = 60;
+const CHOICE_PRESET: u16 = 100;
 const SCROLL_CHOICES: [(&str, &str); 4] = [
     ("scroll:up", "Scroll Up"), ("scroll:down", "Scroll Down"),
     ("scroll:left", "Scroll Left"), ("scroll:right", "Scroll Right"),
@@ -94,6 +96,8 @@ pub(super) struct WheelField {
 pub(super) fn action_text(action: &ButtonAction) -> String {
     match action {
         ButtonAction::None => "None".into(),
+        ButtonAction::Toggle(action) => format!("Toggle: {}", action_text(action)),
+        ButtonAction::Preset(name) => format!("Preset: {}", name.as_str()),
         ButtonAction::Managed(config) => format!("Managed: {}", model::plugin_name(config)),
         ButtonAction::Barrel(number) => format!("Pen Button {number}"),
         ButtonAction::Mouse(button) => MOUSE_CHOICES
@@ -733,7 +737,29 @@ pub(super) fn choose(window: HWND, control: HWND) {
         },
     );
     commands::append(menu, 0, CHOICE_MANAGED, "Managed binding...");
+    let toggleable = matches!(current, ButtonAction::Keys(_) | ButtonAction::Mouse(_) | ButtonAction::Barrel(_) | ButtonAction::Toggle(_));
+    commands::append(menu, MFT_RADIOCHECK | commands::checked(matches!(current, ButtonAction::Toggle(_))) | if toggleable { 0 } else { MF_GRAYED },
+        CHOICE_TOGGLE, "Toggle this key / mouse / barrel action");
+    let presets = match otd_core::presets::PresetStore::user().and_then(|store| store.list()) {
+        Ok(list) => {
+            for warning in list.warnings { with_app(|app| app.log(Level::Warning, "Bindings", warning)); }
+            let mut names = Vec::new();
+            for preset in list.presets {
+                if let Some(error) = preset.error { with_app(|app| app.log(Level::Error, "Bindings", format!("Preset {:?} is unavailable: {error}", preset.name))); }
+                else if names.len() < 256 { if let Ok(name) = otd_core::presets::PresetName::parse(&preset.name) { names.push(name); } }
+            }
+            names
+        },
+        Err(error) => { with_app(|app| app.log(Level::Error, "Bindings", format!("Cannot list presets: {error}"))); Vec::new() }
+    };
+    for (index, preset) in presets.iter().enumerate() {
+        commands::append(menu, MFT_RADIOCHECK | commands::checked(current == ButtonAction::Preset(preset.clone())),
+            CHOICE_PRESET + index as u16, &format!("Preset: {}", preset.as_str()));
+    }
+    if presets.is_empty() { commands::append(menu, MF_GRAYED, CHOICE_PRESET, "No saved presets (save one in Presets)"); }
     let action = match commands::popup(window, menu, control) {
+        CHOICE_TOGGLE => match current { ButtonAction::Toggle(action) => Some(*action), action if toggleable => Some(ButtonAction::Toggle(Box::new(action))), _ => None },
+        choice if (CHOICE_PRESET..CHOICE_PRESET + presets.len() as u16).contains(&choice) => Some(ButtonAction::Preset(presets[(choice - CHOICE_PRESET) as usize].clone())),
         CHOICE_MANAGED => { managed_settings::choose(window, control, managed_settings::Target::Binding(target)); None },
         CHOICE_NONE => Some(ButtonAction::None),
         choice if (CHOICE_BARREL + 1..=CHOICE_BARREL + 3).contains(&choice) => {

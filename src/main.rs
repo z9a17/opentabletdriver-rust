@@ -1,5 +1,6 @@
 pub mod action_output;
 mod area_cli;
+mod binding_presets;
 mod companions;
 mod control;
 mod daemon;
@@ -11,6 +12,8 @@ mod display;
 mod download;
 mod experimental;
 mod dotnet;
+mod managed_host;
+mod managed_services;
 mod hid;
 mod original_driver;
 mod output;

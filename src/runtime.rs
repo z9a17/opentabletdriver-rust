@@ -40,6 +40,7 @@ pub enum Directive {
 }
 #[derive(Debug)]
 pub enum Notice {
+    PresetRequested(crate::binding_presets::Request),
     PreparedProfile(Box<Profile>),
     Prepared,
     ActivationReady,
@@ -213,7 +214,9 @@ fn run(
         return Err("Plugins are being installed or recovered; retry starting the driver after that finishes.".into());
     }
     let mut authored_profile = profile;
+    let binding_inhibit = authored_profile.binding_inhibit.take();
     let mut profile = execution_profile(&authored_profile, |execution| {
+        execution.binding_inhibit = binding_inhibit;
         crate::plugin_catalog::use_native_ports(execution, log);
     });
     // Exercise deterministic pipeline construction before old output pauses.
@@ -281,12 +284,33 @@ fn run(
             id.clone()
         } else { device_sessions.reserve_primary(&selected)? };
         crate::device_sessions::set_debug_key(&id);
+        let mut reload_profile = !profile_loaded;
         if !profile_loaded {
+            if prefer_saved { authored_profile.use_settings_collection = true; }
+            // A physical file returned by this lookup clears the transient
+            // marker through native TOML parsing; no second file-read inference.
             authored_profile = device_sessions.effective_profile(&id, &authored_profile, prefer_saved)?;
+        } else if authored_profile.use_settings_collection {
+            // Cold physical reconnect only. Inner quiesce/rollback activation
+            // keeps its owned graph and profile; reports never call this path.
+            if let Some(saved) = device_sessions.saved_profile(&id)? {
+                authored_profile = saved;
+                authored_profile.use_settings_collection = false;
+                reload_profile = true;
+            } else if let Some(mut retained) = crate::upstream_rpc::profile_for_tablet(&selected.configuration)? {
+                // Read one owned document snapshot on every physical reconnect;
+                // separately sampled revision/profile reads can miss a publish.
+                retained.device_path.clone_from(&authored_profile.device_path);
+                reload_profile = retained.to_toml()? != authored_profile.to_toml()?;
+                authored_profile = retained;
+            }
+        }
+        if reload_profile {
             if authored_profile.plugin_configs().any(|plugin| plugin.enabled) && !crate::plugin_catalog::recover_installations()? {
                 return Err("Plugins are being installed or recovered; retry starting the driver after that finishes.".into());
             }
             profile = execution_profile(&authored_profile, |execution| {
+                execution.binding_inhibit = binding_inhibit;
                 crate::plugin_catalog::use_native_ports(execution, log);
             });
             crate::plugins::prepare_parser_registry(&profile, database)?;
@@ -369,7 +393,19 @@ fn run(
             let opened_epoch = Cell::new(None);
             // Tools run while this worker owns the output, like the tablet.
             let tools = std::cell::RefCell::new(None);
-            let result = source.run(&profile, &mut plugins, &log, |identifiers| {
+            let preset_notices = notices.clone();
+            let mut last_preset_press = std::time::Instant::now();
+            let preset: crate::binding_presets::Callback = Box::new(move |owner, name| {
+                let now = std::time::Instant::now();
+                let elapsed = now.saturating_duration_since(last_preset_press);
+                last_preset_press = now;
+                if elapsed <= std::time::Duration::from_millis(50) { return Ok(()); }
+                preset_notices.try_send(Notice::PresetRequested(crate::binding_presets::Request::new(owner, name)))
+                    .map_err(|_| io::Error::from(io::ErrorKind::WouldBlock))?;
+                crate::control::wake();
+                Ok(())
+            });
+            let result = source.run(&profile, &mut plugins, &log, Some(preset), |identifiers| {
                 notify(Notice::ActivationReady).map_err(io::Error::other)?;
                 match receive(&commands, cancelled)? {
                     Directive::Run if !cancelled.load(Ordering::Acquire) => {

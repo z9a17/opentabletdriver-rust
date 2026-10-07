@@ -68,6 +68,8 @@ pub struct SessionSnapshot {
     /// committed explicit Apply that differs from disk sets this flag.
     #[serde(default)]
     pub has_unsaved_runtime_edits: bool,
+    #[serde(default)]
+    pub use_settings_collection: bool,
     pub last_error: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -254,7 +256,7 @@ impl Handle {
                 connected: true, identity_stability: if key.fallback { IdentityStability::PathFallback } else { IdentityStability::PhysicalParent },
                 properties: selected.configuration.clone(), digitizer: selected.identifier.clone(),
                 auxiliary: selected.auxiliary.as_ref().map(|(_, identifier)| identifier.clone()), opened_identifiers: None, profile_source: None,
-                profile_path, persisted_revision: file.revision(), persisted_digest: file.digest.clone(), profile_saved: false, has_unsaved_runtime_edits: false,
+                profile_path, persisted_revision: file.revision(), persisted_digest: file.digest.clone(), profile_saved: false, has_unsaved_runtime_edits: false, use_settings_collection:false,
                 last_error: file_error }, file, pending_edit_generation: None, opened_epoch: 0 });
         Ok(id)
     }
@@ -321,6 +323,7 @@ impl Handle {
                 entry.snapshot.persisted_revision = entry.file.revision();
                 entry.snapshot.persisted_digest = entry.file.digest.clone();
                 entry.snapshot.profile_saved = entry.file.matches(&profile);
+                entry.snapshot.use_settings_collection = profile.use_settings_collection;
                 entry.snapshot.has_unsaved_runtime_edits = runtime_edit_pending(
                     entry.snapshot.has_unsaved_runtime_edits, explicit_edit, entry.snapshot.profile_saved);
                 entry.pending_edit_generation = None;
@@ -337,6 +340,11 @@ impl Handle {
     }
     pub(crate) fn primary_commit(&self, profile: Profile) -> Result<(), String> {
         self.primary_commit_with_origin(profile, false)
+    }
+    pub(crate) fn profile_uses_settings_collection(&self,id:&str,generation:u64) -> Result<bool,String> {
+        let registry = self.registry.lock().map_err(|_| "device registry poisoned")?;
+        let entry = checked(&registry,id,generation)?;
+        Ok(entry.profile.as_ref().is_some_and(|profile| profile.use_settings_collection))
     }
     pub(crate) fn primary_commit_with_origin(&self, profile: Profile, explicitly_applied: bool) -> Result<(), String> {
         let Some(id) = self.primary_id()? else { return Err("primary device is not yet detected".into()); };
@@ -410,15 +418,27 @@ impl Handle {
     /// the initial generation; an explicit Apply wins unless the current file
     /// is its exact semantic source, in which case use that actual parsed file.
     pub(crate) fn effective_profile(&self, id: &str, incoming: &Profile, prefer_saved: bool) -> Result<Profile, String> {
-        let (path, tablet) = {
+        let (path, tablet, properties) = {
             let registry = self.registry.lock().map_err(|_| "device registry poisoned")?;
             let entry = registry.entries.get(id).ok_or("unknown device session")?;
-            (entry.file.path.clone(), entry.snapshot.tablet.clone())
+            (entry.file.path.clone(), entry.snapshot.tablet.clone(), entry.snapshot.properties.clone())
         };
         let file = ProfileFile::read(path)?;
         let effective = if prefer_saved || file.matches(incoming) {
             if let Some(error) = &file.error { return Err(error.clone()); }
-            file.profile.as_ref().unwrap_or(incoming).clone()
+            if let Some(saved) = &file.profile { saved.clone() }
+            else if prefer_saved {
+                // A retained original settings collection supplies startup
+                // defaults only. Explicit native Apply and physical files
+                // retain precedence, including their device identity.
+                match crate::upstream_rpc::profile_for_tablet(&properties)? {
+                    Some(mut retained) => {
+                        retained.device_path.clone_from(&incoming.device_path);
+                        retained
+                    }
+                    None => incoming.clone(),
+                }
+            } else { incoming.clone() }
         } else { incoming.clone() };
         if effective.tablet_name()?.is_some_and(|name| name != tablet) { return Err("saved physical profile belongs to another tablet".into()); }
         let mut registry = self.registry.lock().map_err(|_| "device registry poisoned")?;

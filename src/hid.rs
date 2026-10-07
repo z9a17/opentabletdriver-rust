@@ -485,6 +485,14 @@ pub fn enumerate_with_database(database: &Database) -> io::Result<Vec<Candidate>
 /// pinned WinUSB interfaces. It does not apply initialization reports or read
 /// input. Failures remain missing/unavailable endpoint metadata.
 pub fn enumerate_rpc_devices() -> io::Result<Vec<serde_json::Value>> {
+    enumerate_device_metadata(true)
+}
+/// Managed background snapshots never open another input reader to probe
+/// CanOpen. Unknown availability remains null until an explicit owner can prove it.
+pub fn enumerate_service_devices() -> io::Result<Vec<serde_json::Value>> {
+    enumerate_device_metadata(false)
+}
+fn enumerate_device_metadata(probe_open: bool) -> io::Result<Vec<serde_json::Value>> {
     let guid = hid_guid();
     let set = unsafe { SetupDiGetClassDevsW(&guid, ptr::null(), ptr::null_mut(),
         DIGCF_PRESENT | DIGCF_DEVICEINTERFACE) };
@@ -522,9 +530,10 @@ pub fn enumerate_rpc_devices() -> io::Result<Vec<serde_json::Value>> {
             "InputReportLength":candidate.endpoint.input_length,
             "OutputReportLength":candidate.endpoint.output_length,
             "FeatureReportLength":candidate.endpoint.feature_length,
-            "CanOpen":candidate.open_read().is_ok(),"DeviceAttributes":candidate.endpoint.attributes}));
+            "CanOpen":if probe_open { Some(candidate.open_read().is_ok()) } else { None },
+            "DeviceAttributes":candidate.endpoint.attributes}));
     }
-    devices.extend(crate::winusb::rpc_devices()?);
+    devices.extend(if probe_open { crate::winusb::rpc_devices()? } else { crate::winusb::service_metadata()? });
     Ok(devices)
 }
 

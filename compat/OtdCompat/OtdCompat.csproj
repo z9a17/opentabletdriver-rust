@@ -12,6 +12,7 @@
     <License>LGPL-3.0-only</License>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="../UpstreamDesktop/OpenTabletDriver.Desktop.csproj" />
     <PackageReference Include="OpenTabletDriver.Plugin" Version="0.6.7" />
     <PackageReference Include="OpenTabletDriver.Configurations" Version="[0.6.7]" />
   </ItemGroup>

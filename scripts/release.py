@@ -22,8 +22,30 @@ if set(MATRIX) != MANDATORY:
 VERSION = tomllib.loads((ROOT / 'Cargo.toml').read_text())['package']['version']
 PROJECT_LICENSES = ['LICENSE', 'LICENSE.LGPL-3.0', 'NOTICE.md']
 COMPAT_FILES = ['OtdCompat.dll', 'OtdCompat.runtimeconfig.json', 'OtdCompat.deps.json',
-                'OpenTabletDriver.Plugin.dll', 'OpenTabletDriver.Configurations.dll',
-                'Newtonsoft.Json.dll', 'JetBrains.Annotations.dll', 'nethost.dll']
+                'OpenTabletDriver.dll', 'OpenTabletDriver.Plugin.dll',
+                'OpenTabletDriver.Configurations.dll', 'OpenTabletDriver.Native.dll',
+                'OpenTabletDriver.Desktop.dll', 'HidSharpCore.dll',
+                'Newtonsoft.Json.dll', 'JetBrains.Annotations.dll', 'MessagePack.dll',
+                'MessagePack.Annotations.dll', 'Microsoft.Extensions.DependencyInjection.dll',
+                'Microsoft.Extensions.DependencyInjection.Abstractions.dll',
+                'Microsoft.NET.StringTools.dll', 'Microsoft.VisualStudio.Threading.dll',
+                'Microsoft.VisualStudio.Validation.dll', 'Nerdbank.Streams.dll', 'Octokit.dll',
+                'ICSharpCode.SharpZipLib.dll', 'StreamJsonRpc.dll', 'System.CommandLine.dll',
+                'System.IO.Pipelines.dll',
+                'WaylandNET.dll', 'nethost.dll']
+# Preserve the original dependency satellites, not only their English fallback.
+COMPAT_FILES += [f'{locale}/{assembly}.resources.dll'
+                 for locale in ['cs', 'de', 'es', 'fr', 'it', 'ja', 'ko', 'pl', 'pt-BR',
+                                'ru', 'tr', 'zh-Hans', 'zh-Hant']
+                 for assembly in ['Microsoft.VisualStudio.Threading', 'Microsoft.VisualStudio.Validation',
+                                  'StreamJsonRpc', 'System.CommandLine']]
+# Exact runtime DLL closure from the net8.0 restored projects, pinned by both
+# packages.lock.json files. This remains an allowlist, not an arbitrary-output glob.
+# System.ComponentModel.Annotations resolves from the shared net8.0 framework;
+# it is not a copy-local runtime dependency in OtdCompat.deps.json.
+BRIDGE_LICENSES = {'DOTNET-BRIDGE-NOTICES.txt': 'compat/THIRD_PARTY_NOTICES.txt',
+                  'OTD-DESKTOP-LICENSE.txt': 'compat/UpstreamDesktop/LICENSE',
+                  'OTD-DESKTOP-SOURCE.txt': 'compat/UpstreamDesktop/PROVENANCE.md'}
 LINUX_SETUP = ['install.sh', '70-opentabletdriver-rust.rules', 'opentabletdriver-rust.conf', 'generate-rules.py']
 
 
@@ -189,7 +211,8 @@ def build(args):
     for name in PROJECT_LICENSES:
         shutil.copy2(ROOT / name, license_directory / name)
     if platform == 'win-x64':
-        shutil.copy2(ROOT / 'compat/THIRD_PARTY_NOTICES.txt', license_directory / 'DOTNET-BRIDGE-NOTICES.txt')
+        for packaged_name, source_name in BRIDGE_LICENSES.items():
+            shutil.copy2(ROOT / source_name, license_directory / packaged_name)
         for name in ['LICENSE.txt', 'ThirdPartyNotices.txt']:
             source = dotnet_directory / name
             if not source.is_file():
@@ -253,7 +276,9 @@ def make_package(args):
                 raise ValueError('compatibility bridge changed since recorded build; rebuild Windows')
             (data_directory / 'compat').mkdir()
             for name in COMPAT_FILES:
-                shutil.copy2(compat / name, data_directory / 'compat' / name)
+                component_destination = data_directory / 'compat' / name
+                component_destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(compat / name, component_destination)
         elif platform == 'linux-x64':
             (stage / 'setup').mkdir()
             for name in LINUX_SETUP:
@@ -353,7 +378,8 @@ def verify(directory, require_clean):
         required += ['data/licenses/' + name for name in metadata['licenses']]
         if platform == 'win-x64':
             required += ['data/compat/' + name for name in COMPAT_FILES]
-            required += ['data/licenses/DOTNET-BRIDGE-NOTICES.txt', 'data/licenses/DOTNET-LICENSE.txt', 'data/licenses/DOTNET-ThirdPartyNotices.txt']
+            required += ['data/licenses/' + name for name in BRIDGE_LICENSES]
+            required += ['data/licenses/DOTNET-LICENSE.txt', 'data/licenses/DOTNET-ThirdPartyNotices.txt']
         elif platform == 'linux-x64':
             required += ['setup/' + name for name in LINUX_SETUP] + ['data/LINUX.md']
         else:
@@ -381,6 +407,9 @@ def verify(directory, require_clean):
             if digest(files[prefix + 'data/licenses/' + name]) != expected_hash:
                 raise ValueError(f'runtime license mismatch: {name}')
         if platform == 'win-x64':
+            for packaged_name, source_name in BRIDGE_LICENSES.items():
+                if files[prefix + 'data/licenses/' + packaged_name] != (ROOT / source_name).read_bytes():
+                    raise ValueError(f'managed helper license/source notice mismatch: {packaged_name}')
             check_binary('win-x64', 'nethost.dll', files[prefix + 'data/compat/nethost.dll'])
             if set(metadata['compat']) != set(COMPAT_FILES):
                 raise ValueError('compatibility bridge dependency inventory differs from required runtime files')

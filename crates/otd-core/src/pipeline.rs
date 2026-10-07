@@ -289,6 +289,7 @@ impl ReportPipeline {
         mut send: impl FnMut(MousePacket) -> io::Result<()>,
     ) -> io::Result<DispatchStats> {
         let mut initial_stats = DispatchStats::default();
+        self.buttons.observe_source(&input.values);
         // Transport state must advance even while cleanup or mapping pauses
         // dispatch. A retained timer report cannot resurrect a lost pen.
         let physical_loss = input.kind == ReportKind::OutOfRange

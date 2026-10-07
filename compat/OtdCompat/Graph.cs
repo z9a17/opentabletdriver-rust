@@ -141,6 +141,7 @@ unsafe sealed class SynchronousGraph : IDisposable
         delegate* unmanaged[Cdecl]<nint, uint, uint, GraphReport*, int> native, nint nativeScope,
         bool fusedContinuations = false, IDeviceReport? originalReport = null)
     {
+        using var reportScope = ServiceClient.Report();
         ObjectDisposedException.ThrowIf(disposed, this);
         if (running || Environment.CurrentManagedThreadId != ownerThread)
             throw new InvalidOperationException("The synchronous graph must run on its owning thread.");
@@ -187,6 +188,7 @@ unsafe sealed class SynchronousGraph : IDisposable
     public int Tick(delegate* unmanaged[Cdecl]<nint, uint, uint, GraphReport*, int> native, nint nativeScope,
         bool fusedContinuations = false)
     {
+        using var reportScope = ServiceClient.Report();
         if (running || Environment.CurrentManagedThreadId != ownerThread)
             throw new InvalidOperationException("The synchronous graph must run on its owning thread.");
         if (Volatile.Read(ref foreignOutputEmission) != 0) throw new InvalidOperationException("Managed output emitted outside its owning dispatch; the mode must be restarted.");

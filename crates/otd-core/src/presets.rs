@@ -9,18 +9,20 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PresetName(String);
 
+/// Bounded filename stem, also the maximum deferred binding request size.
+pub const MAX_PRESET_NAME_BYTES: usize = 240;
+
 impl PresetName {
     pub fn parse(value: &str) -> Result<Self, String> {
         if value.is_empty()
-            || value.len() > 64
+            || value.len() > MAX_PRESET_NAME_BYTES
             || value.trim() != value
-            || !value.bytes().all(|byte| {
-                byte.is_ascii_alphanumeric() || matches!(byte, b' ' | b'-' | b'_' | b'(' | b')')
-            })
+            || matches!(value, "." | "..") || value.ends_with('.')
+            || value.chars().any(|character| character.is_control() || matches!(character, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'))
         {
-            return Err("preset names require 1-64 ASCII letters/digits, internal spaces, hyphens, underscores or parentheses; no leading/trailing spaces or path characters".into());
+            return Err("preset names require 1-240 UTF-8 bytes in a safe filename stem; no control/path characters, leading/trailing spaces, or trailing period".into());
         }
-        let upper = value.to_ascii_uppercase();
+        let upper = value.split('.').next().unwrap_or(value).to_ascii_uppercase();
         if matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
             || ((upper.starts_with("COM") || upper.starts_with("LPT"))
                 && upper.len() == 4

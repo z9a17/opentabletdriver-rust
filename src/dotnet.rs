@@ -70,6 +70,8 @@ struct Bridge {
 type CreateTool = unsafe extern "C" fn(*const u8, usize) -> *mut c_void;
 type DestroyTool = unsafe extern "C" fn(*mut c_void);
 static BRIDGE: OnceLock<Result<Bridge, String>> = OnceLock::new();
+/// Metadata/observer work must remain asleep for ordinary native profiles.
+pub fn initialized() -> bool { BRIDGE.get().is_some_and(|value| value.is_ok()) }
 
 fn bridge_dir() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("OTD_COMPAT_DIR") {
@@ -245,6 +247,21 @@ fn load_bridge() -> Result<Bridge, String> {
                 format!("The installed .NET bridge lacks owned reset-report support. Replace the data/compat directory with this release's files: {error}"))?)
         },
     };
+    // Set up cold native metadata before any plugin constructor can ask for it.
+    // prime() never loads CLR/registry and is inert without a daemon host owner.
+    crate::managed_host::prime();
+    type InstallServices = unsafe extern "C" fn(*const crate::managed_services::Callbacks) -> i32;
+    let install: InstallServices = unsafe { std::mem::transmute(entry("InstallHostServices")?) };
+    if unsafe { install(&crate::managed_services::CALLBACKS) } != 0 {
+        return Err("Cannot install native managed-service callbacks.".into());
+    }
+    type ConfigureApp = unsafe extern "C" fn(*const u8, u32) -> i32;
+    let configure: ConfigureApp = unsafe { std::mem::transmute(entry("ConfigureHostedApplication")?) };
+    let app = serde_json::to_vec(&crate::upstream_rpc::original_application_info()?)
+        .map_err(|error| error.to_string())?;
+    if app.len() > 1048576 || unsafe { configure(app.as_ptr(), app.len() as u32) } != 0 {
+        return Err("Cannot configure original Desktop application providers.".into());
+    }
     // The runtime and managed entry points live for this process. Retain the
     // hosting module as well; do not attempt to unload CoreCLR under plugins.
     std::mem::forget(host);

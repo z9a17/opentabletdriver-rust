@@ -27,6 +27,7 @@ pub fn for_detected(settings:&Value,tablets:&[TabletConfiguration],screen:Rect) 
 }
 
 pub fn defaults(tablets: &[TabletConfiguration], screen: Rect) -> Result<Value, Error> {
+    if tablets.is_empty() { return Ok(super::collection::empty()); }
     if !screen.valid() { return Err(Error::failed("default settings need a valid virtual screen")); }
     let mut profiles = Vec::new();
     for tablet in tablets {

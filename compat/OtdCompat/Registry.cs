@@ -27,6 +27,10 @@ sealed class RegistryGeneration : IDisposable
     public void Dispose() { foreach (var context in Contexts) context.Unload(); }
     internal void Load(string root)
     {
+        // Shipped original Desktop bindings/outputs are installed providers too;
+        // users need not install a duplicate helper DLL merely to use PresetBinding.
+        Assembly desktop = typeof(OpenTabletDriver.Desktop.Binding.PresetBinding).Assembly;
+        AddAssembly(desktop.Location, desktop);
         if (!Directory.Exists(root)) return;
         var directories = Directory.EnumerateDirectories(root).Order(StringComparer.OrdinalIgnoreCase).Take(257).ToArray();
         if (directories.Length > 256) throw new InvalidOperationException("Installed registry exceeds 256 plugin directories.");
@@ -38,7 +42,10 @@ sealed class RegistryGeneration : IDisposable
             {
                 if (++files > 4096) throw new InvalidOperationException("Installed registry exceeds 4096 DLLs.");
                 if (string.Equals(Path.GetFileName(path), "OpenTabletDriver.Plugin.dll", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(Path.GetFileName(path), "OpenTabletDriver.Configurations.dll", StringComparison.OrdinalIgnoreCase)) continue;
+                    || string.Equals(Path.GetFileName(path), "OpenTabletDriver.Configurations.dll", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(Path.GetFileName(path), "OpenTabletDriver.Desktop.dll", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(Path.GetFileName(path), "OpenTabletDriver.Native.dll", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(Path.GetFileName(path), "OpenTabletDriver.dll", StringComparison.OrdinalIgnoreCase)) continue;
                 try { _ = AssemblyName.GetAssemblyName(path); }
                 catch (BadImageFormatException) { SkippedNative.Add(path); continue; }
                 context ??= new PluginContext(path, inspect: true);
@@ -46,16 +53,18 @@ sealed class RegistryGeneration : IDisposable
                 // Stream-backed loading releases installation files immediately,
                 // while this generation retains the actual managed assemblies.
                 Assembly assembly = context.LoadPluginAssembly(path);
-                Assemblies.Add(Path.GetFullPath(path), assembly);
-                foreach (Type type in assembly.GetExportedTypes())
-                {
-                    if (!IsPluginType(type) || !PluginEligibility.IsDiscoverable(type)) continue;
-                    if (Entries.Count == 20000) throw new InvalidOperationException("Installed registry exceeds 20000 plugin types.");
-                    Entries.Add((path, type));
-                    if (!Types.TryGetValue(type.FullName!, out var matches)) Types.Add(type.FullName!, matches = []);
-                    matches.Add(type);
-                }
+                AddAssembly(path, assembly);
             }
+        }
+    }
+    void AddAssembly(string path, Assembly assembly) {
+        Assemblies.Add(Path.GetFullPath(path), assembly);
+        foreach (Type type in assembly.GetExportedTypes()) {
+            if (!IsPluginType(type) || !PluginEligibility.IsDiscoverable(type)) continue;
+            if (Entries.Count == 20000) throw new InvalidOperationException("Installed registry exceeds 20000 plugin types.");
+            Entries.Add((path, type));
+            if (!Types.TryGetValue(type.FullName!, out var matches)) Types.Add(type.FullName!, matches = []);
+            matches.Add(type);
         }
     }
     static readonly Type[] Contracts = typeof(IDriver).Assembly.GetExportedTypes().Where(type => type.IsAbstract || type.IsInterface).ToArray();
@@ -77,6 +86,7 @@ static class InstalledRegistry
         var next = new RegistryGeneration();
         try
         {
+            if (ServiceClient.Available) HostedDesktop.Configure();
             next.Load(root);
             // Attributes/validated static choices can execute plugin code. Do
             // that outside the lifetime lock before exposing the new registry.
@@ -88,6 +98,7 @@ static class InstalledRegistry
                 next.Number = generation + 1; document["generation"] = next.Number;
                 byte[] json = Encoding.UTF8.GetBytes(document.ToString(Formatting.None));
                 if (json.Length > 1048576) throw new InvalidOperationException("Installed registry metadata exceeds 1 MiB.");
+                HostedDesktop.Manager.RefreshTypes(next);
                 generation = next.Number;
                 var previous = current; current = next;
                 if (previous != null && --previous.References == 0) previous.Dispose();
@@ -129,6 +140,14 @@ static class InstalledRegistry
             return BuiltinParsers.ContainsKey(name);
         }
     }
+    internal static (Type Type, RegistryGeneration Generation)? AcquireType(string name) {
+        lock (Gate) {
+            if (current == null || !current.Types.TryGetValue(name, out var entries)) return null;
+            if (entries.Count != 1) throw new InvalidOperationException($"'{name}' occurs in multiple installed DLLs.");
+            current.References++; return (entries[0], current);
+        }
+    }
+    internal static Type[] TypeSnapshot() { lock (Gate) return current?.Entries.Select(entry => entry.Type).ToArray() ?? []; }
     internal static void Release(RegistryGeneration value) { lock (Gate) { if (--value.References == 0) value.Dispose(); } }
 }
 
@@ -181,24 +200,25 @@ sealed class ParserSession : IDisposable
             if (id <= 0) throw new InvalidOperationException("Managed source parser identity exhausted.");
             Id = (ulong)id;
             if (!Sources.TryAdd(Id, this)) throw new InvalidOperationException("Duplicate managed source identity.");
-        } catch { try { (parser as IDisposable)?.Dispose(); } finally { services?.Dispose(); if (generation != null) InstalledRegistry.Release(generation); } throw; }
+        } catch { try { HostServices.DisposePlugin(parser); } finally { services?.Dispose(); if (generation != null) InstalledRegistry.Release(generation); } throw; }
     }
     void Check() { ObjectDisposedException.ThrowIf(disposed, this); if (Environment.CurrentManagedThreadId != ownerThread) throw new InvalidOperationException("Parser instances belong to their background stream thread."); }
     internal void Reset()
     {
         Check(); Pending = null; sourceReport = null; sourceConsumed = true;
-        try { (parser as IDisposable)?.Dispose(); } finally { parser = null; services?.Dispose(); services = null; }
+        try { HostServices.DisposePlugin(parser); } finally { parser = null; services?.Dispose(); services = null; }
         object? created = null;
         try
         {
-            created = Activator.CreateInstance(type) ?? throw new InvalidOperationException("Cannot construct report parser.");
+            created = HostServices.Construct(type) ?? throw new InvalidOperationException("Cannot construct report parser.");
             services = new HostServices(); services.Inject(type, created);
             parser = (IReportParser<IDeviceReport>)created;
         }
-        catch { try { (created as IDisposable)?.Dispose(); } finally { services?.Dispose(); services = null; } throw; }
+        catch { try { HostServices.DisposePlugin(created); } finally { services?.Dispose(); services = null; } throw; }
     }
     internal unsafe int Decode(byte* raw, uint length)
     {
+        using var reportScope = ServiceClient.Report();
         Check(); Pending = null;
         if (raw == null || length == 0 || length > 65535) throw new ArgumentException("Debug parser raw length must be 1..65535.");
         // Exact upstream DebugReportData constructor: actual concrete Path and
@@ -212,6 +232,7 @@ sealed class ParserSession : IDisposable
     }
     internal unsafe int Project(byte* raw, uint length, ParsedSourceReport* output)
     {
+        using var reportScope = ServiceClient.Report();
         Check(); sourceReport = null; sourceConsumed = true;
         if (raw == null || length == 0 || length > 65535 || output == null) throw new ArgumentException("Invalid managed source packet.");
         if (sourceSequence == ulong.MaxValue) throw new InvalidOperationException("Managed source sequence exhausted.");
@@ -245,7 +266,7 @@ sealed class ParserSession : IDisposable
     public void Dispose()
     {
         if (disposed) return; Check(); disposed = true; Sources.TryRemove(Id, out _); sourceReport = null; sourceConsumed = true;
-        try { (parser as IDisposable)?.Dispose(); }
+        try { HostServices.DisposePlugin(parser); }
         finally { parser = null; Pending = null; services?.Dispose(); if (generation != null) InstalledRegistry.Release(generation); }
     }
 }

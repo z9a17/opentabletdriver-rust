@@ -62,7 +62,10 @@ impl Request {
             Command::StartIf { profile_toml, .. } | Command::Restart { profile_toml, .. } => {
                 Some(profile_toml)
             }
-            Command::ApplyDeviceProfile { profile_toml, .. } | Command::SaveDeviceProfile { profile_toml, .. } => Some(profile_toml),
+            Command::ApplyDeviceProfile { profile_toml, .. }
+            | Command::ApplyDeviceProfileWithInhibit { profile_toml, .. }
+            | Command::ApplyOriginalDeviceProfile { profile_toml, .. }
+            | Command::SaveDeviceProfile { profile_toml, .. } => Some(profile_toml),
             _ => None,
         };
         if profile.is_some_and(|profile| profile.len() > MAX_PROFILE_BYTES) {
@@ -91,11 +94,18 @@ impl Request {
             Command::SelectDeviceSession { id, .. }
             | Command::GetDeviceProfile { id, .. }
             | Command::ApplyDeviceProfile { id, .. }
+            | Command::ApplyDeviceProfileWithInhibit { id, .. }
+            | Command::ApplyOriginalDeviceProfile { id, .. }
             | Command::SaveDeviceProfile { id, .. }
             | Command::StopDevice { id, .. }
             | Command::StartDevice { id, .. } => {
                 if id.is_empty() || id.len() > 128 || id.chars().any(char::is_control) {
                     return Err(ControlError::new(ErrorCode::InvalidRequest, "invalid device session ID"));
+                }
+            }
+            Command::SetIdleOriginalSettings { settings_json, .. } => {
+                if settings_json.len() > MAX_PROFILE_BYTES {
+                    return Err(ControlError::new(ErrorCode::InvalidRequest, "original settings collection exceeds 128 KiB"));
                 }
             }
             Command::DebugCaptureStart { start_id, capacity_bytes, lease_ms, .. } => {
@@ -131,6 +141,10 @@ pub enum Command {
     SelectDeviceSession { expected: WorkerIdentity, id: String },
     GetDeviceProfile { expected: WorkerIdentity, id: String, device_generation: u64 },
     ApplyDeviceProfile { expected: WorkerIdentity, id: String, device_generation: u64, profile_toml: String },
+    ApplyDeviceProfileWithInhibit { expected: WorkerIdentity, id: String, device_generation: u64,
+        profile_toml: String, binding_inhibit: u32 },
+    ApplyOriginalDeviceProfile { expected: WorkerIdentity, id: String, device_generation: u64,
+        profile_toml: String, binding_inhibit: Option<u32> },
     SaveDeviceProfile { expected: WorkerIdentity, id: String, device_generation: u64,
         expected_revision: Option<u64>, expected_digest: Option<String>, profile_toml: String },
     StopDevice { expected: WorkerIdentity, id: String, device_generation: u64 },
@@ -139,6 +153,7 @@ pub enum Command {
     /// appends it to its actual recent log; no input thread handles RPC traffic.
     WriteMessage { message: UpstreamLogMessage },
     GetUpstreamLog,
+    SetIdleOriginalSettings { expected: WorkerIdentity, expected_revision: u64, settings_json: String },
     SetExperimental {
         expected: WorkerIdentity,
         settings: crate::experimental::Settings,
@@ -291,6 +306,7 @@ pub enum Reply {
     UpdateCancelled,
     ExperimentalSaved,
     MessageWritten,
+    OriginalSettingsCommitted { revision: u64 },
     UpstreamLog { instance: String, sequence: u64, messages: Vec<UpstreamLogMessage> },
     DeviceSessions { sessions: Vec<crate::device_sessions::SessionSnapshot>, selected_id: Option<String> },
     DeviceSessionSelected { id: String },

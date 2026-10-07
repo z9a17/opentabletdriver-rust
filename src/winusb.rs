@@ -318,6 +318,19 @@ pub fn rpc_devices() -> io::Result<Vec<serde_json::Value>> {
     Ok(paths()?.into_iter().filter_map(|(path, instance)| inspect(&path, instance, None).ok().map(|(_, dto)| dto)).collect())
 }
 
+/// Discovery metadata without opening a WinUSB interface or claiming lengths
+/// and openability which require the real I/O owner to establish.
+pub fn service_metadata() -> io::Result<Vec<serde_json::Value>> {
+    Ok(paths()?.into_iter().filter_map(|(path, instance)| {
+        let (vendor, product) = hid::instance_id(instance).as_deref().and_then(usb_ids)?;
+        if vendor == 0x2833 { return None; }
+        Some(serde_json::json!({"DevicePath":String::from_utf16_lossy(&path[..path.len().saturating_sub(1)]),
+            "VendorID":vendor,"ProductID":product,"Manufacturer":null,"ProductName":null,
+            "FriendlyName":null,"SerialNumber":null,"InputReportLength":null,"OutputReportLength":null,
+            "FeatureReportLength":null,"CanOpen":null,"DeviceAttributes":null}))
+    }).collect())
+}
+
 pub fn read_strings(vendor: u16, product: u16, indices: &[u8]) -> io::Result<Vec<hid::DeviceStrings>> {
     let mut devices = Vec::new();
     for (path, instance) in paths()? {

@@ -66,17 +66,19 @@ struct Transaction {
     phase: Option<Phase>,
     profile: Profile,
     pending_profile: Option<Profile>,
+    reconnect_profile: Option<Profile>,
     generation: u64,
     error: Option<String>,
 }
 impl Transaction {
     fn new(profile: Profile) -> Self {
         Self { active: None, candidate: None, retiring: None, phase: None, profile,
-            pending_profile: None, generation: 0, error: None }
+            pending_profile: None, reconnect_profile:None, generation: 0, error: None }
     }
     fn apply(&mut self, id: &str, handle: &Handle, profile: Profile, generation: u64) -> Result<(), String> {
         if self.phase.is_some() || self.retiring.is_some() { return Err("device resources are still transitioning".into()); }
         let worker = Worker::spawn_device(profile.clone(), handle.clone(), id.to_owned())?;
+        self.reconnect_profile = None;
         self.candidate = Some(worker);
         self.pending_profile = Some(profile);
         self.generation = generation;
@@ -101,6 +103,16 @@ impl Transaction {
         else { handle.state(id, SessionState::Failed, Some(error)); }
         self.candidate.as_ref().map_or(Ok(()), Worker::stop)
     }
+    fn preset_request(&self, id: &str, handle: &Handle, request: crate::binding_presets::Request) -> Result<(), String> {
+        if self.phase.is_some() || self.retiring.is_some() {
+            return Err("preset request is stale or this device is transitioning".into());
+        }
+        let generation = handle.snapshot()?.sessions.into_iter().find(|session| session.id == id)
+            .filter(|session| session.state == SessionState::Running && session.pending_generation.is_none())
+            .map(|session| session.device_generation)
+            .ok_or("preset source device no longer owns the running generation")?;
+        crate::binding_presets::load(request).and_then(|profile| handle.apply(id, generation, profile)).map(|_| ())
+    }
     fn poll(&mut self, id: &str, handle: &Handle) -> Result<(), String> {
         // Process the retained worker first: candidate activation requires its
         // Quiesced acknowledgment, never just a signalled interrupt.
@@ -108,14 +120,20 @@ impl Transaction {
         for notice in notices {
             let suppress = matches!(self.phase, Some(Phase::Quiescing | Phase::Activating | Phase::Rollback | Phase::Stopping));
             match notice {
-                Notice::PreparedProfile(_) => {}
+                Notice::PresetRequested(request) => {
+                    let result = self.preset_request(id, handle, request);
+                    if let Err(error) = result { handle.error(id, format!("Preset binding was not applied: {error}")); }
+                }
+                Notice::PreparedProfile(profile) if self.phase.is_none() => self.reconnect_profile = Some(*profile),
                 Notice::Quiesced if self.phase == Some(Phase::Quiescing) => {
                     self.phase = Some(Phase::Activating);
                     handle.state(id, SessionState::Starting, None);
                     self.candidate.as_ref().ok_or("device candidate disappeared")?.command(Directive::Activate)?;
                 }
                 Notice::Prepared if !suppress => self.active.as_ref().unwrap().command(Directive::Activate)?,
-                Notice::ActivationReady if !suppress => self.active.as_ref().unwrap().command(Directive::Run)?,
+                Notice::ActivationReady if !suppress => {
+                    self.run_reconnect(id,handle)?;
+                },
                 Notice::Running if !suppress => {
                     handle.state(id, SessionState::Running, self.error.clone());
                     if self.phase == Some(Phase::Resuming) {
@@ -133,9 +151,16 @@ impl Transaction {
             if matches!(self.phase, Some(Phase::Abort | Phase::Rollback | Phase::Stopping)) { continue; }
             if self.candidate.is_none() {
                 match notice {
-                    Notice::PreparedProfile(_) => {}
+                    Notice::PresetRequested(request) => {
+                        // ActivationReady promoted this same source worker;
+                        // later queued presses belong to its active generation.
+                        if let Err(error) = self.preset_request(id, handle, request) { handle.error(id, format!("Preset binding was not applied: {error}")); }
+                    }
+                    Notice::PreparedProfile(profile) => self.reconnect_profile = Some(*profile),
                     Notice::Prepared => self.active.as_ref().unwrap().command(Directive::Activate)?,
-                    Notice::ActivationReady => self.active.as_ref().unwrap().command(Directive::Run)?,
+                    Notice::ActivationReady => {
+                        self.run_reconnect(id,handle)?;
+                    },
                     Notice::Running => handle.state(id, SessionState::Running, None),
                     Notice::Waiting => handle.state(id, SessionState::Waiting, None),
                     Notice::ActivationFailed(error) => return Err(format!("device reconnect activation failed: {error}")),
@@ -211,6 +236,24 @@ impl Transaction {
         }
         Ok(())
     }
+    fn run_reconnect(&mut self,id:&str,handle:&Handle) -> Result<(),String> {
+        let profile = if self.phase.is_none() { self.reconnect_profile.take() } else { None };
+        let generation = if profile.is_some() {
+            let snapshot = handle.snapshot()?.sessions.into_iter().find(|session| session.id == id)
+                .ok_or("reconnect device registry entry disappeared")?;
+            if snapshot.pending_generation.is_some() { return Err("reconnect settings changed during another device operation".into()); }
+            Some(snapshot.device_generation.checked_add(1).ok_or("device generation exhausted")?)
+        } else { None };
+        self.active.as_ref().ok_or("reconnect worker disappeared")?.command(Directive::Run)?;
+        if let (Some(profile),Some(generation)) = (profile,generation) {
+            // Publish only at the successful Run dispatch boundary, including
+            // an unchanged authored document whose collection origin changed.
+            self.generation = generation;
+            handle.commit(id,generation,profile.clone());
+            self.profile = profile;
+        }
+        Ok(())
+    }
     fn join_all(&mut self) -> Result<(), String> {
         let mut errors = Vec::new();
         for worker in [self.active.take(), self.candidate.take(), self.retiring.take()].into_iter().flatten() {
@@ -262,8 +305,17 @@ fn supervise(profile: Profile, handle: Handle, requests: mpsc::Receiver<Request>
                             (entry.enabled, entry.profile.clone())
                         };
                         if !should_start { continue; }
-                        let stored = stored.or(handle.saved_profile(&id)?);
-                        let own_profile = stored.map_or_else(|| super::companion_profile(&profile, profile.tablet_name()?.as_deref(), &selected.configuration.name, super::import_otd), Ok);
+                        let own_profile: Result<Profile,String> = (|| {
+                            let fallback = match stored {
+                                Some(profile) if !profile.use_settings_collection => return Ok(profile),
+                                other => other,
+                            };
+                            if let Some(saved) = handle.saved_profile(&id)? { return Ok(saved); }
+                            if let Some(retained) = crate::upstream_rpc::profile_for_tablet(&selected.configuration)? { return Ok(retained); }
+                            let mut own = fallback.map_or_else(|| super::companion_profile(&profile, profile.tablet_name()?.as_deref(), &selected.configuration.name, super::import_otd), Ok)?;
+                            own.use_settings_collection = true;
+                            Ok(own)
+                        })();
                         match own_profile {
                             Ok(own_profile) => {
                                 let generation = { let mut registry = handle.registry.lock().map_err(|_| "device registry poisoned")?;
@@ -328,10 +380,15 @@ fn supervise(profile: Profile, handle: Handle, requests: mpsc::Receiver<Request>
                                 Ok(())
                             } else { transaction.apply(&id, &handle, profile, generation) }
                         },
-                        Request::Stop { .. } => { transaction.generation = generation; transaction.phase = Some(Phase::Stopping); handle.state(&id, SessionState::Stopping, None); transaction.signal_all() },
+                        Request::Stop { .. } => { transaction.reconnect_profile = None; transaction.generation = generation; transaction.phase = Some(Phase::Stopping); handle.state(&id, SessionState::Stopping, None); transaction.signal_all() },
                         Request::Start { .. } => {
                             if transaction.active.is_some() || transaction.phase.is_some() { Err("device session is already active".into()) }
-                            else { transaction.apply(&id, &handle, transaction.profile.clone(), generation) }
+                            else {
+                                let profile = if transaction.profile.use_settings_collection {
+                                    handle.effective_profile(&id,&transaction.profile,true)
+                                } else { Ok(transaction.profile.clone()) };
+                                profile.and_then(|profile| transaction.apply(&id, &handle, profile, generation))
+                            }
                         }
                     }
                 } else { Err("device session has no prepared runtime profile".into()) };
