@@ -371,6 +371,10 @@ impl Daemon {
         let generation = self.next_generation()?;
         let name = profile.source.clone();
         if self.devices.is_none() {
+            let database = crate::config::configured_tablets()
+                .map_err(|error| ControlError::new(ErrorCode::StartFailed, error))?;
+            crate::plugins::prepare_connected_parsers(database.as_ref())
+                .map_err(|error| ControlError::new(ErrorCode::StartFailed, error))?;
             self.devices = Some(crate::companions::Supervisor::prepare(profile.clone())
                 .map_err(|error| ControlError::new(ErrorCode::StartFailed, error))?);
         }

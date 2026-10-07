@@ -740,6 +740,7 @@ fn drive(
     let _tools = capture_seconds
         .is_none()
         .then(|| plugins::Tools::start(&profile.plugins, |line| eprintln!("{line}")));
+    if capture_seconds.is_none() { plugins::prepare_connected_parsers(database)?; }
     let mut companions = None::<companions::Companions>;
     let outcome = (|| {
         let mut waiting = false;

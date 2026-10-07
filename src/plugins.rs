@@ -25,11 +25,22 @@ pub fn prepare_parser_registry(profile: &crate::config::Profile, database: &Data
     let configuration = database.entries().iter().filter_map(otd_core::tablets::Entry::usable)
         .find(|configuration| configuration.name == name);
     if let Some(configuration) = configuration {
-        let missing = configuration.digitizer_identifiers.iter().chain(configuration.auxiliary_identifiers())
+        let missing = configuration.digitizer_identifiers.iter()
             .any(|identifier| otd_core::tablets::parser_support(identifier.parser()) == otd_core::tablets::ParserSupport::Missing
                 && !crate::dotnet::installed_report_parser(identifier.parser()));
         if missing { load_parser_registry()?; }
     }
+    Ok(())
+}
+/// One explicit all-tablet startup lookup. Passive supervisor scans remain
+/// cached; an absent optional auxiliary does not start CLR.
+pub fn prepare_connected_parsers(database: &Database) -> Result<(), String> {
+    let devices = crate::hid::enumerate_with_database(database).map_err(|error| error.to_string())?;
+    let missing = devices.iter().any(|device| database.find(device.vendor, device.product).any(|found|
+        found.role == Role::Digitizer && otd_core::endpoint_match::matches(&device.endpoint, &found).is_ok()
+            && otd_core::tablets::parser_support(found.identifier.parser()) == otd_core::tablets::ParserSupport::Missing
+            && !crate::dotnet::installed_report_parser(found.identifier.parser())));
+    if missing { load_parser_registry()?; }
     Ok(())
 }
 /// Explicit Apply/Start validation. Missing named parsers may load the trusted
