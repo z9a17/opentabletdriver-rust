@@ -618,9 +618,10 @@ fn pen_button_action(store: Option<&OtdStore>, pen: bool) -> Result<ButtonAction
         },
         MOUSE_SCROLL_BINDING => {
             use crate::output::buttons::{ScrollAction, ScrollAxis};
-            let integer = |name: &str, default: i32| -> Result<i32, String> {
+            let integer = |name: &str, constructor: i32, default: i32| -> Result<i32, String> {
                 match store.settings.iter().rev().find(|setting| setting.property == name).map(|setting| &setting.value) {
-                    None | Some(serde_json::Value::Null) => Ok(default),
+                    None => Ok(constructor),
+                    Some(serde_json::Value::Null) => Ok(default),
                     Some(value) => value.as_i64().and_then(|value| i32::try_from(value).ok())
                         .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
                         .ok_or_else(|| format!("scroll {name} must be a signed 32-bit integer")),
@@ -637,9 +638,11 @@ fn pen_button_action(store: Option<&OtdStore>, pen: bool) -> Result<ButtonAction
                 None => false,
             };
             let axis = if horizontal { ScrollAxis::Horizontal } else { ScrollAxis::Vertical };
-            let amount = integer("Amount", 120)?;
+            let amount = integer("Amount", 120, 120)?;
             let amount = if amount == 0 { 1 } else { amount };
-            let interval_ms = integer("Interval", 300)?.max(1) as u32;
+            // ApplySettings visits saved entries only: an absent Interval
+            // keeps _interval=1; an explicit null selects the attribute's 300.
+            let interval_ms = integer("Interval", 1, 300)?.max(1) as u32;
             Ok(ButtonAction::Scroll(ScrollAction { axis, amount, interval_ms }))
         }
         path => Err(format!("unsupported pen button binding: {path}")),
@@ -2734,6 +2737,10 @@ mod tests {
 
     #[test]
     fn imported_scroll_defaults_and_upstream_setter_normalization_are_retained() {
+        let sparse = import_bindings(serde_json::json!({"MouseScrollDown": {
+            "Path": MOUSE_SCROLL_BINDING, "Enable": true, "Settings": []
+        }}));
+        assert_eq!(sparse.mouse_scroll_down.to_string(), "scroll:vertical:120:1");
         for (direction, amount, interval, expected) in [
             (serde_json::Value::Null, serde_json::Value::Null, serde_json::Value::Null, "scroll:vertical:120:300"),
             (serde_json::json!("invalid"), serde_json::json!(0), serde_json::json!(-20), "scroll:vertical:1:1"),
