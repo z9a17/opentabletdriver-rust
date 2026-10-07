@@ -345,10 +345,15 @@ fn run(
                         running.set(true);
                         device_sessions.activated(&id, &selected);
                         notify(Notice::Running).map_err(io::Error::other)?;
-                        *tools.borrow_mut() =
-                            Some(crate::plugins::Tools::start(&profile.plugins, |line| {
-                                log(line)
-                            }));
+                        // Pinned DriverDaemon owns one Settings.Tools collection,
+                        // separate from tablet profiles. Peer workers run their
+                        // filters/output/bindings, never another global tool set.
+                        if bound_id.is_none() {
+                            *tools.borrow_mut() =
+                                Some(crate::plugins::Tools::start(&profile.plugins, |line| {
+                                    log(line)
+                                }));
+                        }
                         Ok(true)
                     }
                     Directive::Stop | Directive::Run => Ok(false),
