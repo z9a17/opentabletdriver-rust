@@ -33,7 +33,7 @@ sealed class HostServices(Func<ITimer>? timer = null, Func<Type, object?>? input
         // Bound output/binding scopes already own typed native input queues.
         // Global tools and concrete Core construction use real pinned providers.
         if (!authoritativeInput && (originalInputs ??= new OriginalInputServices()).Get(serviceType) is { } original) return original;
-        return (providers ??= new ManagedProviders(sourceSession)).Get(serviceType);
+        return (providers ??= new ManagedProviders(sourceSession)).Get(serviceType) ?? HostedDesktop.AdditionalService(serviceType);
     }
 
     public void Dispose() {

@@ -70,7 +70,7 @@ static class HostedCustomDevices
                 }
             }
         }
-        foreach (ulong token in retired) _ = Task.Run(() => { try { Close(token); } catch (Exception error) { Console.Error.WriteLine(error); } });
+        foreach (ulong token in retired) ManagedRetirements.Track(Task.Run(() => Close(token)));
     }
     internal static void Remove(ulong scope)
     {
@@ -83,7 +83,7 @@ static class HostedCustomDevices
         }
         // Dispose can unblock Read, but never wait for that Read lock. Native
         // reader retirement performs the join after closing the original stream.
-        foreach (ulong token in retired) _ = Task.Run(() => { try { Close(token); } catch (Exception error) { Console.Error.WriteLine(error); } });
+        foreach (ulong token in retired) ManagedRetirements.Track(Task.Run(() => Close(token)));
     }
     internal static JObject[] Snapshot()
     {

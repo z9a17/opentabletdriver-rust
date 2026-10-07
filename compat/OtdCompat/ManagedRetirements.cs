@@ -29,9 +29,10 @@ static class ManagedRetirements
         }
     }
     static readonly AsyncLocal<Batch?> active = new();
+    internal static Batch? Current => active.Value;
     static readonly ConcurrentDictionary<ulong,Task> receipts = new();
     static long identity;
-    internal static IDisposable Enter(Batch batch) {
+    internal static IDisposable Enter(Batch? batch) {
         var previous=active.Value;active.Value=batch;return new Restore(previous);
     }
     sealed class Restore(Batch? previous) : IDisposable { public void Dispose()=>active.Value=previous; }

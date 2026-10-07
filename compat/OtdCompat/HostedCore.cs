@@ -44,7 +44,7 @@ sealed class HostedCore : IDisposable, IServiceProvider
         try { lock (gate) { if (!disposed) Refresh(); } }
         catch (Exception error) { Log.Exception(error); }
     }
-    public object? GetService(Type type) => type == typeof(IDeviceHubsProvider) ? providers : providers.Get(type);
+    public object? GetService(Type type) => type == typeof(IDeviceHubsProvider) ? providers : providers.Get(type) ?? HostedDesktop.AdditionalService(type);
     internal bool Refresh()
     {
         ServiceClient.RequireIoAllowed();
@@ -171,9 +171,15 @@ sealed class HostedCore : IDisposable, IServiceProvider
             }
             providers.DevicesChanged -= NativeChanged;
             providers.TabletsChanged -= NativeTabletsChanged;
-            Driver?.Dispose(); trees.Clear();
-            Root.HostedDispose();
-            HostedCustomDevices.Remove(scope);
+            List<Exception> errors=[];
+            foreach(var reader in trees.Values.SelectMany(value=>value.Tree.InputDevices)) {
+                try {reader.Dispose();} catch(Exception error) {errors.Add(error);}
+            }
+            try {Driver?.Dispose();} catch(Exception error) {errors.Add(error);}
+            trees.Clear();
+            try {Root.HostedDispose();} catch(Exception error) {errors.Add(error);}
+            try {HostedCustomDevices.Remove(scope);} catch(Exception error) {errors.Add(error);}
+            if (errors.Count!=0) throw new AggregateException("Concrete reader/hub retirement failed.",errors);
             // Actual input cleanup follows the delegated callback drain tasks.
         }
     }

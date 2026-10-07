@@ -242,14 +242,17 @@ sealed partial class ManagedProviders : IDriver, IDeviceConfigurationProvider, I
         lock (gate) {
             if (disposed) return; disposed = true; lifetime.Cancel();
             tabletsChanged = null; devicesChanged = null; message = null; resynchronize = null; deviceReport = null;
+            debugRetirement=ManagedRetirements.Current;
             CancelDebug();
-            _ = StopDisposedDebug();
+            ManagedRetirements.Track(StopDisposedDebug());
+            if (monitor != null) ManagedRetirements.Track(monitor);
+            if (debugDelivery != null) ManagedRetirements.Track(debugDelivery);
             List<Exception>? failures = null;
             foreach (var parser in parsers) {
                 try { parser.Dispose(); } catch (Exception error) { (failures ??= []).Add(error); }
             }
             parsers.Clear();
-            core?.Dispose();
+            try {core?.Dispose();} catch(Exception error) {(failures ??= []).Add(error);}
             if (failures != null) throw new AggregateException("Provider parser disposal failed.", failures);
         }
         // No join of plugin event handlers here: a handler may be waiting on
@@ -323,6 +326,7 @@ static class HostedDesktop
     static AppInfo? application;
     static HostPluginManager? manager;
     internal static AppInfo Application { get { Configure(); return application!; } }
+    internal static object? AdditionalService(Type type) { lock(Gate) return manager?.AdditionalService(type); }
     internal static HostPluginManager Manager { get { Configure(); return manager!; } }
     internal static void Configure()
     {
@@ -348,6 +352,7 @@ sealed class HostPluginManager : DesktopPluginManager
 {
     readonly HostServices services = new();
     readonly TypeInfo[] builtinTypes;
+    readonly HashSet<Type> defaultServices = [];
     readonly ManagedProviders operations = new();
     DesktopPluginContext[] contexts = [];
     static readonly ConditionalWeakTable<object, ConstructedLease> constructed = new();
@@ -404,7 +409,11 @@ sealed class HostPluginManager : DesktopPluginManager
             (OpenTabletDriver.Configurations.DeviceConfigurationProvider)services.GetService(typeof(OpenTabletDriver.Configurations.DeviceConfigurationProvider))!);
         AddService<OpenTabletDriver.Configurations.ReportParserProvider>(() =>
             (OpenTabletDriver.Configurations.ReportParserProvider)services.GetService(typeof(OpenTabletDriver.Configurations.ReportParserProvider))!);
+        defaultServices.Clear();
+        defaultServices.UnionWith(((Dictionary<Type,Func<object>>)field.GetValue(this)!).Keys);
     }
+    internal object? AdditionalService(Type type) => defaultServices.Contains(type) ? null : GetService(type);
+
     public override T ConstructObject<T>(string name, object[] args)
     {
         using var setup = ServiceClient.Setup();

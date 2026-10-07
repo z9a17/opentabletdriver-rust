@@ -9,6 +9,8 @@ sealed partial class ManagedProviders
 {
     CancellationTokenSource? debugCancellation;
     Task<JToken>? debugAdmission;
+    Task? debugDelivery;
+    ManagedRetirements.Batch? debugRetirement;
     long debugEpoch;
     Task ConfigureDebug(bool enabled)
     {
@@ -23,13 +25,13 @@ sealed partial class ManagedProviders
             // hold the provider gate or run on the physical report thread.
             var admitted = ServiceClient.Request(10, scope, new JObject { ["enabled"] = true, ["cursor"] = 0, ["limit"] = 32 }, cancellation.Token);
             debugAdmission = admitted;
-            _ = Task.Run(() => DeliverDebug(admitted, epoch, cancellation));
+            debugDelivery = Task.Run(() => DeliverDebug(admitted, epoch, cancellation));
             return admitted;
         }
     }
     async Task StopDisposedDebug()
     {
-        try { await DisarmDebug().ConfigureAwait(false); } catch (Exception) { /* native scope expiry also disarms */ }
+        await DisarmDebug().ConfigureAwait(false);
     }
     void CancelDebug()
     {
@@ -104,8 +106,9 @@ sealed partial class ManagedProviders
             // stream is honest; silently delivering a sampled stream is not.
             await DebugFailure(error).ConfigureAwait(false);
         } finally {
+            using var retirement=ManagedRetirements.Enter(debugRetirement);
             foreach (var parser in decoders.Values) {
-                try { parser.Dispose(); } catch (Exception error) { Log.Exception(error); }
+                try { parser.Dispose(); } catch (Exception error) { ManagedRetirements.Track(Task.FromException(error)); }
             }
             Task? disarm = null;
             lock (gate) {
