@@ -19,6 +19,7 @@ pub mod endpoints;
 mod registry;
 #[path = "dotnet/parser.rs"]
 mod parser;
+#[path = "dotnet/custom_devices.rs"]
 pub mod custom_devices;
 pub use parser::{RuntimeDecoder, ManagedReportParser, installed_report_parser};
 pub use registry::{ManagedDebugDecoder, ManagedDebugReport, ManagedRegistryInfo, known_report_parser, registry_snapshot, reload_installed_plugins};

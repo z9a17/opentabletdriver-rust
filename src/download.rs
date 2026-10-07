@@ -340,6 +340,7 @@ fn automatic_proxy(url: &str, detect: bool, script: Option<&str>) -> Option<Opti
 }
 
 /// Copies and frees a string WinHTTP allocated; empty strings are None.
+#[cfg(windows)]
 unsafe fn take(text: PWSTR) -> Option<String> {
     if text.is_null() {
         return None;

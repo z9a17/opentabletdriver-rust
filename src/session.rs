@@ -72,6 +72,7 @@ struct Reader {
     shared: crate::shared_devices::Registration,
     custom:Option<crate::custom_devices::Reader>,
     custom_length:Option<usize>,
+    custom_ready:Option<Instant>,
     event: Event,
     buffer: Box<[u8]>,
     operation: OVERLAPPED,
@@ -127,7 +128,7 @@ impl Reader {
                 ..Default::default()
             },
             shared,
-            custom,custom_length:None,
+            custom,custom_length:None,custom_ready:None,
             event,
             // ReadFile needs room for the collection's whole input report.
             buffer: vec![0; usize::from(candidate.input_length.max(1))].into_boxed_slice(),
@@ -139,7 +140,9 @@ impl Reader {
     /// already waiting in the HID class driver and is complete.
     fn start(&mut self) -> io::Result<bool> {
         if let Some(custom)=&mut self.custom {
-            self.custom_length=custom.poll(&mut self.buffer)?;
+            let report=custom.poll_report(&mut self.buffer)?;
+            self.custom_length=report.map(|(length,_)|length);
+            self.custom_ready=report.map(|(_,ready)|ready);
             return Ok(self.custom_length.is_some());
         }
         if self.pending {
@@ -425,7 +428,7 @@ impl<'a> HidSource<'a> {
     /// An asynchronous completion came from that wait, where Stop has
     /// precedence, so it needs no second check.
     fn pen_report(&mut self, queued: bool) -> io::Result<Read<'_>> {
-        let ready = Instant::now();
+        let ready = self.pen.custom_ready.take().unwrap_or_else(Instant::now);
         let Some(length) = self.pen.finish()? else {
             return Ok(Read::Ended);
         };
@@ -441,7 +444,7 @@ impl<'a> HidSource<'a> {
     }
 
     fn auxiliary_report(&mut self, queued: bool) -> io::Result<Read<'_>> {
-        let ready = Instant::now();
+        let ready = self.auxiliary.as_mut().and_then(|reader|reader.custom_ready.take()).unwrap_or_else(Instant::now);
         let finished = self.auxiliary.as_mut().map(Reader::finish);
         match finished {
             Some(Ok(Some(length))) => {

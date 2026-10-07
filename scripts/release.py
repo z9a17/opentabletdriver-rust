@@ -98,7 +98,10 @@ def publish_managed(dotnet,project,platform,output,apphost):
     # generated from the selected RID; the native ui command starts those.
     properties=['-p:MacBuildBundle=false','-p:MacAutoPublishBundle=false','-p:PublishTrimmed=false',
                 '-p:UseAppHost='+str(apphost).lower()]
-    subprocess.run([dotnet,'restore',project,'--locked-mode','-r',RID[platform],'--nologo',*properties],cwd=ROOT,check=True)
+    # restore --runtime overrides RuntimeIdentifiers and invalidates a lock
+    # containing several RIDs. Restore the declared graph once, then publish
+    # one of the already locked runtime targets without another restore.
+    subprocess.run([dotnet,'restore',project,'--locked-mode','--nologo',*properties],cwd=ROOT,check=True)
     subprocess.run([dotnet,'publish',project,'-c','Release','--no-restore','-r',RID[platform],
                     '--self-contained','false','-o',str(output),'--nologo',*properties],cwd=ROOT,check=True)
 

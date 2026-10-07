@@ -69,15 +69,20 @@ impl Connection {
         // Ownership cleanup must run even after this connection/daemon's local
         // listener cancellation was requested. PID/token guards prevent it
         // affecting a replacement daemon or another updater.
-        let response = control::request_owned(&Request::new(1,Command::FinishUpdate {
-            token:update.token.clone(),success:update.exit }),Duration::from_secs(5),std::process::id())
-            .map_err(|error| Error::failed(format!("update ownership cleanup: {error}")))?;
         let exit = update.exit;
-        match response.reply {
-            Reply::ShutdownAccepted if exit => {},
-            Reply::UpdateCancelled if !exit => {},
-            Reply::Error { error } => return Err(Error::failed(error.message)),
-            _ => return Err(Error::failed("unexpected update cleanup reply")),
+        let deadline=Instant::now()+Duration::from_secs(40);
+        loop {
+            let response = control::request_owned(&Request::new(1,Command::FinishUpdate {
+                token:update.token.clone(),success:exit }),Duration::from_secs(5),std::process::id())
+                .map_err(|error| Error::failed(format!("update ownership cleanup: {error}")))?;
+            match response.reply {
+                Reply::ShutdownAccepted if exit => break,
+                Reply::UpdateCancelled if !exit => break,
+                Reply::Error { error } if !exit && matches!(error.code,control::ErrorCode::Busy) && Instant::now()<deadline=>
+                    std::thread::sleep(Duration::from_millis(25)),
+                Reply::Error { error } => return Err(Error::failed(error.message)),
+                _ => return Err(Error::failed("unexpected update cleanup reply")),
+            }
         }
         self.update = None;
         Ok(exit)

@@ -123,6 +123,7 @@ pub(super) struct Daemon {
     upstream_log_bytes: usize,
     update_reservation: Option<String>,
     tool_drain: Option<crate::tool_host::Completion>,
+    tool_resume: Option<crate::tool_host::Completion>,
     next_update: u64,
 }
 
@@ -159,6 +160,7 @@ impl Daemon {
             upstream_log_bytes: 0,
             update_reservation: None,
             tool_drain: None,
+            tool_resume: None,
             next_update: 0,
         }
     }
@@ -1139,13 +1141,16 @@ impl ControlHandler for Daemon {
                     self.log("Update staged and response delivered; shutting down the reserved daemon.".into());
                     Ok(Reply::ShutdownAccepted)
                 } else {
-                    let restore=if let Some(document)=crate::upstream_rpc::cached_original_settings(){crate::tool_host::resume(document)}
-                        else if let Some(text)=&self.configuration {
-                            Profile::from_toml_text(text,Path::new("update-cancelled.toml")).and_then(|profile|crate::tool_host::resume_profile(&profile.plugins))
-                        }else{crate::tool_host::resume(serde_json::json!({"Tools":[]}))};
-                    restore.map_err(|error|ControlError::new(ErrorCode::StopFailed,error))?;
+                    if self.tool_resume.is_none(){self.tool_resume=Some(crate::tool_host::resume_previous()
+                        .map_err(|error|ControlError::new(ErrorCode::StopFailed,error))?);}
+                    match self.tool_resume.as_ref().and_then(|completion|completion.result()) {
+                        None=>return Err(ControlError::new(ErrorCode::Busy,"Global tool restoration is pending; retry FinishUpdate with this token")),
+                        Some(Err(error))=>return Err(ControlError::new(ErrorCode::StopFailed,format!("Global tool restoration failed: {error}"))),
+                        Some(Ok(()))=>{}
+                    }
                     self.update_reservation = None;
                     self.tool_drain=None;
+                    self.tool_resume=None;
                     self.log("Update cancelled. Tablet input remains stopped; Start driver explicitly resumes it.".into());
                     Ok(Reply::UpdateCancelled)
                 }

@@ -78,7 +78,7 @@ pub mod upstream_rpc {
     pub fn original_application_info() -> Result<serde_json::Value, String> {
         let data = otd_core::storage::data_directory()?;
         Ok(serde_json::json!({"AppDataDirectory":data,"SettingsFile":data.join("settings.json"),
-            "PluginDirectory":super::plugin_catalog::plugins_directory()?,"PresetDirectory":data.join("presets"),
+            "PluginDirectory":crate::plugin_catalog::plugins_directory()?,"PresetDirectory":data.join("presets"),
             "LogDirectory":data.join("logs"),"TemporaryDirectory":data.join("compat-temp"),"CacheDirectory":data.join("cache"),
             "BackupDirectory":data.join("backup"),"TrashDirectory":data.join("trash"),
             "ConfigurationDirectory":otd_core::config::configurations_directory()}))
