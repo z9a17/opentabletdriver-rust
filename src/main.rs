@@ -1,6 +1,7 @@
 pub mod action_output;
 mod area_cli;
 mod binding_presets;
+mod cli;
 mod companions;
 mod control;
 mod daemon;
@@ -85,6 +86,7 @@ Capture does not inject cursor input. Plugin inspection/checks load trusted exec
 }
 
 enum Command {
+    OriginalConsole(Vec<String>),
     Decode(Vec<String>),
     Devices(Vec<String>),
     Diagnostics(Vec<String>),
@@ -155,6 +157,16 @@ fn parse_args() -> Result<Command, String> {
             })
         };
     };
+    // Keep explicit TOML saves/loads and their native subcommands available;
+    // every original command otherwise talks to the daemon collection.
+    let remainder:Vec<String>=args.collect();
+    let native_file=matches!(command.as_str(),"load"|"save") && remainder.first().is_some_and(|file|
+        std::path::Path::new(file).extension().is_some_and(|ext|ext.eq_ignore_ascii_case("toml")));
+    if cli::recognizes(&command) && !native_file {
+        return Ok(Command::OriginalConsole(std::iter::once(command).chain(remainder).collect()));
+    }
+    let command=match command.as_str(){"native-save"=>"save","native-save-defaults"=>"save-defaults","native-stdio"=>"stdio",other=>other}.to_owned();
+    let mut args=remainder.into_iter();
     match command.as_str() {
         "devices" => Ok(Command::Devices(args.collect())),
         "diagnostics" => Ok(Command::Diagnostics(args.collect())),
@@ -856,6 +868,7 @@ fn main() {
         std::process::exit(1);
     }
     let result = match command {
+        Ok(Command::OriginalConsole(args)) => cli::run(args),
         Ok(Command::Decode(args)) => decode_cli::run(args),
         Ok(Command::Devices(args)) => device_cli::run(args),
         Ok(Command::Plugins(args)) => plugin_catalog::run(args),
@@ -980,6 +993,7 @@ fn main() {
         }) => run(config, otd_settings, Some(seconds)),
         Ok(Command::Help) => {
             println!("{}", usage());
+            println!("\n{}", cli::usage());
             println!("\n{}", profile_cli::usage());
             println!("\n{}", area_cli::usage());
             println!("\n{}", diagnostics::usage());
