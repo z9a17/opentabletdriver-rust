@@ -102,8 +102,16 @@ impl HostedRpc {
         let token=unsafe{(api()?.start_rpc)(pipe.as_ptr(),pipe.len() as u32)};
         if token==0 {Err(last_error())}else{Ok(Self{token})}
     }
+    /// Call on the cold owning shutdown thread before dropping the native
+    /// services host. A failed drain keeps the token available for retry.
+    pub fn stop(&mut self)->Result<(),String> {
+        if self.token==0 {return Ok(());}
+        if unsafe{(api()?.stop_rpc)(self.token)}<0 {return Err(last_error());}
+        self.token=0;
+        Ok(())
+    }
 }
-impl Drop for HostedRpc {fn drop(&mut self){if let Ok(api)=api(){if unsafe{(api.stop_rpc)(self.token)}<0 {eprintln!("Original RPC shutdown: {}",last_error());}}}}
+impl Drop for HostedRpc {fn drop(&mut self){if let Err(error)=self.stop(){eprintln!("Original RPC shutdown: {error}");}}}
 
 #[derive(Clone, Debug)]
 pub struct ManagedRegistryInfo {
