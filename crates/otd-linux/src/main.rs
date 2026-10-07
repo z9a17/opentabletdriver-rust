@@ -59,6 +59,7 @@ mod app {
     use otd_core::display::{DisplayFingerprint, DisplaySnapshot};
     use otd_core::endpoint_match;
     use otd_core::plugins::NoFilters;
+    use otd_platform::plugins::PluginChain;
     use otd_core::session::{self, Displays, Mode};
     use otd_core::spec::TabletSpec;
     use otd_core::tablets::{Database, ParserSupport, Role, parser_support};
@@ -207,7 +208,8 @@ mod app {
                     }
                     Err(_) => continue,
                 }
-                if parser_support(found.identifier.parser()) == ParserSupport::Missing {
+                if parser_support(found.identifier.parser()) == ParserSupport::Missing
+                    && !otd_platform::dotnet::installed_report_parser(found.identifier.parser()) {
                     unsupported = Some(format!(
                         "{} uses {}, which this driver cannot decode",
                         found.configuration.name,
@@ -276,12 +278,9 @@ mod app {
             }
             let profile = match &profile {
                 Some(profile) => profile.clone(),
-                None => Profile::load_otd_tablet(&selected.configuration.name)?.unwrap_or_default(),
+                None => otd_platform::plugins::load_original_tablet_profile(&selected.configuration.name)?.unwrap_or_default(),
             }.for_tablet(selected.spec)?;
-            profile.validate_runtime_tablet_in(&database)?;
-            if profile.plugins.iter().any(|plugin| plugin.enabled) {
-                return Err("external plugins are not supported by the Linux runtime; disable them explicitly".into());
-            }
+            otd_platform::plugins::validate_runtime_profile(&profile)?;
             // Reject deterministic mapping/output errors before initialization
             // writes, and do not repeatedly reinitialize on an unchanged fault.
             let _ = otd_core::pipeline::ReportPipeline::new(&profile)?;
@@ -354,8 +353,15 @@ mod app {
         profile: &Profile,
         displays: &mut StaticDisplays,
     ) -> Result<(), SessionError> {
-        let mut decoder = TabletDecoder::for_parser(selected.identifier.parser(), selected.spec)
-            .ok_or_else(|| SessionError::Fatal(std::io::Error::other("unsupported parser")))?;
+        otd_platform::display::set_snapshot(displays.0.clone());
+        otd_platform::action_output::set_supports(|action| match action {
+            otd_core::actions::Action::Mouse(_) => true,
+            otd_core::actions::Action::Key(key) => crate::keymap::key_code(key).is_some(),
+        });
+        let mut plugins = PluginChain::load_for_profile_with_identifiers(profile, &selected.configuration,
+            std::slice::from_ref(&selected.identifier)).map_err(|error| SessionError::Fatal(std::io::Error::other(error)))?;
+        let mut decoder = plugins.source_decoder(selected.identifier.parser(), selected.spec)
+            .map_err(|error| SessionError::Fatal(std::io::Error::other(error)))?;
         let label = format!(
             "{} ({})",
             selected.configuration.name,
@@ -372,9 +378,13 @@ mod app {
             .chain(profile.wheels.iter().flat_map(|wheel| [&wheel.clockwise, &wheel.counter_clockwise]
                 .into_iter().chain(wheel.buttons.iter())));
         let actions = || profile.pen_buttons.iter().chain(non_pen_actions());
-        let keys = actions().any(|action| matches!(action, ButtonAction::Keys(_)));
-        let clicks = actions().any(|action| matches!(action, ButtonAction::Mouse(_) | ButtonAction::Scroll(_)))
-            || non_pen_actions().any(|action| matches!(action, ButtonAction::Barrel(1 | 2)));
+        fn inner(action: &ButtonAction) -> &ButtonAction {
+            match action { ButtonAction::Toggle(inner) => inner.as_ref(), action => action }
+        }
+        let managed = !otd_core::output::buttons::ButtonOutput::managed_slots(profile).is_empty() || profile.managed_output.is_some();
+        let keys = managed || actions().any(|action| matches!(inner(action), ButtonAction::Keys(_)));
+        let clicks = managed || actions().any(|action| matches!(inner(action), ButtonAction::Mouse(_) | ButtonAction::Scroll(_)))
+            || non_pen_actions().any(|action| matches!(inner(action), ButtonAction::Barrel(1 | 2)));
         let keyboard = keys.then(VirtualKeyboard::create).transpose().map_err(SessionError::Fatal)?;
         let pen = if profile.output == OutputKind::Pen {
             Some(VirtualTablet::create(displays.0.virtual_screen).map_err(SessionError::Fatal)?)
@@ -382,24 +392,27 @@ mod app {
         let pointer = if pen.is_none() || clicks {
             Some(std::rc::Rc::new(Uinput::create(pen.is_some() || profile.relative.is_some()).map_err(SessionError::Fatal)?))
         } else { None };
+        let actions = plugins.wrap_action_sink(profile, &selected.configuration, linux::action_sink(pointer.clone(), keyboard))
+            .map_err(|error| SessionError::Fatal(std::io::Error::other(error)))?;
         linux::initialize(
             selected.device, source.file(), &selected.identifier,
             &selected.configuration, &STOP,
         ).map_err(SessionError::hardware)?;
         let _realtime = crate::realtime::RealtimePriority::raise();
+        let _tools = otd_platform::plugins::Tools::start(&profile.plugins, |line| eprintln!("{line}"));
         if let Some(tablet) = pen {
             return session::run_gated_with_devices(
                 &mut source, displays, profile, Mode::Driver,
-                &mut decoder, &mut NoFilters, |_| Ok(()), Some(Box::new(tablet)),
-                Some(linux::action_sink(pointer, keyboard)), &|line| eprintln!("{line}"), || Ok(true),
+                &mut decoder, &mut plugins, |_| Ok(()), Some(Box::new(tablet)),
+                Some(actions), &|line| eprintln!("{line}"), || Ok(true),
             ).map_err(SessionError::hardware);
         }
         let output = pointer.ok_or_else(|| SessionError::Fatal(std::io::Error::other("mouse output was not created")))?;
         let sender = std::rc::Rc::clone(&output);
         session::run_gated_with_devices(
             &mut source, displays, profile, Mode::Driver, &mut decoder,
-            &mut NoFilters, move |packet| sender.send(packet), None,
-            Some(linux::action_sink(Some(output), keyboard)),
+            &mut plugins, move |packet| sender.send(packet), None,
+            Some(actions),
             &|line| eprintln!("{line}"), || Ok(true),
         ).map_err(SessionError::hardware)
     }

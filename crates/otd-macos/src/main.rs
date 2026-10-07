@@ -49,10 +49,9 @@ mod app {
     use std::time::{Duration, Instant};
 
     use otd_core::config::{OutputKind, Profile};
-    use otd_core::decoders::TabletDecoder;
     use otd_core::endpoint_match;
     use otd_core::mapping::Rect;
-    use otd_core::plugins::NoFilters;
+    use otd_platform::plugins::PluginChain;
     use otd_core::session::{self, Displays, Mode};
     use otd_core::spec::TabletSpec;
     use otd_core::tablets::{Database, DeviceIdentifier, ParserSupport, Role, TabletConfiguration, parser_support};
@@ -176,7 +175,8 @@ mod app {
                     }
                     Err(_) => continue,
                 }
-                if parser_support(found.identifier.parser()) == ParserSupport::Missing {
+                if parser_support(found.identifier.parser()) == ParserSupport::Missing
+                    && !otd_platform::dotnet::installed_report_parser(found.identifier.parser()) {
                     unsupported = Some(format!("{} uses unsupported parser {}", found.configuration.name, found.identifier.parser()));
                     continue;
                 }
@@ -218,14 +218,11 @@ mod app {
             waiting = false;
             let profile = match &requested_profile {
                 Some(profile) => profile.clone(),
-                None => Profile::load_otd_tablet(&selected.configuration.name)?.unwrap_or_default(),
+                None => otd_platform::plugins::load_original_tablet_profile(&selected.configuration.name)?.unwrap_or_default(),
             }.for_tablet(selected.spec)?;
-            profile.validate_runtime_tablet_in(&database)?;
+            otd_platform::plugins::validate_runtime_profile(&profile)?;
             if profile.output == OutputKind::Pen {
-                return Err("macOS CLI supports mouse output only; pressure/tilt tablet output and Artist Mode are not implemented".into());
-            }
-            if profile.plugins.iter().any(|plugin| plugin.enabled) {
-                return Err("external plugins are not supported by the macOS CLI runtime; disable them explicitly".into());
+                return Err("the pinned macOS output contract is mouse/keyboard; Windows Ink and Linux Artist Mode pen output are unavailable on macOS".into());
             }
             let _ = otd_core::pipeline::ReportPipeline::new(&profile)?;
             if profile.relative.is_none() { displays.snapshot()?.mapper(&profile)?; }
@@ -248,14 +245,22 @@ mod app {
     }
 
     fn run_session(selected: &Selected<'_>, profile: &Profile, displays: &mut NativeDisplays, mode: Mode) -> io::Result<()> {
-        let mut decoder = TabletDecoder::for_parser(selected.identifier.parser(), selected.spec)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "unsupported tablet parser"))?;
+        otd_platform::display::set_snapshot(displays.snapshot().map_err(io::Error::other)?);
+        otd_platform::action_output::set_supports(|action| match action {
+            otd_core::actions::Action::Mouse(_) => true,
+            otd_core::actions::Action::Key(key) => crate::keymap::key_code(key).is_some(),
+        });
+        let mut plugins = if matches!(mode, Mode::Driver) {
+            PluginChain::load_for_profile_with_identifiers(profile, &selected.configuration, std::slice::from_ref(&selected.identifier))
+        } else { PluginChain::load_with_tablet(&[], &selected.configuration) }.map_err(io::Error::other)?;
+        let mut decoder = plugins.source_decoder(selected.identifier.parser(), selected.spec).map_err(io::Error::other)?;
         let mut source = HidSource::open(selected.device, format!("{} ({})", selected.configuration.name, selected.device.endpoint.path), &STOP)?;
         // Establish output permission/resources before any hardware init writes.
         let mouse = if matches!(mode, Mode::Driver) {
             Some(std::rc::Rc::new(std::cell::RefCell::new(Mouse::new(displays.geometry.clone())?)))
         } else { None };
-        let actions = mouse.as_ref().map(|mouse| crate::macos::action_sink(std::rc::Rc::clone(mouse)));
+        let actions = mouse.as_ref().map(|mouse| plugins.wrap_action_sink(profile, &selected.configuration,
+            crate::macos::action_sink(std::rc::Rc::clone(mouse)))).transpose().map_err(io::Error::other)?;
         source.initialize(&selected.identifier, &selected.configuration,
             match mode { Mode::Capture { deadline, .. } => Some(deadline), Mode::Driver => None })?;
         if let ParserSupport::Partial(reason) = parser_support(selected.identifier.parser()) {
@@ -263,7 +268,8 @@ mod app {
         }
         eprintln!("macOS native CLI: hardware validation pending; Ctrl+C stops and releases contact.");
         let _realtime = matches!(mode, Mode::Driver).then(crate::realtime::TimeConstraint::raise);
-        session::run_gated_with_devices(&mut source, displays, profile, mode, &mut decoder, &mut NoFilters,
+        let _tools = matches!(mode, Mode::Driver).then(|| otd_platform::plugins::Tools::start(&profile.plugins, |line| eprintln!("{line}")));
+        session::run_gated_with_devices(&mut source, displays, profile, mode, &mut decoder, &mut plugins,
             |packet| match &mouse { Some(mouse) => mouse.borrow_mut().send(packet), None => Ok(()) },
             None, actions, &|line| eprintln!("{line}"), || Ok(true))
     }
