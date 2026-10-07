@@ -277,7 +277,7 @@ impl Daemon {
         }
         Ok(())
     }
-    fn identity(&self) -> WorkerIdentity {
+    pub(super) fn identity(&self) -> WorkerIdentity {
         WorkerIdentity {
             instance: self.instance.clone(),
             generation: self.generation,
@@ -1010,7 +1010,8 @@ impl ControlHandler for Daemon {
         self.poll();
         if self.update_reservation.is_some() && matches!(&command,
             Command::Start { .. } | Command::StartIf { .. } | Command::Restart { .. }
-            | Command::ApplyDeviceProfile { .. } | Command::SaveDeviceProfile { .. } | Command::StartDevice { .. }
+            | Command::ApplyDeviceProfile { .. } | Command::ApplyDeviceProfileWithInhibit { .. }
+            | Command::SaveDeviceProfile { .. } | Command::StartDevice { .. }
             | Command::SelectDeviceSession { .. } | Command::DetectDeviceSessions) {
             return Err(ControlError::new(ErrorCode::Busy, "an update owns the stopped driver; wait for completion or cancel its reservation"));
         }
@@ -1112,6 +1113,32 @@ impl ControlHandler for Daemon {
                     message.message.as_deref().unwrap_or(""));
                 self.append_log(line, message);
                 Ok(Reply::MessageWritten)
+            }
+            Command::SetIdleOriginalSettings { expected, expected_revision, settings_json } => {
+                self.check_identity(&expected)?;
+                if self.stopping || self.pending.is_some() || self.retiring.is_some()
+                    || self.update_reservation.is_some() || self.cleanup_error.is_some() {
+                    return Err(ControlError::new(ErrorCode::Busy, "native lifecycle is transitioning; idle settings were not replaced"));
+                }
+                // Keep discovery admission excluded until the new cold collection
+                // is published. A snapshot followed by publication would let a
+                // newly connected worker start with the previous collection.
+                let handle = self.device_sessions();
+                let registry = handle.as_ref().map(|handle| handle.registry.lock())
+                    .transpose().map_err(|_| ControlError::new(ErrorCode::Internal, "device registry poisoned"))?;
+                if let Some(registry) = &registry {
+                    if registry.entries.values().any(|entry| entry.snapshot.connected || entry.snapshot.pending_generation.is_some()) {
+                        return Err(ControlError::new(ErrorCode::Conflict, "devices appeared or changed during idle settings admission; refresh before retrying"));
+                    }
+                }
+                if settings_json.len() > control::MAX_PROFILE_BYTES {
+                    return Err(ControlError::new(ErrorCode::InvalidRequest, "original settings collection exceeds 128 KiB"));
+                }
+                let settings = serde_json::from_str(&settings_json)
+                    .map_err(|error| ControlError::new(ErrorCode::InvalidRequest, error.to_string()))?;
+                let revision = crate::upstream_rpc::publish_idle_original_settings(settings, expected_revision)
+                    .map_err(ControlError::from)?;
+                Ok(Reply::OriginalSettingsCommitted { revision })
             }
             Command::GetUpstreamLog => Ok(Reply::UpstreamLog { instance: self.instance.clone(),
                 sequence: self.log_sequence, messages: self.upstream_logs.iter()
