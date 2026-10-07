@@ -18,6 +18,7 @@ pub struct Device {
     pub configuration: TabletConfiguration,
     pub identifier: DeviceIdentifier,
     pub auxiliary: Option<(Endpoint, DeviceIdentifier)>,
+    pub custom_endpoint:Option<u64>,pub auxiliary_custom_endpoint:Option<u64>,
 }
 impl Device {
     fn key(&self) -> String { format!("{}\0{}",self.endpoint.physical_id,self.configuration.name) }
@@ -59,7 +60,7 @@ pub fn discover(database:&otd_core::tablets::Database,endpoints:&[Endpoint]) -> 
             .find_map(|aux|database.find(aux.vendor_id,aux.product_id).find(|candidate|candidate.role==Role::Auxiliary
                 && candidate.configuration.name==found.configuration.name&&otd_core::endpoint_match::matches(aux,candidate).is_ok())
                 .map(|candidate|(aux.clone(),candidate.identifier.clone())));
-        devices.push(Device{endpoint:endpoint.clone(),configuration:found.configuration.clone(),identifier:found.identifier.clone(),auxiliary});
+        devices.push(Device{endpoint:endpoint.clone(),configuration:found.configuration.clone(),identifier:found.identifier.clone(),auxiliary,custom_endpoint:None,auxiliary_custom_endpoint:None});
     }
     Ok(devices)
 }
@@ -110,6 +111,7 @@ impl WorkerContext {
 /// mapper and output. The callback itself is allocation-free and runs once.
 pub struct LifecycleSource<S>{source:S,ready:Option<SyncSender<Event>>,started:AtomicBool}
 impl<S> LifecycleSource<S>{pub fn new(source:S,context:Option<&WorkerContext>)->Self{Self{source,ready:context.map(|context|context.events.clone()),started:AtomicBool::new(false)}}}
+impl<S> LifecycleSource<S>{pub fn source_mut(&mut self)->&mut S{&mut self.source}}
 impl<S:otd_core::session::ReportSource> otd_core::session::ReportSource for LifecycleSource<S>{
     fn shared_output(&self)->bool{self.source.shared_output()}
     fn label(&self)->&str{self.source.label()}

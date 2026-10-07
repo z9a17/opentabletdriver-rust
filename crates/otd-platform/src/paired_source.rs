@@ -3,15 +3,17 @@
 use std::{io,time::{Duration,Instant}};
 use otd_core::session::{Read,ReportSource};
 enum ResultKind{Report(usize,Instant,bool),Idle,Ended}
+pub trait Retire {fn retire(&mut self)->io::Result<()>{Ok(())}}
 pub struct PairedSource<S,W>{primary:S,auxiliary:Option<S>,wait:W,delivery:Box<[u8]>,aux_first:bool}
 impl<S,W> PairedSource<S,W>{pub fn new(primary:S,auxiliary:Option<S>,wait:W)->Self{Self{primary,auxiliary,wait,delivery:vec![0;65535].into_boxed_slice(),aux_first:false}}}
+impl<S,W> PairedSource<S,W>{pub fn close(&mut self,mut close:impl FnMut(&mut S)->io::Result<()>)->io::Result<()>{let primary=close(&mut self.primary);let auxiliary=self.auxiliary.as_mut().map(&mut close).transpose();primary.and(auxiliary.map(|_|()))}}
 fn copy(source:&mut impl ReportSource,delivery:&mut[u8])->io::Result<ResultKind>{
     match source.next(Duration::ZERO)?{
         Read::Report{bytes,ready,queued}|Read::Auxiliary{bytes,ready,queued}=>{if bytes.len()>delivery.len(){return Err(io::Error::new(io::ErrorKind::InvalidData,"Endpoint exceeds paired report bound"));}delivery[..bytes.len()].copy_from_slice(bytes);Ok(ResultKind::Report(bytes.len(),ready,queued))},
         Read::Ended|Read::AuxiliaryEnded=>Ok(ResultKind::Ended),Read::Idle=>Ok(ResultKind::Idle),
     }
 }
-impl<S:ReportSource,W:FnMut(&mut S,Option<&mut S>,Duration)->io::Result<()>> ReportSource for PairedSource<S,W>{
+impl<S:ReportSource+Retire,W:FnMut(&mut S,Option<&mut S>,Duration)->io::Result<()>> ReportSource for PairedSource<S,W>{
     fn label(&self)->&str{self.primary.label()}
     fn now(&self)->Instant{self.primary.now()}
     fn shared_output(&self)->bool{self.primary.shared_output()}
@@ -26,8 +28,8 @@ impl<S:ReportSource,W:FnMut(&mut S,Option<&mut S>,Duration)->io::Result<()>> Rep
                 let result=if auxiliary{match &mut self.auxiliary{Some(source)=>copy(source,&mut self.delivery),None=>continue}}else{copy(&mut self.primary,&mut self.delivery)};
                 match result{
                     Ok(ResultKind::Report(length,ready,queued))=>{self.aux_first=!auxiliary;return Ok(if auxiliary{Read::Auxiliary{bytes:&self.delivery[..length],ready,queued}}else{Read::Report{bytes:&self.delivery[..length],ready,queued}});},
-                    Err(error)if auxiliary=>{eprintln!("Auxiliary endpoint retired: {error}");self.auxiliary=None;return Ok(Read::AuxiliaryEnded);},
-                    Ok(ResultKind::Ended)if auxiliary=>{self.auxiliary=None;return Ok(Read::AuxiliaryEnded);},
+                    Err(error)if auxiliary=>{eprintln!("Auxiliary endpoint retired: {error}");if let Some(source)=&mut self.auxiliary{source.retire()?;}self.auxiliary=None;return Ok(Read::AuxiliaryEnded);},
+                    Ok(ResultKind::Ended)if auxiliary=>{if let Some(source)=&mut self.auxiliary{source.retire()?;}self.auxiliary=None;return Ok(Read::AuxiliaryEnded);},
                     Ok(ResultKind::Ended)=>return Ok(Read::Ended),Err(error)=>return Err(error),Ok(ResultKind::Idle)=>{},
                 }
             }

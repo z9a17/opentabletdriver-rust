@@ -64,3 +64,43 @@ impl ReportSource for Source<'_>{
         self.wake.drain();self.registration.endpoint.output.reader_wake().drain();Ok(Read::Idle)
     }
 }
+pub trait NativeSource:ReportSource{
+    fn tablet(&self,tablet:serde_json::Value);
+    fn initialized(&self);
+    fn waits(&self)->[libc::pollfd;3];
+    fn pump_native(&mut self,timeout:Duration)->io::Result<()>;
+}
+/// Native and original custom-hub endpoints can form either half of the same
+/// physical device. This is a typed backend, never a fabricated OS handle.
+pub enum Input<'a,S>{Native(S),Managed(Source<'a>)}
+impl<S:NativeSource> Input<'_,S>{
+    pub fn tablet(&self,value:serde_json::Value){match self{Self::Native(source)=>source.tablet(value),Self::Managed(source)=>source.tablet(value)}}
+    pub fn initialized(&self){match self{Self::Native(source)=>source.initialized(),Self::Managed(source)=>source.initialized()}}
+    fn waits(&self)->[libc::pollfd;3]{match self{Self::Native(source)=>source.waits(),Self::Managed(source)=>source.waits()}}
+    pub fn close(&mut self)->io::Result<()>{match self{Self::Native(_)=>Ok(()),Self::Managed(source)=>source.close().map_err(otd_core::session::cleanup_failure)}}
+    pub fn wait_pair(primary:&mut Self,mut auxiliary:Option<&mut Self>,timeout:Duration)->io::Result<()>{
+        let mut waits=[libc::pollfd{fd:-1,events:0,revents:0};6];waits[..3].copy_from_slice(&primary.waits());if let Some(auxiliary)=auxiliary.as_ref(){waits[3..].copy_from_slice(&auxiliary.waits());}
+        let mut timeout=timeout.min(Duration::from_secs(1));
+        if cfg!(target_os="macos"){
+            timeout=timeout.min(Duration::from_millis(50));
+            // IOKit callbacks are scheduled on this owner runloop; the original
+            // custom stream has its own reader and its ring signals a pipe.
+            let signaled=unsafe{libc::poll(waits.as_mut_ptr(),6,0)}>0;
+            if signaled{return Ok(());}
+            if let Self::Native(source)=primary{return source.pump_native(timeout);}
+            if let Some(Self::Native(source))=auxiliary.as_deref_mut(){return source.pump_native(timeout);}
+        }
+        let result=unsafe{libc::poll(waits.as_mut_ptr(),6,timeout.as_micros().div_ceil(1000) as i32)};
+        if result<0{let error=io::Error::last_os_error();if error.kind()!=io::ErrorKind::Interrupted{return Err(error);}}Ok(())
+    }
+}
+impl<S:NativeSource> ReportSource for Input<'_,S>{
+    fn label(&self)->&str{match self{Self::Native(source)=>source.label(),Self::Managed(source)=>source.label()}}
+    fn now(&self)->Instant{Instant::now()}
+    fn shared_output(&self)->bool{match self{Self::Native(source)=>source.shared_output(),Self::Managed(source)=>source.shared_output()}}
+    fn native_output_enabled(&self)->bool{match self{Self::Native(source)=>source.native_output_enabled(),Self::Managed(source)=>source.native_output_enabled()}}
+    fn output_started(&self){match self{Self::Native(source)=>source.output_started(),Self::Managed(source)=>source.output_started()}}
+    fn output_acknowledged(&self,enabled:bool){match self{Self::Native(source)=>source.output_acknowledged(enabled),Self::Managed(source)=>source.output_acknowledged(enabled)}}
+    fn next(&mut self,timeout:Duration)->io::Result<Read<'_>>{match self{Self::Native(source)=>source.next(timeout),Self::Managed(source)=>source.next(timeout)}}
+}
+impl<S:NativeSource> crate::paired_source::Retire for Input<'_,S>{fn retire(&mut self)->io::Result<()>{self.close()}}
