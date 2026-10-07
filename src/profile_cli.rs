@@ -48,7 +48,11 @@ the daemon nor applies the result. Relative options require relative output.
 Pen button and express key numbers start at 1 (maximum 64). Repeat
 --pen-button or --aux-button for distinct buttons. Actions: none, barrel:1..3,
 mouse:left|right|middle|backward|forward, or keys:Control+Shift+Z. Quote key
-chords when required by your shell. Scroll actions: scroll:up|down|left|right or
+chords when required by your shell. Toggle/preset actions:
+toggle:keys:Control+Z, toggle:mouse:left, toggle:barrel:1 retain a hold until
+the next press; cleanup releases it. preset:NAME requests guarded replacement
+of the source device's profile by a saved native preset (daemon mode).
+Scroll actions: scroll:up|down|left|right or
 scroll:vertical|horizontal:AMOUNT[:INTERVAL_MS]. Amount is the upstream signed
 amount, emitted with its sign inverted; interval defaults to 300 ms. Scroll
 presses once then repeats while held; release cancels repetition. Mouse scroll
@@ -780,8 +784,9 @@ pub fn active_section(section: &str) -> Result<(), String> {
 }
 
 pub fn binding_actions() -> Result<(), String> {
-    print_json(&json!({"native": ["none", "barrel:1", "barrel:2", "barrel:3", "mouse:left", "mouse:right", "mouse:middle", "mouse:backward", "mouse:forward", "keys:KEY[+KEY...]", "scroll:up", "scroll:down", "scroll:left", "scroll:right", "scroll:vertical|horizontal:AMOUNT[:INTERVAL_MS]"],
-        "managed_bindings": "not hosted", "preset_bindings": "not hosted"}))
+    print_json(&json!({"native": ["none", "barrel:1", "barrel:2", "barrel:3", "mouse:left", "mouse:right", "mouse:middle", "mouse:backward", "mouse:forward", "keys:KEY[+KEY...]", "scroll:up", "scroll:down", "scroll:left", "scroll:right", "scroll:vertical|horizontal:AMOUNT[:INTERVAL_MS]", "toggle:keys:KEY[+KEY...]", "toggle:mouse:BUTTON", "toggle:barrel:NUMBER", "preset:NAME"],
+        "managed_bindings": "unchanged supported IStateBinding classes require their actual providers; use the typed managed editor",
+        "preset_bindings": "preset:NAME uses native TOML and guarded per-device daemon replacement; original PresetBinding uses its unchanged managed collection provider"}))
 }
 
 fn output_mode(profile: &Profile) -> &'static str {

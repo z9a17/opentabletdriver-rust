@@ -15,8 +15,8 @@ pub fn usage() -> &'static str {
   presets apply NAME
   presets save-active NAME [--replace]
 
-Names preserve case and spacing: 1-64 ASCII letters/digits, internal spaces,
-hyphens, underscores or parentheses; Windows device names are rejected.
+Names preserve case and spacing: 1-240 UTF-8 bytes in a safe filename stem,
+no control/path characters or trailing periods; Windows device names are rejected.
 Use quotes around names with spaces. Case-only aliases are not substituted.
 Save creates a new preset by default; --replace requires an existing valid preset.
 Show includes full profile values and plugin paths; review before sharing.

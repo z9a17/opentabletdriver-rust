@@ -69,6 +69,10 @@ pub enum ButtonAction {
     /// first and come up last.
     Keys(Vec<KeyboardUsage>),
     Scroll(ScrollAction),
+    /// Rust extension: retain a native hold until the next rising edge.
+    Toggle(Box<ButtonAction>),
+    /// A deferred preset switch; never reads settings inside report dispatch.
+    Preset(crate::presets::PresetName),
     /// An unchanged OpenTabletDriver IStateBinding, constructed once per slot.
     Managed(crate::plugins::PluginConfig),
 }
@@ -161,6 +165,17 @@ impl FromStr for ButtonAction {
                 if config.kind != crate::plugins::PluginKind::Dotnet { return Err("managed bindings require kind = dotnet".into()); }
                 Ok(Self::Managed(config))
             }
+            "preset" => crate::presets::PresetName::parse(value).map(Self::Preset),
+            "toggle" => {
+                if !value.split_once(':').is_some_and(|(kind, _)| ["keys", "key", "mouse", "barrel"].iter().any(|valid| kind.eq_ignore_ascii_case(valid))) {
+                    return Err("toggle requires a native key/chord, mouse or barrel action".into());
+                }
+                let action = value.parse::<Self>()?;
+                if !matches!(action, Self::Keys(_) | Self::Mouse(_) | Self::Barrel(_)) {
+                    return Err("toggle requires a native key/chord, mouse or barrel action".into());
+                }
+                Ok(Self::Toggle(Box::new(action)))
+            }
             "barrel" => match value.parse::<u8>() {
                 Ok(number @ 1..=MAX_BARREL) => Ok(Self::Barrel(number)),
                 _ => Err(format!(
@@ -213,6 +228,8 @@ impl fmt::Display for ButtonAction {
             Self::Mouse(button) => write!(f, "mouse:{}", mouse_name(*button)),
             Self::Keys(keys) => write!(f, "keys:{}", keys::chord_text(keys)),
             Self::Scroll(action) => write!(f, "scroll:{}:{}:{}", match action.axis { ScrollAxis::Vertical => "vertical", ScrollAxis::Horizontal => "horizontal" }, action.amount, action.interval_ms),
+            Self::Toggle(action) => write!(f, "toggle:{action}"),
+            Self::Preset(name) => write!(f, "preset:{}", name.as_str()),
             Self::Managed(config) => write!(f, "dotnet:{}", serde_json::to_string(config).map_err(|_| fmt::Error)?),
         }
     }
@@ -221,6 +238,11 @@ impl fmt::Display for ButtonAction {
 /// Where held actions become operating-system input. One sink serves one
 /// tablet session; the platform decides whether sessions share ownership.
 pub trait ActionSink {
+    fn inhibited_binding(&self) -> Option<u32> { None }
+    fn supports_presets(&self) -> bool { false }
+    fn preset(&mut self, _owner: u32, _name: &crate::presets::PresetName) -> io::Result<()> {
+        Err(io::Error::new(io::ErrorKind::Unsupported, "preset bindings require a guarded driver control owner"))
+    }
     fn has_managed(&self) -> bool { false }
     fn managed_next_tick(&self) -> Option<Duration> { None }
     fn managed_tick(&mut self) -> io::Result<()> { Ok(()) }
@@ -316,6 +338,10 @@ struct Slot {
     scroll: Option<ScrollAction>,
     next_scroll: Option<Instant>,
     managed: Option<crate::plugins::PluginConfig>,
+    toggle: bool,
+    active: bool,
+    preset: Option<crate::presets::PresetName>,
+    blocked: std::cell::Cell<bool>,
 }
 
 /// The binding owner IDs of each group in the shared action state. Two
@@ -367,6 +393,7 @@ impl Rotation {
 /// Follows the pen buttons, express keys and wheels of a session's reports
 /// and presses their actions.
 pub struct ButtonOutput {
+    inhibition_active: std::cell::Cell<bool>,
     pen: Group,
     contact: Group,
     aux: Group,
@@ -392,6 +419,17 @@ fn resolve(
     scroll: &mut Option<ScrollAction>,
 ) -> Box<[Action]> {
     let actions: Vec<Action> = match binding {
+        ButtonAction::Toggle(action) => {
+            if matches!(action.as_ref(), ButtonAction::Keys(_) | ButtonAction::Mouse(_) | ButtonAction::Barrel(1..=3)) {
+                return resolve(action, pen, barrel, sink, what, rejected, scroll);
+            }
+            rejected.push(format!("{}: toggle requires a native key/chord, mouse or barrel action", what()));
+            Vec::new()
+        }
+        ButtonAction::Preset(_) => {
+            if !sink.supports_presets() { rejected.push(format!("{}: preset bindings require a guarded driver control owner", what())); }
+            Vec::new()
+        }
         ButtonAction::None => Vec::new(),
         ButtonAction::Managed(config) => {
             if config.enabled && !sink.supports_managed(config) { rejected.push(format!("{}: unchanged managed binding {} is unavailable", what(), config.type_name)); }
@@ -443,6 +481,9 @@ fn group(
             let mut scroll = None;
             let actions = resolve(binding, pen, &mut barrel, sink, &|| name(index), rejected, &mut scroll);
             Slot { actions, barrel, scroll, next_scroll: None,
+                toggle: matches!(binding, ButtonAction::Toggle(_)), active: false,
+                preset: match binding { ButtonAction::Preset(name) if sink.supports_presets() => Some(name.clone()), _ => None },
+                blocked: std::cell::Cell::new(sink.inhibited_binding() == Some(owners + index as u32)),
                 managed: match binding { ButtonAction::Managed(config) if config.enabled && sink.supports_managed(config) => Some(config.clone()), _ => None } }
         })
         .collect();
@@ -454,6 +495,25 @@ fn group(
 }
 
 impl Group {
+    fn observe_buttons(&self, buttons: Option<Buttons>) {
+        if let Some(buttons) = buttons {
+            for (index, slot) in self.slots.iter().enumerate().take(buttons.len()) {
+                if buttons.get(index) == Some(false) { slot.blocked.set(false); }
+            }
+        }
+    }
+    fn active(&self) -> bool { self.held != 0 || self.slots.iter().any(|slot| slot.active) }
+    /// Cleanup releases latched holds too, even when their physical key is up.
+    fn release(&mut self, sink: &mut dyn ActionSink, now: Instant) -> io::Result<()> {
+        let result = self.hold(sink, 0, now);
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            if slot.toggle && slot.active {
+                for action in slot.actions.iter() { sink.hold(self.owners + index as u32, *action, false)?; }
+                slot.active = false;
+            }
+        }
+        result
+    }
     fn next_tick(&self, now: Instant) -> Option<Duration> {
         self.slots.iter().filter_map(|slot| slot.next_scroll)
             .map(|deadline| deadline.saturating_duration_since(now)).min()
@@ -479,7 +539,7 @@ impl Group {
         let mut wanted = 0;
         for index in 0..self.slots.len().min(buttons.len()) {
             if buttons.get(index) == Some(true) {
-                wanted |= 1 << index;
+                if !self.slots[index].blocked.get() { wanted |= 1 << index; }
             }
         }
         wanted
@@ -494,12 +554,17 @@ impl Group {
                 continue;
             }
             let down = wanted & bit != 0;
+            let slot = &mut self.slots[index];
+            if let Some(name) = &slot.preset { if down { sink.preset(self.owners + index as u32, name)?; } }
+            if slot.toggle && !down { self.held &= !bit; continue; }
+            let output_down = if slot.toggle { !slot.active } else { down };
             if let Some(config) = &self.slots[index].managed {
                 sink.managed_binding(self.owners + index as u32, config, down)?;
             }
             for action in self.slots[index].actions.iter() {
-                sink.hold(self.owners + index as u32, *action, down)?;
+                sink.hold(self.owners + index as u32, *action, output_down)?;
             }
+            self.slots[index].active = output_down;
             if let Some(scroll) = self.slots[index].scroll {
                 if down {
                     sink.flush()?;
@@ -550,6 +615,7 @@ impl ButtonOutput {
         );
         (
             Self {
+                inhibition_active: std::cell::Cell::new(sink.inhibited_binding().is_some()),
                 pen,
                 contact: Group::default(),
                 aux: Group::default(),
@@ -602,12 +668,15 @@ impl ButtonOutput {
                 let actions = resolve(action, false, &mut ignored, sink,
                     &|| format!("wheel {} {direction}", wheel + 1), &mut rejected, &mut scroll);
                 Slot { actions, barrel: 0, scroll, next_scroll: None,
+                    toggle: matches!(action, ButtonAction::Toggle(_)), active: false,
+                    preset: match action { ButtonAction::Preset(name) if sink.supports_presets() => Some(name.clone()), _ => None },
+                    blocked: std::cell::Cell::new(false),
                     managed: match action { ButtonAction::Managed(config) if config.enabled && sink.supports_managed(config) => Some(config.clone()), _ => None } }
             };
             let clockwise = actions(&binding.clockwise, "clockwise");
             let counter_clockwise = actions(&binding.counter_clockwise, "counter-clockwise");
             let degrees_per_step = spec.degrees_per_step().unwrap_or(0.0);
-            if degrees_per_step == 0.0 && !(clockwise.actions.is_empty() && counter_clockwise.actions.is_empty() && clockwise.scroll.is_none() && counter_clockwise.scroll.is_none()) {
+            if degrees_per_step == 0.0 && !(clockwise.actions.is_empty() && counter_clockwise.actions.is_empty() && clockwise.scroll.is_none() && counter_clockwise.scroll.is_none() && clockwise.preset.is_none() && counter_clockwise.preset.is_none()) {
                 rejected.push(format!(
                     "wheel {}: the tablet configuration has no step count, so its rotation does nothing",
                     wheel + 1
@@ -649,12 +718,34 @@ impl ButtonOutput {
     }
     pub fn apply_contact(&mut self, eraser: bool, pressed: bool) -> io::Result<()> {
         if self.contact.slots.is_empty() { return Ok(()); }
+        if self.contact.slots[usize::from(eraser)].blocked.get() { return Ok(()); }
         let bit = 1u64 << u32::from(eraser);
         let wanted = (self.contact.held & !bit) | if pressed { bit } else { 0 };
         if wanted == self.contact.held && !self.unsettled { return Ok(()); }
         self.unsettled = true; self.contact.hold(self.sink.as_mut(), wanted, self.now)?; self.flush()
     }
     pub fn set_time(&mut self, now: Instant) { self.now = now; }
+    /// Observe untouched source capabilities before any filter/remap. A changed
+    /// threshold or a filter changing buttons must not arm a still-held source.
+    pub fn observe_source(&self, values: &crate::reports::ReportValues) {
+        if !self.inhibition_active.get() { return; }
+        self.pen.observe_buttons(values.pen_buttons);
+        self.aux.observe_buttons(values.aux_buttons);
+        self.mouse.observe_buttons(values.mouse_buttons);
+        if let Some([_, y]) = values.mouse_scroll {
+            let bits = u64::from(y < 0.0) | (u64::from(y > 0.0) << 1);
+            if let Ok(buttons) = Buttons::from_bits(bits, 2) { self.mouse_scroll.observe_buttons(Some(buttons)); }
+        }
+        if let Some(wheels) = values.wheel_buttons {
+            for (group, buttons) in self.wheel_buttons.iter().zip(wheels.as_slice()) { group.observe_buttons(Some(*buttons)); }
+        }
+        if values.pressure == Some(0) {
+            for slot in &self.contact.slots { slot.blocked.set(false); }
+        }
+        let remaining = [&self.pen, &self.contact, &self.aux, &self.mouse, &self.mouse_scroll].into_iter()
+            .chain(self.wheel_buttons.iter()).any(|group| group.slots.iter().any(|slot| slot.blocked.get()));
+        self.inhibition_active.set(remaining);
+    }
     pub fn set_report(&mut self, kind: crate::reports::ReportKind, values: &crate::reports::ReportValues, raw: &[u8]) -> io::Result<()> { self.sink.set_report(kind, values, raw) }
     pub fn next_managed_command(&mut self) -> Option<crate::plugins::ManagedCommand> { self.sink.next_managed_command() }
     pub fn managed_hold(&mut self, owner: u32, action: Action, held: bool) -> io::Result<()> { self.sink.hold(owner, action, held) }
@@ -705,7 +796,9 @@ impl ButtonOutput {
             .slots
             .iter()
             .enumerate()
-            .filter(|(index, _)| wanted & (1 << index) != 0)
+            .filter(|(index, slot)| if slot.toggle {
+                if wanted & (1 << index) != 0 && self.pen.held & (1 << index) == 0 { !slot.active } else { slot.active }
+            } else { wanted & (1 << index) != 0 })
             .fold(0, |barrel, (_, slot)| barrel | slot.barrel)
     }
 
@@ -851,8 +944,16 @@ impl ButtonOutput {
     /// Presses and releases a rotation action. A failure still leaves it
     /// released in the wanted state, so later reconciliation lets it go.
     fn tap(&mut self, wheel: usize, clockwise: bool, owner: u32) -> io::Result<()> {
-        let rotation = &self.rotations[wheel];
-        let slot = if clockwise { &rotation.clockwise } else { &rotation.counter_clockwise };
+        let rotation = &mut self.rotations[wheel];
+        let slot = if clockwise { &mut rotation.clockwise } else { &mut rotation.counter_clockwise };
+        if let Some(name) = &slot.preset { self.sink.preset(owner, name)?; }
+        if slot.toggle {
+            self.unsettled = true;
+            let down = !slot.active;
+            for action in slot.actions.iter() { self.sink.hold(owner, *action, down)?; }
+            slot.active = down;
+            return self.flush();
+        }
         if let Some(scroll) = slot.scroll {
             self.sink.flush()?;
             self.sink.scroll(scroll.pulse())?;
@@ -887,14 +988,21 @@ impl ButtonOutput {
         for rotation in &mut self.rotations {
             rotation.reset();
         }
-        let held = self.aux.held != 0 || self.wheel_buttons.iter().any(|group| group.held != 0);
+        let held = self.aux.active() || self.wheel_buttons.iter().any(Group::active)
+            || self.rotations.iter().any(|rotation| rotation.clockwise.active || rotation.counter_clockwise.active);
         if !held && !self.unsettled {
             return Ok(false);
         }
         self.unsettled = true;
-        self.aux.hold(self.sink.as_mut(), 0, self.now)?;
+        self.aux.release(self.sink.as_mut(), self.now)?;
         for group in &mut self.wheel_buttons {
-            group.hold(self.sink.as_mut(), 0, self.now)?;
+            group.release(self.sink.as_mut(), self.now)?;
+        }
+        for (wheel, rotation) in self.rotations.iter_mut().enumerate() {
+            for (direction, slot) in [&mut rotation.clockwise, &mut rotation.counter_clockwise].into_iter().enumerate() {
+                for action in slot.actions.iter() { self.sink.hold(WHEEL_ROTATION_OWNERS + 2 * wheel as u32 + direction as u32, *action, false)?; }
+                slot.active = false;
+            }
         }
         let sent = self.sink.flush()?;
         self.unsettled = false;
@@ -908,9 +1016,9 @@ impl ButtonOutput {
             rotation.reset();
         }
         for group in [&mut self.pen, &mut self.contact, &mut self.aux, &mut self.mouse, &mut self.mouse_scroll].into_iter().chain(self.wheel_buttons.iter_mut()) { group.clear_timers(); }
-        let held = self.contact.held != 0 || self.mouse_scroll.held != 0 || self.mouse.held != 0 || self.pen.held != 0
-            || self.aux.held != 0
-            || self.wheel_buttons.iter().any(|group| group.held != 0);
+        let held = [&self.contact, &self.mouse_scroll, &self.mouse, &self.pen, &self.aux].into_iter().any(|group| group.active())
+            || self.wheel_buttons.iter().any(Group::active)
+            || self.rotations.iter().any(|rotation| rotation.clockwise.active || rotation.counter_clockwise.active);
         if !held && !self.unsettled && !self.sink.has_managed() {
             return Ok(false);
         }
@@ -918,7 +1026,7 @@ impl ButtonOutput {
         // Continue native cleanup even if a managed release throws.
         let mut binding_error = None;
         for group in [&mut self.pen, &mut self.contact, &mut self.aux, &mut self.mouse, &mut self.mouse_scroll].into_iter().chain(self.wheel_buttons.iter_mut()) {
-            if let Err(error) = group.hold(self.sink.as_mut(), 0, self.now) { if binding_error.is_none() { binding_error = Some(error); } }
+            if let Err(error) = group.release(self.sink.as_mut(), self.now) { if binding_error.is_none() { binding_error = Some(error); } }
         }
         self.pen.held = 0;
         self.contact.held = 0;
@@ -930,6 +1038,10 @@ impl ButtonOutput {
         }
         self.unsettled = true;
         let sent = self.sink.release_all()?;
+        for group in [&mut self.pen, &mut self.contact, &mut self.aux, &mut self.mouse, &mut self.mouse_scroll].into_iter().chain(self.wheel_buttons.iter_mut()) {
+            for slot in &mut group.slots { slot.active = false; }
+        }
+        for rotation in &mut self.rotations { rotation.clockwise.active = false; rotation.counter_clockwise.active = false; }
         self.unsettled = false;
         if let Some(error) = binding_error { return Err(error); }
         Ok(sent != 0)
@@ -979,6 +1091,108 @@ mod tests {
     }
 
     type Log = Rc<RefCell<Vec<(Action, bool)>>>;
+
+    #[test]
+    fn toggled_hold_shares_ownership_and_retries_failed_cleanup() {
+        let (mut out, log, fail) = output(&["toggle:keys:Z".parse().unwrap(), "keys:Z".parse().unwrap()], false);
+        for state in [1, 1, 0, 2, 3, 2, 0, 1, 0] { out.apply(state).unwrap(); }
+        let key = "keys:Z".parse::<ButtonAction>().unwrap();
+        let ButtonAction::Keys(keys) = key else { unreachable!() };
+        assert_eq!(*log.borrow(), [(Action::Key(keys[0]), true), (Action::Key(keys[0]), false), (Action::Key(keys[0]), true)]);
+        *fail.borrow_mut() = true;
+        assert!(out.release_all().is_err());
+        *fail.borrow_mut() = false;
+        out.release_all().unwrap();
+        out.release_all().unwrap();
+        assert_eq!(log.borrow().last(), Some(&(Action::Key(keys[0]), false)));
+        assert_eq!(log.borrow().len(), 4);
+    }
+
+    #[test]
+    fn toggled_barrel_uses_effective_state_and_cleanup_clears_latch() {
+        let (mut out, _, _) = output(&["toggle:barrel:1".parse().unwrap()], true);
+        assert_eq!(out.barrel(1), 1);
+        out.apply(1).unwrap(); out.apply(0).unwrap();
+        assert_eq!(out.barrel(0), 1);
+        assert_eq!(out.barrel(1), 0);
+        out.apply(1).unwrap(); out.apply(0).unwrap();
+        assert_eq!(out.barrel(0), 0);
+        out.apply(1).unwrap(); out.apply(0).unwrap();
+        out.release_all().unwrap();
+        assert_eq!(out.barrel(0), 0);
+    }
+
+    #[test]
+    fn self_switch_source_is_inhibited_until_real_release_without_blocking_other_keys() {
+        struct Presets { inner: Box<dyn ActionSink>, requests: Rc<std::cell::Cell<usize>> }
+        impl ActionSink for Presets {
+            fn inhibited_binding(&self) -> Option<u32> { Some(0) }
+            fn supports_presets(&self) -> bool { true }
+            fn preset(&mut self, owner: u32, _: &crate::presets::PresetName) -> io::Result<()> {
+                assert_eq!(owner, 0); self.requests.set(self.requests.get() + 1); Ok(())
+            }
+            fn supports(&self, action: Action) -> bool { self.inner.supports(action) }
+            fn hold(&mut self, owner: u32, action: Action, held: bool) -> io::Result<()> { self.inner.hold(owner, action, held) }
+            fn flush(&mut self) -> io::Result<usize> { self.inner.flush() }
+            fn release_all(&mut self) -> io::Result<usize> { self.inner.release_all() }
+        }
+        let log = Log::default(); let fail = Rc::new(RefCell::new(false));
+        let requests = Rc::new(std::cell::Cell::new(0));
+        let sink = Presets { inner: sink(&log, &fail), requests: requests.clone() };
+        let (mut out, rejected) = ButtonOutput::new(&["preset:Work".parse().unwrap(), "keys:Z".parse().unwrap()], false, Box::new(sink));
+        assert!(rejected.is_empty());
+        for state in [3, 3, 2, 3, 3] {
+            out.observe_source(&crate::reports::ReportValues { pen_buttons: buttons(state), ..Default::default() });
+            out.apply(out.wanted(buttons(state), true)).unwrap();
+        }
+        assert_eq!(requests.get(), 1);
+        assert_eq!(log.borrow().len(), 1, "unrelated key is still held exactly once");
+        out.release_all().unwrap();
+        assert_eq!(log.borrow().len(), 2);
+    }
+
+    #[test]
+    fn native_toggle_edges_and_cleanup_allocate_nothing_after_setup() {
+        let sink = Box::new(LocalActions::new(|_| Ok(()), |_| true));
+        let (mut out, rejected) = ButtonOutput::new(&["toggle:keys:Control+Z".parse().unwrap()], false, sink);
+        assert!(rejected.is_empty());
+        crate::test_alloc::assert_no_allocations(|| {
+            for state in [1, 1, 0, 1, 0, 1, 0] { out.apply(state).unwrap(); }
+            out.release_all().unwrap();
+        });
+    }
+
+    #[test]
+    fn contact_inhibition_requires_raw_zero_not_absence_or_a_new_threshold() {
+        struct Contact { calls: Rc<RefCell<Vec<bool>>> }
+        impl ActionSink for Contact {
+            fn inhibited_binding(&self) -> Option<u32> { Some(1024) }
+            fn supports(&self, _: Action) -> bool { true }
+            fn supports_managed(&self, _: &crate::plugins::PluginConfig) -> bool { true }
+            fn managed_binding(&mut self, owner: u32, _: &crate::plugins::PluginConfig, pressed: bool) -> io::Result<()> {
+                assert_eq!(owner, 1024); self.calls.borrow_mut().push(pressed); Ok(())
+            }
+            fn hold(&mut self, _: u32, _: Action, _: bool) -> io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> io::Result<usize> { Ok(0) }
+            fn release_all(&mut self) -> io::Result<usize> { Ok(0) }
+        }
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let (mut out, _) = ButtonOutput::new(&[], false, Box::new(Contact { calls: calls.clone() }));
+        let config = crate::plugins::PluginConfig { path: "Original.dll".into(), type_name: "Original.PresetBinding".into(),
+            kind: crate::plugins::PluginKind::Dotnet, enabled: true, settings_json: "{}".into() };
+        assert!(out.set_contact_bindings(Some(&config), None).is_empty());
+        for pressure in [Some(100), None, Some(20)] {
+            out.observe_source(&crate::reports::ReportValues { pressure, ..Default::default() });
+            out.apply_contact(false, false).unwrap();
+            out.apply_contact(false, true).unwrap();
+        }
+        assert!(calls.borrow().is_empty());
+        out.observe_source(&crate::reports::ReportValues { pressure: Some(0), ..Default::default() });
+        out.apply_contact(false, false).unwrap();
+        out.apply_contact(false, true).unwrap();
+        out.release_all().unwrap();
+        assert_eq!(*calls.borrow(), [true, false]);
+    }
 
     fn sink(log: &Log, fail: &Rc<RefCell<bool>>) -> Box<dyn ActionSink> {
         let (log, fail) = (log.clone(), fail.clone());

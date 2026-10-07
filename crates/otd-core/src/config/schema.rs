@@ -1265,6 +1265,19 @@ fn pen_binding_property(path: &str) -> Option<&'static str> {
     }
 }
 
+#[cfg(test)]
+mod native_binding_export_tests {
+    #[test]
+    fn native_extensions_do_not_fabricate_original_binding_stores() {
+        for action in ["toggle:mouse:left", "preset:Work"] {
+            let mut source = serde_json::Value::Null;
+            let error = super::write_pen_button(&mut source, &action.parse().unwrap(), false).unwrap_err();
+            assert!(source.is_null());
+            assert!(error.contains("TOML") || error.contains("collection"));
+        }
+    }
+}
+
 fn unknown_binding_properties(store: &Value, path: &str) -> bool {
     let allowed: &[&str] = match path {
         super::ADAPTIVE_BINDING => &["Binding"], super::MOUSE_BINDING => &["Button"],
@@ -1324,6 +1337,8 @@ fn write_pen_button(
         return Ok(());
     }
     let (path, property, value) = match action {
+        ButtonAction::Toggle(_) => return Err("native toggle bindings have no pinned OpenTabletDriver store representation; save TOML instead".into()),
+        ButtonAction::Preset(_) => return Err("native per-device TOML presets are not original collection presets; save TOML or select the original managed PresetBinding".into()),
         ButtonAction::Scroll(_) | ButtonAction::Managed(_) => unreachable!("handled above"),
         ButtonAction::None => {
             if !store.is_null() {

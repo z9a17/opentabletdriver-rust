@@ -40,6 +40,7 @@ pub enum Directive {
 }
 #[derive(Debug)]
 pub enum Notice {
+    PresetRequested(crate::binding_presets::Request),
     PreparedProfile(Box<Profile>),
     Prepared,
     ActivationReady,
@@ -213,7 +214,9 @@ fn run(
         return Err("Plugins are being installed or recovered; retry starting the driver after that finishes.".into());
     }
     let mut authored_profile = profile;
+    let binding_inhibit = authored_profile.binding_inhibit.take();
     let mut profile = execution_profile(&authored_profile, |execution| {
+        execution.binding_inhibit = binding_inhibit;
         crate::plugin_catalog::use_native_ports(execution, log);
     });
     // Exercise deterministic pipeline construction before old output pauses.
@@ -287,6 +290,7 @@ fn run(
                 return Err("Plugins are being installed or recovered; retry starting the driver after that finishes.".into());
             }
             profile = execution_profile(&authored_profile, |execution| {
+                execution.binding_inhibit = binding_inhibit;
                 crate::plugin_catalog::use_native_ports(execution, log);
             });
             crate::plugins::prepare_parser_registry(&profile, database)?;
@@ -369,7 +373,19 @@ fn run(
             let opened_epoch = Cell::new(None);
             // Tools run while this worker owns the output, like the tablet.
             let tools = std::cell::RefCell::new(None);
-            let result = source.run(&profile, &mut plugins, &log, |identifiers| {
+            let preset_notices = notices.clone();
+            let mut last_preset_press = std::time::Instant::now();
+            let preset: crate::binding_presets::Callback = Box::new(move |owner, name| {
+                let now = std::time::Instant::now();
+                let elapsed = now.saturating_duration_since(last_preset_press);
+                last_preset_press = now;
+                if elapsed <= std::time::Duration::from_millis(50) { return Ok(()); }
+                preset_notices.try_send(Notice::PresetRequested(crate::binding_presets::Request::new(owner, name)))
+                    .map_err(|_| io::Error::from(io::ErrorKind::WouldBlock))?;
+                crate::control::wake();
+                Ok(())
+            });
+            let result = source.run(&profile, &mut plugins, &log, Some(preset), |identifiers| {
                 notify(Notice::ActivationReady).map_err(io::Error::other)?;
                 match receive(&commands, cancelled)? {
                     Directive::Run if !cancelled.load(Ordering::Acquire) => {

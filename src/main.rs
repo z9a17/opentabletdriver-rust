@@ -1,5 +1,6 @@
 pub mod action_output;
 mod area_cli;
+mod binding_presets;
 mod companions;
 mod control;
 mod daemon;

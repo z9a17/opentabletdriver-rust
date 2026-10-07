@@ -526,6 +526,24 @@ impl Daemon {
         }
         let phase = self.pending.as_ref().map(|pending| pending.phase);
         match notice {
+            Notice::PresetRequested(request) => {
+                // Only this active worker owns the request. Retired/candidate
+                // workers cannot replace a newer client's generation.
+                let result = if phase.is_some() || self.state != DriverState::Running || self.update_reservation.is_some() {
+                    Err("preset request is stale or the driver is transitioning".to_owned())
+                } else {
+                    crate::binding_presets::load(request)
+                        .and_then(|profile| {
+                            let inhibit = profile.binding_inhibit;
+                            let (mut profile, text) = Self::prepare(Some(profile.to_toml()?)).map_err(|error| error.message)?;
+                            profile.binding_inhibit = inhibit;
+                            Ok((profile, text))
+                        })
+                        .and_then(|(profile, text)| self.begin(profile, text, false).map(|_| ()).map_err(|error| error.message))
+                };
+                match result { Ok(()) => self.log("Preset binding replacement accepted; waiting for guarded cleanup/activation.".into()),
+                    Err(error) => self.log(format!("Preset binding was not applied: {error}")) }
+            }
             Notice::PreparedProfile(_) => {}
             Notice::Prepared => {
                 // A disconnect can race the queued quiesce. Do not enqueue a

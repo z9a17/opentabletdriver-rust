@@ -736,6 +736,7 @@ impl<'a> PreparedSession<'a> {
         profile: &Profile,
         plugins: &mut PluginChain,
         status: &impl Fn(&str),
+        preset: Option<crate::binding_presets::Callback>,
         gate: impl FnOnce(&[DeviceIdentifier]) -> io::Result<bool>,
     ) -> io::Result<()> {
         let profile = profile
@@ -765,6 +766,7 @@ impl<'a> PreparedSession<'a> {
         let pen = pen_device(&profile, Mode::Driver)?;
         let actions = action_sink(Mode::Driver)?.map(|sink| plugins.wrap_action_sink(&profile, &self.selected.configuration, sink))
             .transpose().map_err(io::Error::other)?;
+        let actions = match (actions, preset) { (Some(sink), Some(request)) => Some(crate::binding_presets::wrap(sink, request, profile.binding_inhibit)), (sink, _) => sink };
         let identifiers = source.identifiers(self.selected);
         let result = otd_core::session::run_gated_with_endpoints(
             &mut source,

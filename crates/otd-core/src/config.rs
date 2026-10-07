@@ -153,10 +153,35 @@ const MOUSE_SCROLL_BINDING: &str = "OpenTabletDriver.Desktop.Binding.MouseScroll
 /// Most pen buttons a profile can bind; a report's button set holds 64.
 pub const MAX_PEN_BUTTONS: usize = 64;
 
+#[cfg(test)]
+mod native_binding_handoff_tests {
+    use super::*;
+    #[test]
+    fn transient_inhibition_is_absent_from_settings_and_native_actions_round_trip() {
+        let mut profile = Profile { pen_buttons: vec!["toggle:keys:Control+Z".parse().unwrap(), "preset:Écriture.2".parse().unwrap()], ..Default::default() };
+        let authored = profile.to_toml().unwrap();
+        profile.binding_inhibit = Some(0);
+        assert_eq!(profile.to_toml().unwrap(), authored);
+        let reopened = Profile::from_toml_text(&authored, Path::new("profile.toml")).unwrap();
+        assert_eq!(reopened.binding_inhibit, None);
+        assert_eq!(reopened.pen_buttons, profile.pen_buttons);
+        for value in ["toggle:preset:Work", "toggle:scroll:up", "toggle:toggle:keys:Z", "toggle:none", "preset:../other", "preset:CON.txt"] {
+            assert!(value.parse::<ButtonAction>().is_err(), "{value}");
+        }
+        assert!(("toggle:".repeat(4096) + "keys:Z").parse::<ButtonAction>().is_err());
+        profile.pen_buttons = vec![ButtonAction::Toggle(Box::new(ButtonAction::Scroll(crate::output::buttons::ScrollAction { axis: crate::output::buttons::ScrollAxis::Vertical, amount: 120, interval_ms: 1 })))];
+        assert!(profile.to_toml().is_err());
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Profile {
     pub schema_version: u32,
     pub settings_revision: u64,
+    /// One execution handoff, never serialized or compared as authored settings.
+    /// A binding that replaced its own profile must report released before the
+    /// new slot may press. Runtime removes this from its authored profile.
+    pub binding_inhibit: Option<u32>,
     /// Original settings collection, retained without rewriting JSON values.
     pub imported_otd: Option<ImportedOtdSettings>,
     /// Unrecognized native fields are archived by their original JSON-pointer path.
@@ -209,6 +234,7 @@ impl Default for Profile {
         Self {
             schema_version: PROFILE_SCHEMA_VERSION,
             settings_revision: 0,
+            binding_inhibit: None,
             imported_otd: None,
             preserved_fields: Default::default(),
             diagnostics: Vec::new(),
@@ -1553,6 +1579,14 @@ impl Profile {
             .chain([&self.mouse_scroll_up, &self.mouse_scroll_down])
             .chain(self.wheels.iter().flat_map(|wheel| [&wheel.clockwise, &wheel.counter_clockwise].into_iter().chain(&wheel.buttons)));
         for action in actions {
+            if let ButtonAction::Toggle(inner) = action {
+                match inner.as_ref() {
+                    ButtonAction::Mouse(_) | ButtonAction::Barrel(1..=3) => {},
+                    ButtonAction::Keys(keys) if !keys.is_empty() && keys.iter().all(|key| crate::keys::name_of(*key).is_some()) => {},
+                    _ => return Err("toggle requires a valid native key/chord, mouse or barrel action".into()),
+                }
+            }
+            if let ButtonAction::Preset(name) = action { crate::presets::PresetName::parse(name.as_str())?; }
             if let ButtonAction::Scroll(scroll) = action { scroll.validate()?; }
             if let ButtonAction::Managed(config) = action { config.validate()?; if config.kind != crate::plugins::PluginKind::Dotnet { return Err("managed binding requires kind = dotnet".into()); } }
         }

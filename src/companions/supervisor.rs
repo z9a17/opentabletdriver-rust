@@ -101,6 +101,16 @@ impl Transaction {
         else { handle.state(id, SessionState::Failed, Some(error)); }
         self.candidate.as_ref().map_or(Ok(()), Worker::stop)
     }
+    fn preset_request(&self, id: &str, handle: &Handle, request: crate::binding_presets::Request) -> Result<(), String> {
+        if self.phase.is_some() || self.retiring.is_some() {
+            return Err("preset request is stale or this device is transitioning".into());
+        }
+        let generation = handle.snapshot()?.sessions.into_iter().find(|session| session.id == id)
+            .filter(|session| session.state == SessionState::Running && session.pending_generation.is_none())
+            .map(|session| session.device_generation)
+            .ok_or("preset source device no longer owns the running generation")?;
+        crate::binding_presets::load(request).and_then(|profile| handle.apply(id, generation, profile)).map(|_| ())
+    }
     fn poll(&mut self, id: &str, handle: &Handle) -> Result<(), String> {
         // Process the retained worker first: candidate activation requires its
         // Quiesced acknowledgment, never just a signalled interrupt.
@@ -108,6 +118,10 @@ impl Transaction {
         for notice in notices {
             let suppress = matches!(self.phase, Some(Phase::Quiescing | Phase::Activating | Phase::Rollback | Phase::Stopping));
             match notice {
+                Notice::PresetRequested(request) => {
+                    let result = self.preset_request(id, handle, request);
+                    if let Err(error) = result { handle.error(id, format!("Preset binding was not applied: {error}")); }
+                }
                 Notice::PreparedProfile(_) => {}
                 Notice::Quiesced if self.phase == Some(Phase::Quiescing) => {
                     self.phase = Some(Phase::Activating);
@@ -133,6 +147,11 @@ impl Transaction {
             if matches!(self.phase, Some(Phase::Abort | Phase::Rollback | Phase::Stopping)) { continue; }
             if self.candidate.is_none() {
                 match notice {
+                    Notice::PresetRequested(request) => {
+                        // ActivationReady promoted this same source worker;
+                        // later queued presses belong to its active generation.
+                        if let Err(error) = self.preset_request(id, handle, request) { handle.error(id, format!("Preset binding was not applied: {error}")); }
+                    }
                     Notice::PreparedProfile(_) => {}
                     Notice::Prepared => self.active.as_ref().unwrap().command(Directive::Activate)?,
                     Notice::ActivationReady => self.active.as_ref().unwrap().command(Directive::Run)?,
