@@ -23,6 +23,7 @@ use std::sync::atomic::AtomicBool;
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 #[cfg(unix)]
 const CREATE_NO_WINDOW:u32=0;
+#[path="update/transaction.rs"]
 pub(crate) mod transaction;
 
 pub const REPOSITORY: &str = "z9a17/opentabletdriver-rust";
