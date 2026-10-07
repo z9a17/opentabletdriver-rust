@@ -52,6 +52,17 @@ transport failures remain explicit incomplete results. Ownership leases also
 expire abandoned frozen captures; expiry and renewal share control-thread
 synchronization rather than racing on the input thread.
 
+Recorded packets use persistent, separate primary and auxiliary decoders, so
+touch slots and tool state survive between packets. Decoded history begins at
+the capture boundary; prior session state is explicitly unknown. Sequence gaps
+reset both decoders, decoding errors reset their endpoint, and the recording
+marks lost decoded continuity independently of raw-report completeness.
+Recording actions also recheck the original debugger lifetime and panel state
+after modal dialogs before creating a file or starting a capture worker.
+
+Linux package staging normalizes setup scripts and service/rule files to LF,
+and artifact verification rejects carriage returns in those files.
+
 The owner has no native Linux or macOS test machines available for this work.
 Cross-compiling a package checks its source and linked artifact, not native
 permissions, input delivery, application behavior or tablet hardware. Those
