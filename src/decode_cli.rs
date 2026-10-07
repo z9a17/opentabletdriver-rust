@@ -341,6 +341,79 @@ pub(crate) fn decode_debug_report(report: &mut crate::control::DebugReport) {
     };
 }
 
+/// One endpoint's decoder in a full-rate capture reader. This parser starts at
+/// the capture boundary, which can be mid-session: its initial retained state
+/// is unknown, and cannot be recovered from the daemon's live decoder. Feed
+/// every packet in endpoint order, and reset both endpoint decoders whenever
+/// the shared capture sequence has a gap. This never runs on the report tap.
+pub(crate) struct DebugCaptureDecoder {
+    parser_type: Option<String>,
+    parser: Option<otd_core::decoders::ReportParser>,
+    session: u64,
+    endpoint: u32,
+    generation: u64,
+}
+impl DebugCaptureDecoder {
+    pub(crate) fn new(parser: Option<&str>, session: u64, endpoint: u32) -> Self {
+        Self {
+            parser_type: parser.map(str::to_owned),
+            parser: parser.and_then(otd_core::decoders::ReportParser::for_type),
+            session, endpoint, generation: 0,
+        }
+    }
+    /// Reconstruct rather than relying on a parser-specific partial reset.
+    /// Values before this boundary remain unknown even if later packets can
+    /// rebuild particular touch slots, pressure, rotation or tool state.
+    pub(crate) fn reset(&mut self) {
+        self.parser = self.parser_type.as_deref()
+            .and_then(otd_core::decoders::ReportParser::for_type);
+        self.generation = self.generation.saturating_add(1);
+    }
+    /// Unlike the sampled snapshot helper, this always feeds the owned parser
+    /// and rewrites decoded values. Session/endpoint are fixed by construction;
+    /// sequence and read-completion offset are explicit packet metadata.
+    pub(crate) fn decode(&mut self, report: &mut crate::control::DebugReport, elapsed_us: u64) {
+        report.values = self.decode_values(report, elapsed_us);
+    }
+    fn decode_values(&mut self, report: &crate::control::DebugReport, elapsed_us: u64) -> Value {
+        let result = if report.parser.as_deref() != self.parser_type.as_deref() {
+            Err("capture packet parser changed within one endpoint".to_owned())
+        } else {
+            parse_hex_within(&report.raw_hex, otd_core::debug::MAX_BYTES).and_then(|bytes| {
+                let parser = self.parser.as_mut().ok_or_else(|| {
+                    "this capture endpoint has no supported decoder".to_owned()
+                })?;
+                let metadata = ReportMetadata {
+                    device: DeviceId(0), session: SessionId(self.session), endpoint: EndpointId(self.endpoint),
+                    received_at: Duration::from_micros(elapsed_us), sequence: report.sequence,
+                };
+                parser.parse(&bytes, metadata).map(|(kind, decoded)| json!({
+                    "kind": match kind { ReportKind::Data => "data", ReportKind::OutOfRange => "out_of_range" },
+                    "values": values_json(decoded.values),
+                })).map_err(|error| format!("{error:?}"))
+            })
+        };
+        let mut decoded = match result {
+            Ok(decoded) => decoded,
+            Err(error) => {
+                // An invalid packet cannot establish continuity for retained
+                // parser state. Raw capture still preserves it and its error.
+                self.reset();
+                // Keep numeric decoder metadata out of report-value ranges:
+                // the statistics reader explicitly selects this values field.
+                json!({"error": error, "values": Value::Null})
+            }
+        };
+        decoded["decoder_state"] = json!({
+            "scope": if self.generation == 0 { "since_capture_start" } else { "since_last_reset" },
+            "generation": self.generation, "pre_capture_state_known": false,
+            "state_before_boundary_known": false, "source_session": self.session,
+            "endpoint": self.endpoint, "elapsed_us": elapsed_us, "sequence": report.sequence,
+        });
+        decoded
+    }
+}
+
 fn encode_hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
     let mut encoded = String::with_capacity(bytes.len() * 2);
@@ -384,6 +457,86 @@ fn values_json(values: ReportValues) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn capture_packet(parser: &str, sequence: u64, bytes: &[u8]) -> crate::control::DebugReport {
+        crate::control::DebugReport { tablet: Some("capture fixture".into()), parser: Some(parser.into()),
+            sequence, raw_hex: encode_hex(bytes), values: Value::Null }
+    }
+    #[test]
+    fn capture_decoder_preserves_touch_updates_and_resets_unknown_gap_state() {
+        let parser = "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV2.IntuosV2ReportParser";
+        let mut decoder = DebugCaptureDecoder::new(Some(parser), 41, 0);
+        let mut first = [0u8; 40];
+        first[0] = 0x21;
+        first[2] = 1;
+        first[3] = 1;
+        first[4] = 10;
+        let mut report = capture_packet(parser, 1, &first);
+        decoder.decode(&mut report, 123);
+        assert_eq!(report.values["values"]["touches"][0]["position"][0], 10.0);
+        assert_eq!(report.values["decoder_state"]["scope"], "since_capture_start");
+        assert_eq!(report.values["decoder_state"]["pre_capture_state_known"], false);
+        assert_eq!(report.values["decoder_state"]["source_session"], 41);
+        assert_eq!(report.values["decoder_state"]["elapsed_us"], 123);
+        let mut second = first;
+        second[2] = 2;
+        second[4] = 20;
+        let mut report = capture_packet(parser, 2, &second);
+        decoder.decode(&mut report, 456);
+        assert_eq!(report.values["values"]["touches"][0]["position"][0], 10.0);
+        assert_eq!(report.values["values"]["touches"][1]["position"][0], 20.0);
+        let mut independent = DebugCaptureDecoder::new(Some(parser), 41, 1);
+        independent.decode(&mut report, 456);
+        assert!(report.values["values"]["touches"][0].is_null(), "another endpoint cannot inherit touches");
+        assert_eq!(report.values["decoder_state"]["endpoint"], 1);
+        decoder.reset();
+        let mut report = capture_packet(parser, 4, &second);
+        decoder.decode(&mut report, 789);
+        assert!(report.values["values"]["touches"][0].is_null());
+        assert_eq!(report.values["decoder_state"]["scope"], "since_last_reset");
+        assert_eq!(report.values["decoder_state"]["generation"], 1);
+        assert_eq!(report.values["decoder_state"]["sequence"], 4);
+        // Sampled snapshots continue to use a fresh parser for each packet.
+        report.values = Value::Null;
+        decode_debug_report(&mut report);
+        assert!(report.values["values"]["touches"][0].is_null());
+        assert!(report.values.get("decoder_state").is_none());
+    }
+    #[test]
+    fn capture_decoder_preserves_pen_values_across_rotation_packets() {
+        let parser = "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV1.IntuosV1ReportParser";
+        let tablet = [0x02, 0xe3, 0x12, 0x34, 0x05, 0x06, 0x80, 0xc0, 0x40, 0x03];
+        let rotation = [0x02, 0xea, 0, 0, 0, 0, 0, 0, 0, 0];
+        let mut decoder = DebugCaptureDecoder::new(Some(parser), 57, 0);
+        let mut first = capture_packet(parser, 1, &tablet);
+        decoder.decode(&mut first, 1_000);
+        let mut second = capture_packet(parser, 2, &rotation);
+        decoder.decode(&mut second, 2_000);
+        assert_eq!(second.values["values"]["pressure"], 1_031);
+        assert_eq!(second.values["values"]["pressure"], first.values["values"]["pressure"]);
+        assert_eq!(second.values["values"]["tilt"], first.values["values"]["tilt"]);
+        assert_eq!(second.values["values"]["pen_buttons"], first.values["values"]["pen_buttons"]);
+        decoder.reset();
+        decoder.decode(&mut second, 2_000);
+        assert_eq!(second.values["values"]["pressure"], 0);
+        assert_eq!(second.values["decoder_state"]["state_before_boundary_known"], false);
+        assert_eq!(second.values["decoder_state"]["generation"], 1);
+    }
+    #[test]
+    fn capture_decode_errors_reset_retained_state_and_preserve_raw_packet() {
+        let parser = "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV1.IntuosV1ReportParser";
+        let mut decoder = DebugCaptureDecoder::new(Some(parser), 7, 0);
+        let mut report = capture_packet(parser, 3, &[0x02, 0xe3]);
+        let raw = report.raw_hex.clone();
+        decoder.decode(&mut report, 8);
+        assert!(report.values["error"].is_string());
+        assert!(report.values.get("values").unwrap().is_null());
+        assert_eq!(report.raw_hex, raw);
+        assert_eq!(report.values["decoder_state"]["generation"], 1);
+        let mut changed = capture_packet("Unknown.Parser", 4, &[1]);
+        decoder.decode(&mut changed, 9);
+        assert!(changed.values["error"].as_str().unwrap().contains("parser changed"));
+        assert_eq!(changed.values["decoder_state"]["generation"], 2);
+    }
 
     #[test]
     fn debug_report_decodes_the_latest_packet_with_the_session_parser() {
