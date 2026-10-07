@@ -115,10 +115,14 @@ sealed class ManagedProviders : IDriver, IDeviceConfigurationProvider, IReportPa
         add => throw new NotSupportedException("Managed daemon debug event delivery is not connected to a full-rate source lease.");
         remove { }
     }
-    void StartMonitor() => monitor ??= Task.Run(Monitor);
-    async Task Monitor()
+    void StartMonitor() {
+        if (monitor != null) return;
+        JObject? baseline = null;
+        try { baseline = ServiceClient.Snapshot(); } catch (Exception) { }
+        monitor = Task.Run(() => Monitor(baseline));
+    }
+    async Task Monitor(JObject? previous)
     {
-        JObject? previous = null;
         while (!lifetime.IsCancellationRequested) {
             try {
                 var current = ServiceClient.Snapshot();
@@ -326,6 +330,19 @@ sealed class HostPluginManager : DesktopPluginManager
         AddService<IDeviceHubsProvider>(() => (IDeviceHubsProvider)services.GetService(typeof(IDeviceHubsProvider))!);
         AddService<IDeviceHub>(() => (IDeviceHub)services.GetService(typeof(IDeviceHub))!);
         AddService<ICompositeDeviceHub>(() => (ICompositeDeviceHub)services.GetService(typeof(ICompositeDeviceHub))!);
+        AddService<OpenTabletDriver.Plugin.Platform.Display.IVirtualScreen>(() =>
+            (OpenTabletDriver.Plugin.Platform.Display.IVirtualScreen)services.GetService(typeof(OpenTabletDriver.Plugin.Platform.Display.IVirtualScreen))!);
+        AddService<PluginManager>(() => this);
+        AddService<DesktopPluginManager>(() => this);
+        AddService<IServiceManager>(() => this);
+        AddService<AppInfo>(() => HostedDesktop.Application);
+        AddService<PresetManager>(() => AppInfo.PresetManager);
+        AddService<DesktopDeviceConfigurationProvider>(() => (DesktopDeviceConfigurationProvider)services.GetService(typeof(DesktopDeviceConfigurationProvider))!);
+        AddService<DesktopReportParserProvider>(() => (DesktopReportParserProvider)services.GetService(typeof(DesktopReportParserProvider))!);
+        AddService<OpenTabletDriver.Configurations.DeviceConfigurationProvider>(() =>
+            (OpenTabletDriver.Configurations.DeviceConfigurationProvider)services.GetService(typeof(OpenTabletDriver.Configurations.DeviceConfigurationProvider))!);
+        AddService<OpenTabletDriver.Configurations.ReportParserProvider>(() =>
+            (OpenTabletDriver.Configurations.ReportParserProvider)services.GetService(typeof(OpenTabletDriver.Configurations.ReportParserProvider))!);
     }
     public override T ConstructObject<T>(string name, object[] args)
     {
