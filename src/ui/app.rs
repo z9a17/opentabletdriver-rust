@@ -2342,7 +2342,7 @@ impl App {
         }
     }
 
-    fn submit_control(&mut self, command: client::ClientCommand) -> bool {
+    pub(super) fn submit_control(&mut self, command: client::ClientCommand) -> bool {
         if self.closing || self.update_restart_pending {
             return false;
         }
