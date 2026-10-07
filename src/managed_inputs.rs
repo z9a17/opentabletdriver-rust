@@ -2,8 +2,8 @@
 //! on the independent input service lane, including cleanup and lease expiry.
 use std::{collections::{HashMap,HashSet},io,mem::size_of,sync::{Mutex,OnceLock},time::{Duration,Instant}};
 use serde_json::{Value,json};
-use otd_core::{actions::{Action,ActionTransition,MouseButton},output::buttons::ActionSink};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{MapVirtualKeyW,MAPVK_VK_TO_VSC_EX,INPUT,INPUT_0,INPUT_KEYBOARD,KEYBDINPUT,KEYEVENTF_KEYUP,SendInput};
+use otd_core::{actions::{Action,ActionTransition,KeyboardUsage,MouseButton},output::buttons::ActionSink};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{INPUT,INPUT_0,INPUT_KEYBOARD,KEYBDINPUT,KEYEVENTF_KEYUP,SendInput};
 use crate::managed_services::Operation;
 
 const MAX_SCOPES:usize=256;
@@ -18,10 +18,9 @@ fn raw_key(code:u32,pressed:bool)->io::Result<()> {
     if unsafe{SendInput(1,&input,size_of::<INPUT>() as i32)}!=1{return Err(io::Error::other("Original key transition was not accepted by SendInput"));}Ok(())
 }
 fn canonical_key(code:u32)->Option<Action>{
-    if let Some(usage)=crate::action_output::usage_for_virtual_key(code){return Some(Action::Key(usage));}
-    let scan=unsafe{MapVirtualKeyW(code,MAPVK_VK_TO_VSC_EX)};
-    if scan==0{return None;}
-    crate::action_output::usage_for_scan_code((scan&0xff) as u16,scan&0xff00==0xe000).map(Action::Key)
+    // Keep the original VK encoder. SessionActions alone owns layout-aware
+    // canonicalization and remembers the press identity through release.
+    u16::try_from(code).ok().and_then(KeyboardUsage::windows_virtual_key).map(Action::Key)
 }
 fn button(code:u32)->Result<Option<Action>,String>{Ok(Some(Action::Mouse(match code{
     0=>return Ok(None),1=>MouseButton::Left,2=>MouseButton::Middle,3=>MouseButton::Right,

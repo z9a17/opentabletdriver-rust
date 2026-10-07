@@ -1267,6 +1267,17 @@ fn pen_binding_property(path: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod native_binding_export_tests {
+    #[cfg(windows)]
+    #[test]
+    fn original_logical_keys_export_names_and_native_positions_are_not_reinterpreted() {
+        let mut store = serde_json::Value::Null;
+        super::write_pen_button(&mut store, &"keys:vk:Control+vk:A".parse().unwrap(), false).unwrap();
+        assert_eq!(store["Path"], "OpenTabletDriver.Desktop.Binding.MultiKeyBinding");
+        assert_eq!(store["Settings"][0]["Value"], "Control+A");
+        let mut physical = serde_json::Value::Null;
+        assert!(super::write_pen_button(&mut physical, &"keys:A".parse().unwrap(), false).unwrap_err().contains("physical Windows"));
+        assert!(physical.is_null());
+    }
     #[test]
     fn native_extensions_do_not_fabricate_original_binding_stores() {
         for action in ["toggle:mouse:left", "preset:Work"] {
@@ -1335,6 +1346,11 @@ fn write_pen_button(
         set_store_property(store, "Amount", json!(scroll.amount))?;
         set_store_property(store, "Interval", json!(scroll.interval_ms))?;
         return Ok(());
+    }
+    // Original Windows names are logical VKs. A native physical letter,
+    // digit or OEM position has no layout-independent original store value.
+    if cfg!(windows) && matches!(action, ButtonAction::Keys(keys) if keys.iter().any(|key| matches!(key.usage(), 0x04..=0x27 | 0x2d..=0x38))) {
+        return Err("physical Windows letter/digit/OEM bindings cannot be represented as original logical keys; save TOML or select an original logical key binding".into());
     }
     let (path, property, value) = match action {
         ButtonAction::Toggle(_) => return Err("native toggle bindings have no pinned OpenTabletDriver store representation; save TOML instead".into()),

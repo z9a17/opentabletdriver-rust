@@ -1,13 +1,14 @@
 //! OpenTabletDriver's key names, as its Key Binding and Multi-Key Binding
-//! store them, mapped to portable USB keyboard usages.
+//! store them, mapped to native physical usages or original logical identities.
 //!
 //! The names are the `Eto.Forms.Keys` spellings of upstream's
 //! `WindowsVirtualKeyboard.EtoKeysymToVK`, pinned at
 //! <https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Desktop/Interop/Input/Keyboard/WindowsVirtualKeyboard.cs>.
 //! Lookup is exact and case-sensitive, as upstream's dictionary is.
 //!
-//! Upstream's generic modifiers (`Shift`, `Control`, `Alt`, `Application`)
-//! press the left key. `Menu` is Windows' `VK_MENU`, which is Alt.
+//! Native generic modifiers select the left physical key. Original Windows
+//! generic modifiers retain their actual generic virtual keys; `Application`
+//! selects VK_LWIN. `Menu` is Windows' VK_MENU, which is Alt.
 //! `Equal`/`Plus` and `Slash`/`ForwardSlash` are aliases of one key.
 //! Media keys retain consumer-page identities in the synthetic u16 domain
 //! described by `actions::ConsumerKey`, preserving the managed command ABI.
@@ -162,22 +163,70 @@ pub fn usage_from_name(name: &str) -> Option<KeyboardUsage> {
 
 /// The canonical upstream name of a usage.
 pub fn name_of(key: KeyboardUsage) -> Option<&'static str> {
+    if let Some(code) = key.windows_virtual_code() {
+        return windows_names().find(|(_, vk)| *vk == code).map(|(name, _)| name);
+    }
     KEYS.iter()
         .find(|(_, usage)| *usage == key.usage())
         .map(|(name, _)| *name)
+}
+
+/// Exact pinned WindowsVirtualKeyboard names and VK values, including None.
+/// Unlike native USB-position bindings, these retain layout-dependent semantics.
+pub fn windows_names() -> impl Iterator<Item = (&'static str, u16)> {
+    std::iter::once(("None", 0)).chain(KEYS.iter().filter_map(|(name, _)| windows_code(name).map(|code| (*name, code))))
+}
+fn windows_code(name: &str) -> Option<u16> {
+    match name { "None" => return Some(0), "Shift" => return Some(0x10),
+        "Control" => return Some(0x11), "Alt" | "Menu" => return Some(0x12), _ => {} }
+    let usage = usage_from_name(name)?.usage();
+    Some(match usage {
+        0x04..=0x1d => 0x41 + usage - 0x04,
+        0x1e..=0x26 => 0x31 + usage - 0x1e,
+        0x27 => 0x30, 0x28 => 0x0d, 0x29 => 0x1b, 0x2a => 0x08, 0x2b => 0x09,
+        0x2c => 0x20, 0x2d => 0xbd, 0x2e => 0xbb, 0x2f => 0xdb, 0x30 => 0xdd,
+        0x31 => 0xdc, 0x33 => 0xba, 0x34 => 0xde, 0x35 => 0xc0, 0x36 => 0xbc,
+        0x37 => 0xbe, 0x38 => 0xbf, 0x39 => 0x14,
+        0x3a..=0x45 => 0x70 + usage - 0x3a,
+        0x46 => 0x2c, 0x47 => 0x91, 0x48 => 0x13, 0x49 => 0x2d, 0x4a => 0x24,
+        0x4b => 0x21, 0x4c => 0x2e, 0x4d => 0x23, 0x4e => 0x22, 0x4f => 0x27,
+        0x50 => 0x25, 0x51 => 0x28, 0x52 => 0x26, 0x53 => 0x90, 0x54 => 0x6f,
+        0x55 => 0x6a, 0x56 => 0x6d, 0x57 => 0x6b,
+        0x59..=0x61 => 0x61 + usage - 0x59,
+        0x62 => 0x60, 0x63 => 0x6e, 0x65 => 0x5d, 0x67 => 0x92,
+        0x68..=0x73 => 0x7c + usage - 0x68,
+        0x75 => 0x2f, 0x9c => 0x0c, 0xe0 => 0xa2, 0xe1 => 0xa0, 0xe2 => 0xa4,
+        0xe3 => 0x5b, 0xe4 => 0xa3, 0xe5 => 0xa1, 0xe6 => 0xa5, 0xe7 => 0x5c,
+        0x10e2 => 0xad, 0x10ea => 0xae, 0x10e9 => 0xaf, 0x10b5 => 0xb0,
+        0x10b6 => 0xb1, 0x10b7 => 0xb2, 0x10cd => 0xb3, _ => return None,
+    })
+}
+pub fn windows_usage_from_name(name: &str) -> Option<KeyboardUsage> {
+    windows_code(name).and_then(KeyboardUsage::windows_virtual_key)
+}
+pub fn usage_from_original_name(name: &str) -> Option<KeyboardUsage> {
+    if cfg!(windows) { windows_usage_from_name(name) } else { usage_from_name(name) }
 }
 
 /// Longest chord accepted. Upstream has no limit, but a chord has to fit the
 /// fixed-size action table alongside the other held actions.
 pub const MAX_CHORD: usize = 8;
 
-/// Parses upstream's Multi-Key syntax, key names joined by `+`
+/// Parses native Multi-Key syntax, key names joined by `+`
 /// (`Control+Shift+Z`). Whitespace around a name is ignored. The result is
-/// all-or-nothing: as upstream, one unsupported name rejects the whole chord.
+/// all-or-nothing: one unsupported name rejects the whole chord. `vk:` marks
+/// an original Windows logical key without changing native physical names.
 pub fn parse_chord(text: &str) -> Result<Vec<KeyboardUsage>, String> {
+    parse_names(text, |name| name.strip_prefix("vk:").map_or_else(|| usage_from_name(name), windows_usage_from_name), false)
+}
+pub fn parse_original_chord(text: &str) -> Result<Vec<KeyboardUsage>, String> {
+    parse_names(text, usage_from_original_name, true)
+}
+fn parse_names(text: &str, lookup: impl Fn(&str) -> Option<KeyboardUsage>, allow_none: bool) -> Result<Vec<KeyboardUsage>, String> {
     let mut keys = Vec::new();
     for name in text.split('+').map(str::trim) {
-        let key = usage_from_name(name).ok_or_else(|| {
+        if allow_none && name == "None" { continue; }
+        let key = lookup(name).ok_or_else(|| {
             if name.is_empty() {
                 "empty key name in the key list".to_owned()
             } else {
@@ -194,13 +243,19 @@ pub fn parse_chord(text: &str) -> Result<Vec<KeyboardUsage>, String> {
     Ok(keys)
 }
 
-/// The inverse of `parse_chord`, using canonical names.
+/// Original store text, using canonical names without native domain prefixes.
 pub fn chord_text(keys: &[KeyboardUsage]) -> String {
+    format_chord(keys, false)
+}
+/// Native persistence retains whether a key is physical or logical.
+pub fn native_chord_text(keys: &[KeyboardUsage]) -> String { format_chord(keys, true) }
+fn format_chord(keys: &[KeyboardUsage], native: bool) -> String {
     let mut text = String::new();
     for key in keys {
         if !text.is_empty() {
             text.push('+');
         }
+        if native && key.windows_virtual_code().is_some() { text.push_str("vk:"); }
         text.push_str(name_of(*key).unwrap_or("None"));
     }
     text
@@ -209,6 +264,23 @@ pub fn chord_text(keys: &[KeyboardUsage]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn logical_windows_names_remain_distinct_and_roundtrip_native_storage() {
+        let chord = parse_chord("vk:Control+vk:A+vk:VolumeUp").unwrap();
+        assert_eq!(chord.iter().map(|key| key.usage()).collect::<Vec<_>>(), [0x2011, 0x2041, 0x20af]);
+        assert_ne!(chord[1], usage_from_name("A").unwrap());
+        assert_eq!(chord_text(&chord), "Control+A+VolumeUp");
+        assert_eq!(parse_chord(&native_chord_text(&chord)).unwrap(), chord);
+        assert_ne!(windows_usage_from_name("Control"), windows_usage_from_name("LeftControl"));
+        assert_eq!(windows_usage_from_name("Alt"), windows_usage_from_name("Menu"));
+        for name in ["Control", "Shift", "Alt", "LeftControl", "RightShift", "RightAlt", "LeftApplication", "RightApplication"] {
+            assert!(windows_usage_from_name(name).unwrap().is_modifier(), "{name}");
+        }
+        assert!(!windows_usage_from_name("A").unwrap().is_modifier());
+        assert!(windows_usage_from_name("None").is_none());
+        assert!(parse_original_chord("None+None").unwrap().is_empty());
+    }
 
     #[test]
     fn names_map_to_usb_usages() {

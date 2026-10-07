@@ -28,6 +28,7 @@ pub struct ActionOwner {
 /// Keyboard/Keypad usage ID from USB HID usage page 0x07, not an OS key code.
 /// The seven pinned media controls use `0x1000 | consumer_usage` as a synthetic
 /// domain within the existing u16 command ABI; they are not page-0x07 usages.
+/// Original Windows logical keys use `0x2000 | VK` in that same ABI.
 ///
 /// Values 0..=3 are reserved/no-key/error reports and cannot be held. Other IDs
 /// retain their portable identity; an adapter must reject unsupported usages.
@@ -44,7 +45,17 @@ impl KeyboardUsage {
     }
 
     pub const fn is_modifier(self) -> bool {
-        self.0 >= 0xe0 && self.0 <= 0xe7
+        (self.0 >= 0xe0 && self.0 <= 0xe7)
+            || matches!(self.windows_virtual_code(), Some(0x10..=0x12 | 0x5b..=0x5c | 0xa0..=0xa5))
+    }
+
+    /// Original Windows keys are logical virtual keys; native usages remain
+    /// physical keys. This synthetic domain retains the u16 command ABI.
+    pub const fn windows_virtual_key(code: u16) -> Option<Self> {
+        if code > 0 && code <= 255 { Some(Self(0x2000 | code)) } else { None }
+    }
+    pub const fn windows_virtual_code(self) -> Option<u16> {
+        if self.0 > 0x2000 && self.0 <= 0x20ff { Some(self.0 & 0xff) } else { None }
     }
 
     pub const fn consumer_key(self) -> Option<ConsumerKey> {

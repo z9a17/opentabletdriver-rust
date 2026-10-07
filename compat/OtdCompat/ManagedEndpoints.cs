@@ -115,6 +115,7 @@ sealed class SessionKeyboard(CommandQueue queue, JObject keys) : IVirtualKeyboar
     void Key(string key, bool pressed)
     {
         if (!names.TryGetValue(key, out uint usage)) throw new NotSupportedException($"Unsupported Windows key '{key}'.");
+        if (usage == 0) return;
         queue.Add(new() { Kind = 2, Value = usage, Flags = pressed ? 1u : 0u });
     }
 }

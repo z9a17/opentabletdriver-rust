@@ -226,7 +226,7 @@ impl fmt::Display for ButtonAction {
             Self::None => f.write_str("none"),
             Self::Barrel(number) => write!(f, "barrel:{number}"),
             Self::Mouse(button) => write!(f, "mouse:{}", mouse_name(*button)),
-            Self::Keys(keys) => write!(f, "keys:{}", keys::chord_text(keys)),
+            Self::Keys(keys) => write!(f, "keys:{}", keys::native_chord_text(keys)),
             Self::Scroll(action) => write!(f, "scroll:{}:{}:{}", match action.axis { ScrollAxis::Vertical => "vertical", ScrollAxis::Horizontal => "horizontal" }, action.amount, action.interval_ms),
             Self::Toggle(action) => write!(f, "toggle:{action}"),
             Self::Preset(name) => write!(f, "preset:{}", name.as_str()),

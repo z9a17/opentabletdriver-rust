@@ -25,7 +25,9 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
     MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
     MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEEVENTF_WHEEL, MOUSEEVENTF_HWHEEL, MOUSEINPUT, SendInput,
+    GetKeyboardLayout, MapVirtualKeyExW, MAPVK_VK_TO_VSC_EX,
 };
+use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 
 /// Check support before adding a configured action to the ownership state.
 /// Unknown usages are rejected, not silently replaced with a different key.
@@ -36,8 +38,8 @@ pub fn supports(action: Action) -> bool {
     }
 }
 
-/// Translate without injecting input. Keyboard usages denote physical key
-/// positions; the active Windows layout determines the resulting characters.
+/// Translate without injecting input. Native usages denote physical positions;
+/// the original Windows synthetic domain denotes logical virtual keys.
 pub fn encode_transition(transition: ActionTransition) -> io::Result<INPUT> {
     match transition.action {
         Action::Mouse(button) => {
@@ -256,6 +258,7 @@ fn keyboard_scan_code(key: KeyboardUsage) -> Option<(u16, bool)> {
 /// Exact pinned WindowsVirtualKeyboard virtual keys for names whose keyboard
 /// scan encoding is absent, and consumer controls from the synthetic domain.
 fn keyboard_virtual_code(key: KeyboardUsage) -> Option<u16> {
+    if let Some(code) = key.windows_virtual_code() { return Some(code); }
     if let Some(consumer) = key.consumer_key() {
         return Some(match consumer {
             ConsumerKey::Mute => 0xad, ConsumerKey::VolumeDown => 0xae,
@@ -291,13 +294,65 @@ pub fn usage_for_scan_code(scan: u16, extended: bool) -> Option<KeyboardUsage> {
 }
 
 /// Every session's held actions.
-static HELD: Mutex<ActionState> = Mutex::new(ActionState::new());
+#[derive(Clone, Copy)]
+struct Encoder { canonical: Action, source: Action, owner: ActionOwner }
+#[derive(Clone, Copy)]
+struct SourceHold { owner: ActionOwner, canonical: Action, source: Action }
+struct SharedActions { actions: ActionState, encoders: [Option<Encoder>; 64], sources: [Option<SourceHold>; 128] }
+impl SharedActions {
+    const fn new() -> Self { Self { actions: ActionState::new(), encoders: [None; 64], sources: [None; 128] } }
+    fn reap_encoders(&mut self) {
+        for entry in &mut self.encoders {
+            if entry.is_some_and(|entry| !self.actions.is_desired(entry.canonical) && !self.actions.is_emitted(entry.canonical)) { *entry = None; }
+        }
+    }
+    fn set_held(&mut self, owner: ActionOwner, canonical: Action, source: Action, down: bool) -> io::Result<()> {
+        self.reap_encoders();
+        let existing = self.encoders.iter().position(|entry| entry.is_some_and(|entry| entry.canonical == canonical));
+        let slot = if down && existing.is_none() {
+            Some(self.encoders.iter().position(Option::is_none).ok_or_else(|| io::Error::other("Held encoder capacity exceeded"))?)
+        } else { None };
+        let existing_source = self.sources.iter().position(|entry| entry.is_some_and(|entry| entry.owner == owner && entry.canonical == canonical));
+        let source_slot = if down && existing_source.is_none() {
+            Some(self.sources.iter().position(Option::is_none).ok_or_else(|| io::Error::other("Held source capacity exceeded"))?)
+        } else { existing_source };
+        self.actions.set_held(owner, canonical, down).map_err(io::Error::other)?;
+        if let Some(slot) = source_slot { self.sources[slot] = down.then_some(SourceHold { owner, canonical, source }); }
+        if let Some(slot) = slot { self.encoders[slot] = Some(Encoder { canonical, source, owner }); }
+        Ok(())
+    }
+    fn release_device(&mut self, device: u64) {
+        self.actions.release_device(device);
+        for source in &mut self.sources { if source.is_some_and(|entry| entry.owner.device == device) { *source = None; } }
+    }
+    fn flush(&mut self) -> io::Result<usize> { self.flush_with(send_transition) }
+    fn flush_with(&mut self, mut send: impl FnMut(ActionTransition) -> io::Result<()>) -> io::Result<usize> {
+        let mut count = 0;
+        while let Some(pending) = self.actions.next_pending() {
+            let transition = pending.transition();
+            let encoder = self.encoders.iter_mut().flatten().find(|entry| entry.canonical == transition.action)
+                .ok_or_else(|| io::Error::other("Held action has no retained output encoder"))?;
+            // A press not yet accepted must belong to a still-desired source.
+            // Once accepted, keep that exact encoder until its release succeeds.
+            if transition.pressed && !self.sources.iter().flatten().any(|source| source.owner == encoder.owner && source.canonical == encoder.canonical && source.source == encoder.source) {
+                let source = self.sources.iter().flatten().find(|source| source.canonical == encoder.canonical)
+                    .ok_or_else(|| io::Error::other("Desired action has no retained source"))?;
+                encoder.source = source.source; encoder.owner = source.owner;
+            }
+            send(ActionTransition { action: encoder.source, pressed: transition.pressed })?;
+            pending.acknowledge(); count += 1;
+        }
+        self.reap_encoders();
+        Ok(count)
+    }
+}
+static HELD: Mutex<SharedActions> = Mutex::new(SharedActions::new());
 // Created during session setup, so registration never allocates in a report.
 // One owner represents the combined left holds in HELD across every session.
 static LEFT_ACTION_OUTPUT: Mutex<Option<crate::output::SessionOutput>> = Mutex::new(None);
 static NEXT_DEVICE: AtomicU64 = AtomicU64::new(1);
 
-fn held() -> io::Result<std::sync::MutexGuard<'static, ActionState>> {
+fn held() -> io::Result<std::sync::MutexGuard<'static, SharedActions>> {
     HELD.lock()
         .map_err(|_| io::Error::other("held action lock poisoned"))
 }
@@ -306,9 +361,40 @@ fn held() -> io::Result<std::sync::MutexGuard<'static, ActionState>> {
 /// what it still holds.
 pub struct SessionActions {
     device: u64,
+    aliases: [Option<HeldAlias>; 128],
+}
+#[derive(Clone, Copy)]
+struct HeldAlias { binding: u32, source: Action, canonical: Action }
+
+fn canonical_action(source: Action) -> Action {
+    let Action::Key(key) = source else { return source; };
+    let Some(code) = key.windows_virtual_code() else { return source; };
+    // VK-only baseline keys/media already have a shared portable identity.
+    if let Some(key) = usage_for_virtual_key(u32::from(code)) { return Action::Key(key); }
+    // A named original key follows the foreground input layout. A physical
+    // native key stays at its scan position. This lookup occurs only when a
+    // logical hold starts; release uses its retained identity below.
+    let foreground = unsafe { GetForegroundWindow() };
+    let thread = if foreground.is_null() { 0 } else { unsafe { GetWindowThreadProcessId(foreground, std::ptr::null_mut()) } };
+    let layout = unsafe { GetKeyboardLayout(thread) };
+    let scan = unsafe { MapVirtualKeyExW(u32::from(code), MAPVK_VK_TO_VSC_EX, layout) };
+    usage_for_scan_code((scan & 0xff) as u16, scan & 0xff00 == 0xe000).map(Action::Key).unwrap_or(source)
 }
 
 impl SessionActions {
+    fn hold_in_state(&mut self, state: &mut SharedActions, binding: u32, action: Action, down: bool,
+        canonicalize: impl FnOnce(Action) -> Action) -> io::Result<()> {
+        let existing = self.aliases.iter().position(|alias| alias.is_some_and(|alias| alias.binding == binding && alias.source == action));
+        let slot = match existing {
+            Some(slot) => slot,
+            None if !down => return Ok(()),
+            None => self.aliases.iter().position(Option::is_none).ok_or_else(|| io::Error::other("Session hold capacity exceeded"))?,
+        };
+        let canonical = self.aliases[slot].map_or_else(|| canonicalize(action), |alias| alias.canonical);
+        state.set_held(ActionOwner { device: self.device, binding: slot as u32 }, canonical, action, down)?;
+        self.aliases[slot] = down.then_some(HeldAlias { binding, source: action, canonical });
+        Ok(())
+    }
     pub fn new() -> io::Result<Self> {
         let mut output = LEFT_ACTION_OUTPUT.lock()
             .map_err(|_| io::Error::other("left action output lock poisoned"))?;
@@ -317,6 +403,7 @@ impl SessionActions {
         }
         Ok(Self {
             device: NEXT_DEVICE.fetch_add(1, Ordering::Relaxed),
+            aliases: [None; 128],
         })
     }
 }
@@ -327,7 +414,7 @@ impl ActionSink for SessionActions {
         // Serialize with this application's held events. Scroll is a pulse;
         // one owner must never suppress another owner's independent wheel tick.
         let mut state = held()?;
-        flush_pending(&mut state)?;
+        state.flush()?;
         send_scroll(pulse)
     }
 
@@ -336,28 +423,20 @@ impl ActionSink for SessionActions {
     }
 
     fn hold(&mut self, binding: u32, action: Action, down: bool) -> io::Result<()> {
-        held()?
-            .set_held(
-                ActionOwner {
-                    device: self.device,
-                    binding,
-                },
-                action,
-                down,
-            )
-            .map(|_| ())
-            .map_err(io::Error::other)
+        let mut state = held()?;
+        self.hold_in_state(&mut state, binding, action, down, canonical_action)
     }
 
     fn flush(&mut self) -> io::Result<usize> {
         let mut state = held()?;
-        flush_pending(&mut state)
+        state.flush()
     }
 
     fn release_all(&mut self) -> io::Result<usize> {
         let mut state = held()?;
         state.release_device(self.device);
-        flush_pending(&mut state)
+        self.aliases.fill(None);
+        state.flush()
     }
 }
 
@@ -367,7 +446,7 @@ impl Drop for SessionActions {
         // by any session retries it.
         if let Ok(mut state) = HELD.lock() {
             state.release_device(self.device);
-            let _ = flush_pending(&mut state);
+            let _ = state.flush();
         }
     }
 }
@@ -375,6 +454,41 @@ impl Drop for SessionActions {
 #[cfg(test)]
 mod scroll_tests {
     use super::*;
+    #[test]
+    fn logical_and_physical_holders_share_edges_and_retain_release_encoding() {
+        // A fake layout maps original A to the physical Q position. No OS calls.
+        let logical = Action::Key(KeyboardUsage::windows_virtual_key(0x41).unwrap());
+        let physical = Action::Key(KeyboardUsage::new(0x14).unwrap());
+        let mut session = std::mem::ManuallyDrop::new(SessionActions { device: 1, aliases: [None; 128] });
+        let mut state = SharedActions::new();
+        let mut sent = Vec::new();
+        session.hold_in_state(&mut state, 7, logical, true, |_| physical).unwrap();
+        state.flush_with(|event| { sent.push(event); Ok(()) }).unwrap();
+        // A second chord member has the same canonical key and its own subowner.
+        session.hold_in_state(&mut state, 7, physical, true, |key| key).unwrap();
+        session.hold_in_state(&mut state, 7, logical, false, |_| panic!("release must not resolve a new layout")).unwrap();
+        assert_eq!(state.flush_with(|event| { sent.push(event); Ok(()) }).unwrap(), 0);
+        session.hold_in_state(&mut state, 7, physical, false, |_| panic!("release must retain its identity")).unwrap();
+        state.flush_with(|event| { sent.push(event); Ok(()) }).unwrap();
+        assert_eq!(sent, [ActionTransition { action: logical, pressed: true }, ActionTransition { action: logical, pressed: false }]);
+    }
+    #[test]
+    fn rejected_press_selects_a_remaining_source_before_retry() {
+        let logical = Action::Key(KeyboardUsage::windows_virtual_key(0x41).unwrap());
+        let physical = Action::Key(KeyboardUsage::new(0x14).unwrap());
+        let first = ActionOwner { device: 1, binding: 0 };
+        let second = ActionOwner { device: 2, binding: 0 };
+        let mut state = SharedActions::new();
+        state.set_held(first, physical, logical, true).unwrap();
+        assert!(state.flush_with(|_| Err(io::Error::other("blocked"))).is_err());
+        state.set_held(second, physical, physical, true).unwrap();
+        state.release_device(first.device);
+        let mut sent = Vec::new();
+        state.flush_with(|event| { sent.push(event); Ok(()) }).unwrap();
+        state.release_device(second.device);
+        state.flush_with(|event| { sent.push(event); Ok(()) }).unwrap();
+        assert_eq!(sent, [ActionTransition { action: physical, pressed: true }, ActionTransition { action: physical, pressed: false }]);
+    }
     #[test]
     fn pinned_windows_names_and_consumer_vk_encoding_are_available() {
         for (name, key) in otd_core::keys::names() {
