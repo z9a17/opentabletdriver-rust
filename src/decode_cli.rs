@@ -270,6 +270,43 @@ pub(crate) fn debug_report() -> crate::control::DebugReport {
     }
 }
 
+/// Hex encoding and metadata allocation belong to the daemon control thread;
+/// the report tap stores only fixed-size raw bytes and timestamps.
+pub(crate) fn debug_capture_status(instance: &str, capture: otd_core::debug::CaptureStatus)
+    -> crate::control::DebugCaptureStatus {
+    use crate::control::{DebugCaptureStatus, DebugCaptureStopReason, DebugCaptureToken};
+    use otd_core::debug::CaptureStopReason;
+    DebugCaptureStatus {
+        token: DebugCaptureToken { instance: instance.to_owned(), epoch: capture.epoch, session: capture.session },
+        tablet: capture.device.name, parser: capture.device.parser,
+        auxiliary_parser: capture.auxiliary_parser,
+        report_length: capture.report_length as u32, capacity_reports: capture.capacity_reports as u32,
+        started_unix_ms: capture.started_unix_ms, active: capture.active,
+        last_sequence: capture.last_sequence, resolved_reports: capture.resolved_reports,
+        pending_reports: capture.pending_reports, lost_tap: capture.lost_tap,
+        overflow: capture.overflow, oversized: capture.oversized,
+        acknowledged_sequence: capture.acknowledged_sequence,
+        stop_reason: capture.stop_reason.map(|reason| match reason {
+            CaptureStopReason::Requested => DebugCaptureStopReason::Requested,
+            CaptureStopReason::LeaseExpired => DebugCaptureStopReason::LeaseExpired,
+            CaptureStopReason::SessionEnded => DebugCaptureStopReason::SessionEnded,
+            CaptureStopReason::SequenceLimit => DebugCaptureStopReason::SequenceLimit,
+        }),
+        lease_remaining_ms: capture.lease_remaining_ms,
+    }
+}
+pub(crate) fn debug_capture_batch(instance: &str, batch: otd_core::debug::CaptureBatch)
+    -> crate::control::DebugCaptureBatch {
+    crate::control::DebugCaptureBatch {
+        capture: debug_capture_status(instance, batch.capture),
+        packets: batch.packets.into_iter().map(|packet| crate::control::DebugCapturePacket {
+            sequence: packet.sequence, elapsed_us: packet.elapsed_us, auxiliary: packet.auxiliary,
+            raw_hex: encode_hex(&packet.bytes),
+        }).collect(),
+        next_sequence: batch.next_sequence,
+    }
+}
+
 /// Fills in the decoded values of a debugger snapshot in the client's own
 /// process, with a fresh parser of the session's type. Stateful parsers
 /// therefore show only what this one packet carries. A snapshot a daemon

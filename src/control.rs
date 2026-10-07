@@ -67,6 +67,24 @@ impl Request {
                 "profile exceeds 128 KiB",
             ));
         }
+        match &self.command {
+            Command::DebugCaptureStart { start_id, capacity_bytes, lease_ms, .. } => {
+                if *start_id == 0 {
+                    return Err(ControlError::new(ErrorCode::InvalidRequest, "start ID must be nonzero"));
+                }
+                otd_core::debug::validate_capture_start(*capacity_bytes as usize, *lease_ms)
+                    .map_err(ControlError::from)?;
+            }
+            Command::DebugCaptureRead { capture, after_sequence, limit, acknowledge_through, lease_ms } => {
+                capture.validate()?;
+                otd_core::debug::validate_capture_read(*after_sequence, *limit as usize,
+                    *acknowledge_through, *lease_ms).map_err(ControlError::from)?;
+            }
+            Command::DebugCaptureStop { capture } | Command::DebugCaptureRelease { capture } => {
+                capture.validate()?;
+            }
+            _ => {}
+        }
         Ok(())
     }
 }
@@ -108,6 +126,84 @@ pub enum Command {
     /// The latest tablet packet, decoded, for the tablet debugger. Each poll
     /// keeps the report thread's copy armed for about two seconds.
     Debug,
+    /// Prepare the client writer first. Retry with the same nonzero start_id
+    /// after a lost reply; this never rearms or extends the original lease.
+    DebugCaptureStart {
+        expected: WorkerIdentity,
+        start_id: u64,
+        capacity_bytes: u32,
+        lease_ms: u32,
+    },
+    /// Acknowledge only previously durable packets. Repeating this read with
+    /// the same cursor is safe; overflow is explicitly counted if the producer
+    /// outruns the bounded ring before the retry or acknowledgment.
+    DebugCaptureRead {
+        capture: DebugCaptureToken,
+        after_sequence: u64,
+        limit: u32,
+        acknowledge_through: u64,
+        lease_ms: u32,
+    },
+    /// Freeze last_sequence. Drain until pending_reports is zero and the batch
+    /// cursor reaches last_sequence, then release its bounded storage.
+    DebugCaptureStop { capture: DebugCaptureToken },
+    DebugCaptureRelease { capture: DebugCaptureToken },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DebugCaptureToken {
+    pub instance: String,
+    pub epoch: u64,
+    pub session: u64,
+}
+impl DebugCaptureToken {
+    fn validate(&self) -> Result<(), ControlError> {
+        if self.instance.is_empty() || self.instance.len() > 512 ||
+            self.epoch == 0 || self.epoch > u64::from(u32::MAX) || self.session == 0 {
+            return Err(ControlError::new(ErrorCode::InvalidRequest, "invalid capture token"));
+        }
+        Ok(())
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DebugCaptureStopReason { Requested, LeaseExpired, SessionEnded, SequenceLimit }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DebugCaptureStatus {
+    pub token: DebugCaptureToken,
+    pub tablet: String,
+    pub parser: String,
+    pub auxiliary_parser: Option<String>,
+    pub report_length: u32,
+    pub capacity_reports: u32,
+    pub started_unix_ms: u64,
+    pub active: bool,
+    pub last_sequence: u64,
+    pub resolved_reports: u64,
+    pub pending_reports: u64,
+    pub lost_tap: u64,
+    pub overflow: u64,
+    pub oversized: u64,
+    pub acknowledged_sequence: u64,
+    pub stop_reason: Option<DebugCaptureStopReason>,
+    pub lease_remaining_ms: u64,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DebugCapturePacket {
+    pub sequence: u64,
+    pub elapsed_us: u64,
+    pub auxiliary: bool,
+    pub raw_hex: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DebugCaptureBatch {
+    pub capture: DebugCaptureStatus,
+    pub packets: Vec<DebugCapturePacket>,
+    pub next_sequence: u64,
 }
 
 /// What the tablet debugger shows: the tablet, its parser, a packet counter
@@ -164,6 +260,10 @@ pub enum Reply {
     Debug {
         report: DebugReport,
     },
+    DebugCaptureStarted { capture: DebugCaptureStatus },
+    DebugCaptureRead { batch: DebugCaptureBatch },
+    DebugCaptureStopped { capture: DebugCaptureStatus },
+    DebugCaptureReleased,
     Error {
         error: ControlError,
     },
@@ -214,6 +314,16 @@ impl ControlError {
         let mut message = message.into();
         truncate(&mut message, MAX_LOG_LINE_BYTES);
         Self { code, message }
+    }
+}
+impl From<otd_core::debug::CaptureError> for ControlError {
+    fn from(error: otd_core::debug::CaptureError) -> Self {
+        use otd_core::debug::CaptureError;
+        match error {
+            CaptureError::Invalid(message) => Self::new(ErrorCode::InvalidRequest, message),
+            CaptureError::Busy => Self::new(ErrorCode::Busy, "capture is active, pending, or not released"),
+            CaptureError::Conflict => Self::new(ErrorCode::Conflict, "capture token is no longer current"),
+        }
     }
 }
 
@@ -366,5 +476,58 @@ fn truncate(value: &mut String, max_bytes: usize) {
             end -= 1;
         }
         value.truncate(end);
+    }
+}
+
+#[cfg(test)]
+mod capture_tests {
+    use super::*;
+    fn token() -> DebugCaptureToken {
+        DebugCaptureToken { instance: "offline-fixture".into(), epoch: 1, session: 7 }
+    }
+    #[test]
+    fn capture_requests_reject_bad_limits_acknowledgments_and_tokens() {
+        for (limit, after_sequence, acknowledge_through, lease_ms) in
+            [(0, 0, 0, 1_000), (513, 0, 0, 1_000), (1, 0, 1, 1_000), (1, 0, 0, 999), (1, 0, 0, 30_001)] {
+            let request = Request::new(1, Command::DebugCaptureRead {
+                capture: token(), after_sequence, limit, acknowledge_through, lease_ms,
+            });
+            assert!(matches!(request.validate(), Err(ControlError { code: ErrorCode::InvalidRequest, .. })));
+        }
+        let mut bad_token = token();
+        bad_token.epoch = 0;
+        assert!(Request::new(1, Command::DebugCaptureStop { capture: bad_token }).validate().is_err());
+        let start = Request::new(1, Command::DebugCaptureStart {
+            expected: WorkerIdentity { instance: "offline-fixture".into(), generation: 1 },
+            start_id: 0, capacity_bytes: 65_536, lease_ms: 1_000,
+        });
+        assert!(start.validate().is_err());
+        assert!(serde_json::from_str::<Request>(r#"{"version":2,"id":1,"command":{"method":"debug_capture_stop","capture":{"instance":"fixture","epoch":1,"session":7},"ignored":true}}"#).is_err());
+    }
+    #[test]
+    fn capture_read_wire_budget_includes_worst_case_escaped_metadata() {
+        let capture = DebugCaptureStatus {
+            token: DebugCaptureToken { instance: "\u{1}".repeat(512), epoch: u64::from(u32::MAX), session: u64::MAX },
+            tablet: "\u{1}".repeat(512), parser: "\u{1}".repeat(512), auxiliary_parser: Some("\u{1}".repeat(512)),
+            report_length: u16::MAX as u32, capacity_reports: u32::MAX,
+            started_unix_ms: u64::MAX, active: false, last_sequence: u64::MAX,
+            resolved_reports: u64::MAX, pending_reports: u64::MAX, lost_tap: u64::MAX,
+            overflow: u64::MAX, oversized: u64::MAX, acknowledged_sequence: u64::MAX,
+            stop_reason: Some(DebugCaptureStopReason::SequenceLimit), lease_remaining_ms: u64::MAX,
+        };
+        // Max-limit small packets use nearly all of the core's packet budget.
+        let count = otd_core::debug::MAX_CAPTURE_LIMIT;
+        let hex_length = (otd_core::debug::CAPTURE_PACKET_JSON_BUDGET / count - 160) & !1;
+        let packets = (0..count).map(|_| DebugCapturePacket {
+            sequence: u64::MAX, elapsed_us: u64::MAX, auxiliary: false, raw_hex: "a".repeat(hex_length),
+        }).collect();
+        let response = Response { version: PROTOCOL_VERSION, id: u64::MAX,
+            reply: Reply::DebugCaptureRead { batch: DebugCaptureBatch { capture: capture.clone(), packets, next_sequence: u64::MAX } } };
+        assert!(serde_json::to_vec(&response).unwrap().len() <= MAX_FRAME_BYTES);
+        let response = Response { version: PROTOCOL_VERSION, id: u64::MAX,
+            reply: Reply::DebugCaptureRead { batch: DebugCaptureBatch { capture,
+                packets: vec![DebugCapturePacket { sequence: u64::MAX, elapsed_us: u64::MAX, auxiliary: false,
+                    raw_hex: "ab".repeat(otd_core::debug::MAX_BYTES) }], next_sequence: u64::MAX } } };
+        assert!(serde_json::to_vec(&response).unwrap().len() <= MAX_FRAME_BYTES);
     }
 }

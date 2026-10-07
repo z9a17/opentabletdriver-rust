@@ -3,6 +3,7 @@ using OpenTabletDriver.Plugin.Attributes;
 using OpenTabletDriver.Plugin.DependencyInjection;
 using OpenTabletDriver.Plugin.Tablet;
 using OpenTabletDriver.Plugin.Timers;
+using ITimer = OpenTabletDriver.Plugin.Timers.ITimer;
 
 namespace SettingsFixture;
 
