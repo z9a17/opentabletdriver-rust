@@ -1222,7 +1222,7 @@ impl ControlHandler for Daemon {
                 let settings = serde_json::from_str(&settings_json)
                     .map_err(|error| ControlError::new(ErrorCode::InvalidRequest, error.to_string()))?;
                 let revision = crate::upstream_rpc::publish_idle_original_settings(settings, expected_revision)
-                    .map_err(ControlError::from)?;
+                    .map_err(|error| ControlError::new(ErrorCode::Conflict, error))?;
                 Ok(Reply::OriginalSettingsCommitted { revision })
             }
             Command::GetUpstreamLog => Ok(Reply::UpstreamLog { instance: self.instance.clone(),
