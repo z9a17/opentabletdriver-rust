@@ -299,6 +299,28 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
             1 => {
                 append(menu, MF_STRING, CMD_DETECT, "Detect tablet\tCtrl+D");
                 append(menu, MF_STRING, CMD_DEBUGGER, "Tablet debugger...");
+                let sessions = unsafe { CreatePopupMenu() };
+                app.device_choices = app.device_sessions.iter().take(usize::from(DEVICE_CHOICES))
+                    .map(|device| device.id.clone()).collect();
+                if app.device_choices.is_empty() {
+                    append(sessions, MF_GRAYED, 0, "No device sessions");
+                }
+                for (index, id) in app.device_choices.iter().enumerate() {
+                    if let Some(device) = app.device_sessions.iter().find(|device| &device.id == id) {
+                        let disabled = app.control_busy || app.dirty || !app.invalid.is_empty()
+                            || device.pending_generation.is_some() || device.device_generation == 0;
+                        let flags = checked(app.selected_device.as_ref().is_some_and(|selected| selected.id == device.id))
+                            | if disabled { MF_GRAYED } else { MF_STRING };
+                        append(sessions, flags, CMD_DEVICE_FIRST + index as u16,
+                            &format!("{} ({}) — {:?}{}", device.tablet, device.id, device.state,
+                                if device.primary { " · primary" } else { "" }));
+                    }
+                }
+                unsafe { AppendMenuW(menu, MF_POPUP, sessions as usize, wide("Device sessions").as_ptr()) };
+                let ready = !app.control_busy && app.selected_device.as_ref().is_some_and(|device|
+                    device.pending_generation.is_none() && device.device_generation > 0);
+                append(menu, if ready { MF_STRING } else { MF_GRAYED }, CMD_DEVICE_START, "Start selected tablet");
+                append(menu, if ready { MF_STRING } else { MF_GRAYED }, CMD_DEVICE_STOP, "Stop selected tablet");
                 append(
                     menu,
                     MF_STRING,
@@ -619,6 +641,15 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         CMD_TABLET_ANY => {
             with_app(|app| app.choose_tablet(None));
         }
+        id if (CMD_DEVICE_FIRST..CMD_DEVICE_FIRST + DEVICE_CHOICES).contains(&id) => {
+            with_app(|app| {
+                if let Some(id) = app.device_choices.get(usize::from(id - CMD_DEVICE_FIRST)).cloned() {
+                    app.choose_device(id);
+                }
+            });
+        }
+        CMD_DEVICE_START => { with_app(|app| app.device_lifecycle(true)); }
+        CMD_DEVICE_STOP => { with_app(|app| app.device_lifecycle(false)); }
         id if (CMD_TABLET_FIRST..CMD_TABLET_FIRST + TABLET_CHOICES).contains(&id) => {
             with_app(|app| {
                 let name = app

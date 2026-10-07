@@ -34,6 +34,7 @@ fn fixture(hwnd: HWND) -> App {
         background_tx, background_rx, device_scan: background::DeviceScan::default(),
         device_strings_pending: false, import_pending: false, diagnostics_pending: false,
         connected_tablets: Vec::new(), binding_rows: Vec::new(), wheel_fields: Vec::new(),
+        device_sessions: Vec::new(), selected_device: None, device_choices: Vec::new(),
         bindings_detected: false, labels: HashMap::new(), property_page: 0,
         invalid: HashSet::new(), drag: None, context_area: AreaKind::Tablet,
         running: None, daemon_client: None, control_busy: false, daemon_instance: None,

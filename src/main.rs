@@ -5,8 +5,8 @@ mod control;
 mod daemon;
 mod device_sessions;
 mod decode_cli;
+mod device_cli;
 mod diagnostics;
-mod device_sessions;
 mod display;
 mod download;
 mod experimental;
@@ -59,6 +59,7 @@ fn usage() -> &'static str {
   opentabletdriver-rust.exe listbindings | listoutputmodes | listpresets | listdisplays
   opentabletdriver-rust.exe status | stop | shutdown | debug
   opentabletdriver-rust.exe profiles list|preview|import|export|select|get|set ...
+  opentabletdriver-rust.exe devices list|select|profile|apply|start|stop|save ...
   opentabletdriver-rust.exe presets list|show|save|export|apply|save-active ...
   opentabletdriver-rust.exe area convert|full|fit ...
   opentabletdriver-rust.exe diagnostics --output NEW_FILE.json [--config PROFILE.toml]
@@ -82,6 +83,7 @@ Capture does not inject cursor input. Plugin inspection/checks load trusted exec
 
 enum Command {
     Decode(Vec<String>),
+    Devices(Vec<String>),
     Diagnostics(Vec<String>),
     Area(Vec<String>),
     Profiles(Vec<String>),
@@ -151,6 +153,7 @@ fn parse_args() -> Result<Command, String> {
         };
     };
     match command.as_str() {
+        "devices" => Ok(Command::Devices(args.collect())),
         "diagnostics" => Ok(Command::Diagnostics(args.collect())),
         "decode" => Ok(Command::Decode(args.collect())),
         "plugins" => Ok(Command::Plugins(args.collect())),
@@ -834,6 +837,7 @@ fn main() {
     }
     let result = match command {
         Ok(Command::Decode(args)) => decode_cli::run(args),
+        Ok(Command::Devices(args)) => device_cli::run(args),
         Ok(Command::Plugins(args)) => plugin_catalog::run(args),
         Ok(Command::DeviceStrings(args)) => device_strings(args),
         Ok(Command::Diagnostics(args)) => diagnostics::run(args),

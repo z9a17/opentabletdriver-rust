@@ -118,6 +118,8 @@ pub(super) struct Daemon {
     last_error: Option<String>,
     logs: VecDeque<String>,
     log_sequence: u64,
+    update_reservation: Option<String>,
+    next_update: u64,
 }
 
 impl Daemon {
@@ -148,6 +150,8 @@ impl Daemon {
             last_error: None,
             logs: VecDeque::new(),
             log_sequence: 0,
+            update_reservation: None,
+            next_update: 0,
         }
     }
     fn log(&mut self, mut line: String) {
@@ -227,6 +231,29 @@ impl Daemon {
         self.device_sessions().unwrap().primary_pending(next, crate::device_sessions::SessionState::Running);
         Ok(crate::device_sessions::SessionReceipt { id: id.to_owned(), device_generation: generation,
             target_generation: next, accepted_pending: true })
+    }
+    fn device_lifecycle(&mut self, id: &str, generation: u64, start: bool)
+        -> Result<crate::device_sessions::SessionReceipt, ControlError> {
+        let handle = self.device_sessions().ok_or_else(|| ControlError::new(ErrorCode::Busy,
+            "device supervisor is unavailable"))?;
+        let primary = handle.snapshot().map_err(|error| ControlError::new(ErrorCode::Internal, error))?
+            .sessions.iter().any(|session| session.id == id && session.primary);
+        if primary {
+            if start { self.primary_start(id, generation) } else { self.primary_stop(id, generation) }
+        } else {
+            (if start { handle.start_device(id, generation) } else { handle.stop_device(id, generation) })
+                .map_err(|error| ControlError::new(ErrorCode::Conflict, error))
+        }
+    }
+    fn update_ready(&self) -> bool {
+        !self.stopping && self.worker.is_none() && self.pending.is_none()
+            && self.retiring.is_none() && self.devices.is_none() && self.ownership.is_none()
+    }
+    fn check_update_token(&self, token: &str) -> Result<(), ControlError> {
+        if self.update_reservation.as_deref() != Some(token) {
+            return Err(ControlError::new(ErrorCode::Conflict, "update reservation belongs to another request or daemon"));
+        }
+        Ok(())
     }
     fn identity(&self) -> WorkerIdentity {
         WorkerIdentity {
@@ -903,8 +930,100 @@ impl ControlHandler for Daemon {
             _ => {}
         }
         self.poll();
+        if self.update_reservation.is_some() && matches!(&command,
+            Command::Start { .. } | Command::StartIf { .. } | Command::Restart { .. }
+            | Command::ApplyDeviceProfile { .. } | Command::StartDevice { .. }
+            | Command::SelectDeviceSession { .. } | Command::DetectDeviceSessions) {
+            return Err(ControlError::new(ErrorCode::Busy, "an update owns the stopped driver; wait for completion or cancel its reservation"));
+        }
         match command {
             Command::Status => Ok(self.status()),
+            Command::BeginUpdate { expected } => {
+                self.check_identity(&expected)?;
+                if self.update_reservation.is_some() { return Err(ControlError::new(ErrorCode::Busy, "another update is already reserved")); }
+                self.next_update = self.next_update.checked_add(1)
+                    .ok_or_else(|| ControlError::new(ErrorCode::Internal, "update reservation sequence exhausted"))?;
+                let token = format!("{}:update:{}", self.instance, self.next_update);
+                self.update_reservation = Some(token.clone());
+                if let Err(error) = self.stop_all() {
+                    self.update_reservation = None;
+                    return Err(ControlError::new(ErrorCode::StopFailed, error));
+                }
+                self.log("Update reserved; all tablet sessions and global tools are draining before installation.".into());
+                Ok(Reply::UpdateAccepted { token })
+            }
+            Command::UpdateStatus { token } => {
+                self.check_update_token(&token)?;
+                Ok(Reply::UpdateState { token, ready: self.update_ready() && self.cleanup_error.is_none(),
+                    error: self.cleanup_error.clone() })
+            }
+            Command::FinishUpdate { token, success } => {
+                self.check_update_token(&token)?;
+                if success {
+                    if !self.update_ready() || self.cleanup_error.is_some() {
+                        return Err(ControlError::new(ErrorCode::Busy, "update cannot exit before successful device cleanup"));
+                    }
+                    self.log("Update staged and response delivered; shutting down the reserved daemon.".into());
+                    Ok(Reply::ShutdownAccepted)
+                } else {
+                    self.update_reservation = None;
+                    self.log("Update cancelled. Tablet input remains stopped; Start driver explicitly resumes it.".into());
+                    Ok(Reply::UpdateCancelled)
+                }
+            }
+            Command::DetectDeviceSessions => {
+                let handle = self.device_sessions().ok_or_else(|| ControlError::new(ErrorCode::Busy,
+                    "no active device supervisor; Start driver enables discovery"))?;
+                let list = handle.refresh().map_err(|error| ControlError::new(ErrorCode::Internal, error))?;
+                Ok(Reply::DeviceSessions { sessions: list.sessions, selected_id: list.selected_id })
+            }
+            Command::ListDeviceSessions => {
+                let list = self.device_sessions().map(|handle| handle.snapshot()).transpose()
+                    .map_err(|error| ControlError::new(ErrorCode::Internal, error))?;
+                Ok(Reply::DeviceSessions { sessions: list.as_ref().map_or_else(Vec::new, |list| list.sessions.clone()),
+                    selected_id: list.and_then(|list| list.selected_id) })
+            }
+            Command::SelectDeviceSession { expected, id } => {
+                self.check_identity(&expected)?;
+                let handle = self.device_sessions().ok_or_else(|| ControlError::new(ErrorCode::Busy,
+                    "device supervisor is unavailable"))?;
+                handle.select(&id).map_err(|error| ControlError::new(ErrorCode::Busy, error))?;
+                Ok(Reply::DeviceSessionSelected { id })
+            }
+            Command::GetDeviceProfile { expected, id, device_generation } => {
+                self.check_identity(&expected)?;
+                let handle = self.device_sessions().ok_or_else(|| ControlError::new(ErrorCode::Busy,
+                    "device supervisor is unavailable"))?;
+                let profile_toml = handle.profile(&id, device_generation)
+                    .map_err(|error| ControlError::new(ErrorCode::Conflict, error))?;
+                Ok(Reply::DeviceProfile { identity: self.identity(), id, device_generation, profile_toml })
+            }
+            Command::ApplyDeviceProfile { expected, id, device_generation, profile_toml } => {
+                self.check_identity(&expected)?;
+                let handle = self.device_sessions().ok_or_else(|| ControlError::new(ErrorCode::Busy,
+                    "device supervisor is unavailable"))?;
+                let primary = handle.snapshot().map_err(|error| ControlError::new(ErrorCode::Internal, error))?
+                    .sessions.iter().any(|session| session.id == id && session.primary);
+                let receipt = if primary { self.primary_apply(&id, device_generation, profile_toml)? }
+                    else {
+                        let (profile, _) = Self::prepare(Some(profile_toml))?;
+                        handle.apply(&id, device_generation, profile)
+                            .map_err(|error| ControlError::new(ErrorCode::Conflict, error))?
+                    };
+                Ok(Reply::DeviceOperationAccepted { receipt })
+            }
+            Command::StopDevice { expected, id, device_generation } => {
+                self.check_identity(&expected)?;
+                Ok(Reply::DeviceOperationAccepted { receipt: self.device_lifecycle(&id, device_generation, false)? })
+            }
+            Command::StartDevice { expected, id, device_generation } => {
+                self.check_identity(&expected)?;
+                Ok(Reply::DeviceOperationAccepted { receipt: self.device_lifecycle(&id, device_generation, true)? })
+            }
+            Command::WriteMessage { message } => {
+                self.log(format!("[{}] {}", message.group, message.message));
+                Ok(Reply::MessageWritten)
+            }
             Command::SetExperimental { expected, settings } => {
                 self.check_identity(&expected)?;
                 let path = crate::experimental::path()

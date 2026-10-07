@@ -26,6 +26,7 @@ mod conversion;
 mod debugger;
 mod debugger_data;
 mod debugger_capture;
+mod device_controls;
 mod draw;
 mod experimental;
 mod layout;
@@ -124,6 +125,10 @@ const CMD_UPDATE_ON_OPEN: u16 = 243;
 const CMD_TABLET_ANY: u16 = 6000;
 const CMD_TABLET_FIRST: u16 = 6001;
 const TABLET_CHOICES: u16 = 64;
+const CMD_DEVICE_FIRST: u16 = 6100;
+const DEVICE_CHOICES: u16 = 32;
+const CMD_DEVICE_START: u16 = 6132;
+const CMD_DEVICE_STOP: u16 = 6133;
 const CMD_ADD_DOTNET: u16 = 220;
 const CMD_ADD_NATIVE: u16 = 221;
 const CMD_PLUGIN_MANAGER: u16 = 229;
@@ -769,6 +774,9 @@ struct App {
     import_pending: bool,
     diagnostics_pending: bool,
     connected_tablets: Vec<String>,
+    device_sessions: Vec<crate::device_sessions::SessionSnapshot>,
+    selected_device: Option<crate::device_sessions::SessionSnapshot>,
+    device_choices: Vec<String>,
     /// Pen button, express key and wheel binding dropdowns.
     binding_rows: Vec<bindings::BindingRow>,
     wheel_fields: Vec<bindings::WheelField>,

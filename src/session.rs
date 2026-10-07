@@ -620,14 +620,16 @@ impl<'a> PreparedSession<'a> {
                 ));
             }
         }
-        for (reports, length) in [
+        for (reports, length, output) in [
             (
                 &selected.identifier.feature_init_report,
                 selected.pen.endpoint.feature_length,
+                false,
             ),
             (
                 &selected.identifier.output_init_report,
                 selected.pen.endpoint.output_length,
+                true,
             ),
         ] {
             for report in reports
@@ -635,7 +637,10 @@ impl<'a> PreparedSession<'a> {
                 .flatten()
                 .filter(|report| !report.0.is_empty())
             {
-                if length == 0 || length > u16::MAX as u32 || report.0.len() > length as usize {
+                let invalid = if selected.pen.endpoint.transport == otd_core::endpoint_match::Transport::WinUsb {
+                    report.0.len() > u16::MAX as usize || (output && length == 0)
+                } else { length == 0 || length > u16::MAX as u32 || report.0.len() > length as usize };
+                if invalid {
                     return Err(io::Error::other(
                         "initialization report exceeds endpoint report length",
                     ));

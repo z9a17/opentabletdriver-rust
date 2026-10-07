@@ -151,7 +151,7 @@ impl Interface {
         decode_string(&data[..count])
     }
 
-    pub fn initialize(&self, candidate: &Candidate, identifier: &DeviceIdentifier,
+    pub fn initialize(&self, _candidate: &Candidate, identifier: &DeviceIdentifier,
         configuration: &TabletConfiguration, stop: &Event) -> io::Result<()> {
         let delay = configuration.attributes.as_ref().and_then(|a| a.get("FeatureInitDelayMs"))
             .map(|text| text.parse::<u32>()).transpose()
@@ -167,7 +167,13 @@ impl Interface {
                 WAIT_OBJECT_0 => return Err(cancelled()), WAIT_TIMEOUT => {},
                 _ => return Err(io::Error::last_os_error()),
             }
-            let mut data = padded(&report.0, candidate.endpoint.feature_length)?;
+            // WinUSB SET_REPORT uses the configured packet's exact length.
+            // The descriptor maximum can cover a different report ID; HID
+            // class padding must not change this control request's wLength.
+            if report.0.len() > u16::MAX as usize {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "WinUSB feature initialization report exceeds 65535 bytes"));
+            }
+            let mut data = report.0.clone();
             let value = 0x0300 | u16::from(data[0]);
             let count = self.control(0x21, 9, value, u16::from(self.number), &mut data, Some(stop), 5000)?;
             if count != data.len() { return Err(io::Error::new(io::ErrorKind::WriteZero,

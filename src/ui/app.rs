@@ -220,6 +220,9 @@ impl App {
             import_pending: false,
             diagnostics_pending: false,
             connected_tablets: Vec::new(),
+            device_sessions: Vec::new(),
+            selected_device: None,
+            device_choices: Vec::new(),
             binding_rows: Vec::new(),
             wheel_fields: Vec::new(),
             bindings_detected: false,
@@ -2449,12 +2452,15 @@ impl App {
         else {
             return;
         };
-        if self.submit_control(client::ClientCommand::Restart {
+        let command = if let Some(device) = &self.selected_device {
+            client::ClientCommand::ApplyDevice { expected, id: device.id.clone(),
+                device_generation: device.device_generation, profile: Box::new(profile) }
+        } else { client::ClientCommand::Restart {
             expected,
             profile: Box::new(profile),
-        }) {
-            self.set_driver_state(DriverState::Stopping);
-            self.log(Level::Info, "Daemon", "Restart requested with current settings; the daemon waits for cleanup before starting again.");
+        } };
+        if self.submit_control(command) {
+            self.log(Level::Info, "Daemon", "Settings apply requested for the selected tablet. Other tablets keep their profiles; the device state reports completion.");
         }
     }
 
@@ -2506,21 +2512,39 @@ impl App {
                 }
                 client::ClientEvent::Offline(error) => {
                     self.running = None;
+                    self.device_sessions.clear();
+                    self.selected_device = None;
                     self.set_driver_state(DriverState::Disconnected);
                     self.log(if error.is_some() { Level::Warning } else { Level::Info }, "Daemon",
                         error.unwrap_or_else(|| "No daemon is available. Start driver launches it; closing this panel stops tablet input.".into()));
                 }
-                client::ClientEvent::Snapshot { status, profile } => {
+                client::ClientEvent::Snapshot { status, profile, sessions, editing_device } => {
                     let identity = status.identity();
                     if self.daemon_instance.as_deref() != Some(&status.instance) {
                         self.daemon_instance = Some(status.instance.clone());
                         self.daemon_log_sequence = 0;
                     }
                     self.running = client::active(status.state).then_some(Running { identity });
+                    let next_device = sessions.sessions.iter().find(|device| Some(&device.id) == editing_device.as_ref()).cloned();
+                    let switched_device = next_device.as_ref().map(|device| &device.id)
+                        != self.selected_device.as_ref().map(|device| &device.id);
+                    self.device_sessions = sessions.sessions;
+                    self.selected_device = next_device;
                     if let Some(profile) = profile.filter(|_| !self.closing) {
                         if self.dirty || !self.invalid.is_empty() {
                             self.log(Level::Warning, "Settings", "Daemon configuration changed. Unsaved local edits were kept; Apply deliberately replaces the active configuration.");
                         } else {
+                            if switched_device && let Some(device) = &self.selected_device {
+                                if let Some(path) = device.profile_source.as_ref().map(PathBuf::from)
+                                    .filter(|path| path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("toml"))) {
+                                    self.profile_path = path;
+                                    self.profile_snapshot = otd_core::storage::capture(&self.profile_path).ok();
+                                } else if !device.primary {
+                                    // A tablet without its own durable profile needs Save As;
+                                    // never overwrite the previous tablet's settings file.
+                                    self.recovered_backup = true;
+                                }
+                            }
                             self.load_active_profile(*profile);
                             self.log(Level::Info, "Settings", "Loaded the daemon's active configuration. Save writes it to the local profile file.");
                         }
