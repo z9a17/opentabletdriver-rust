@@ -336,7 +336,7 @@ unsafe sealed class SynchronousGraph : IDisposable
         if (!hasManagedFilters && timed.Length == 0 && managedOutput == null) return -2;
         // Async callbacks have no native wake handle. A bounded idle poll keeps
         // newly admitted work live; native may cache only the -2 capability.
-        long now = Stopwatch.GetTimestamp(), best = hasManagedFilters ? 10_000 : -1;
+        long now = Stopwatch.GetTimestamp(), best = hasManagedFilters || managedOutput != null ? 10_000 : -1;
         foreach (Node node in timed)
             if (!node.Disabled && node.Filter is { HasTimers: true } filter)
             {
