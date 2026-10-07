@@ -9,4 +9,10 @@ fn main() {
     let date=std::process::Command::new("git").current_dir(root).args(["show","-s","--format=%cI","HEAD"]).output().expect("read source commit date");
     assert!(date.status.success(),"cannot read build source date");
     println!("cargo:rustc-env=OTD_BUILD_DATE={}",String::from_utf8(date.stdout).expect("source date UTF-8").trim());
+    for name in ["HEAD","refs/heads"] {
+        let path=std::process::Command::new("git").current_dir(&root).args(["rev-parse","--git-path",name]).output().expect("read source reference path");
+        assert!(path.status.success(),"cannot read source reference path");
+        let path=String::from_utf8(path.stdout).expect("source reference UTF-8");
+        println!("cargo:rerun-if-changed={}",root.join(path.trim()).display());
+    }
 }
