@@ -67,6 +67,13 @@ pub fn reload_installed_plugins(root: &Path) -> Result<ManagedRegistryInfo, Stri
     Ok(info)
 }
 
+pub(super) fn create_parser(name: &str) -> Result<*mut c_void, String> {
+    let context = unsafe { (api()?.create)(name.as_ptr(), name.len() as i32) };
+    if context.is_null() { Err(last_error()) } else { Ok(context) }
+}
+pub(super) fn reset_parser(context: *mut c_void) -> Result<(), String> { if unsafe { (api()?.reset)(context) } < 0 { Err(last_error()) } else { Ok(()) } }
+pub(super) fn destroy_parser(context: *mut c_void) { if let Ok(api) = api() { unsafe { (api.destroy)(context) }; } }
+
 /// Wire fields match Desktop/RPC/DebugReportData's constructor exactly.
 /// The caller attaches its actual TabletReference to the RPC envelope.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]

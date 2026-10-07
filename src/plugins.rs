@@ -17,6 +17,29 @@ pub use otd_core::plugins::{PipelineStage, PluginConfig, PluginKind};
 #[path = "plugins/graph.rs"]
 mod graph;
 
+/// Explicit startup only: load installed parser metadata for a named tablet
+/// whose configuration has a parser missing from the native implementation.
+/// Enumeration and ordinary native startup never initialize CLR here.
+pub fn prepare_parser_registry(profile: &crate::config::Profile, database: &Database) -> Result<(), String> {
+    let Some(name) = profile.tablet_name()? else { return Ok(()); };
+    let configuration = database.entries().iter().filter_map(otd_core::tablets::Entry::usable)
+        .find(|configuration| configuration.name == name);
+    if let Some(configuration) = configuration {
+        let missing = configuration.digitizer_identifiers.iter().chain(configuration.auxiliary_identifiers())
+            .any(|identifier| otd_core::tablets::parser_support(identifier.parser()) == otd_core::tablets::ParserSupport::Missing
+                && !crate::dotnet::installed_report_parser(identifier.parser()));
+        if missing { load_parser_registry()?; }
+    }
+    Ok(())
+}
+pub fn load_parser_registry() -> Result<(), String> {
+    if !crate::plugin_catalog::recover_installations()? { return Err("Plugin installation is busy; retry parser startup.".into()); }
+    let directory = crate::plugin_catalog::plugins_directory()?;
+    std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    crate::dotnet::reload_installed_plugins(&directory)?;
+    Ok(())
+}
+
 /// Explicit original-settings import. Pure native profiles do not load CLR;
 /// unresolved managed stores use one retained installed-registry snapshot.
 pub fn import_otd_with_installed(text: &str, source: &Path, connected: &[String]) -> Result<crate::config::Profile, String> {
@@ -540,7 +563,10 @@ impl PluginChain {
 
     fn load_profile(profile: &crate::config::Profile, tablet: &TabletConfiguration,
         identifiers: Option<&[DeviceIdentifier]>) -> Result<Self, String> {
+        if profile.managed_output.as_ref().is_some_and(|mode| !mode.enabled) { return Err("The selected original managed output mode is disabled; select an enabled output before starting".into()); }
         let mut chain = Self::load_with_builtins(&profile.plugins, tablet, profile.builtin_filter_slot(), identifiers)?;
+        if !otd_core::output::buttons::ButtonOutput::managed_slots(profile).is_empty() { chain.prepare_managed_decoder()?; }
+
         if let Some(config) = profile.managed_output.as_ref().filter(|config| config.enabled) {
             let output = crate::dotnet::endpoints::OutputSession::new_with_identifiers(config, profile, tablet, identifiers)?;
             if chain.graph.is_none() { chain.graph = graph::create_if(&chain.plugins, chain.builtin_slot, true)?; }
@@ -592,6 +618,14 @@ impl PluginChain {
         replacement.validate_output_mode(profile.relative.is_some())?;
         *self = replacement;
         Ok(true)
+    }
+
+    /// Original report consumers require an original parser object, including
+    /// concrete type identity. Pure native profiles have no managed graph.
+    pub fn needs_concrete_reports(&self) -> bool { self.graph.is_some() }
+    pub fn prepare_managed_decoder(&mut self) -> Result<(), String> {
+        if self.graph.is_none() { self.graph = graph::create_if(&self.plugins, self.builtin_slot, true)?; }
+        Ok(())
     }
 
     /// Binds to this graph's exact output instance; third-party pointers retain

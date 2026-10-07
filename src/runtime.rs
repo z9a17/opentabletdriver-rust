@@ -196,7 +196,8 @@ fn run(
     };
     let configured_tablets = crate::check_tablet_configurations()?;
     let database = configured_tablets.as_ref();
-    profile.validate_runtime_tablet_in(database)?;
+    crate::plugins::prepare_parser_registry(&profile, database)?;
+    profile.validate_runtime_tablet_in_with_parser_support(database, &crate::dotnet::installed_report_parser)?;
     profile.validate_filter_execution()?;
     let tablet_name = profile.tablet_name()?;
     if profile.plugin_configs().any(|plugin| plugin.enabled)
@@ -226,7 +227,7 @@ fn run(
             device_sessions.validate_profile(id, &profile)?;
             device_sessions.find(id, &devices, database)?
         } else {
-            crate::hid::select_device(&devices, database, profile.device_path.as_deref(), tablet_name.as_deref())?
+            crate::hid::select_device_for_start(&devices, database, profile.device_path.as_deref(), tablet_name.as_deref())?
         };
         let Some(selected) = choice
         else {
@@ -275,7 +276,8 @@ fn run(
                 return Err("Plugins are being installed or recovered; retry starting the driver after that finishes.".into());
             }
             crate::plugin_catalog::use_native_ports(&mut profile, log);
-            profile.validate_runtime_tablet_in(database)?;
+            crate::plugins::prepare_parser_registry(&profile, database)?;
+            profile.validate_runtime_tablet_in_with_parser_support(database, &crate::dotnet::installed_report_parser)?;
             profile.validate_filter_execution()?;
             let _ = otd_core::pipeline::ReportPipeline::new(&profile.for_tablet(selected.spec)?)?;
             if profile.relative.is_none() { crate::display::read_snapshot()?.mapper(&profile.for_tablet(selected.spec)?)?; }

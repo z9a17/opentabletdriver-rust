@@ -236,6 +236,7 @@ impl PluginChain {
         input: DispatchInput<'_>,
         runtime: &mut dyn PipelineRuntime,
     ) -> io::Result<()> {
+        if input.values.managed_report.is_some() && self.graph.is_none() { return Err(io::Error::other("Managed source parser requires its original report graph to be prepared")); }
         let mut values = input.values;
         let raw = input.raw;
         let time_ns = input
@@ -271,8 +272,10 @@ impl PluginChain {
                 builtins_in_graph,
                 error: None,
             };
-            let result =
-                unsafe { graph.dispatch(&frame, callback, (&mut scope as *mut Scope<'_>).cast()) };
+            let result = unsafe { match input.values.managed_report {
+                Some(token) => graph.dispatch_parsed(token, &frame, callback, (&mut scope as *mut Scope<'_>).cast()),
+                None => graph.dispatch(&frame, callback, (&mut scope as *mut Scope<'_>).cast()),
+            } };
             if let Some(error) = scope.error {
                 return Err(error);
             }

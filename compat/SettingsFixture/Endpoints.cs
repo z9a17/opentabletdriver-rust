@@ -47,3 +47,15 @@ public sealed class StatefulParser : IReportParser<IDeviceReport>
     int count;
     public IDeviceReport Parse(byte[] raw) => raw[0] == 255 ? null : new StatefulReport { Raw = raw, Tick = ++count };
 }
+
+public sealed class RewriteRawParser : IReportParser<IDeviceReport>
+{
+    public IDeviceReport Parse(byte[] raw) => new StatefulReport { Raw = new byte[] { 42 }, Tick = 9 };
+}
+public sealed class ConcreteReportFilter : IPositionedPipelineElement<IDeviceReport>
+{
+    public PipelinePosition Position => PipelinePosition.PreTransform;
+    public IDeviceReport LastReport { get; private set; }
+    public event Action<IDeviceReport> Emit;
+    public void Consume(IDeviceReport report) { if (report is not StatefulReport) throw new InvalidOperationException("Original concrete report type was replaced."); LastReport = report; Emit?.Invoke(report); }
+}

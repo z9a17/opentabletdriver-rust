@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -147,8 +148,18 @@ sealed class PluginLoad
     }
 }
 
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct ParsedSourceReport { public GraphReport Report; public ulong Parser, Sequence; }
+
 sealed class ParserSession : IDisposable
 {
+    static long nextId;
+    static readonly ConcurrentDictionary<ulong, ParserSession> Sources = new();
+    internal readonly ulong Id;
+    readonly SynchronousGraph projector = new([]);
+    IDeviceReport? sourceReport;
+    ulong sourceSequence;
+    bool sourceConsumed = true;
     readonly Type type;
     readonly RegistryGeneration? generation;
     readonly int ownerThread = Environment.CurrentManagedThreadId;
@@ -159,19 +170,24 @@ sealed class ParserSession : IDisposable
     internal ParserSession(string name)
     {
         (type, generation) = InstalledRegistry.AcquireParser(name);
-        try { Reset(); } catch { if (generation != null) InstalledRegistry.Release(generation); throw; }
+        try {
+            Reset();
+            long id = Interlocked.Increment(ref nextId);
+            if (id <= 0) throw new InvalidOperationException("Managed source parser identity exhausted.");
+            Id = (ulong)id;
+            if (!Sources.TryAdd(Id, this)) throw new InvalidOperationException("Duplicate managed source identity.");
+        } catch { try { (parser as IDisposable)?.Dispose(); } finally { services?.Dispose(); if (generation != null) InstalledRegistry.Release(generation); } throw; }
     }
     void Check() { ObjectDisposedException.ThrowIf(disposed, this); if (Environment.CurrentManagedThreadId != ownerThread) throw new InvalidOperationException("Parser instances belong to their background stream thread."); }
     internal void Reset()
     {
-        Check(); Pending = null;
+        Check(); Pending = null; sourceReport = null; sourceConsumed = true;
         try { (parser as IDisposable)?.Dispose(); } finally { parser = null; services?.Dispose(); services = null; }
         object? created = null;
         try
         {
             created = Activator.CreateInstance(type) ?? throw new InvalidOperationException("Cannot construct report parser.");
             services = new HostServices(); services.Inject(type, created);
-            HostServices.Complete(type, created, null);
             parser = (IReportParser<IDeviceReport>)created;
         }
         catch { try { (created as IDisposable)?.Dispose(); } finally { services?.Dispose(); services = null; } throw; }
@@ -189,6 +205,30 @@ sealed class ParserSession : IDisposable
         if (Pending.Length > 262144) { Pending = null; throw new InvalidOperationException("Concrete debug report exceeds 256 KiB."); }
         return Pending.Length;
     }
+    internal unsafe int Project(byte* raw, uint length, ParsedSourceReport* output)
+    {
+        Check(); sourceReport = null; sourceConsumed = true;
+        if (raw == null || length == 0 || length > 65535 || output == null) throw new ArgumentException("Invalid managed source packet.");
+        if (sourceSequence == ulong.MaxValue) throw new InvalidOperationException("Managed source sequence exhausted.");
+        sourceSequence++;
+        var report = parser!.Parse(new ReadOnlySpan<byte>(raw, checked((int)length)).ToArray());
+        if (report == null) return 0;
+        byte[] actualRaw = report.Raw ?? throw new InvalidOperationException("Managed parser returned null Raw.");
+        if (actualRaw.Length > 65535) throw new NotSupportedException("Managed parser Raw exceeds 65535 bytes.");
+        projector.Export(report, &output->Report);
+        output->Parser = Id; output->Sequence = sourceSequence;
+        sourceReport = report; sourceConsumed = false;
+        return 1;
+    }
+    internal static IDeviceReport Take(ulong id, ulong sequence)
+    {
+        if (!Sources.TryGetValue(id, out var parser)) throw new InvalidOperationException("Managed source parser has ended.");
+        parser.Check();
+        if (parser.sourceConsumed || parser.sourceReport == null || parser.sourceSequence != sequence)
+            throw new InvalidOperationException("Managed source report is expired or already consumed.");
+        parser.sourceConsumed = true;
+        return parser.sourceReport;
+    }
     internal int Copy(Span<byte> output)
     {
         Check(); if (Pending == null) return 0;
@@ -197,7 +237,7 @@ sealed class ParserSession : IDisposable
     }
     public void Dispose()
     {
-        if (disposed) return; Check(); disposed = true;
+        if (disposed) return; Check(); disposed = true; Sources.TryRemove(Id, out _); sourceReport = null; sourceConsumed = true;
         try { (parser as IDisposable)?.Dispose(); }
         finally { parser = null; Pending = null; services?.Dispose(); if (generation != null) InstalledRegistry.Release(generation); }
     }
@@ -234,6 +274,7 @@ public static unsafe partial class EntryPoints
             if (name == null || length < 1 || length > 4096) throw new ArgumentException("Invalid parser name.");
             var parser = new ParserSession(Encoding.UTF8.GetString(new ReadOnlySpan<byte>(name, length)));
             return GCHandle.ToIntPtr(GCHandle.Alloc(parser));
+
         }
         catch (Exception error) { lastError = error.GetBaseException().Message; return 0; }
     }
@@ -248,6 +289,19 @@ public static unsafe partial class EntryPoints
             else if (length != 0) throw new ArgumentException("Raw is missing.");
             return parser.Copy(output == null ? Span<byte>.Empty : new Span<byte>(output, capacity));
         }
+        catch (Exception error) { lastError = error.GetBaseException().Message; return -1; }
+    }
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static int ParseSourceReport(nint context, byte* raw, uint length, ParsedSourceReport* output)
+    {
+        try { return ((ParserSession)GCHandle.FromIntPtr(context).Target!).Project(raw, length, output); }
+        catch (Exception error) { lastError = error.GetBaseException().Message; return -1; }
+    }
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static int DispatchParsedGraph(nint graph, ulong parser, ulong sequence, GraphReport* input,
+        delegate* unmanaged[Cdecl]<nint, uint, uint, GraphReport*, int> callback, nint scope, int fused)
+    {
+        try { return ((SynchronousGraph)GCHandle.FromIntPtr(graph).Target!).Dispatch(input, callback, scope, fused != 0, ParserSession.Take(parser, sequence)); }
         catch (Exception error) { lastError = error.GetBaseException().Message; return -1; }
     }
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]

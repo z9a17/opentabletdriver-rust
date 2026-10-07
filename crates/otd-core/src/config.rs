@@ -896,6 +896,12 @@ pub fn tablets_from_directory(directory: Option<&Path>) -> Result<(std::borrow::
 }
 
 pub fn runtime_tablet_in(name: &str, database: &crate::tablets::Database) -> Result<TabletSpec, String> {
+    runtime_tablet_in_with_parser_support(name, database, &|_| false)
+}
+
+/// Platform setup can accept an actually loaded managed parser without making
+/// the portable core initialize a runtime or change native parser selection.
+pub fn runtime_tablet_in_with_parser_support(name: &str, database: &crate::tablets::Database, additional: &impl Fn(&str) -> bool) -> Result<TabletSpec, String> {
     use crate::tablets::{Entry, ParserSupport, parser_support};
     let configuration = database
         .entries()
@@ -906,7 +912,7 @@ pub fn runtime_tablet_in(name: &str, database: &crate::tablets::Database) -> Res
     if let Some(identifier) = configuration
         .digitizer_identifiers
         .iter()
-        .find(|identifier| parser_support(identifier.parser()) == ParserSupport::Missing)
+        .find(|identifier| parser_support(identifier.parser()) == ParserSupport::Missing && !additional(identifier.parser()))
     {
         return Err(format!(
             "{name} uses {}, which this driver cannot decode",
@@ -1669,6 +1675,11 @@ impl Profile {
         Ok(())
     }
 
+    pub fn validate_runtime_tablet_in_with_parser_support(&self, database: &crate::tablets::Database, additional: &impl Fn(&str) -> bool) -> Result<(), String> {
+        if let Some(name) = self.tablet_name()? { runtime_tablet_in_with_parser_support(&name, database, additional)?; }
+        Ok(())
+    }
+
     /// This profile for the tablet the runtime selected. Raw pressure
     /// thresholds must fit the tablet's pressure range.
     pub fn for_tablet(&self, spec: TabletSpec) -> Result<Self, String> {
@@ -1925,6 +1936,22 @@ impl Profile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn managed_parser_validation_requires_an_explicit_verified_factory() {
+        let mut configuration = crate::tablets::Database::builtin().entries().iter()
+            .filter_map(crate::tablets::Entry::usable).find(|value| value.name == "Wacom PTH-660").unwrap().clone();
+        configuration.name = "Managed parser fixture".into();
+        configuration.digitizer_identifiers[0].report_parser = Some("Fixture.CustomParser".into());
+        let database = crate::tablets::Database::with_overrides(&[("fixture.json".into(), serde_json::to_string(&configuration).unwrap())]);
+        assert!(runtime_tablet_in("Managed parser fixture", &database).is_err());
+        assert!(runtime_tablet_in_with_parser_support("Managed parser fixture", &database, &|name| name == "Fixture.OtherParser").is_err());
+        assert_eq!(runtime_tablet_in_with_parser_support("Managed parser fixture", &database, &|name| name == "Fixture.CustomParser").unwrap(),
+            TabletSpec::from_configuration(&configuration).unwrap());
+        let calls = std::cell::Cell::new(0);
+        assert!(runtime_tablet_in_with_parser_support("Wacom PTH-660", &database, &|_| { calls.set(calls.get() + 1); false }).is_ok());
+        assert_eq!(calls.get(), 0, "native validation must not call managed discovery");
+    }
 
     #[test]
     fn original_managed_store_missing_enable_stays_disabled_and_null_settings_stays_truthful() {

@@ -7,7 +7,7 @@ use std::mem::size_of;
 use std::os::windows::ffi::OsStringExt;
 use std::ptr;
 
-use otd_core::decoders::TabletDecoder;
+use crate::dotnet::RuntimeDecoder;
 use otd_core::endpoint_match::{self, Endpoint, Transport};
 use otd_core::spec::TabletSpec;
 use otd_core::tablets::{
@@ -616,15 +616,11 @@ pub struct SelectedDevice<'a> {
 
 impl SelectedDevice<'_> {
     /// The decoder for this endpoint's configured parser.
-    pub fn decoder(&self) -> io::Result<TabletDecoder> {
-        TabletDecoder::for_parser(self.identifier.parser(), self.spec).ok_or_else(|| {
-            io::Error::other(format!(
-                "{} uses {}, which this driver cannot decode",
-                self.configuration.name,
-                self.identifier.parser()
-            ))
-        })
+    pub fn decoder(&self) -> io::Result<RuntimeDecoder> { self.decoder_for_graph(false) }
+    pub fn decoder_for_graph(&self, prefer_original: bool) -> io::Result<RuntimeDecoder> {
+        RuntimeDecoder::for_graph(self.identifier.parser(), self.spec, prefer_original).map_err(io::Error::other)
     }
+
 }
 
 /// The configuration name and role of a discovered collection, if a usable
@@ -637,7 +633,7 @@ pub fn identify(device: &Candidate, database: &Database) -> Option<(String, Role
             (
                 found.configuration.name.clone(),
                 found.role,
-                parser_support(found.identifier.parser()) != ParserSupport::Missing,
+                parser_supported(found.identifier.parser()),
             )
         })
 }
@@ -649,13 +645,18 @@ pub fn connected_tablets() -> Result<Vec<String>, String> {
     let mut names = Vec::new();
     for device in enumerate_with_database(&database).map_err(|error| error.to_string())? {
         if let Some((name, Role::Digitizer, true)) = identify(&device, &database)
-            && crate::config::runtime_tablet_in(&name, &database).is_ok()
+            && crate::config::runtime_tablet_in_with_parser_support(&name, &database, &crate::dotnet::installed_report_parser).is_ok()
             && !names.contains(&name)
         {
             names.push(name);
         }
     }
     Ok(names)
+}
+
+/// Pure cached support check; no CLR initialization or plugin construction.
+pub fn parser_supported(name: &str) -> bool {
+    parser_support(name) != ParserSupport::Missing || crate::dotnet::installed_report_parser(name)
 }
 
 /// Selects one tablet to drive. Every digitizer interface that matches a
@@ -670,6 +671,18 @@ pub fn select_device<'a>(
     path: Option<&str>,
     tablet: Option<&str>,
 ) -> Result<Option<SelectedDevice<'a>>, String> {
+    select_device_impl(devices, database, path, tablet, false)
+}
+
+/// Explicit output startup may load an installed parser for an actually matched
+/// missing endpoint. Ordinary discovery uses select_device and never does so.
+pub fn select_device_for_start<'a>(devices: &'a [Candidate], database: &Database,
+    path: Option<&str>, tablet: Option<&str>) -> Result<Option<SelectedDevice<'a>>, String> {
+    select_device_impl(devices, database, path, tablet, true)
+}
+fn select_device_impl<'a>(devices: &'a [Candidate], database: &Database,
+    path: Option<&str>, tablet: Option<&str>, load_registry: bool) -> Result<Option<SelectedDevice<'a>>, String> {
+    let mut registry_loaded = false;
     let mut unsupported = None;
     for device in devices
         .iter()
@@ -685,7 +698,11 @@ pub fn select_device<'a>(
             if endpoint_match::matches(&device.endpoint, &found).is_err() {
                 continue;
             }
-            if parser_support(found.identifier.parser()) == ParserSupport::Missing {
+            if !parser_supported(found.identifier.parser()) && load_registry && !registry_loaded {
+                crate::plugins::load_parser_registry()?;
+                registry_loaded = true;
+            }
+            if !parser_supported(found.identifier.parser()) {
                 unsupported = Some(format!(
                     "{} uses {}, which this driver cannot decode",
                     found.configuration.name,

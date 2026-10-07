@@ -372,6 +372,7 @@ pub struct Graph {
     timer_capability: bool,
 }
 impl Graph {
+    pub(super) fn context_handle(&self) -> *mut c_void { self.context }
     pub fn new(nodes: &[GraphNode]) -> Result<Self, String> {
         if nodes.len() > 32 {
             return Err("The synchronous graph supports at most 32 filters".into());

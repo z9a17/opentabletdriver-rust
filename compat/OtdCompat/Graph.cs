@@ -125,7 +125,7 @@ unsafe sealed class SynchronousGraph
     }
     public int Dispatch(GraphReport* input,
         delegate* unmanaged[Cdecl]<nint, uint, uint, GraphReport*, int> native, nint nativeScope,
-        bool fusedContinuations = false)
+        bool fusedContinuations = false, IDeviceReport? originalReport = null)
     {
         if (running || Environment.CurrentManagedThreadId != ownerThread)
             throw new InvalidOperationException("The synchronous graph must run on its owning thread.");
@@ -134,7 +134,11 @@ unsafe sealed class SynchronousGraph
         callback = native; scope = nativeScope; fused = fusedContinuations;
         try
         {
-            IDeviceReport report = Import(input);
+            IDeviceReport report = originalReport ?? Import(input);
+            // Host built-ins can modify position before the graph dispatch. The
+            // concrete original report object remains the downstream identity.
+            if (originalReport is IAbsolutePositionReport position && (input->Flags & Position) != 0)
+                position.Position = new Vector2(input->X, input->Y);
             if (fused || Call(0, 0, report))
             {
                 if (managedOutput is { } endpoint) { endpoint.Mode.Read(report); DrainOutput(); }
@@ -396,7 +400,7 @@ unsafe sealed class SynchronousGraph
     const uint OutOfRangeShape = 1u << 30, PenSnapshotShape = 1u << 31;
 
     // Each Unsafe.As below is guarded by the cached shape of this exact type.
-    uint Export(IDeviceReport report, GraphReport* frame)
+    internal uint Export(IDeviceReport report, GraphReport* frame)
     {
         uint s = ShapeOf(report);
         ref GraphReport f = ref *frame;

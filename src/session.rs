@@ -21,7 +21,8 @@ use windows_sys::Win32::System::Threading::{
 /// ticks need sub-millisecond deadlines, which millisecond waits truncate.
 const PRECISE_WAIT: Duration = Duration::from_millis(50);
 
-use otd_core::decoders::{PenDecoder, TabletDecoder};
+use otd_core::decoders::PenDecoder;
+use crate::dotnet::RuntimeDecoder;
 pub use otd_core::session::Mode;
 use otd_core::session::{Read, ReportSource};
 use otd_core::tablets::DeviceIdentifier;
@@ -294,20 +295,30 @@ impl<'a> HidSource<'a> {
         Ok(())
     }
 
-    /// The auxiliary endpoint's decoder, or `None` (closing the endpoint)
-    /// when there is none or its parser cannot be decoded.
-    fn auxiliary_decoder(&mut self, selected: &SelectedDevice<'_>) -> Option<TabletDecoder> {
-        let (_, identifier) = selected.auxiliary.as_ref()?;
-        self.auxiliary.as_ref()?;
-        let decoder = TabletDecoder::for_parser(identifier.parser(), selected.spec);
-        if decoder.is_none() {
-            eprintln!(
-                "Auxiliary collection uses {}, which this driver cannot decode; express keys and wheels do nothing",
-                identifier.parser()
-            );
-            self.auxiliary = None;
+    fn prepare_parsers(&self, selected: &SelectedDevice<'_>) -> io::Result<()> {
+        let missing = std::iter::once(&selected.identifier)
+            .chain(selected.auxiliary.as_ref().filter(|_| self.auxiliary.is_some()).map(|(_, identifier)| identifier))
+            .any(|identifier| !hid::parser_supported(identifier.parser()));
+        if missing { crate::plugins::load_parser_registry().map_err(io::Error::other)?; }
+        Ok(())
+    }
+
+    fn needs_original_parser(&self, selected: &SelectedDevice<'_>) -> bool {
+        use otd_core::tablets::{parser_support, ParserSupport};
+        parser_support(selected.identifier.parser()) == ParserSupport::Missing
+            || (self.auxiliary.is_some() && selected.auxiliary.as_ref().is_some_and(|(_, identifier)|
+                parser_support(identifier.parser()) == ParserSupport::Missing))
+    }
+
+    /// An independently owned parser for an actually opened auxiliary endpoint.
+    /// Construction failures abort startup instead of silently dropping input.
+    fn auxiliary_decoder(&mut self, selected: &SelectedDevice<'_>, prefer_original: bool) -> io::Result<Option<RuntimeDecoder>> {
+        let Some((_, identifier)) = selected.auxiliary.as_ref() else { return Ok(None); };
+        if self.auxiliary.is_none() { return Ok(None); }
+        if !hid::parser_supported(identifier.parser()) && !prefer_original {
+            crate::plugins::load_parser_registry().map_err(io::Error::other)?;
         }
-        decoder
+        RuntimeDecoder::for_graph(identifier.parser(), selected.spec, prefer_original).map(Some).map_err(io::Error::other)
     }
 
     /// Arms the high-resolution timer to signal after `wait`.
@@ -511,11 +522,19 @@ pub fn run(
     let profile = profile
         .for_tablet(selected.spec)
         .map_err(io::Error::other)?;
-    let mut decoder = selected.decoder()?;
-    let mut auxiliary = source.auxiliary_decoder(selected);
+    source.prepare_parsers(selected)?;
     if matches!(mode, Mode::Driver) {
         plugins.bind_identifiers(&profile, &selected.configuration, &source.identifiers(selected))
             .map_err(io::Error::other)?;
+    }
+    if matches!(mode, Mode::Driver) && source.needs_original_parser(selected) {
+        plugins.prepare_managed_decoder().map_err(io::Error::other)?;
+    }
+    let prefer_original = matches!(mode, Mode::Driver) && plugins.needs_concrete_reports();
+    let mut decoder = selected.decoder_for_graph(prefer_original)?;
+    let mut auxiliary = source.auxiliary_decoder(selected, prefer_original)?;
+    if matches!(mode, Mode::Driver) && (decoder.is_managed() || auxiliary.as_ref().is_some_and(RuntimeDecoder::is_managed)) {
+        plugins.prepare_managed_decoder().map_err(io::Error::other)?;
     }
     plugins.reset();
     if let Some(name) = plugins.take_failure() {
@@ -723,15 +742,23 @@ impl<'a> PreparedSession<'a> {
         let profile = profile
             .for_tablet(self.selected.spec)
             .map_err(io::Error::other)?;
-        let mut decoder = self.selected.decoder()?;
         let mut source = self.source;
-        let mut auxiliary = source.auxiliary_decoder(self.selected);
+        source.prepare_parsers(self.selected)?;
         if plugins.bind_identifiers(&profile, &self.selected.configuration, &source.identifiers(self.selected))
             .map_err(io::Error::other)? {
             plugins.reset();
             if let Some(name) = plugins.take_failure() {
                 return Err(io::Error::other(format!("Plugin failed during endpoint reset notification: {name}")));
             }
+        }
+        if source.needs_original_parser(self.selected) {
+            plugins.prepare_managed_decoder().map_err(io::Error::other)?;
+        }
+        let prefer_original = plugins.needs_concrete_reports();
+        let mut decoder = self.selected.decoder_for_graph(prefer_original)?;
+        let mut auxiliary = source.auxiliary_decoder(self.selected, prefer_original)?;
+        if decoder.is_managed() || auxiliary.as_ref().is_some_and(RuntimeDecoder::is_managed) {
+            plugins.prepare_managed_decoder().map_err(io::Error::other)?;
         }
         let _debug = DebugDevice::set(self.selected, &source);
         announce_auxiliary(&source, self.selected, status);
