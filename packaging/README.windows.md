@@ -7,7 +7,7 @@
 Keep the `data` folder beside the apps. It contains the plugin dependencies and
 license notices. You can create a shortcut to the UI executable on your desktop.
 
-The Experimental tab lets you choose logical CPUs separately for the
+Open **Settings > Performance settings...** to choose logical CPUs separately for the
 GUI and driver. Use All for automatic scheduling or a list such as `0,2,4-7`.
 Save and apply persists the choices without restarting tablet input. Closing
 the panel stops input and shuts down the daemon process. Minimizing keeps both
