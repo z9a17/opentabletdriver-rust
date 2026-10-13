@@ -143,6 +143,10 @@ abstract class EndpointInstance : IDisposable
             var graph = (SynchronousGraph)GCHandle.FromIntPtr((nint)graphHandle).Target!;
             context = new PluginLoad(path, graph.SourceGeneration, frozen: true);
         } else context = new PluginLoad(path);
+        object? value = null;
+        HostServices? initializedServices = null;
+        try
+        {
         Queue.Owner = config.Value<uint>("owner");
         Pointer = new SessionPointer(Queue, config.Value<bool>("relative"), config.Value<bool>("pen"));
         var keyboard = new SessionKeyboard(Queue, config["keys"] as JObject ?? new JObject());
@@ -155,12 +159,9 @@ abstract class EndpointInstance : IDisposable
             // pointer, such as VMulti, is the exact upstream output dependency.
             if (actualPointer is SessionPointer) actualPointer = null;
         }
-        services = new HostServices(() => { CheckThread(); var timer = new SessionTimer(); timers.Add(timer); return timer; },
+        services = initializedServices = new HostServices(() => { CheckThread(); var timer = new SessionTimer(); timers.Add(timer); return timer; },
             type => type == typeof(IVirtualKeyboard) ? keyboard :
                 actualPointer != null && IsPointerService(type) && type.IsInstanceOfType(actualPointer) ? actualPointer : Pointer.Resolve(type), authoritativeInput: true);
-        object? value = null;
-        try
-        {
             Tablet = Instance.CreateTabletReference(config);
             Type type = context.LoadFromAssemblyPath(path).GetType(config.Value<string>("type_name") ?? "", true)!;
             PluginEligibility.RequireLoadable(type);
@@ -175,7 +176,14 @@ abstract class EndpointInstance : IDisposable
         catch
         {
             Queue.Dispose();
-            try { HostServices.DisposePlugin(value); } finally { foreach (var timer in timers) timer.Dispose(); services.Dispose(); context.Unload(); }
+            try { HostServices.DisposePlugin(value); }
+            catch (Exception error) { Console.Error.WriteLine($".NET endpoint cleanup failed: {error.GetBaseException().Message}"); }
+            finally {
+                foreach (var timer in timers) timer.Dispose();
+                try { initializedServices?.Dispose(); }
+                catch (Exception error) { Console.Error.WriteLine($".NET service cleanup failed: {error.GetBaseException().Message}"); }
+                finally { context.Unload(); }
+            }
             throw;
         }
     }
@@ -213,7 +221,7 @@ abstract class EndpointInstance : IDisposable
         if (disposed) return;
         CheckThread(); disposed = true;
         try { HostServices.DisposePlugin(Value); }
-        finally { Queue.Dispose(); foreach (var timer in timers) timer.Dispose(); services.Dispose(); context.Unload(); }
+        finally { Queue.Dispose(); foreach (var timer in timers) timer.Dispose(); try { services.Dispose(); } finally { context.Unload(); } }
     }
 }
 

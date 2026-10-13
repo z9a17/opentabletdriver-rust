@@ -754,11 +754,14 @@ mod tests {
     impl FakeSource {
         fn new(clock: Rc<Cell<Instant>>, events: Vec<(u64, Event)>) -> Self {
             let start = clock.get();
+            // Capture test waits without charging instrumentation growth to
+            // the successful-report allocation budget (including the final poll).
+            let waits = Vec::with_capacity(events.len() + 1);
             Self {
                 clock,
                 events: events.into(),
                 start,
-                waits: Vec::new(),
+                waits,
             }
         }
     }

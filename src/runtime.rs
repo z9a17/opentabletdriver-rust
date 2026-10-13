@@ -147,9 +147,48 @@ impl Worker {
         self.done.load(Ordering::Acquire) || self.thread.is_finished()
     }
     pub fn join(self) -> Result<(), String> {
+        // A worker may already be blocked sending a lifecycle notice behind
+        // queued preset requests. Closing its receiver releases that send;
+        // cancellation alone cannot wake a blocking channel send.
+        drop(self.notices);
         self.thread
             .join()
             .unwrap_or_else(|_| Err("driver worker panicked".into()))
+    }
+}
+
+#[cfg(test)]
+mod worker_cleanup_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn join_releases_worker_blocked_by_full_notice_queue() {
+        let (sender_thread, sender_owner) = mpsc::sync_channel(1);
+        let worker = Worker::fixture(move |_, notices, _| {
+            for _ in 0..8 { notices.send(Notice::Waiting).unwrap(); }
+            let (sent, completed) = mpsc::sync_channel(1);
+            // Keep this blocking send on a separate fixture thread so that a
+            // regression still lets the worker exit on a bounded timeout.
+            // After join returns, its receiver drops and we join this sender.
+            let sender = std::thread::spawn(move || {
+                let receiver_closed = notices.send(Notice::Waiting).is_err();
+                let _ = sent.send(receiver_closed);
+            });
+            sender_thread.send(sender).unwrap();
+            match completed.recv_timeout(Duration::from_secs(2)) {
+                Ok(true) => Ok(()),
+                Ok(false) => Err("notice unexpectedly fit in full queue".into()),
+                Err(_) => Err("join retained the notice receiver while waiting for the worker".into()),
+            }
+        });
+        let sender = sender_owner.recv_timeout(Duration::from_secs(2)).unwrap();
+        worker.stop().unwrap();
+        let result = worker.join();
+        // Always drain the fixture sender before asserting, including when
+        // the timeout above detects a regression in receiver-drop ordering.
+        sender.join().unwrap();
+        result.unwrap();
     }
 }
 

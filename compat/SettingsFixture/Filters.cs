@@ -7,6 +7,19 @@ using OpenTabletDriver.Plugin.Tablet;
 
 namespace SettingsFixture;
 
+public sealed class ThrowingUnsubscribeFilter : IPositionedPipelineElement<IDeviceReport>, IDisposable
+{
+    Action<IDeviceReport> emit;
+    public PipelinePosition Position => PipelinePosition.PreTransform;
+    public int Disposes { get; private set; }
+    public event Action<IDeviceReport> Emit {
+        add => emit += value;
+        remove => throw new InvalidOperationException("fixture unsubscribe failure");
+    }
+    public void Consume(IDeviceReport report) => emit?.Invoke(report);
+    public void Dispose() => Disposes++;
+}
+
 public abstract class BaseFilter : IPositionedPipelineElement<IDeviceReport>
 {
     [Property("Inherited offset")]

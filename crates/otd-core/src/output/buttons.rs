@@ -1257,6 +1257,7 @@ mod tests {
             "mouse:backward",
             "keys:LeftControl+LeftShift+Z",
             "keys:Escape",
+            "keys:Mute",
         ] {
             let action: ButtonAction = text.parse().unwrap();
             assert_eq!(action.to_string(), text);
@@ -1274,7 +1275,6 @@ mod tests {
             "barrel:0",
             "barrel:4",
             "mouse:none",
-            "keys:Mute",
             "wheel:1",
         ] {
             assert!(bad.parse::<ButtonAction>().is_err(), "{bad:?}");

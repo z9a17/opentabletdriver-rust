@@ -94,11 +94,15 @@ impl Registration {
     pub fn publish(&self,bytes:&[u8]) {
         let endpoint=&self.endpoint;
         if endpoint.subscribers.load(Ordering::Relaxed)==0 || bytes.len()>endpoint.report_length { return; }
+        // Admit the write before publishing its sequence. Otherwise a reader
+        // could count an in-flight successful write as a trailing drop and
+        // advance its cursor past the report before it reaches the ring.
+        let locked=endpoint.ring.try_lock();
         let sequence=endpoint.sequence.fetch_add(1,Ordering::Relaxed)+1;
         let event=EVENT_SEQUENCE.fetch_add(1,Ordering::Relaxed);
         // A slow managed consumer never stalls input. Failed try_lock leaves a
         // sequence gap which the consumer must report, not silently conceal.
-        let Ok(mut ring)=endpoint.ring.try_lock() else { return; };
+        let Ok(mut ring)=locked else { return; };
         let index=ring.write;let offset=index*endpoint.report_length;
         ring.bytes[offset..offset+bytes.len()].copy_from_slice(bytes);
         ring.lengths[index]=bytes.len();ring.sequences[index]=sequence;ring.events[index]=event;
@@ -142,7 +146,15 @@ fn stream<'a>(state:&'a mut Registry,scope:u64,payload:&Value)->Result<&'a mut S
     if stream.scope!=scope || !stream.endpoint.alive.load(Ordering::Acquire) { return Err("Shared endpoint owner changed".into()); }
     stream.expires=Instant::now()+LEASE;Ok(stream)
 }
-fn packets(stream:&mut Stream,after:u64,limit:usize)->Result<Vec<Value>,String> {
+#[derive(serde::Serialize)]
+struct Packet {
+    sequence:u64,event_sequence:u64,data:String,
+    // Loss through this packet, not through later packets in the peeked batch.
+    // This is internal cursor state and must not change the stream wire format.
+    #[serde(skip)]
+    lost:u64,
+}
+fn packets(stream:&mut Stream,after:u64,limit:usize)->Result<Vec<Packet>,String> {
     let endpoint=&stream.endpoint;let ring=endpoint.ring.lock().map_err(|_|"Report ring poisoned")?;
     let after=after.max(stream.cursor);
     let mut slots:Vec<_>=ring.sequences.iter().copied().enumerate().filter(|(_,s)|*s>after).collect();
@@ -150,7 +162,7 @@ fn packets(stream:&mut Stream,after:u64,limit:usize)->Result<Vec<Value>,String> 
     for (index,sequence) in slots.into_iter().take(limit) {
         stream.lost=stream.lost.saturating_add(sequence.saturating_sub(expected));expected=sequence.saturating_add(1);
         let offset=index*endpoint.report_length;let raw=&ring.bytes[offset..offset+ring.lengths[index]];
-        out.push(json!({"sequence":sequence,"event_sequence":ring.events[index],"data":encode(raw)}));stream.cursor=sequence;
+        out.push(Packet{sequence,event_sequence:ring.events[index],data:encode(raw),lost:stream.lost});stream.cursor=sequence;
     }
     // A last dropped report is observable even when no later packet arrives.
     let received=endpoint.sequence.load(Ordering::Acquire);
@@ -243,20 +255,20 @@ fn events(state:&mut Registry,scope:u64,payload:&Value)->Result<Value,String>{
         let observed_lost=stream.lost;
         if items.is_empty() {lease.lost=lease.lost.saturating_add(observed_lost.saturating_sub(lost));}
         else {stream.cursor=cursor;stream.lost=lost;}
-        for item in items {available.push((*key,item,observed_lost));}
+        for item in items {available.push((*key,item));}
     }
-    available.sort_unstable_by_key(|(_,item,_)|item["event_sequence"].as_u64().unwrap_or(0));
+    available.sort_unstable_by_key(|(_,item)|item.event_sequence);
     let mut bytes=0;
-    for (key,item,lost) in available.into_iter().take(limit) {
+    for (key,item) in available.into_iter().take(limit) {
         let stream=lease.streams.get_mut(&key).unwrap();let endpoint=&stream.endpoint;
         let next_sequence=lease.cursor.checked_add(1).ok_or("Managed event sequence exhausted")?;
         let event=json!({"sequence":next_sequence,"session_id":endpoint.session_id,
             "device_generation":endpoint.generation,"reader_generation":endpoint.epoch,"auxiliary":endpoint.auxiliary,
-            "parser":endpoint.parser,"raw":item["data"],"tablet":endpoint.tablet.lock().map_err(|_|"Endpoint metadata poisoned")?.clone()});
+            "parser":endpoint.parser,"raw":item.data,"tablet":endpoint.tablet.lock().map_err(|_|"Endpoint metadata poisoned")?.clone()});
         let size=serde_json::to_vec(&event).map_err(|e|e.to_string())?.len();
         if bytes+size>3*1024*1024{break;}bytes+=size;
-        lease.lost=lease.lost.saturating_add(lost.saturating_sub(stream.lost));stream.lost=lost;
-        stream.cursor=item["sequence"].as_u64().unwrap();lease.cursor=next_sequence;out.push(event);
+        lease.lost=lease.lost.saturating_add(item.lost.saturating_sub(stream.lost));stream.lost=item.lost;
+        stream.cursor=item.sequence;lease.cursor=next_sequence;out.push(event);
     }
     lease.streams.retain(|_,stream|stream.endpoint.alive.load(Ordering::Acquire)
         || stream.cursor<stream.endpoint.sequence.load(Ordering::Acquire));
@@ -269,4 +281,94 @@ fn decode(data:&str)->Result<Vec<u8>,String>{
     if data.is_empty()||data.len()>131070||data.len()%2!=0{return Err("Invalid endpoint report hex length".into());}
     fn nibble(byte:u8)->Option<u8>{match byte{b'0'..=b'9'=>Some(byte-b'0'),b'a'..=b'f'=>Some(byte-b'a'+10),b'A'..=b'F'=>Some(byte-b'A'+10),_=>None}}
     data.as_bytes().chunks_exact(2).map(|b|Ok((nibble(b[0]).ok_or("Invalid endpoint hex")?<<4)|nibble(b[1]).ok_or("Invalid endpoint hex")?)).collect()
+}
+
+#[cfg(all(test,windows))]
+mod tests {
+    use super::*;
+
+    // An event handle is sufficient: these fixtures exercise only the owned
+    // report ring, never device I/O, the global registry, or managed code.
+    fn endpoint(epoch:u64,auxiliary:bool,reports:&[(u64,u64)],received:u64)->Arc<Endpoint> {
+        let handle=crate::hid::OwnedHandle::new(unsafe {
+            windows_sys::Win32::System::Threading::CreateEventW(std::ptr::null(),1,0,std::ptr::null())
+        }).unwrap();
+        Arc::new(Endpoint {
+            io:Arc::new(SharedIo::new(handle,None,0,0).unwrap()),output:OutputGate::new().unwrap(),
+            epoch,session_id:"fixture".into(),generation:1,identifier:Value::Null,configuration:Value::Null,
+            path:format!("fixture:{epoch}:{auxiliary}"),parser:"fixture".into(),auxiliary,
+            tablet:Mutex::new(json!({"Name":"fixture"})),report_length:1,
+            alive:AtomicBool::new(true),initialized:AtomicBool::new(true),subscribers:AtomicUsize::new(1),
+            sequence:AtomicU64::new(received),ring:Mutex::new(Ring {
+                bytes:reports.iter().map(|(sequence,_)|*sequence as u8).collect(),
+                lengths:vec![1;reports.len()].into_boxed_slice(),
+                sequences:reports.iter().map(|(sequence,_)|*sequence).collect(),
+                events:reports.iter().map(|(_,event)|*event).collect(),write:0,
+            }),
+        })
+    }
+
+    fn stream(endpoint:Arc<Endpoint>)->Stream {
+        Stream{endpoint,scope:7,expires:Instant::now()+LEASE,cursor:0,lost:0}
+    }
+
+    #[test]
+    fn partial_event_batches_count_each_gap_once_and_preserve_retries() {
+        let pen=endpoint(1,false,&[(1,1),(3,3)],4);
+        let auxiliary=endpoint(1,true,&[(1,2),(2,4)],2);
+        let mut state=Registry::default();
+        state.events.insert(7,EventLease {
+            streams:HashMap::from([((1,false),stream(pen)),((1,true),stream(auxiliary))]),
+            expires:Instant::now()+LEASE,cursor:0,lost:0,last_request:None,last_reply:None,
+        });
+        // Each source can supply two reports, but only two merged reports fit.
+        let first=events(&mut state,7,&json!({"cursor":0,"limit":2})).unwrap();
+        assert_eq!(first["next_sequence"],2);
+        assert_eq!(first["lost_reports"],0,"the pen gap is after the delivered prefix");
+        assert_eq!(first["events"][0]["raw"],"01");
+        assert_eq!(first["events"][1]["auxiliary"],true);
+        assert_eq!(events(&mut state,7,&json!({"cursor":0,"limit":2})).unwrap(),first);
+
+        let second=events(&mut state,7,&json!({"cursor":2,"limit":2})).unwrap();
+        assert_eq!(second["next_sequence"],4);
+        assert_eq!(second["lost_reports"],1,"the gap is committed with pen sequence 3");
+        assert_eq!(second["events"][0]["raw"],"03");
+        assert_eq!(second["events"][1]["raw"],"02");
+
+        let final_batch=events(&mut state,7,&json!({"cursor":4,"limit":2})).unwrap();
+        assert_eq!(final_batch["events"],json!([]));
+        assert_eq!(final_batch["lost_reports"],2,"a trailing dropped report is counted once");
+        assert_eq!(events(&mut state,7,&json!({"cursor":4,"limit":2})).unwrap(),final_batch);
+    }
+
+    #[test]
+    fn stream_reports_keep_wire_shape_and_count_trailing_loss() {
+        let mut source=stream(endpoint(2,false,&[(1,1),(3,3)],4));
+        let reports=packets(&mut source,0,8).unwrap();
+        assert_eq!(serde_json::to_value(reports).unwrap(),json!([
+            {"sequence":1,"event_sequence":1,"data":"01"},
+            {"sequence":3,"event_sequence":3,"data":"03"},
+        ]));
+        assert_eq!((source.cursor,source.lost),(4,2));
+        assert!(packets(&mut source,4,8).unwrap().is_empty());
+        assert_eq!((source.cursor,source.lost),(4,2));
+    }
+
+    #[test]
+    fn busy_tap_never_blocks_publish_and_records_exactly_one_gap() {
+        let endpoint=endpoint(3,false,&[(0,0)],0);
+        let registration=Registration{endpoint:Arc::clone(&endpoint)};
+        let mut source=stream(Arc::clone(&endpoint));
+        let guard=endpoint.ring.lock().unwrap();
+        crate::test_alloc::assert_no_allocations(||registration.publish(&[5]));
+        drop(guard);
+        assert!(packets(&mut source,0,8).unwrap().is_empty());
+        assert_eq!((source.cursor,source.lost),(1,1));
+
+        crate::test_alloc::assert_no_allocations(||registration.publish(&[6]));
+        let reports=packets(&mut source,1,8).unwrap();
+        assert_eq!(reports.len(),1);
+        assert_eq!(reports[0].data,"06");
+        assert_eq!((source.cursor,source.lost),(2,1));
+    }
 }

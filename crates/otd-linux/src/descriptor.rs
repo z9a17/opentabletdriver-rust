@@ -23,7 +23,7 @@ struct Globals {
 }
 
 /// Parses the short and long items of a report descriptor. Returns `None`
-/// for a truncated descriptor.
+/// for a truncated descriptor or overflowing report bit count.
 pub fn lengths(descriptor: &[u8]) -> Option<Lengths> {
     // Bits per report ID for input, output and feature reports.
     let mut bits: [BTreeMap<u8, u32>; 3] = Default::default();
@@ -59,8 +59,8 @@ pub fn lengths(descriptor: &[u8]) -> Option<Lengths> {
                     0x9 => 1,
                     _ => 2,
                 };
-                *bits[kind].entry(globals.id).or_default() +=
-                    globals.size.saturating_mul(globals.count);
+                let current = bits[kind].entry(globals.id).or_default();
+                *current = current.checked_add(globals.size.checked_mul(globals.count)?)?;
             }
             (1, 0x7) => globals.size = value,
             (1, 0x8) => globals.id = value as u8,
@@ -132,5 +132,16 @@ mod tests {
         ];
         assert_eq!(lengths(&descriptor).unwrap().input, 2);
         assert_eq!(lengths(&[0x75]), None);
+    }
+
+    #[test]
+    fn overflowing_report_fields_are_rejected() {
+        // A single field must fit before it is combined with earlier fields.
+        assert_eq!(lengths(&[0x77, 255, 255, 255, 255, 0x95, 2, 0x81, 2]), None);
+        // Each field fits, but their sum does not. This used to panic in debug
+        // builds and wrap into a misleading short report length in release.
+        assert_eq!(lengths(&[0x77, 255, 255, 255, 255, 0x95, 1, 0x81, 2, 0x81, 2]), None);
+        // The largest representable field can still be normalized safely.
+        assert_eq!(lengths(&[0x77, 255, 255, 255, 255, 0x95, 1, 0x81, 2]).unwrap().input, 536_870_913);
     }
 }

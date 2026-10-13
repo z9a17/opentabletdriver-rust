@@ -29,6 +29,8 @@ python scripts/update-test-build.py
 
 The default destination is `E:/OTD RUST TEST`. The command builds the Windows apps and managed bridge, verifies the package hashes and source revision, and copies runtime files into that folder. Extra local files are preserved. `data/TEST-BUILD.json` identifies the version, branch, commit and build time, so builds with the same package version can be distinguished. This does not reserve a release version, merge a PR, or publish assets.
 
+If that build is running, use `--destination` with a separate test folder and leave the active folder intact. Before replacing any runtime file, Windows preflight rejects existing mapped executables, loaded DLLs and other files it cannot open for replacement. It does not stop processes. Copying is still a sequence of file replacements; a new process or later I/O failure can interrupt it, so preflight is not an atomic installation guarantee.
+
 The updater never launches or stops a driver. Close a running test build yourself before replacing its executables. The test apps use the existing saved settings in `%LOCALAPPDATA%\OpenTabletDriverRust`; copying a build does not edit them. Running the test app and saving changes uses those settings as usual.
 
 ## Prepare the source

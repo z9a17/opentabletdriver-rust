@@ -16,8 +16,9 @@ running. Opening the panel again starts a new daemon with the saved choices.
 Stop other tablet drivers before using this driver. Only the Wacom PTH-660 has
 confirmed Windows hardware support; other tablets remain experimental.
 
-The native panel and driver need no .NET runtime. Existing OpenTabletDriver
-.NET filters, output modes, bindings, tools and custom report parsers need
+Native-only profiles and panel workflows need no .NET runtime. Existing OpenTabletDriver
+.NET filters, output modes, bindings, tools and custom report parsers, original
+RPC hosting, registered type discovery and default-store construction need
 Microsoft's **x64 .NET 8 runtime or newer**:
 [download .NET](https://dotnet.microsoft.com/en-us/download/dotnet/8.0).
 

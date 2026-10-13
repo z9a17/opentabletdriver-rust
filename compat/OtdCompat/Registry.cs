@@ -256,13 +256,13 @@ sealed class ParserSession : IDisposable
             if (id <= 0) throw new InvalidOperationException("Managed source parser identity exhausted.");
             Id = (ulong)id;
             if (!Sources.TryAdd(Id, this)) throw new InvalidOperationException("Duplicate managed source identity.");
-        } catch { try { HostServices.DisposePlugin(parser); } finally { services?.Dispose(); if (generation != null) InstalledRegistry.Release(generation); } throw; }
+        } catch { try { HostServices.DisposePlugin(parser); } finally { try { services?.Dispose(); } finally { if (generation != null) InstalledRegistry.Release(generation); } } throw; }
     }
     void Check() { ObjectDisposedException.ThrowIf(disposed, this); if (Environment.CurrentManagedThreadId != ownerThread) throw new InvalidOperationException("Parser instances belong to their background stream thread."); }
     internal void Reset()
     {
         Check(); Pending = null; sourceReport = null; sourceConsumed = true;
-        try { HostServices.DisposePlugin(parser); } finally { parser = null; services?.Dispose(); services = null; }
+        try { HostServices.DisposePlugin(parser); } finally { parser = null; try { services?.Dispose(); } finally { services = null; } }
         object? created = null;
         try
         {
@@ -270,7 +270,7 @@ sealed class ParserSession : IDisposable
             services = new HostServices(); services.ConfigureSource(new JObject { ["source_session"] = sourceSession }); services.Inject(type, created);
             parser = (IReportParser<IDeviceReport>)created;
         }
-        catch { try { HostServices.DisposePlugin(created); } finally { services?.Dispose(); services = null; } throw; }
+        catch { try { HostServices.DisposePlugin(created); } finally { try { services?.Dispose(); } finally { services = null; } } throw; }
     }
     internal unsafe int Decode(byte* raw, uint length)
     {
@@ -323,7 +323,7 @@ sealed class ParserSession : IDisposable
     {
         if (disposed) return; Check(); disposed = true; Sources.TryRemove(Id, out _); sourceReport = null; sourceConsumed = true;
         try { HostServices.DisposePlugin(parser); }
-        finally { parser = null; Pending = null; services?.Dispose(); if (generation != null) InstalledRegistry.Release(generation); }
+        finally { parser = null; Pending = null; try { services?.Dispose(); } finally { if (generation != null) InstalledRegistry.Release(generation); } }
     }
 }
 

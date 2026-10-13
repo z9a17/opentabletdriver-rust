@@ -282,12 +282,12 @@ sealed class ProviderParser : IReportParser<IDeviceReport>, IDisposable
         object? value = null;
         try { value = HostServices.Construct(selected.Type) ?? throw new InvalidOperationException("Cannot construct original report parser.");
             services.Inject(selected.Type, value); parser = (IReportParser<IDeviceReport>)value; }
-        catch { try { HostServices.DisposePlugin(value); } finally { services.Dispose(); if (generation != null) InstalledRegistry.Release(generation); } throw; }
+        catch { try { HostServices.DisposePlugin(value); } finally { try { services.Dispose(); } finally { if (generation != null) InstalledRegistry.Release(generation); } } throw; }
     }
     public IDeviceReport Parse(byte[] data) { using var reportScope = ServiceClient.Report(); lock (gate) { ObjectDisposedException.ThrowIf(disposed, this); return parser.Parse(data); } }
     public void Dispose() { lock (gate) { if (disposed) return; disposed = true;
         try { HostServices.DisposePlugin(parser); }
-        finally { services.Dispose(); if (generation != null) InstalledRegistry.Release(generation); }
+        finally { try { services.Dispose(); } finally { if (generation != null) InstalledRegistry.Release(generation); } }
     } }
 }
 

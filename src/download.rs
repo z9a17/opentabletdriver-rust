@@ -470,6 +470,7 @@ mod tests {
 
     /// A setup script can send GitHub's storage host through a proxy and the
     /// API directly; each redirect is asked separately.
+    #[cfg(windows)]
     #[test]
     fn a_setup_script_picks_the_proxy_per_host() {
         use std::io::{Read, Write};

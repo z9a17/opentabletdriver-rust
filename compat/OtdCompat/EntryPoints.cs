@@ -206,8 +206,9 @@ sealed class Instance : IDisposable
             finally
             {
                 foreach (var timer in timers) timer.Dispose();
-                services?.Dispose();
-                context.Unload();
+                try { services?.Dispose(); }
+                catch (Exception error) { Console.Error.WriteLine($".NET service cleanup failed: {error.GetBaseException().Message}"); }
+                finally { context.Unload(); }
             }
             throw;
         }
@@ -440,13 +441,17 @@ sealed class Instance : IDisposable
     {
         if (Interlocked.Exchange(ref disposed, 1) != 0) return;
         AttachAsyncSink(null);
-        filter.Emit -= OnEmit;
-        try { HostServices.DisposePlugin(filter); }
+        // Event accessors are plugin code too. A rejecting unsubscribe must
+        // not bypass the plugin, injected services, or assembly lease cleanup.
+        try { filter.Emit -= OnEmit; }
         finally
         {
-            foreach (var timer in timers) timer.Dispose();
-            services?.Dispose();
-            context.Unload();
+            try { HostServices.DisposePlugin(filter); }
+            finally {
+                foreach (var timer in timers) timer.Dispose();
+                try { services?.Dispose(); }
+                finally { context.Unload(); }
+            }
         }
     }
 }
