@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn stale_inspection_and_modal_guards_reject_edits_selection_reuse_and_shutdown() {
         READY.with(|ready| *ready.borrow_mut() = None);
-        let mut app = super::super::area_preview_tests::fixture(ptr::null_mut());
+        let mut app = super::super::app::area_preview_tests::fixture(ptr::null_mut());
         let guard = Guard { token: app.managed_token, revision: app.edit_revision, generation: app.metadata_generation,
             path: app.profile_path.clone(), target: Target::Output, current: None };
         assert!(guard.valid(&app));

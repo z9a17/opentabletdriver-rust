@@ -507,12 +507,7 @@ impl App {
         let inner_width = area.right - area.left - s(24);
         let text_height = canvas::wrapped_height(dc, self.style().fonts.ui, text, inner_width);
         let gap = s(8);
-        let label_width = targets
-            .iter()
-            .map(|target| measure(self.style().fonts.ui, &target.label()).0)
-            .max()
-            .unwrap_or(0);
-        let columns = ((inner_width + gap) / (label_width + s(200) + gap)).max(1) as usize;
+        let columns = self.binding_grid_columns(&targets, draw::inset(area, s(12), 0), measure);
         let lines = targets.len().div_ceil(columns) as i32;
         let grid = if lines > 0 { lines * (s(38) + gap) } else { 0 };
         let bottom = (area.top + s(24) + s(12) + grid + text_height + s(14)).min(area.bottom);
@@ -605,8 +600,7 @@ impl App {
         // Express keys.
         {
             let inner_width = content.right - content.left - s(24);
-            let label_width = keys.iter().map(|t| measure(font, &t.label()).0).max().unwrap_or(0);
-            let columns = ((inner_width + s(8)) / (label_width + s(200) + s(8))).max(1) as usize;
+            let columns = self.binding_grid_columns(&keys, draw::inset(content, s(12), 0), measure);
             let lines = keys.len().div_ceil(columns) as i32;
             let text = keys.is_empty().then(|| self.no_rows_text("express keys"));
             let body_height = match &text {
@@ -659,11 +653,12 @@ impl App {
                     )
                 })
                 .collect();
-            let button_lines = buttons.len().div_ceil(2) as i32;
+            let grid_area = draw::inset(content, s(12), 0);
+            let rotation_lines = rotation.len().div_ceil(self.binding_grid_columns(&rotation, grid_area, measure)) as i32;
+            let button_lines = buttons.len().div_ceil(self.binding_grid_columns(&buttons, grid_area, measure)) as i32;
             let height = s(24)
                 + s(24)
-                + s(38)
-                + s(8)
+                + rotation_lines * (s(38) + s(8))
                 + if fields.is_empty() { 0 } else { s(38) + s(8) }
                 + button_lines * (s(38) + s(8))
                 - s(8);

@@ -2,7 +2,7 @@
 //! hidden owner and synthetic device results. No app startup or daemon client.
 use super::*;
 
-pub(super) fn fixture(hwnd: HWND) -> App {
+pub(in crate::ui) fn fixture(hwnd: HWND) -> App {
     let null = ptr::null_mut();
     let fonts = FontSet::new(96);
     LOOK.with(|slot| *slot.borrow_mut() = Some(Look {
@@ -255,6 +255,98 @@ fn placed(app: &App, controls: &[HWND]) -> Vec<RECT> {
 
 fn overlaps(a: &RECT, b: &RECT) -> bool {
     a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
+}
+
+#[test]
+fn pth660_binding_rows_remain_visible_across_window_sizes() {
+    use bindings::BindingTarget;
+    let window = unsafe { CreateWindowExW(0, wide("STATIC").as_ptr(), wide("Binding resize").as_ptr(),
+        WS_POPUP, 0, 0, 962, 756, ptr::null_mut(), ptr::null_mut(), GetModuleHandleW(ptr::null()), ptr::null()) };
+    assert!(!window.is_null());
+    let mut app = fixture(window);
+    app.c.tabs.clear();
+    app.create_controls().unwrap();
+    discover(&mut app, Ok(vec!["Wacom PTH-660".into()]));
+    for (width, height) in [(962, 756), (2560, 1360), (820, 600)] {
+        unsafe { SetWindowPos(window, ptr::null_mut(), 0, 0, width, height, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE); }
+        app.select_tab(Tab::Aux);
+        app.layout();
+        let controls: Vec<_> = app.binding_rows.iter().filter(|row| matches!(row.target,
+            BindingTarget::Aux(_) | BindingTarget::Clockwise(_) | BindingTarget::CounterClockwise(_) | BindingTarget::WheelButton(_, _)))
+            .flat_map(|row| [row.hwnd, row.label]).chain(app.wheel_fields.iter().map(|field| field.hwnd)).collect();
+        let rects = placed(&app, &controls);
+        assert_eq!(rects.len(), 24, "all eight keys and ring controls at {width}x{height}");
+        for (index, a) in rects.iter().enumerate() {
+            assert!(a.left >= 0 && a.right <= width && a.bottom <= height - 48);
+            for b in &rects[index + 1..] { assert!(!overlaps(a, b)); }
+        }
+    }
+    drop(app);
+    LOOK.with(|slot| slot.borrow_mut().take());
+    unsafe { DestroyWindow(window); }
+}
+
+#[test]
+fn empty_tools_clear_actions_from_selected_filter() {
+    let window = unsafe { CreateWindowExW(0, wide("STATIC").as_ptr(), wide("Empty tools").as_ptr(),
+        WS_POPUP, 0, 0, 962, 756, ptr::null_mut(), ptr::null_mut(), GetModuleHandleW(ptr::null()), ptr::null()) };
+    assert!(!window.is_null());
+    let mut app = fixture(window);
+    app.c.tabs.clear();
+    app.create_controls().unwrap();
+    app.select_tab(Tab::Filters);
+    assert_ne!(unsafe { IsWindowEnabled(app.c.filter_defaults) }, 0);
+    app.select_tab(Tab::Tools);
+    assert!(app.selected_target().is_none());
+    assert_eq!(unsafe { IsWindowEnabled(app.c.filter_defaults) }, 0);
+    assert_eq!(unsafe { IsWindowEnabled(app.c.remove_filter) }, 0);
+    app.select_tab(Tab::Filters);
+    assert_ne!(unsafe { IsWindowEnabled(app.c.filter_defaults) }, 0);
+    drop(app);
+    LOOK.with(|slot| slot.borrow_mut().take());
+    unsafe { DestroyWindow(window); }
+}
+
+#[test]
+fn partial_page_paint_matches_full_page_pixels() {
+    let window = unsafe { CreateWindowExW(0, wide("STATIC").as_ptr(), wide("Partial painting").as_ptr(),
+        WS_POPUP, 0, 0, 962, 756, ptr::null_mut(), ptr::null_mut(), GetModuleHandleW(ptr::null()), ptr::null()) };
+    assert!(!window.is_null());
+    let mut app = fixture(window);
+    app.c.tabs.clear();
+    app.create_controls().unwrap();
+    discover(&mut app, Ok(vec!["Wacom PTH-660".into()]));
+    app.status = "Driver connected".into();
+    let client = client_rect(window);
+    for palette in [Palette::dark(), Palette::light(), Palette::high_contrast()] {
+        update_look(|look| look.style.palette = palette);
+        for tab in [Tab::Output, Tab::Filters, Tab::Pen, Tab::Aux, Tab::Console] {
+            app.select_tab(tab);
+            let mut full = canvas::Canvas::new(ptr::null_mut(), client).unwrap();
+            app.paint_items(&mut full, client);
+            let expected = full.to_bmp();
+            let status = app.items.iter().find_map(|item| match item {
+                Item::Status(r) => Some(*r), _ => None,
+            }).unwrap();
+            // Include clipped shapes/text in the middle of a page as well as
+            // the narrow status strip that refreshes while the panel is idle.
+            for clip in [status, rect(101, 103, 423, 267)] {
+                let mut partial = canvas::Canvas::new(ptr::null_mut(), clip).unwrap();
+                app.paint_items(&mut partial, client);
+                let actual = partial.to_bmp();
+                let width = (clip.right - clip.left) as usize;
+                for y in clip.top..clip.bottom {
+                    let full_offset = 54 + (y as usize * client.right as usize + clip.left as usize) * 4;
+                    let partial_offset = 54 + (y - clip.top) as usize * width * 4;
+                    assert_eq!(&actual[partial_offset..partial_offset + width * 4],
+                        &expected[full_offset..full_offset + width * 4], "{tab:?}, row {y}");
+                }
+            }
+        }
+    }
+    drop(app);
+    LOOK.with(|slot| slot.borrow_mut().take());
+    unsafe { DestroyWindow(window); }
 }
 
 #[test]

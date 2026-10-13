@@ -6,7 +6,10 @@ impl App {
         let mut ps = PAINTSTRUCT::default();
         let hdc = unsafe { BeginPaint(self.hwnd, &mut ps) };
         let client = client_rect(self.hwnd);
-        if let Some(mut canvas) = canvas::Canvas::new(hdc, client) {
+        // Status polling and focus changes usually invalidate a small strip.
+        // Canvas uses window coordinates and clips drawing to its own buffer;
+        // allocate/rasterize only the update rectangle, not the entire page.
+        if let Some(mut canvas) = canvas::Canvas::new(hdc, ps.rcPaint) {
             self.paint_items(&mut canvas, client);
             canvas.present(hdc);
         }

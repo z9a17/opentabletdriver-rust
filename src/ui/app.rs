@@ -4,7 +4,7 @@ use super::*;
 
 #[cfg(test)]
 #[path = "area_preview_tests.rs"]
-mod area_preview_tests;
+pub(super) mod area_preview_tests;
 
 impl App {
     pub(super) fn style(&self) -> Style {
@@ -894,6 +894,10 @@ impl App {
             }
         }
         let Some(target) = self.selected_target() else {
+            unsafe {
+                EnableWindow(self.c.remove_filter, 0);
+                EnableWindow(self.c.filter_defaults, 0);
+            }
             return;
         };
         set_text(self.c.filter_enable, "Enabled");
@@ -2335,6 +2339,7 @@ impl App {
     // ----- Driver -----------------------------------------------------------------------
 
     pub(super) fn set_driver_state(&mut self, state: DriverState) {
+        let changed = self.driver != state;
         let was_connected = self.driver == DriverState::Connected;
         self.driver = state;
         let running = self.running.is_some();
@@ -2347,7 +2352,11 @@ impl App {
         if was_connected != (state == DriverState::Connected) {
             self.update_title();
         }
-        self.invalidate_status();
+        // Polling repeats the same state every 500 ms. Logs, discovery and
+        // layout changes invalidate their own status updates.
+        if changed {
+            self.invalidate_status();
+        }
         if self.in_tray {
             tray::set_tip(self.hwnd, &self.tray_tip());
         }
