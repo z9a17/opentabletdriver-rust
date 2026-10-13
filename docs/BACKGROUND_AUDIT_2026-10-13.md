@@ -23,6 +23,7 @@ this review, and unrelated icon changes in the shared checkout are excluded.
 | Unix descriptor parsing | Reject report-size arithmetic overflow instead of wrapping or saturating malformed descriptors into plausible capabilities. |
 | Unix service requests | Apply expiry and retirement checks to both ordinary mailbox receives and the race recheck. Expired calls are drained iteratively. |
 | Local test deployment | Check existing Windows payloads for mapped/locked files before replacing any file, avoiding partial metadata/dependency updates when the test executable is already running. This preflight is not a full multi-file transaction; use a separate destination if the old build must remain running. |
+| Idle tray updates | Skip identical tooltip updates instead of converting text and calling `Shell_NotifyIconW` on every 500 ms status snapshot. Cache successful updates only; icon creation and Explorer recovery always reapply the icon and text. |
 
 The successful native report path remains allocation-free in the exercised
 fixtures. Reader storage is allocated at setup. Fairness reuses the combined
@@ -97,5 +98,91 @@ behavior, and native Linux/macOS execution still need direct evidence. The new
 Unix mailbox fixtures were compiled, not executed on a Unix OS. Managed lease
 release is tested; eventual collectible-assembly garbage collection is not.
 
-Live Windows results and final build provenance will be recorded after the
-authorized local review.
+## Authorized live Windows review
+
+The owner subsequently authorized computer use with the connected Wacom PTH-660.
+The first live package came from clean commit
+`1eda08ef1e790c1dcb562d8601ee9f300390845e`; it excluded unrelated working-tree icon
+edits. It was exercised at the owner's saved window size and violet accent.
+
+- Startup detected the tablet and its auxiliary endpoint. Status remained
+  `running`, with no reported driver error through repeated Save/Apply cycles.
+- Saving the third filter kept it selected. Friendly plugin names, units and
+  saved values populated after metadata loading.
+- All eight ExpressKeys and ring controls fit in the Buttons page. The Mouse
+  tool selection survived visiting Pen and returning to Buttons. A binding
+  dropdown closed on a second click.
+- Plugin manager headers, rows, details and buttons were inspected in dark and
+  light themes. Columns fit without a horizontal scrollbar. Selecting the
+  installed Radial Follow plugin populated its details and enabled its actions.
+  Installation/removal was not performed.
+- Performance settings opened from Settings and its Back navigation worked.
+  Invalid area text displayed a validation message; leaving the field restored
+  its last valid value. Save subsequently applied that valid profile.
+- The debugger opened three times without terminating the driver; its
+  statistics panel and dark layout rendered correctly. It showed zero reports
+  while the pen was idle/out of range. This does not certify active capture,
+  physical report timing, pen movement or ExpressKey delivery.
+- Clicking the visible main window's close button exited both owned processes.
+  An earlier `.NET Process.CloseMainWindow` attempt while the UI was hidden in
+  the tray did not close them; that helper attempt is recorded separately and
+  is not used as evidence for the actual close-button behavior.
+- No matching Application Error/Windows Error Reporting event was found for
+  the test executables during this first session.
+
+All 11 original settings/plugin files were backed up and verified by SHA-256.
+The three device-profile files created by testing Save were archived with the
+after-state before removal. Original settings were restored before the final
+package retest.
+
+### Idle observations
+
+These bounded CPU observations used the connected tablet without pen motion;
+they are not throughput or input-latency benchmarks. The computer-use observer
+was disconnected for sampling. Percentages below are fractions of one logical
+CPU, not the whole machine.
+
+| First live package scenario | 30-second UI CPU time | One-core utilization |
+| --- | --- | --- |
+| Visible Area, first sample | 1.296875 s | 4.32% |
+| Visible Area, settled repeat | 1.437500 s | 4.79% |
+| Minimized to tray | 1.250000 s | 4.17% |
+
+The daemon used 0 and 0.03125 CPU seconds in the two visible-window samples.
+In the settled repeat, UI handles, threads and working set stayed constant;
+daemon handles, threads and working set also stayed constant. This brief
+observation does not exclude long-running leaks.
+
+Source review found the redundant tray-tooltip shell update independently of
+these samples. The samples do not establish how much of their CPU time came
+from that update.
+
+The final package's two 30-second visible-Area samples used 0.953125 and
+1.421875 UI CPU seconds (3.18% and 4.74% of one core), and 0.0625 and 0 daemon
+CPU seconds. The settled second sample had unchanged handles, threads and
+working set for both processes. This does not demonstrate a clear CPU
+improvement from the tray cache. Further idle-UI optimization should start with
+sampled call stacks in a controlled session rather than attributing this cost
+to rendering or tablet latency from these totals.
+
+### Final package and restoration
+
+The native Windows release-mode apps and managed dependencies were rebuilt
+from clean commit `2ca106377ee179d77407ff1321865219b19b02e1` and copied to
+`E:/OTD RUST TEST`. Later PR changes update this audit documentation only.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Windows test ZIP | `1a72a514f36331a7a97d67579091f74e2dd09901242112b73ce8aeb2e39a2a8f` |
+| UI executable | `516fa2d8548495aba74cf67bb035a6408c3e889012781e2e53b785864de32bcd` |
+| Driver executable | `d4fe6395e9cdce5411801dfc16aee965b7d23b2cf266fd0bd0bb90da6138e83c` |
+
+With original settings restored, the final build detected the PTH-660, opened
+its debugger, and reported no driver error. Clicking the main window's close
+button while the debugger remained open exited the debugger, UI and daemon.
+All 11 original settings/plugin files were restored and SHA-256 verified again;
+no test app or daemon was left running. Local after-state archives, screenshots,
+status snapshots, process samples and build logs remain in the audit folder.
+
+This is an unmerged Windows test build, not a release. Physical input acceptance
+and the other platforms' runtime checks remain open as described above.

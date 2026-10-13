@@ -1,5 +1,10 @@
 # Windows desktop review, 12–13 October 2026
 
+Follow-up: the [13 October reliability review](BACKGROUND_AUDIT_2026-10-13.md)
+addresses the reader-starvation issue described below and records later live
+checks of the navigation cleanup and debugger. This document preserves the
+earlier observations and their limits.
+
 Baseline: published Windows x64 **v0.18.0**, source
 `ef331b9e2bbac3abd825d363ffd0e80e2b9a58d3`. The local release archive SHA-256
 matched the published asset:
