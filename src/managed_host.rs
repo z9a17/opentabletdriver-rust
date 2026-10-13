@@ -69,9 +69,13 @@ impl Owner {
             }
         }).map_err(|error| error.to_string())?;
         let _ = backend.observer_thread.set(observer.thread().clone());
-        let tools=crate::tool_host::Owner::start()?;
+        // Establish teardown ownership before any later startup step can fail.
+        // Dropping a bare JoinHandle would leave the parked observer and its
+        // retained backend alive after a failed tool-owner initialization.
+        let mut owner = Self { tools: None, host: Some(host), stop, observer: Some(observer), backend };
+        owner.tools = Some(crate::tool_host::Owner::start()?);
         if let Some(settings)=crate::upstream_rpc::cached_original_settings() {crate::tool_host::initialize_document((*settings).clone())?;}
-        Ok(Self { tools:Some(tools),host: Some(host), stop, observer: Some(observer), backend })
+        Ok(owner)
     }
 }
 impl Drop for Owner {

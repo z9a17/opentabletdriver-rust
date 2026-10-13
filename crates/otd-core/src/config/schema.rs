@@ -1525,7 +1525,7 @@ mod managed_export_tests {
         json!({"Profiles":[{"Tablet":"Wacom PTH-660",
             "OutputMode":{"Path":"OpenTabletDriver.Desktop.Output.AbsoluteMode","Enable":true},
             "AbsoluteModeSettings":{"Display":{"Width":2560,"Height":1440,"X":1280,"Y":720,"Rotation":0},
-                "Tablet":{"Width":224,"Height":148,"X":112,"Y":74,"Rotation":0},"EnableClipping":true},
+                "Tablet":{"Width":224,"Height":148,"X":112,"Y":74,"Rotation":0},"EnableClipping":true,"EnableAreaLimiting":false},
             "Bindings":{},"Filters":filters}],"Tools":tools,"Future":null}).to_string()
     }
     fn plugin(name: &str, kind: PluginKind, settings: &str, enabled: bool) -> PluginConfig {

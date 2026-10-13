@@ -1,4 +1,4 @@
-# Windows application icon
+# Project application artwork
 
 `opentabletdriver.svg` is the application icon: a pen with a rust-orange grip
 drawing on a tablet's mapped active area, on a Windows-blue tile.
@@ -7,10 +7,14 @@ thicker strokes, so it stays legible at 16-24 pixels in the notification area
 and title bar. Both use this project's GPL-3.0-only license.
 
 `opentabletdriver.ico` is generated from them with
-`python scripts/generate-app-icon.py` (requires `resvg`, installed with
+`python scripts/generate-app-icon.py --frontend-assets` (requires `resvg`, installed with
 `cargo install resvg`). It contains PNG images at 16, 20 and 24 pixels from the
 small drawing and 32, 40, 48, 64, 96, 128 and 256 pixels from the full one.
 Edit the SVGs, then regenerate the icon; do not edit the `.ico` by hand.
+The `--frontend-assets` option also writes the matching ICO and 256-pixel PNG
+to `compat/UpstreamUX/Assets` for the Linux/macOS frontends. These replace the
+upstream artwork while retaining its resource names; see the frontend's
+`PROVENANCE.md`. They do not add a Linux desktop entry or macOS app bundle.
 
 `build.rs` embeds it as Windows icon resource 1 in both executables. The native
 panel loads owned copies at the current DPI for its window, taskbar, tray and

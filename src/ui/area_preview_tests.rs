@@ -2,7 +2,7 @@
 //! hidden owner and synthetic device results. No app startup or daemon client.
 use super::*;
 
-pub(super) fn fixture(hwnd: HWND) -> App {
+pub(in crate::ui) fn fixture(hwnd: HWND) -> App {
     let null = ptr::null_mut();
     let fonts = FontSet::new(96);
     LOOK.with(|slot| *slot.borrow_mut() = Some(Look {
@@ -17,7 +17,7 @@ pub(super) fn fixture(hwnd: HWND) -> App {
         prefs: UiPrefs::default(), prefs_path: PathBuf::new(), process_dpi: 0,
         tooltip: null, filter_tip: vec![0], hovered_filter: None, accelerators: null,
         c: Controls {
-            menus: Vec::new(), tabs: vec![null; TABS.len()], mode: null,
+            menus: Vec::new(), tabs: vec![null; TABS.len()], button_sections: [null; 2], back: null, mode: null,
             display: [null; 4], tablet: [null; 5], relative: [null; 4],
             filter_list: null, add_dotnet: null, add_native: null, remove_filter: null,
             filter_defaults: null, property_prev: null, property_next: null, filter_enable: null,
@@ -25,7 +25,8 @@ pub(super) fn fixture(hwnd: HWND) -> App {
             eraser_binding: null, eraser_slider: null, eraser_field: null, pen_policy: [null; 3],
             log: null, copy_log: null, clear_log: null, save: null, apply: null,
         },
-        tab: Tab::Output, items: Vec::new(), experimental: None, display_view: None, tablet_view: None,
+        tab: Tab::Output, buttons_tab: Tab::Aux, return_tab: Tab::Output,
+        items: Vec::new(), experimental: None, display_view: None, tablet_view: None,
         displays: fallback_displays(), editor: Editor::new(Profile::default()),
         profile_path: PathBuf::new(), profile_snapshot: None, profile_revision_floor: 0,
         recovered_backup: false, dirty: false, runtime_dirty_origin: None, selected_filter: 0, properties: Vec::new(),
@@ -197,7 +198,7 @@ fn render_page(app: &App, name: &str) {
             let saved = SaveDC(dc);
             SetViewportOrgEx(dc, bounds.left, bounds.top, ptr::null_mut());
             match info.kind {
-                Kind::Button | Kind::Dropdown | Kind::Tab(_) | Kind::Menu | Kind::Check => {
+                Kind::Button | Kind::Dropdown | Kind::Tab(_) | Kind::Section(_) | Kind::Menu | Kind::Check => {
                     let mut draw = NMCUSTOMDRAW { hdr: NMHDR { hwndFrom: hwnd, idFrom: 0, code: NM_CUSTOMDRAW },
                         dwDrawStage: CDDS_PREPAINT, hdc: dc, ..Default::default() };
                     paint::custom_draw(&mut draw);
@@ -255,6 +256,153 @@ fn placed(app: &App, controls: &[HWND]) -> Vec<RECT> {
 
 fn overlaps(a: &RECT, b: &RECT) -> bool {
     a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
+}
+
+#[test]
+fn navigation_keeps_four_primary_tabs_and_returns_from_utilities() {
+    let window = unsafe { CreateWindowExW(0, wide("STATIC").as_ptr(), wide("Navigation").as_ptr(),
+        WS_POPUP, 0, 0, 962, 756, ptr::null_mut(), ptr::null_mut(), GetModuleHandleW(ptr::null()), ptr::null()) };
+    assert!(!window.is_null());
+    let mut app = fixture(window);
+    app.c.tabs.clear();
+    app.create_controls().unwrap();
+    discover(&mut app, Ok(vec!["Wacom PTH-660".into()]));
+    let original = app.editor.profile.to_toml().unwrap();
+    for (name, palette) in [("dark", Palette::dark()), ("light", Palette::light())] {
+        update_look(|look| look.style.palette = palette);
+        for (tab, _) in TABS {
+            app.select_tab(tab);
+            app.layout();
+            let shown: Vec<_> = TABS.iter().enumerate()
+                .filter(|(index, _)| !placed(&app, &[app.c.tabs[*index]]).is_empty())
+                .map(|(index, _)| text(app.c.tabs[index])).collect();
+            assert_eq!(shown, ["Area", "Filters", "Pen", "Buttons"]);
+            let tabs = placed(&app, &app.c.tabs);
+            for (index, a) in tabs.iter().enumerate() {
+                for b in &tabs[index + 1..] { assert!(!overlaps(a, b)); }
+            }
+            assert_eq!(placed(&app, &app.c.button_sections).len(),
+                if matches!(tab, Tab::Aux | Tab::Mouse) { 2 } else { 0 });
+            assert_eq!(placed(&app, &[app.c.back]).len(), usize::from(tab.primary().is_none()));
+            assert_eq!(placed(&app, &[app.c.save, app.c.apply]).len(),
+                if matches!(tab, Tab::Experimental | Tab::Console) { 0 } else { 2 });
+            render_page(&app, &format!("navigation-{tab:?}-{name}"));
+        }
+    }
+    app.select_tab(Tab::Mouse);
+    app.cycle_tab(1);
+    assert_eq!(app.tab, Tab::Output);
+    app.cycle_tab(-1);
+    assert_eq!(app.tab, Tab::Mouse, "return to the remembered Buttons section");
+    app.select_tab(Tab::Tools);
+    app.select_tab(Tab::Console);
+    app.navigate_back();
+    assert_eq!(app.tab, Tab::Mouse, "Back restores the exact Buttons section");
+    app.select_tab(Tab::Pen);
+    app.select_tab(Tab::Tools);
+    app.select_tab(Tab::Experimental);
+    app.select_tab(Tab::Console);
+    app.navigate_back();
+    assert_eq!(app.tab, Tab::Pen, "utility navigation keeps the original return page");
+    app.select_tab(Tab::Console);
+    app.cycle_tab(1);
+    assert_eq!(app.tab, Tab::Mouse, "keyboard navigation visits everyday tabs only");
+    assert_eq!(app.editor.profile.to_toml().unwrap(), original);
+    drop(app);
+    LOOK.with(|slot| slot.borrow_mut().take());
+    unsafe { DestroyWindow(window); }
+}
+
+#[test]
+fn pth660_binding_rows_remain_visible_across_window_sizes() {
+    use bindings::BindingTarget;
+    let window = unsafe { CreateWindowExW(0, wide("STATIC").as_ptr(), wide("Binding resize").as_ptr(),
+        WS_POPUP, 0, 0, 962, 756, ptr::null_mut(), ptr::null_mut(), GetModuleHandleW(ptr::null()), ptr::null()) };
+    assert!(!window.is_null());
+    let mut app = fixture(window);
+    app.c.tabs.clear();
+    app.create_controls().unwrap();
+    discover(&mut app, Ok(vec!["Wacom PTH-660".into()]));
+    for (width, height) in [(962, 756), (2560, 1360), (820, 600)] {
+        unsafe { SetWindowPos(window, ptr::null_mut(), 0, 0, width, height, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE); }
+        app.select_tab(Tab::Aux);
+        app.layout();
+        let controls: Vec<_> = app.binding_rows.iter().filter(|row| matches!(row.target,
+            BindingTarget::Aux(_) | BindingTarget::Clockwise(_) | BindingTarget::CounterClockwise(_) | BindingTarget::WheelButton(_, _)))
+            .flat_map(|row| [row.hwnd, row.label]).chain(app.wheel_fields.iter().map(|field| field.hwnd)).collect();
+        let rects = placed(&app, &controls);
+        assert_eq!(rects.len(), 24, "all eight keys and ring controls at {width}x{height}");
+        for (index, a) in rects.iter().enumerate() {
+            assert!(a.left >= 0 && a.right <= width && a.bottom <= height - 48);
+            for b in &rects[index + 1..] { assert!(!overlaps(a, b)); }
+        }
+    }
+    drop(app);
+    LOOK.with(|slot| slot.borrow_mut().take());
+    unsafe { DestroyWindow(window); }
+}
+
+#[test]
+fn empty_tools_clear_actions_from_selected_filter() {
+    let window = unsafe { CreateWindowExW(0, wide("STATIC").as_ptr(), wide("Empty tools").as_ptr(),
+        WS_POPUP, 0, 0, 962, 756, ptr::null_mut(), ptr::null_mut(), GetModuleHandleW(ptr::null()), ptr::null()) };
+    assert!(!window.is_null());
+    let mut app = fixture(window);
+    app.c.tabs.clear();
+    app.create_controls().unwrap();
+    app.select_tab(Tab::Filters);
+    assert_ne!(unsafe { IsWindowEnabled(app.c.filter_defaults) }, 0);
+    app.select_tab(Tab::Tools);
+    assert!(app.selected_target().is_none());
+    assert_eq!(unsafe { IsWindowEnabled(app.c.filter_defaults) }, 0);
+    assert_eq!(unsafe { IsWindowEnabled(app.c.remove_filter) }, 0);
+    app.select_tab(Tab::Filters);
+    assert_ne!(unsafe { IsWindowEnabled(app.c.filter_defaults) }, 0);
+    drop(app);
+    LOOK.with(|slot| slot.borrow_mut().take());
+    unsafe { DestroyWindow(window); }
+}
+
+#[test]
+fn partial_page_paint_matches_full_page_pixels() {
+    let window = unsafe { CreateWindowExW(0, wide("STATIC").as_ptr(), wide("Partial painting").as_ptr(),
+        WS_POPUP, 0, 0, 962, 756, ptr::null_mut(), ptr::null_mut(), GetModuleHandleW(ptr::null()), ptr::null()) };
+    assert!(!window.is_null());
+    let mut app = fixture(window);
+    app.c.tabs.clear();
+    app.create_controls().unwrap();
+    discover(&mut app, Ok(vec!["Wacom PTH-660".into()]));
+    app.status = "Driver connected".into();
+    let client = client_rect(window);
+    for palette in [Palette::dark(), Palette::light(), Palette::high_contrast()] {
+        update_look(|look| look.style.palette = palette);
+        for tab in [Tab::Output, Tab::Filters, Tab::Pen, Tab::Aux, Tab::Console] {
+            app.select_tab(tab);
+            let mut full = canvas::Canvas::new(ptr::null_mut(), client).unwrap();
+            app.paint_items(&mut full, client);
+            let expected = full.to_bmp();
+            let status = app.items.iter().find_map(|item| match item {
+                Item::Status(r) => Some(*r), _ => None,
+            }).unwrap();
+            // Include clipped shapes/text in the middle of a page as well as
+            // the narrow status strip that refreshes while the panel is idle.
+            for clip in [status, rect(101, 103, 423, 267)] {
+                let mut partial = canvas::Canvas::new(ptr::null_mut(), clip).unwrap();
+                app.paint_items(&mut partial, client);
+                let actual = partial.to_bmp();
+                let width = (clip.right - clip.left) as usize;
+                for y in clip.top..clip.bottom {
+                    let full_offset = 54 + (y as usize * client.right as usize + clip.left as usize) * 4;
+                    let partial_offset = 54 + (y - clip.top) as usize * width * 4;
+                    assert_eq!(&actual[partial_offset..partial_offset + width * 4],
+                        &expected[full_offset..full_offset + width * 4], "{tab:?}, row {y}");
+                }
+            }
+        }
+    }
+    drop(app);
+    LOOK.with(|slot| slot.borrow_mut().take());
+    unsafe { DestroyWindow(window); }
 }
 
 #[test]
@@ -372,6 +520,7 @@ fn tool_mouse_and_pen_policy_editors_preserve_other_settings() {
             unit: Some("ms".into()), ..Default::default() }], ..Default::default() };
     // Inspection is fixture data; no DLL is constructed or daemon requested.
     app.plugin_metadata.insert(tool.path.clone(), Ok(vec![metadata]));
+    app.select_tab(Tab::Pen);
     app.select_tab(Tab::Tools);
     assert_eq!(app.selected_target(), Some(FilterRef::Plugin(1)));
     assert_eq!(with_look(|look| look.filters.len()), Some(1));
@@ -380,6 +529,9 @@ fn tool_mouse_and_pen_policy_editors_preserve_other_settings() {
     assert!(app.invalid.contains(&(app.properties[field].hwnd as isize)));
     app.select_tab(Tab::Output);
     assert_eq!(app.tab, Tab::Tools, "invalid tool edits retain their editor");
+    app.navigate_back();
+    assert_eq!(app.tab, Tab::Tools, "Back also keeps an invalid tool edit in place");
+    assert_eq!(app.return_tab, Tab::Pen, "a rejected departure keeps the return page");
     app.edit_property(field, "40");
     let settings: serde_json::Value = serde_json::from_str(&app.editor.profile.plugins[1].settings_json).unwrap();
     assert_eq!(settings["Interval"], 40);

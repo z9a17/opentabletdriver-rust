@@ -65,18 +65,7 @@ impl SharedIo {
 impl ReaderServices {
     pub fn wake(&self)->&OutputWake {&self.io.wake}
     pub fn next(&mut self)->Option<ServiceCall> {
-        if !self.io.pending.load(Ordering::Acquire){return None;}
-        match self.rx.try_recv(){Ok(call)=>{
-            if Instant::now()>=call.deadline||self.io.closed.load(Ordering::Acquire){
-                let _=call.reply.try_send(Err(io::Error::new(io::ErrorKind::TimedOut,"Reader service expired or reader retired")));
-                return self.next();
-            }
-            Some(ServiceCall{kind:call.kind,data:call.data,reply:call.reply,deadline:call.deadline})
-        },Err(_)=>{self.io.pending.store(false,Ordering::Release);self.io.wake.drain();
-            // Recheck after clearing: a sender can enqueue immediately before
-            // the flag is cleared. A subsequent wake must remain observable.
-            match self.rx.try_recv(){Ok(call)=>{self.io.pending.store(true,Ordering::Release);Some(ServiceCall{kind:call.kind,data:call.data,reply:call.reply,deadline:call.deadline})},Err(_)=>None}
-        }}
+        next_service(&self.io,||self.rx.try_recv())
     }
     /// Only the existing reader invokes the handler; no HID handle crosses
     /// ownership. No queue or kernel call is made when no services are pending.
@@ -91,4 +80,65 @@ impl ReaderServices {
         },Err(_)=>break}}
     }
 }
+fn next_service(io:&SharedIo,mut receive:impl FnMut()->Result<Call,mpsc::TryRecvError>)->Option<ServiceCall> {
+    if !io.pending.load(Ordering::Acquire){return None;}
+    loop {
+        let call=match receive(){
+            Ok(call)=>call,
+            Err(_)=>{
+                io.pending.store(false,Ordering::Release);io.wake.drain();
+                // A sender can enqueue immediately before the flag is cleared.
+                // Recheck the queue, then use the same admission checks as the
+                // first receive before exposing any operation to the reader.
+                match receive(){Ok(call)=>{io.pending.store(true,Ordering::Release);call},Err(_)=>return None}
+            }
+        };
+        if Instant::now()>=call.deadline||io.closed.load(Ordering::Acquire){
+            let _=call.reply.try_send(Err(io::Error::new(io::ErrorKind::TimedOut,"Reader service expired or reader retired")));
+            continue;
+        }
+        return Some(ServiceCall{kind:call.kind,data:call.data,reply:call.reply,deadline:call.deadline});
+    }
+}
 impl Drop for ReaderServices {fn drop(&mut self){self.io.cancel_services();while let Ok(call)=self.rx.try_recv(){let _=call.reply.try_send(Err(io::Error::new(io::ErrorKind::BrokenPipe,"Physical reader retired")));}}}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raced_recheck_never_admits_expired_or_retired_calls() {
+        for retired in [false,true] {
+            let(io,_services)=SharedIo::new(8,8).unwrap();
+            io.pending.store(true,Ordering::Release);
+            let(reply,rx)=mpsc::sync_channel(1);
+            let deadline=if retired{Instant::now()+Duration::from_secs(5)}else{Instant::now()-Duration::from_secs(1)};
+            let mut call=Some(Call{kind:RequestKind::Report(Operation::WriteStream),data:vec![0;8],reply,deadline});
+            let mut reads=0;
+            let admitted=next_service(&io,||{
+                reads+=1;
+                if reads==1{return Err(mpsc::TryRecvError::Empty);}
+                if retired{io.closed.store(true,Ordering::Release);}
+                call.take().ok_or(mpsc::TryRecvError::Empty)
+            });
+            assert!(admitted.is_none());
+            assert_eq!(rx.try_recv().unwrap().unwrap_err().kind(),io::ErrorKind::TimedOut);
+        }
+    }
+
+    #[test]
+    fn valid_raced_recheck_preserves_buffer_and_reply() {
+        let(io,_services)=SharedIo::new(8,8).unwrap();
+        io.pending.store(true,Ordering::Release);
+        let(reply,rx)=mpsc::sync_channel(1);
+        let mut call=Some(Call{kind:RequestKind::Report(Operation::WriteStream),data:vec![1,2],reply,deadline:Instant::now()+Duration::from_secs(5)});
+        let mut reads=0;
+        let admitted=next_service(&io,||{
+            reads+=1;
+            if reads==1{Err(mpsc::TryRecvError::Empty)}else{call.take().ok_or(mpsc::TryRecvError::Empty)}
+        }).unwrap();
+        assert!(io.pending.load(Ordering::Acquire));
+        admitted.finish(Ok(()));
+        assert_eq!(rx.try_recv().unwrap().unwrap(),vec![1,2]);
+    }
+}

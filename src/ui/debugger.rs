@@ -303,12 +303,21 @@ impl Debugger {
         }
     }
 
-    /// Takes the newest reports; returns a new window title if the tablet
-    /// changed, for the caller to set once this borrow has ended.
-    fn take_updates(&mut self) -> Option<String> {
+    /// Takes reports and tracks visible changes, including the rate settling
+    /// after reports stop. Set a returned title once this borrow has ended.
+    fn take_updates(&mut self) -> (Option<String>, bool) {
+        let previous_rate = self.rate();
+        let mut repaint = false;
         while let Ok(update) = self.updates.try_recv() {
             match update {
                 Ok(report) => {
+                    // Sequence alone is insufficient across session resets,
+                    // parser changes or a cleared snapshot.
+                    repaint |= self.error.is_some() || self.latest.as_ref().is_none_or(|latest| {
+                        latest.tablet != report.tablet || latest.parser != report.parser
+                            || latest.sequence != report.sequence || latest.raw_hex != report.raw_hex
+                            || latest.values != report.values
+                    });
                     let now = Instant::now();
                     // Another tablet or a restarted session counts from zero.
                     if self
@@ -349,6 +358,7 @@ impl Debugger {
                     self.latest = Some(report);
                 }
                 Err(error) => {
+                    repaint |= self.latest.is_some() || self.error.as_ref() != Some(&error);
                     self.error = Some(error);
                     self.history.clear();
                     self.latest = None;
@@ -366,10 +376,11 @@ impl Debugger {
             Some(name) => format!("{TITLE} - {name}"),
             None => TITLE.into(),
         };
-        (title != self.title).then(|| {
+        let title = (title != self.title).then(|| {
             self.title.clone_from(&title);
             title
-        })
+        });
+        (title, repaint || previous_rate != self.rate())
     }
 
     /// Every message that can observe completion uses this same terminal path.
@@ -1009,13 +1020,15 @@ unsafe extern "system" fn window_proc(
 ) -> LRESULT {
     match message {
         WM_DEBUG_REPORT => {
-            if let Some((title, result)) = with_debugger(window, |debugger| {
-                (debugger.take_updates(), debugger.finish_recording())
+            if let Some((title, repaint, result)) = with_debugger(window, |debugger| {
+                let (title, repaint) = debugger.take_updates();
+                (title, repaint, debugger.finish_recording())
             }) {
+                let repaint = repaint || result.is_some();
                 if let Some(title) = title { unsafe { SetWindowTextW(window, wide(&title).as_ptr()); } }
                 if let Some(Err(error)) = result { with_app(|app| app.log(Level::Error, "Debugger", error)); }
+                if repaint { unsafe { InvalidateRect(window, ptr::null(), 0); } }
             }
-            unsafe { InvalidateRect(window, ptr::null(), 0) };
             0
         }
         WM_PAINT => {
@@ -1144,10 +1157,17 @@ unsafe extern "system" fn window_proc(
             0
         }
         WM_TIMER if wparam == 2 => {
-            if let Some(Err(error)) = with_debugger(window, Debugger::finish_recording).flatten() {
-                with_app(|app| app.log(Level::Error, "Debugger", error));
+            if let Some((repaint, result)) = with_debugger(window, |debugger| {
+                let recording = debugger.recorder.is_some();
+                let result = debugger.finish_recording();
+                let repaint = recording || debugger.recorder.is_some() || result.is_some();
+                (repaint, result)
+            }) {
+                if let Some(Err(error)) = result {
+                    with_app(|app| app.log(Level::Error, "Debugger", error));
+                }
+                if repaint { unsafe { InvalidateRect(window, ptr::null(), 0); } }
             }
-            unsafe { InvalidateRect(window, ptr::null(), 0); }
             0
         }
         WM_TIMER if wparam == 1 => {
@@ -1306,6 +1326,67 @@ mod tests {
         assert_eq!(unsafe { IsWindow(window) }, 0);
         assert!(DEBUGGER.with(|slot| slot.borrow().is_none()));
         assert!(cancelled.load(Ordering::Acquire));
+    }
+
+    /// Exercises repaint decisions without showing a window or polling a
+    /// daemon. Unchanged samples still maintain history for rate decay.
+    #[test]
+    fn a_hidden_debugger_repaints_report_and_rate_changes_but_not_idle_polls() {
+        let window = create_window(ptr::null_mut()).unwrap();
+        let (sender, updates) = mpsc::sync_channel(1);
+        DEBUGGER.with(|slot| {
+            *slot.borrow_mut() = Some(Debugger::new(
+                window, 96, Palette::light(), updates, Arc::new(AtomicBool::new(false)),
+            ));
+        });
+        let check = |update, repaint| {
+            sender.send(update).unwrap();
+            let (_, changed) = with_debugger(window, Debugger::take_updates).unwrap();
+            assert_eq!(changed, repaint);
+        };
+        let empty = DebugReport {
+            tablet: None, parser: None, sequence: 0, raw_hex: String::new(), values: Value::Null,
+        };
+        check(Ok(empty.clone()), true);
+        check(Ok(empty.clone()), false);
+        let mut report = DebugReport {
+            tablet: Some("Wacom PTH-660".into()), parser: None, sequence: 1,
+            raw_hex: "10ff".into(), values: Value::Null,
+        };
+        check(Ok(report.clone()), true);
+        check(Ok(report.clone()), false);
+        // A matching counter must not conceal changed packet/decoded/parser data.
+        report.raw_hex = "1001".into();
+        check(Ok(report.clone()), true);
+        report.values = serde_json::json!({"pressure": 1});
+        check(Ok(report.clone()), true);
+        report.parser = Some("fixture-parser".into());
+        check(Ok(report.clone()), true);
+        check(Ok(report.clone()), false);
+
+        // The frozen counter's rate changes even though the packet does not.
+        with_debugger(window, |debugger| {
+            let now = Instant::now();
+            debugger.history = VecDeque::from([
+                (now - Duration::from_millis(500), 0),
+                (now - Duration::from_millis(400), 1),
+            ]);
+        });
+        check(Ok(report.clone()), true);
+        // Once all retained counters match, the displayed rate settles to zero.
+        with_debugger(window, |debugger| {
+            debugger.history.front_mut().unwrap().0 = Instant::now() - Duration::from_secs(2);
+        });
+        check(Ok(report.clone()), true);
+        check(Ok(report), false);
+
+        check(Ok(empty.clone()), true);
+        check(Ok(empty), false);
+        check(Err("The driver is not running.".into()), true);
+        check(Err("The driver is not running.".into()), false);
+        check(Err("Cannot reach the driver.".into()), true);
+        unsafe { SendMessageW(window, WM_CLOSE, 0, 0); }
+        assert_eq!(unsafe { IsWindow(window) }, 0);
     }
 
     #[test]

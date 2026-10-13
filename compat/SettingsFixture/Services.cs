@@ -40,7 +40,7 @@ public sealed class ServicesFilter : ServiceBaseFilter, IDisposable
 public sealed class ServicesTool : ITool
 {
     [Resolved] public IServiceProvider Services;
-    [TabletReference] public TabletReference Tablet = new(null, Array.Empty<DeviceIdentifier>());
+    [TabletReference] public TabletReference Tablet { get; set; } = new(null, Array.Empty<DeviceIdentifier>());
     [Property("Marker path")] public string MarkerPath { get; set; }
     bool ready;
     [OnDependencyLoad] public void Ready()

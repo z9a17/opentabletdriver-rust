@@ -7,7 +7,7 @@
 Keep the `data` folder beside the apps. It contains the plugin dependencies and
 license notices. You can create a shortcut to the UI executable on your desktop.
 
-The Experimental tab lets you choose logical CPUs separately for the
+Open **Settings > Performance settings...** to choose logical CPUs separately for the
 GUI and driver. Use All for automatic scheduling or a list such as `0,2,4-7`.
 Save and apply persists the choices without restarting tablet input. Closing
 the panel stops input and shuts down the daemon process. Minimizing keeps both
@@ -16,8 +16,9 @@ running. Opening the panel again starts a new daemon with the saved choices.
 Stop other tablet drivers before using this driver. Only the Wacom PTH-660 has
 confirmed Windows hardware support; other tablets remain experimental.
 
-The native panel and driver need no .NET runtime. Existing OpenTabletDriver
-.NET filters, output modes, bindings, tools and custom report parsers need
+Native-only profiles and panel workflows need no .NET runtime. Existing OpenTabletDriver
+.NET filters, output modes, bindings, tools and custom report parsers, original
+RPC hosting, registered type discovery and default-store construction need
 Microsoft's **x64 .NET 8 runtime or newer**:
 [download .NET](https://dotnet.microsoft.com/en-us/download/dotnet/8.0).
 

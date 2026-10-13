@@ -11,6 +11,55 @@ from types import SimpleNamespace
 import release
 
 
+def preflight_targets(targets):
+    """Reject already-mapped/locked Windows payloads before replacing any file.
+
+    Close every probe handle before copying: MoveFileEx replacement can fail
+    while a destination handle is retained even with delete sharing enabled.
+    This is a preflight, not a multi-file atomic transaction: later I/O failures
+    or a new process can still interrupt installation. A separate --destination
+    is the safe option while using the existing test build.
+    """
+    handles = []
+    close = None
+    try:
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            create = kernel.CreateFileW
+            create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                               wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD,
+                               wintypes.HANDLE]
+            create.restype = wintypes.HANDLE
+            close = kernel.CloseHandle
+            close.argtypes = [wintypes.HANDLE]
+            close.restype = wintypes.BOOL
+            invalid = ctypes.c_void_p(-1).value
+            for target in targets:
+                if not target.exists():
+                    continue
+                # GENERIC_WRITE | DELETE, sharing read/write/delete. Executable
+                # image mappings reject write access even when ordinary reads
+                # would succeed. No content or attributes are changed here.
+                handle = create(str(target), 0x40000000 | 0x00010000, 0x7,
+                                None, 3, 0x80, None)
+                if handle == invalid:
+                    error = ctypes.get_last_error()
+                    raise PermissionError(
+                        error,
+                        f"Test build file is in use or cannot be replaced: {target}. "
+                        "Choose a separate --destination while the existing build is running.",
+                        str(target),
+                    )
+                handles.append(handle)
+    finally:
+        if close is not None:
+            for handle in reversed(handles):
+                close(handle)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--destination", type=Path, default=Path("E:/OTD RUST TEST"))
@@ -72,6 +121,7 @@ def main():
         if not target.resolve().is_relative_to(destination):
             raise ValueError(f"test file escapes destination through a link: {name}")
         targets[name] = target
+    preflight_targets(targets.values())
     for name, target in targets.items():
         target.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(dir=target.parent, prefix=".otd-update-", delete=False) as staged:
@@ -91,4 +141,4 @@ if __name__ == "__main__":
     try:
         main()
     except PermissionError as error:
-        raise SystemExit(f"Cannot replace a test build file. Close the test app before retrying: {error}") from error
+        raise SystemExit(f"Cannot replace a test build file. Choose a separate --destination or close the test app before retrying: {error}") from error

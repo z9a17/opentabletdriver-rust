@@ -36,13 +36,19 @@ def generate():
     for size, data in images:
         directory.extend(struct.pack('<BBBBHHII', size % 256, size % 256, 0, 0, 1, 32, len(data), offset))
         offset += len(data)
-    return bytes(directory) + b''.join(data for _, data in images), [size for size, _ in images]
+    return bytes(directory) + b''.join(data for _, data in images), [size for size, _ in images], images[-1][1]
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, default=ROOT / 'resources/opentabletdriver.ico')
+    parser.add_argument('--frontend-assets', action='store_true', help='Also update the Linux/macOS frontend ICO and 256-pixel PNG resources')
     args = parser.parse_args()
-    icon, sizes = generate()
+    icon, sizes, png = generate()
     args.output.write_bytes(icon)
     print(f'Wrote {args.output} at {", ".join(map(str, sizes))} pixels')
+    if args.frontend_assets:
+        frontend = ROOT / 'compat/UpstreamUX/Assets'
+        (frontend / 'otd.ico').write_bytes(icon)
+        (frontend / 'otd.png').write_bytes(png)
+        print(f'Updated frontend artwork in {frontend}')

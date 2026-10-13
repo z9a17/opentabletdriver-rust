@@ -507,12 +507,7 @@ impl App {
         let inner_width = area.right - area.left - s(24);
         let text_height = canvas::wrapped_height(dc, self.style().fonts.ui, text, inner_width);
         let gap = s(8);
-        let label_width = targets
-            .iter()
-            .map(|target| measure(self.style().fonts.ui, &target.label()).0)
-            .max()
-            .unwrap_or(0);
-        let columns = ((inner_width + gap) / (label_width + s(200) + gap)).max(1) as usize;
+        let columns = self.binding_grid_columns(&targets, draw::inset(area, s(12), 0), measure);
         let lines = targets.len().div_ceil(columns) as i32;
         let grid = if lines > 0 { lines * (s(38) + gap) } else { 0 };
         let bottom = (area.top + s(24) + s(12) + grid + text_height + s(14)).min(area.bottom);
@@ -534,7 +529,7 @@ impl App {
         let s = |value: i32| scale(value, self.dpi);
         let targets: Vec<_> = self.binding_rows.iter().map(|row| row.target)
             .filter(|target| matches!(target, BindingTarget::Mouse(_))).collect();
-        let note = "Use these bindings for a tablet mouse tool. Configure tablet rings and dials in Auxiliary Settings.";
+        let note = "Use these bindings for a tablet mouse tool. Configure tablet rings and dials in Tablet buttons.";
         let note_height = canvas::wrapped_height(dc, self.style().fonts.ui, note, content.right - content.left - s(24));
         let columns = self.binding_grid_columns(&[BindingTarget::MouseScrollUp, BindingTarget::MouseScrollDown], draw::inset(content, s(12), 0), measure);
         let scroll_height = s(48) + (2usize.div_ceil(columns) as i32) * s(46) + note_height;
@@ -605,8 +600,7 @@ impl App {
         // Express keys.
         {
             let inner_width = content.right - content.left - s(24);
-            let label_width = keys.iter().map(|t| measure(font, &t.label()).0).max().unwrap_or(0);
-            let columns = ((inner_width + s(8)) / (label_width + s(200) + s(8))).max(1) as usize;
+            let columns = self.binding_grid_columns(&keys, draw::inset(content, s(12), 0), measure);
             let lines = keys.len().div_ceil(columns) as i32;
             let text = keys.is_empty().then(|| self.no_rows_text("express keys"));
             let body_height = match &text {
@@ -659,11 +653,12 @@ impl App {
                     )
                 })
                 .collect();
-            let button_lines = buttons.len().div_ceil(2) as i32;
+            let grid_area = draw::inset(content, s(12), 0);
+            let rotation_lines = rotation.len().div_ceil(self.binding_grid_columns(&rotation, grid_area, measure)) as i32;
+            let button_lines = buttons.len().div_ceil(self.binding_grid_columns(&buttons, grid_area, measure)) as i32;
             let height = s(24)
                 + s(24)
-                + s(38)
-                + s(8)
+                + rotation_lines * (s(38) + s(8))
                 + if fields.is_empty() { 0 } else { s(38) + s(8) }
                 + button_lines * (s(38) + s(8))
                 - s(8);
@@ -695,51 +690,67 @@ fn wheels_total(app: &App) -> usize {
         .count()
 }
 
+fn can_toggle(current: &ButtonAction) -> bool {
+    matches!(current, ButtonAction::Keys(_) | ButtonAction::Mouse(_) | ButtonAction::Barrel(_) | ButtonAction::Toggle(_))
+}
+
+/// Build from the captured preset list so a modal menu keeps its command mapping.
+/// The caller owns the returned menu, including its attached submenus.
+fn binding_menu(target: BindingTarget, current: &ButtonAction, presets: &[otd_core::presets::PresetName]) -> HMENU {
+    let menu = unsafe { CreatePopupMenu() };
+    commands::append(menu, MFT_RADIOCHECK | commands::checked(*current == ButtonAction::None), CHOICE_NONE, "None");
+    commands::append(menu, MFT_RADIOCHECK | commands::checked(matches!(current, ButtonAction::Keys(_))),
+        CHOICE_KEYS, "Key or shortcut...");
+    commands::append(menu, MF_SEPARATOR, 0, "");
+    let mouse = unsafe { CreatePopupMenu() };
+    for (index, (button, label)) in MOUSE_CHOICES.iter().enumerate() {
+        commands::append(
+            mouse,
+            MFT_RADIOCHECK | commands::checked(*current == ButtonAction::Mouse(*button)),
+            CHOICE_MOUSE + index as u16,
+            label,
+        );
+    }
+    commands::append_submenu(menu, mouse, "Mouse button");
+    let scroll = unsafe { CreatePopupMenu() };
+    for (index, (value, label)) in SCROLL_CHOICES.iter().enumerate() {
+        let action = value.parse::<ButtonAction>().expect("valid built-in scroll action");
+        commands::append(scroll, MFT_RADIOCHECK | commands::checked(*current == action),
+            CHOICE_SCROLL + index as u16, label);
+    }
+    commands::append_submenu(menu, scroll, "Scroll");
+    if matches!(target, BindingTarget::Pen(_)) {
+        let pen = unsafe { CreatePopupMenu() };
+        for number in 1..=otd_core::output::buttons::MAX_BARREL {
+            commands::append(pen,
+                MFT_RADIOCHECK | commands::checked(*current == ButtonAction::Barrel(number)),
+                CHOICE_BARREL + u16::from(number), &format!("Pen Button {number}"));
+        }
+        commands::append_submenu(menu, pen, "Pen button");
+    }
+    commands::append(menu, MF_SEPARATOR, 0, "");
+    commands::append(menu, MFT_RADIOCHECK | commands::checked(matches!(current, ButtonAction::Toggle(_)))
+        | if can_toggle(current) { 0 } else { MF_GRAYED }, CHOICE_TOGGLE, "Toggle binding");
+    commands::append(menu, 0, CHOICE_MANAGED, "Plugin binding...");
+    if presets.is_empty() {
+        commands::append(menu, MF_GRAYED, CHOICE_PRESET, "Preset");
+    } else {
+        let preset_menu = unsafe { CreatePopupMenu() };
+        for (index, preset) in presets.iter().enumerate() {
+            commands::append(preset_menu, MFT_RADIOCHECK | commands::checked(*current == ButtonAction::Preset(preset.clone())),
+                CHOICE_PRESET + index as u16, preset.as_str());
+        }
+        commands::append_submenu(menu, preset_menu, "Preset");
+    }
+    menu
+}
+
 /// The dropdown menu of a binding row. Runs the shortcut dialog for keys.
 pub(super) fn choose(window: HWND, control: HWND) {
     let Some((target, current)) = with_app(|app| app.binding_row(control)).flatten() else {
         return;
     };
-    let menu = unsafe { CreatePopupMenu() };
-    commands::append(menu, MFT_RADIOCHECK | commands::checked(current == ButtonAction::None), CHOICE_NONE, "None");
-    if matches!(target, BindingTarget::Pen(_)) {
-        for number in 1..=otd_core::output::buttons::MAX_BARREL {
-            commands::append(
-                menu,
-                MFT_RADIOCHECK | commands::checked(current == ButtonAction::Barrel(number)),
-                CHOICE_BARREL + u16::from(number),
-                &format!("Pen Button {number}"),
-            );
-        }
-    }
-    for (index, (button, label)) in MOUSE_CHOICES.iter().enumerate() {
-        commands::append(
-            menu,
-            MFT_RADIOCHECK | commands::checked(current == ButtonAction::Mouse(*button)),
-            CHOICE_MOUSE + index as u16,
-            label,
-        );
-    }
-    for (index, (value, label)) in SCROLL_CHOICES.iter().enumerate() {
-        let action = value.parse::<ButtonAction>().expect("valid built-in scroll action");
-        commands::append(menu, MFT_RADIOCHECK | commands::checked(current == action),
-            CHOICE_SCROLL + index as u16, label);
-    }
-    let keys = matches!(current, ButtonAction::Keys(_));
-    commands::append(
-        menu,
-        MFT_RADIOCHECK | commands::checked(keys),
-        CHOICE_KEYS,
-        &if keys {
-            format!("{}…", action_text(&current))
-        } else {
-            "Key or Shortcut…".to_owned()
-        },
-    );
-    commands::append(menu, 0, CHOICE_MANAGED, "Managed binding...");
-    let toggleable = matches!(current, ButtonAction::Keys(_) | ButtonAction::Mouse(_) | ButtonAction::Barrel(_) | ButtonAction::Toggle(_));
-    commands::append(menu, MFT_RADIOCHECK | commands::checked(matches!(current, ButtonAction::Toggle(_))) | if toggleable { 0 } else { MF_GRAYED },
-        CHOICE_TOGGLE, "Toggle this key / mouse / barrel action");
+    let toggleable = can_toggle(&current);
     let presets = match otd_core::presets::PresetStore::user().and_then(|store| store.list()) {
         Ok(list) => {
             for warning in list.warnings { with_app(|app| app.log(Level::Warning, "Bindings", warning)); }
@@ -752,11 +763,7 @@ pub(super) fn choose(window: HWND, control: HWND) {
         },
         Err(error) => { with_app(|app| app.log(Level::Error, "Bindings", format!("Cannot list presets: {error}"))); Vec::new() }
     };
-    for (index, preset) in presets.iter().enumerate() {
-        commands::append(menu, MFT_RADIOCHECK | commands::checked(current == ButtonAction::Preset(preset.clone())),
-            CHOICE_PRESET + index as u16, &format!("Preset: {}", preset.as_str()));
-    }
-    if presets.is_empty() { commands::append(menu, MF_GRAYED, CHOICE_PRESET, "No saved presets (save one in Presets)"); }
+    let menu = binding_menu(target, &current, &presets);
     let action = match commands::popup(window, menu, control) {
         CHOICE_TOGGLE => match current { ButtonAction::Toggle(action) => Some(*action), action if toggleable => Some(ButtonAction::Toggle(Box::new(action))), _ => None },
         choice if (CHOICE_PRESET..CHOICE_PRESET + presets.len() as u16).contains(&choice) => Some(ButtonAction::Preset(presets[(choice - CHOICE_PRESET) as usize].clone())),
@@ -782,5 +789,68 @@ pub(super) fn choose(window: HWND, control: HWND) {
     };
     if let Some(action) = action {
         with_app(|app| app.set_binding_action(target, action));
+    }
+}
+
+#[cfg(test)]
+mod menu_tests {
+    use super::*;
+
+    struct Menu(HMENU);
+    impl Drop for Menu {
+        fn drop(&mut self) { unsafe { DestroyMenu(self.0); } }
+    }
+
+    fn submenu(menu: HMENU, label: &str) -> Option<HMENU> {
+        for index in 0..unsafe { GetMenuItemCount(menu) } {
+            let mut text = [0u16; 64];
+            let length = unsafe { GetMenuStringW(menu, index as u32, text.as_mut_ptr(), text.len() as i32, MF_BYPOSITION) };
+            if String::from_utf16_lossy(&text[..length.max(0) as usize]) == label {
+                let child = unsafe { GetSubMenu(menu, index) };
+                return (!child.is_null()).then_some(child);
+            }
+        }
+        None
+    }
+
+    /// Constructs real native menus without windows, files, a daemon or a popup.
+    #[test]
+    fn grouped_binding_menu_preserves_ids_checks_and_toggle_eligibility() {
+        let presets: Vec<_> = (0..256).map(|index|
+            otd_core::presets::PresetName::parse(&format!("Preset {index}")).unwrap()).collect();
+        for (current, group, selected, toggle_enabled) in [
+            (ButtonAction::None, None, CHOICE_NONE, false),
+            ("keys:Control+Z".parse().unwrap(), None, CHOICE_KEYS, true),
+            (ButtonAction::Mouse(MouseButton::Right), Some("Mouse button"), CHOICE_MOUSE + 1, true),
+            ("scroll:down".parse().unwrap(), Some("Scroll"), CHOICE_SCROLL + 1, false),
+            (ButtonAction::Barrel(2), Some("Pen button"), CHOICE_BARREL + 2, true),
+            (ButtonAction::Toggle(Box::new(ButtonAction::Mouse(MouseButton::Left))), None, CHOICE_TOGGLE, true),
+            (ButtonAction::Preset(presets[255].clone()), Some("Preset"), CHOICE_PRESET + 255, false),
+        ] {
+            let menu = Menu(binding_menu(BindingTarget::Pen(0), &current, &presets));
+            assert!(!menu.0.is_null());
+            assert!(unsafe { GetMenuItemCount(menu.0) } <= 10, "root stays short with 256 presets");
+            let selected_menu = group.map_or(menu.0, |label| submenu(menu.0, label).unwrap());
+            assert_ne!(unsafe { GetMenuState(selected_menu, u32::from(selected), MF_BYCOMMAND) } & MF_CHECKED, 0);
+            assert_eq!(unsafe { GetMenuState(menu.0, u32::from(CHOICE_TOGGLE), MF_BYCOMMAND) } & MF_GRAYED == 0, toggle_enabled);
+            let mut children = Vec::new();
+            for (label, first, count) in [
+                ("Mouse button", CHOICE_MOUSE, 5), ("Scroll", CHOICE_SCROLL, 4),
+                ("Pen button", CHOICE_BARREL + 1, 3), ("Preset", CHOICE_PRESET, 256),
+            ] {
+                let child = submenu(menu.0, label).unwrap();
+                assert_eq!(unsafe { GetMenuItemCount(child) }, count);
+                for index in 0..count {
+                    assert_eq!(unsafe { GetMenuItemID(child, index) }, u32::from(first) + index as u32);
+                }
+                children.push(child);
+            }
+            drop(menu);
+            assert!(children.into_iter().all(|child| unsafe { IsMenu(child) } == 0), "parent destruction owns all submenus");
+        }
+        let menu = Menu(binding_menu(BindingTarget::Aux(0), &ButtonAction::None, &[]));
+        assert!(submenu(menu.0, "Pen button").is_none());
+        assert!(submenu(menu.0, "Preset").is_none());
+        assert_ne!(unsafe { GetMenuState(menu.0, u32::from(CHOICE_PRESET), MF_BYCOMMAND) } & MF_GRAYED, 0);
     }
 }

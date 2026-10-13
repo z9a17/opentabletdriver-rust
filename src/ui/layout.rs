@@ -42,13 +42,14 @@ impl App {
         let tabs_top = s(32);
         let mut tabs_row = tabs_top;
         let mut x = s(10);
-        for (index, hwnd) in self.c.tabs.iter().enumerate() {
-            let width = measure(fonts.ui, TABS[index].1).0 + s(28);
+        for tab in PRIMARY_TABS {
+            let hwnd = self.c.tabs[tab.index()];
+            let width = measure(fonts.ui, TABS[tab.index()].1).0 + s(28);
             if x + width > client.right - s(10) && x > s(10) {
                 x = s(10);
                 tabs_row += s(30);
             }
-            shown.push((*hwnd, rect(x, tabs_row, x + width, tabs_row + s(28))));
+            shown.push((hwnd, rect(x, tabs_row, x + width, tabs_row + s(28))));
             x += width + s(2);
         }
 
@@ -58,7 +59,8 @@ impl App {
         let bar_top = client.bottom - s(48);
         let button_top = bar_top + s(9);
         let mut right = client.right - s(10);
-        for (hwnd, width) in [(self.c.apply, 92), (self.c.save, 92)].into_iter().filter(|_| self.tab != Tab::Experimental) {
+        for (hwnd, width) in [(self.c.apply, 92), (self.c.save, 92)].into_iter()
+            .filter(|_| !matches!(self.tab, Tab::Experimental | Tab::Console)) {
             shown.push((
                 hwnd,
                 rect(right - s(width), button_top, right, button_top + s(30)),
@@ -71,7 +73,21 @@ impl App {
 
         let page = rect(s(8), page_top, client.right - s(8), bar_top);
         items.push(Item::Page(page));
-        let content = draw::inset(page, s(12), s(12));
+        let mut content = draw::inset(page, s(12), s(12));
+        if matches!(self.tab, Tab::Aux | Tab::Mouse) {
+            let mut left = content.left;
+            for (index, (_, label)) in BUTTON_SECTIONS.iter().enumerate() {
+                let width = measure(fonts.ui, label).0 + s(24);
+                shown.push((self.c.button_sections[index], rect(left, content.top, left + width, content.top + s(28))));
+                left += width + s(6);
+            }
+            content.top += s(36);
+        } else if self.tab.primary().is_none() {
+            shown.push((self.c.back, rect(content.left, content.top, content.left + s(72), content.top + s(28))));
+            items.push(Item::Title(rect(content.left + s(88), content.top, content.right, content.top + s(28)),
+                TABS[self.tab.index()].1.into()));
+            content.top += s(36);
+        }
         match self.tab {
             Tab::Output => self.layout_output(content, &mut items, &mut shown, &measure, dc),
             Tab::Filters | Tab::Tools => self.layout_filters(content, &mut items, &mut shown, &measure, dc),
@@ -137,7 +153,8 @@ impl App {
             // Keep keyboard focus on a visible control after a page change.
             let focus = GetFocus();
             if !focus.is_null() && focus != self.hwnd && IsWindowVisible(focus) == 0 {
-                SetFocus(self.c.tabs[TABS.iter().position(|(t, _)| *t == self.tab).unwrap_or(0)]);
+                let target = self.tab.primary().map_or(self.c.back, |tab| self.c.tabs[tab.index()]);
+                SetFocus(target);
             }
             InvalidateRect(self.hwnd, ptr::null(), 0);
         }

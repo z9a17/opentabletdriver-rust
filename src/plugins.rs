@@ -924,6 +924,7 @@ mod tests {
             graph: None,
             managed_output: None,
             identifiers: None,
+            source_session: None,
             plugins: vec![
                 fake(
                     PipelineStage::Pixels,
@@ -1017,6 +1018,7 @@ mod tests {
                 graph: None,
                 managed_output: None,
                 identifiers: None,
+                source_session: None,
                 plugins: vec![Plugin {
                     api: FilterApi {
                         header: Header::V1,

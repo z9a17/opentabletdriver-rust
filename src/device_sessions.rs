@@ -508,7 +508,7 @@ pub(crate) mod tests {
     use otd_core::endpoint_match::{Endpoint, Transport};
     pub(crate) fn candidate(path: &str, parent: &str) -> Candidate {
         Candidate { path: path.encode_utf16().chain([0]).collect(), vendor: 1, product: 2,
-            input_length: 10, usage_page: 13, usage: 2,
+            input_length: 10, usage_page: 13, usage: 2, managed_endpoint: None,
             endpoint: Endpoint { path: path.into(), physical_id: parent.into(), transport: Transport::UsbHid,
                 vendor_id: 1, product_id: 2, can_open: true, input_length: 10, output_length: 0,
                 feature_length: 0, strings: BTreeMap::new(), attributes: None } }

@@ -10,7 +10,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{
-    ERROR_IO_PENDING, ERROR_OPERATION_ABORTED, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_OPERATION_ABORTED, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Storage::FileSystem::ReadFile;
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
@@ -75,8 +75,26 @@ struct Reader {
     custom_ready:Option<Instant>,
     event: Event,
     buffer: Box<[u8]>,
-    operation: OVERLAPPED,
-    pending: bool,
+    // Windows retains this address until completion, including across moves
+    // of the reader/source between calls.
+    operation: Box<OVERLAPPED>,
+    state: ReadState,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ReadState {
+    #[default]
+    Idle,
+    Pending,
+    Ready,
+}
+
+impl ReadState {
+    fn completed(&mut self, result: &io::Result<()>) {
+        if !matches!(result, Err(error) if error.raw_os_error() == Some(ERROR_IO_INCOMPLETE as i32)) {
+            *self = Self::Idle;
+        }
+    }
 }
 
 impl Reader {
@@ -123,41 +141,44 @@ impl Reader {
             serde_json::to_value(identifier).map_err(io::Error::other)?,
             serde_json::to_value(configuration).map_err(io::Error::other)?, epoch).map_err(io::Error::other)?;
         Ok(Self {
-            operation: OVERLAPPED {
+            operation: Box::new(OVERLAPPED {
                 hEvent: event.raw(),
                 ..Default::default()
-            },
+            }),
             shared,
             custom,custom_length:None,custom_ready:None,
             event,
             // ReadFile needs room for the collection's whole input report.
             buffer: vec![0; usize::from(candidate.input_length.max(1))].into_boxed_slice(),
-            pending: false,
+            state: ReadState::Idle,
         })
     }
 
-    /// Starts a read unless one is pending. `true` means a report was
-    /// already waiting in the HID class driver and is complete.
+    /// Starts a read unless one is already outstanding. `true` means the
+    /// complete report is retained in our buffer until `finish` consumes it.
     fn start(&mut self) -> io::Result<bool> {
+        match self.state {
+            ReadState::Ready => return Ok(true),
+            ReadState::Pending => return Ok(false),
+            ReadState::Idle => {}
+        }
         if let Some(custom)=&mut self.custom {
             let report=custom.poll_report(&mut self.buffer)?;
             self.custom_length=report.map(|(length,_)|length);
             self.custom_ready=report.map(|(_,ready)|ready);
-            return Ok(self.custom_length.is_some());
-        }
-        if self.pending {
-            return Ok(false);
+            if self.custom_length.is_some() { self.state = ReadState::Ready; }
+            return Ok(self.state == ReadState::Ready);
         }
         // ReadFile resets the event when it starts the read.
         // https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-readfile
-        self.operation = OVERLAPPED {
+        *self.operation = OVERLAPPED {
             hEvent: self.event.raw(),
             ..Default::default()
         };
         if let Some(winusb) = &self.shared.endpoint.io.winusb {
             if unsafe { ResetEvent(self.event.raw()) } == 0 { return Err(io::Error::last_os_error()); }
             let immediate = unsafe { winusb.read(&mut self.buffer, &self.operation) }?;
-            self.pending = !immediate;
+            self.state = if immediate { ReadState::Ready } else { ReadState::Pending };
             return Ok(immediate);
         }
         let started = unsafe {
@@ -166,30 +187,39 @@ impl Reader {
                 self.buffer.as_mut_ptr(),
                 self.buffer.len() as u32,
                 ptr::null_mut(),
-                &mut self.operation,
+                &mut *self.operation,
             )
         };
         if started != 0 {
+            self.state = ReadState::Ready;
             return Ok(true);
         }
         let error = io::Error::last_os_error();
         if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
             return Err(error);
         }
-        self.pending = true;
+        self.state = ReadState::Pending;
         Ok(false)
     }
 
     /// The length of a completed read, or `None` if it was cancelled.
     fn finish(&mut self) -> io::Result<Option<usize>> {
-        if self.custom.is_some() {return Ok(self.custom_length.take());}
-        self.pending = false;
+        if self.custom.is_some() {
+            self.state = ReadState::Idle;
+            return Ok(self.custom_length.take());
+        }
+        if self.state == ReadState::Idle {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "No outstanding input read"));
+        }
         let mut transferred = 0u32;
         let completion = if let Some(winusb) = &self.shared.endpoint.io.winusb {
             winusb.completed(&self.operation, false).map(|length| { transferred = length; })
-        } else if unsafe { GetOverlappedResult(self.shared.endpoint.io.native_handle()?.raw(), &self.operation, &mut transferred, 0) } == 0 {
+        } else if unsafe { GetOverlappedResult(self.shared.endpoint.io.native_handle()?.raw(), &*self.operation, &mut transferred, 0) } == 0 {
             Err(io::Error::last_os_error())
         } else { Ok(()) };
+        // An unsuccessful readiness probe must not relinquish ownership
+        // of storage which the kernel can still write into.
+        self.state.completed(&completion);
         if let Err(error) = completion {
             if error.raw_os_error() == Some(ERROR_OPERATION_ABORTED as i32) {
                 return Ok(None);
@@ -206,20 +236,26 @@ impl Reader {
     }
 
     fn cancel(&mut self) {
-        if !self.pending {
+        if self.state == ReadState::Idle {
+            return;
+        }
+        if self.custom.is_some() {
+            self.custom_length = None;
+            self.custom_ready = None;
+            self.state = ReadState::Idle;
             return;
         }
         if let Some(winusb) = &self.shared.endpoint.io.winusb {
             winusb.cancel(&self.operation);
-            self.pending = false;
+            self.state = ReadState::Idle;
             return;
         }
         let Ok(handle)=self.shared.endpoint.io.native_handle()else{return;};
-        unsafe { CancelIoEx(handle.raw(), &self.operation) };
+        unsafe { CancelIoEx(handle.raw(), &*self.operation) };
         let mut ignored = 0;
         // Cancellation is only a request; wait before reusing the buffer.
-        unsafe { GetOverlappedResult(handle.raw(), &self.operation, &mut ignored, 1) };
-        self.pending = false;
+        unsafe { GetOverlappedResult(handle.raw(), &*self.operation, &mut ignored, 1) };
+        self.state = ReadState::Idle;
     }
 
     fn initialize(&self, candidate: &Candidate, identifier: &DeviceIdentifier,
@@ -254,6 +290,82 @@ impl Drop for Reader {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum InputEndpoint {
+    #[default]
+    Pen,
+    Auxiliary,
+}
+
+impl InputEndpoint {
+    fn other(self) -> Self {
+        match self { Self::Pen => Self::Auxiliary, Self::Auxiliary => Self::Pen }
+    }
+}
+
+trait InputReader {
+    /// Retain any complete, unconsumed report until `finish` consumes it.
+    fn start(&mut self) -> io::Result<bool>;
+}
+
+impl InputReader for Reader {
+    fn start(&mut self) -> io::Result<bool> { Reader::start(self) }
+}
+
+#[derive(Debug)]
+enum InputSelection {
+    Report(InputEndpoint, bool),
+    AuxiliaryFailed(io::Error),
+    Pending,
+    Stopped,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InputPoll { Pending, Ready, Stopped }
+
+/// Start the preferred endpoint first. A pending read may already be
+/// signaled, so check it before delivering an immediate fallback completion.
+/// The ordinary all-pending path performs no additional poll or wakeup.
+fn select_input<R: InputReader>(pen: &mut R, auxiliary: Option<&mut R>, preferred: InputEndpoint,
+    mut poll: impl FnMut(&R) -> io::Result<InputPoll>,
+    mut stopped: impl FnMut() -> io::Result<bool>) -> io::Result<InputSelection> {
+    let (first, second) = match preferred {
+        InputEndpoint::Pen => (Some(pen), auxiliary),
+        InputEndpoint::Auxiliary => (auxiliary, Some(pen)),
+    };
+    let mut first = first;
+    let start = |reader: &mut R, endpoint| match reader.start() {
+        Ok(ready) => Ok(if ready { Some(InputSelection::Report(endpoint, true)) } else { None }),
+        Err(error) if endpoint == InputEndpoint::Auxiliary => Ok(Some(InputSelection::AuxiliaryFailed(error))),
+        Err(error) => Err(error),
+    };
+    let mut attempt = |reader: &mut R, endpoint, check_stop: bool| {
+        let result = start(reader, endpoint);
+        match result {
+            Ok(None) => Ok(None),
+            // A preferred pending endpoint is polled together with Stop below,
+            // replacing the usual Stop-only check on an immediate fallback.
+            Ok(Some(selection)) if !check_stop && matches!(selection, InputSelection::Report(..)) => Ok(Some(selection)),
+            Ok(Some(selection)) => Ok(Some(if stopped()? { InputSelection::Stopped } else { selection })),
+            Err(error) => if stopped()? { Ok(Some(InputSelection::Stopped)) } else { Err(error) },
+        }
+    };
+    if let Some(reader) = first.as_deref_mut() && let Some(selection) = attempt(reader, preferred, true)? {
+        return Ok(selection);
+    }
+    if let Some(reader) = second && let Some(selection) = attempt(reader, preferred.other(), first.is_none())? {
+        if matches!(selection, InputSelection::Report(..)) && let Some(first) = first.as_deref() {
+            match poll(first)? {
+                InputPoll::Stopped => return Ok(InputSelection::Stopped),
+                InputPoll::Ready => return Ok(InputSelection::Report(preferred, false)),
+                InputPoll::Pending => {}
+            }
+        }
+        return Ok(selection);
+    }
+    Ok(InputSelection::Pending)
+}
+
 /// The pen collection and, when the tablet has one and it opened, its
 /// auxiliary collection. The pen endpoint decides the session's lifetime;
 /// losing the auxiliary one only releases its actions.
@@ -268,6 +380,7 @@ struct HidSource<'a> {
     /// filters never wait less than a second and never create it.
     timer: Option<OwnedHandle>,
     output: Arc<crate::shared_devices::OutputGate>,
+    preferred: InputEndpoint,
 }
 
 fn opened_identifiers(primary: &DeviceIdentifier, auxiliary: Option<&DeviceIdentifier>,
@@ -314,6 +427,7 @@ impl<'a> HidSource<'a> {
             auxiliary,
             timer: None,
             output,
+            preferred: InputEndpoint::Pen,
         })
     }
 
@@ -423,18 +537,43 @@ impl<'a> HidSource<'a> {
         }
     }
 
-    /// A synchronous ReadFile completion never enters the multi-event wait.
-    /// Recheck Stop before exposing it so a queued stream cannot starve Stop.
-    /// An asynchronous completion came from that wait, where Stop has
-    /// precedence, so it needs no second check.
+    fn select_input(&mut self) -> io::Result<InputSelection> {
+        let stop = self.stop.raw();
+        select_input(&mut self.pen, self.auxiliary.as_mut(), self.preferred, |reader| {
+            if reader.custom.is_some() {
+                return match unsafe { WaitForSingleObject(stop, 0) } {
+                    WAIT_OBJECT_0 => Ok(InputPoll::Stopped),
+                    WAIT_TIMEOUT => Ok(InputPoll::Pending),
+                    _ => Err(io::Error::last_os_error()),
+                };
+            }
+            match wait(&[stop, reader.event.raw()], 0)? {
+                Some(0) => Ok(InputPoll::Stopped),
+                Some(_) => Ok(InputPoll::Ready),
+                None => Ok(InputPoll::Pending),
+            }
+        }, || match unsafe { WaitForSingleObject(stop, 0) } {
+            WAIT_OBJECT_0 => Ok(true),
+            WAIT_TIMEOUT => Ok(false),
+            _ => Err(io::Error::last_os_error()),
+        })
+    }
+
+    fn input_report(&mut self, endpoint: InputEndpoint, queued: bool) -> io::Result<Read<'_>> {
+        self.preferred = endpoint.other();
+        match endpoint {
+            InputEndpoint::Pen => self.pen_report(queued),
+            InputEndpoint::Auxiliary => self.auxiliary_report(queued),
+        }
+    }
+
+    /// Selection checks Stop before a queued completion; asynchronous
+    /// completions come from a wait in which Stop has precedence.
     fn pen_report(&mut self, queued: bool) -> io::Result<Read<'_>> {
         let ready = self.pen.custom_ready.take().unwrap_or_else(Instant::now);
         let Some(length) = self.pen.finish()? else {
             return Ok(Read::Ended);
         };
-        if queued && self.stopped()? {
-            return Ok(Read::Ended);
-        }
         self.pen.shared.publish(&self.pen.buffer[..length]);
         Ok(Read::Report {
             bytes: &self.pen.buffer[..length],
@@ -448,9 +587,6 @@ impl<'a> HidSource<'a> {
         let finished = self.auxiliary.as_mut().map(Reader::finish);
         match finished {
             Some(Ok(Some(length))) => {
-                if queued && self.stopped()? {
-                    return Ok(Read::Ended);
-                }
                 match &self.auxiliary {
                     Some(reader) => { reader.shared.publish(&reader.buffer[..length]); Ok(Read::Auxiliary {
                         bytes: &reader.buffer[..length],
@@ -489,24 +625,18 @@ impl ReportSource for HidSource<'_> {
         Instant::now()
     }
 
-    // Each system call here costs about 0.2 us per report. Stop needs no
-    // check of its own: the wait below sees it first, and a synchronous
-    // completion checks it in `pen_report`/`auxiliary_report`.
+    // Blocking waits and pending-read probes put Stop first; selection also
+    // checks it before returning any immediate completion.
     fn next(&mut self, timeout: Duration) -> io::Result<Read<'_>> {
         if unsafe { WaitForSingleObject(self.output.event(), 0) } == WAIT_OBJECT_0 {
             if unsafe { ResetEvent(self.output.event()) } == 0 { return Err(io::Error::last_os_error()); }
-            if self.output.transition_pending() { return Ok(Read::Idle); }
+            if self.output.transition_pending() { return Ok(if self.stopped()? { Read::Ended } else { Read::Idle }); }
         }
-        if self.pen.start()? {
-            // The report was already waiting in the HID class driver.
-            return self.pen_report(true);
-        }
-        if let Some(auxiliary) = &mut self.auxiliary {
-            match auxiliary.start() {
-                Ok(true) => return self.auxiliary_report(true),
-                Ok(false) => {}
-                Err(error) => return Ok(self.lose_auxiliary(error.to_string())),
-            }
+        match self.select_input()? {
+            InputSelection::Report(endpoint, queued) => return self.input_report(endpoint, queued),
+            InputSelection::AuxiliaryFailed(error) => return Ok(self.lose_auxiliary(error.to_string())),
+            InputSelection::Stopped => { self.cancel(); return Ok(Read::Ended); }
+            InputSelection::Pending => {}
         }
         let until = Instant::now() + timeout;
         // An already-due deadline is an input/stop poll, not a new timer wakeup.
@@ -516,9 +646,8 @@ impl ReportSource for HidSource<'_> {
         } else {
             ptr::null_mut()
         };
-        // Stop first, so it takes precedence when several are signaled. The
-        // rare auxiliary reports come before the pen's, so a pen stream
-        // cannot starve them.
+        // Stop first, then alternate endpoints after every report so neither
+        // backlogged collection can starve the other.
         let mut handles = [ptr::null_mut(); 6];
         let mut count = 0;
         let mut add = |handle: HANDLE| {
@@ -528,11 +657,13 @@ impl ReportSource for HidSource<'_> {
         };
         add(self.stop.raw());
         let output_change = add(self.output.event());
-        let auxiliary = self
-            .auxiliary
-            .as_ref()
-            .map(|reader| add(reader.event.raw()));
-        let pen = add(self.pen.event.raw());
+        let (pen, auxiliary) = if self.preferred == InputEndpoint::Pen {
+            let pen = add(self.pen.event.raw());
+            (pen, self.auxiliary.as_ref().map(|reader| add(reader.event.raw())))
+        } else {
+            let auxiliary = self.auxiliary.as_ref().map(|reader| add(reader.event.raw()));
+            (add(self.pen.event.raw()), auxiliary)
+        };
         let notification = add(self.notification.event());
         // The timer is last, so a non-precise wait leaves it out.
         let timer_index = add(timer);
@@ -553,15 +684,20 @@ impl ReportSource for HidSource<'_> {
             match result {
                 Ok(Some(index)) if index == output_change => {
                     if unsafe { ResetEvent(self.output.event()) } == 0 { return Err(io::Error::last_os_error()); }
+                    if self.stopped()? { self.cancel(); return Ok(Read::Ended); }
                     if !self.output.transition_pending() {
-                        if self.pen.custom.is_some() && self.pen.start()? {return self.pen_report(false);}
-                        if let Some(reader)=&mut self.auxiliary {if reader.custom.is_some() && reader.start()? {return self.auxiliary_report(false);}}
+                        match self.select_input()? {
+                            InputSelection::Report(endpoint, queued) => return self.input_report(endpoint, queued),
+                            InputSelection::AuxiliaryFailed(error) => return Ok(self.lose_auxiliary(error.to_string())),
+                            InputSelection::Stopped => { self.cancel(); return Ok(Read::Ended); }
+                            InputSelection::Pending => {}
+                        }
                     }
                     return Ok(Read::Idle);
                 }
-                Ok(Some(index)) if index == pen => return self.pen_report(false),
+                Ok(Some(index)) if index == pen => return self.input_report(InputEndpoint::Pen, false),
                 Ok(Some(index)) if Some(index) == auxiliary => {
-                    return self.auxiliary_report(false);
+                    return self.input_report(InputEndpoint::Auxiliary, false);
                 }
                 // Some HID device arrived or left; only this one matters.
                 Ok(Some(index)) if index == notification && self.candidate.is_present() => {}
@@ -914,5 +1050,223 @@ mod identifier_metadata_tests {
         assert_eq!(opened_identifiers(&primary, Some(&auxiliary), true), [primary.clone(), auxiliary.clone()]);
         assert_eq!(opened_identifiers(&primary, Some(&auxiliary), false), [primary.clone()]);
         assert_eq!(opened_identifiers(&primary, None, false), [primary]);
+    }
+}
+
+#[cfg(test)]
+mod input_fairness_tests {
+    use super::*;
+    use std::{cell::Cell, collections::VecDeque};
+
+    #[derive(Clone, Copy)]
+    enum Completion { Immediate(u8), Pending(u8), Fault }
+
+    /// One fixed completion slot per endpoint, as with OVERLAPPED input.
+    /// Reissuing before consumption would discard a sequence number and fail
+    /// the FIFO assertions below. No OS/device or managed runtime is opened.
+    struct FakeReader {
+        queued: VecDeque<Completion>,
+        state: ReadState,
+        report: Option<u8>,
+        signaled: bool,
+        starts: usize,
+        consumed: Vec<u8>,
+    }
+
+    impl FakeReader {
+        fn new(reports: impl IntoIterator<Item = Completion>) -> Self {
+            Self { queued: reports.into_iter().collect(), state: ReadState::Idle,
+                report: None, signaled: false, starts: 0, consumed: Vec::new() }
+        }
+        fn finish(&mut self) -> u8 {
+            assert!(self.state == ReadState::Ready || self.signaled);
+            self.state.completed(&Ok(()));
+            self.signaled = false;
+            let report = self.report.take().expect("report consumed exactly once");
+            self.consumed.push(report);
+            report
+        }
+        fn signal(&mut self) { assert_eq!(self.state, ReadState::Pending); self.signaled = true; }
+    }
+
+    impl InputReader for FakeReader {
+        fn start(&mut self) -> io::Result<bool> {
+            match self.state {
+                ReadState::Ready => return Ok(true),
+                ReadState::Pending => return Ok(false),
+                ReadState::Idle => {}
+            }
+            self.starts += 1;
+            match self.queued.pop_front().unwrap_or(Completion::Pending(255)) {
+                Completion::Immediate(value) => {
+                    self.report = Some(value); self.state = ReadState::Ready; Ok(true)
+                }
+                Completion::Pending(value) => {
+                    self.report = Some(value); self.state = ReadState::Pending; Ok(false)
+                }
+                Completion::Fault => Err(io::Error::new(io::ErrorKind::BrokenPipe, "fake removed endpoint")),
+            }
+        }
+    }
+
+    fn select(pen: &mut FakeReader, auxiliary: Option<&mut FakeReader>, preferred: InputEndpoint,
+        stop: bool, polls: &Cell<usize>) -> io::Result<InputSelection> {
+        select_input(pen, auxiliary, preferred, |reader| {
+            polls.set(polls.get() + 1);
+            Ok(if stop { InputPoll::Stopped } else if reader.signaled { InputPoll::Ready } else { InputPoll::Pending })
+        }, || Ok(stop))
+    }
+
+    fn deliver(selection: InputSelection, pen: &mut FakeReader, auxiliary: &mut FakeReader,
+        preferred: &mut InputEndpoint) -> (InputEndpoint, u8) {
+        let InputSelection::Report(endpoint, _) = selection else { panic!("expected report, got {selection:?}"); };
+        *preferred = endpoint.other();
+        let value = match endpoint { InputEndpoint::Pen => pen.finish(), InputEndpoint::Auxiliary => auxiliary.finish() };
+        (endpoint, value)
+    }
+
+    #[test]
+    fn two_immediate_backlogs_alternate_and_keep_each_endpoint_fifo() {
+        let mut pen = FakeReader::new((0..8).map(Completion::Immediate));
+        let mut auxiliary = FakeReader::new((10..18).map(Completion::Immediate));
+        let mut preferred = InputEndpoint::Pen;
+        let polls = Cell::new(0);
+        for index in 0..16 {
+            let selection = select(&mut pen, Some(&mut auxiliary), preferred, false, &polls).unwrap();
+            let (endpoint, value) = deliver(selection, &mut pen, &mut auxiliary, &mut preferred);
+            assert_eq!(endpoint, if index % 2 == 0 { InputEndpoint::Pen } else { InputEndpoint::Auxiliary });
+            assert_eq!(value, if index % 2 == 0 { index / 2 } else { 10 + index / 2 });
+        }
+        assert_eq!(polls.get(), 0, "immediate preferred completions need no extra readiness probe");
+        assert_eq!(pen.starts, 8);
+        assert_eq!(auxiliary.starts, 8);
+    }
+
+    #[test]
+    fn signaled_pending_preferred_beats_immediate_fallback_without_overwriting_it() {
+        for preferred in [InputEndpoint::Pen, InputEndpoint::Auxiliary] {
+            let mut pen = FakeReader::new([Completion::Immediate(1), Completion::Immediate(2)]);
+            let mut auxiliary = FakeReader::new([Completion::Immediate(10), Completion::Immediate(11)]);
+            let first = match preferred { InputEndpoint::Pen => &mut pen, InputEndpoint::Auxiliary => &mut auxiliary };
+            // Model a read submitted on an earlier call that completed between
+            // calls: start() returns false although its event is now signaled.
+            first.state = ReadState::Pending;
+            first.report = Some(99);
+            first.signaled = true;
+            let polls = Cell::new(0);
+            let selection = select(&mut pen, Some(&mut auxiliary), preferred, false, &polls).unwrap();
+            assert!(matches!(selection, InputSelection::Report(endpoint, false) if endpoint == preferred));
+            let mut next = preferred;
+            assert_eq!(deliver(selection, &mut pen, &mut auxiliary, &mut next), (preferred, 99));
+            let selection = select(&mut pen, Some(&mut auxiliary), next, false, &polls).unwrap();
+            let (endpoint, _) = deliver(selection, &mut pen, &mut auxiliary, &mut next);
+            assert_eq!(endpoint, preferred.other());
+            let fallback = match endpoint { InputEndpoint::Pen => &pen, InputEndpoint::Auxiliary => &auxiliary };
+            assert_eq!(fallback.starts, 1, "deferred immediate buffer must not be reissued");
+            assert_eq!(fallback.consumed.len(), 1);
+            assert_eq!(polls.get(), 1);
+        }
+    }
+
+    #[test]
+    fn pending_preferred_allows_fallback_then_wins_when_signaled() {
+        let mut pen = FakeReader::new([Completion::Immediate(1), Completion::Immediate(2)]);
+        let mut auxiliary = FakeReader::new([Completion::Pending(10)]);
+        let polls = Cell::new(0);
+        let mut preferred = InputEndpoint::Auxiliary;
+        let selection = select(&mut pen, Some(&mut auxiliary), preferred, false, &polls).unwrap();
+        assert_eq!(deliver(selection, &mut pen, &mut auxiliary, &mut preferred), (InputEndpoint::Pen, 1));
+        auxiliary.signal();
+        let selection = select(&mut pen, Some(&mut auxiliary), preferred, false, &polls).unwrap();
+        assert_eq!(deliver(selection, &mut pen, &mut auxiliary, &mut preferred), (InputEndpoint::Auxiliary, 10));
+        let selection = select(&mut pen, Some(&mut auxiliary), preferred, false, &polls).unwrap();
+        assert_eq!(deliver(selection, &mut pen, &mut auxiliary, &mut preferred), (InputEndpoint::Pen, 2));
+        assert_eq!(auxiliary.starts, 1);
+        assert_eq!(pen.starts, 2);
+    }
+
+    #[test]
+    fn all_pending_adds_no_poll_and_never_reissues_an_outstanding_read() {
+        let mut pen = FakeReader::new([Completion::Pending(1)]);
+        let mut auxiliary = FakeReader::new([Completion::Pending(10)]);
+        let polls = Cell::new(0);
+        for _ in 0..4 {
+            assert!(matches!(select(&mut pen, Some(&mut auxiliary), InputEndpoint::Pen, false, &polls).unwrap(), InputSelection::Pending));
+        }
+        assert_eq!((pen.starts, auxiliary.starts, polls.get()), (1, 1, 0));
+    }
+
+    #[test]
+    fn pending_preferred_poll_replaces_fallback_stop_only_check() {
+        let mut pen = FakeReader::new([Completion::Immediate(1)]);
+        let mut auxiliary = FakeReader::new([Completion::Pending(10)]);
+        let selection = select_input(&mut pen, Some(&mut auxiliary), InputEndpoint::Auxiliary,
+            |_| Ok(InputPoll::Pending), || panic!("combined preferred/Stop poll already checks Stop")).unwrap();
+        assert!(matches!(selection, InputSelection::Report(InputEndpoint::Pen, true)));
+    }
+
+    #[test]
+    fn stop_wins_over_immediate_and_pending_signaled_completions() {
+        for pending in [false, true] {
+            let mut pen = FakeReader::new([Completion::Immediate(1)]);
+            let mut auxiliary = FakeReader::new([Completion::Immediate(10)]);
+            if pending { auxiliary.state = ReadState::Pending; auxiliary.report = Some(99); auxiliary.signaled = true; }
+            assert!(matches!(select(&mut pen, Some(&mut auxiliary), InputEndpoint::Auxiliary, true, &Cell::new(0)).unwrap(), InputSelection::Stopped));
+            assert!(pen.consumed.is_empty());
+            assert!(auxiliary.consumed.is_empty());
+        }
+        for preferred in [InputEndpoint::Pen, InputEndpoint::Auxiliary] {
+            let mut pen = FakeReader::new([Completion::Fault]);
+            let mut auxiliary = FakeReader::new([Completion::Fault]);
+            assert!(matches!(select(&mut pen, Some(&mut auxiliary), preferred, true, &Cell::new(0)).unwrap(), InputSelection::Stopped));
+        }
+    }
+
+    #[test]
+    fn auxiliary_fault_is_isolated_and_keeps_pending_pen_owned() {
+        let mut pen = FakeReader::new([Completion::Pending(1)]);
+        let mut auxiliary = FakeReader::new([Completion::Fault]);
+        assert!(matches!(select(&mut pen, Some(&mut auxiliary), InputEndpoint::Pen, false, &Cell::new(0)).unwrap(), InputSelection::AuxiliaryFailed(_)));
+        assert_eq!(pen.state, ReadState::Pending);
+        pen.signal();
+        assert!(matches!(select(&mut pen, None, InputEndpoint::Auxiliary, false, &Cell::new(0)).unwrap(), InputSelection::Pending));
+        // With no immediate fallback, the source waits on this existing pen
+        // event and consumes its sole completion.
+        assert_eq!(pen.finish(), 1);
+        assert_eq!(pen.starts, 1);
+    }
+
+    #[test]
+    fn pen_fault_and_poll_fault_propagate_without_consuming_fallback() {
+        let mut pen = FakeReader::new([Completion::Fault]);
+        let mut auxiliary = FakeReader::new([]);
+        assert_eq!(select(&mut pen, Some(&mut auxiliary), InputEndpoint::Pen, false, &Cell::new(0)).unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+        let mut pen = FakeReader::new([Completion::Pending(1)]);
+        let mut auxiliary = FakeReader::new([Completion::Immediate(10)]);
+        let error = select_input(&mut pen, Some(&mut auxiliary), InputEndpoint::Pen,
+            |_| Err(io::Error::other("fake wait failure")), || Ok(false)).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(pen.state, ReadState::Pending);
+        assert_eq!(auxiliary.state, ReadState::Ready);
+        assert!(auxiliary.consumed.is_empty());
+    }
+
+    #[test]
+    fn incomplete_completion_remains_owned_until_terminal_completion() {
+        let mut pen = FakeReader::new([Completion::Pending(1)]);
+        assert!(!pen.start().unwrap());
+        pen.state.completed(&Err(io::Error::from_raw_os_error(ERROR_IO_INCOMPLETE as i32)));
+        assert_eq!(pen.state, ReadState::Pending, "drop must still cancel and drain the outstanding operation");
+        assert!(!pen.start().unwrap());
+        assert_eq!(pen.starts, 1, "incomplete completion must not reuse kernel-owned storage");
+        pen.signal();
+        assert_eq!(pen.finish(), 1);
+        assert_eq!(pen.state, ReadState::Idle);
+
+        for error in [ERROR_OPERATION_ABORTED, 1167] { // ERROR_DEVICE_NOT_CONNECTED
+            let mut state = ReadState::Pending;
+            state.completed(&Err(io::Error::from_raw_os_error(error as i32)));
+            assert_eq!(state, ReadState::Idle, "terminal completion relinquishes operation ownership");
+        }
     }
 }

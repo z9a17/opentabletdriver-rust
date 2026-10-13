@@ -72,6 +72,7 @@ unsafe class GraphProbe
     static void Main(string[] args)
     {
         System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
+        if (args.Length > 2 && args[2] == "cleanup") { CleanupProbe.Run(args); return; }
         if (args.Length > 2 && args[2] == "background") { BackgroundProbe.Run(args); return; }
         if (args.Length > 2 && args[2] == "contracts") { Contracts(args); return; }
         if (args.Length > 2 && args[2] == "registry") { RegistryProbe.Run(args); return; }

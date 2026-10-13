@@ -1,8 +1,8 @@
 //! Menus, dialogs and the `WM_COMMAND` dispatcher. Modal UI (menus, file
 //! dialogs, message boxes) runs here, outside any `App` borrow.
 use super::*;
-const CMD_EXPORT_ORIGINAL_DIAGNOSTICS:u16=287;
-const CMD_COPY_ORIGINAL_DIAGNOSTICS:u16=288;
+const CMD_EXPORT_ORIGINAL_DIAGNOSTICS:u16=6307;
+const CMD_COPY_ORIGINAL_DIAGNOSTICS:u16=6308;
 
 pub(super) fn checked(value: bool) -> u32 {
     if value { MF_CHECKED } else { MF_UNCHECKED }
@@ -10,6 +10,13 @@ pub(super) fn checked(value: bool) -> u32 {
 
 pub(super) fn append(menu: HMENU, flags: u32, id: u16, label: &str) {
     unsafe { AppendMenuW(menu, flags, id as usize, wide(label).as_ptr()) };
+}
+
+/// A successful attachment transfers ownership to the parent menu.
+pub(super) fn append_submenu(menu: HMENU, submenu: HMENU, label: &str) {
+    if unsafe { AppendMenuW(menu, MF_POPUP, submenu as usize, wide(label).as_ptr()) } == 0 {
+        unsafe { DestroyMenu(submenu); }
+    }
 }
 
 pub(super) fn copy_to_clipboard(owner: HWND, value: &str) -> bool {
@@ -269,12 +276,6 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
         match index {
             0 => {
                 append(menu, MF_STRING, CMD_LOAD, "Load settings...\tCtrl+O");
-                append(
-                    menu,
-                    MF_STRING,
-                    CMD_RECOVER_BACKUP,
-                    "Recover backup as unsaved settings...",
-                );
                 append(menu, MF_STRING, CMD_SAVE, "Save settings\tCtrl+S");
                 append(
                     menu,
@@ -282,7 +283,6 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                     CMD_SAVE_AS,
                     "Save settings as...\tCtrl+Shift+S",
                 );
-                append(menu, MF_STRING, CMD_RESET, "Reset to defaults");
                 append(
                     menu,
                     if running { MF_STRING } else { MF_GRAYED },
@@ -290,33 +290,32 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                     "Apply settings\tCtrl+Enter",
                 );
                 unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null()) };
-                append(
-                    menu,
-                    MF_STRING,
-                    CMD_IMPORT,
-                    "Import OpenTabletDriver settings",
-                );
-                append(
-                    menu,
-                    MF_STRING,
-                    CMD_OPEN_FOLDER,
-                    "Open settings directory...",
-                );
-                append(menu,MF_STRING,original_settings::CMD_LOAD,"Load and apply original settings collection...");
-                append(menu,MF_STRING,original_settings::CMD_EXPORT,"Export original settings collection...");
-                append(menu,if app.original_pending||app.control_busy{MF_GRAYED}else{MF_STRING},original_settings::CMD_APPLY,"Apply original settings collection...");
-                append(menu,if app.original_pending||app.control_busy{MF_GRAYED}else{MF_STRING},original_settings::CMD_SAVE_DEFAULT,"Save original collection as default...");
-                append(menu,if app.original_pending||app.control_busy{MF_GRAYED}else{MF_STRING},original_settings::CMD_RESET,"Reset original collection to defaults...");
-                append(menu,MF_STRING,original_settings::CMD_SAVE_AS,"Save and apply original collection as...");
-                append(menu,MF_STRING,original_settings::CMD_SAVE_PRESET,"Save original collection as preset...");
                 presets::append_menu(menu, app);
-                append(menu, MF_STRING, CMD_SAVE_LOG, "Save console log...");
+                let transfer = unsafe { CreatePopupMenu() };
+                append(transfer, MF_STRING, CMD_IMPORT, "Import OpenTabletDriver settings...");
+                let original = unsafe { CreatePopupMenu() };
+                let original_ready = if app.original_pending || app.control_busy { MF_GRAYED } else { MF_STRING };
+                append(original, MF_STRING, original_settings::CMD_LOAD, "Load and apply collection...");
+                append(original, original_ready, original_settings::CMD_APPLY, "Apply collection...");
+                append(original, MF_STRING, original_settings::CMD_SAVE_AS, "Save and apply collection as...");
+                append(original, MF_SEPARATOR, 0, "");
+                append(original, MF_STRING, original_settings::CMD_EXPORT, "Export collection...");
+                append(original, original_ready, original_settings::CMD_SAVE_DEFAULT, "Save collection as default...");
+                append(original, MF_STRING, original_settings::CMD_SAVE_PRESET, "Save collection as preset...");
+                append(original, MF_SEPARATOR, 0, "");
+                append(original, original_ready, original_settings::CMD_RESET, "Reset collection to defaults...");
+                append_submenu(transfer, original, "Original settings collection");
+                append_submenu(menu, transfer, "Import && export");
+                let advanced = unsafe { CreatePopupMenu() };
+                append(advanced, MF_STRING, CMD_RECOVER_BACKUP, "Recover backup as unsaved settings...");
+                append(advanced, MF_STRING, CMD_RESET, "Reset settings to defaults...");
+                append(advanced, MF_STRING, CMD_OPEN_FOLDER, "Open settings folder...");
+                append_submenu(menu, advanced, "Advanced");
                 unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null()) };
                 append(menu, MF_STRING, CMD_QUIT, "Quit\tCtrl+Q");
             }
             1 => {
                 append(menu, MF_STRING, CMD_DETECT, "Detect tablet\tCtrl+D");
-                append(menu, MF_STRING, CMD_DEBUGGER, "Tablet debugger...");
                 let sessions = unsafe { CreatePopupMenu() };
                 app.device_choices = app.device_sessions.iter().take(usize::from(DEVICE_CHOICES))
                     .map(|device| device.id.clone()).collect();
@@ -329,22 +328,17 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                             || device.pending_generation.is_some() || device.device_generation == 0;
                         let flags = checked(app.selected_device.as_ref().is_some_and(|selected| selected.id == device.id))
                             | if disabled { MF_GRAYED } else { MF_STRING };
+                        let duplicate = app.device_sessions.iter().filter(|other| other.tablet == device.tablet).count() > 1;
+                        let name = if duplicate {
+                            format!("{} ({})", device.tablet, device.id.strip_prefix("device-").unwrap_or(&device.id))
+                        } else { device.tablet.clone() };
                         append(sessions, flags, CMD_DEVICE_FIRST + index as u16,
-                            &format!("{} ({}) — {:?}{}", device.tablet, device.id, device.state,
-                                if device.primary { " · primary" } else { "" }));
+                            &format!("{name} — {:?}{}{}", device.state,
+                                if device.primary { " · primary" } else { "" },
+                                if device.connected { "" } else { " · disconnected" }));
                     }
                 }
-                unsafe { AppendMenuW(menu, MF_POPUP, sessions as usize, wide("Device sessions").as_ptr()) };
-                let ready = !app.control_busy && app.selected_device.as_ref().is_some_and(|device|
-                    device.pending_generation.is_none() && device.device_generation > 0);
-                append(menu, if ready { MF_STRING } else { MF_GRAYED }, CMD_DEVICE_START, "Start selected tablet");
-                append(menu, if ready { MF_STRING } else { MF_GRAYED }, CMD_DEVICE_STOP, "Stop selected tablet");
-                append(
-                    menu,
-                    MF_STRING,
-                    CMD_DEVICE_STRINGS,
-                    "Device string reader...",
-                );
+                append_submenu(menu, sessions, "Tablet sessions");
                 // The profile's tablet: whichever is connected, a connected
                 // tablet, or the one it already names.
                 let target = app.editor.profile.tablet_name().ok().flatten();
@@ -380,14 +374,7 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                     );
                 }
                 app.tablet_choices = choices;
-                unsafe {
-                    AppendMenuW(
-                        menu,
-                        MF_POPUP,
-                        tablets as usize,
-                        wide("Settings for tablet").as_ptr(),
-                    )
-                };
+                append_submenu(menu, tablets, "Settings for tablet");
                 append(
                     menu,
                     if app.editor.mode() == OutputMode::Absolute {
@@ -398,31 +385,28 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                     AREA_CONVERT,
                     "Convert tablet area from...",
                 );
+                let controls = unsafe { CreatePopupMenu() };
+                let ready = !app.control_busy && app.selected_device.as_ref().is_some_and(|device|
+                    device.pending_generation.is_none() && device.device_generation > 0);
+                append(controls, if ready { MF_STRING } else { MF_GRAYED }, CMD_DEVICE_START, "Start selected tablet");
+                append(controls, if ready { MF_STRING } else { MF_GRAYED }, CMD_DEVICE_STOP, "Stop selected tablet");
+                append(controls, MF_SEPARATOR, 0, "");
                 append(
-                    menu,
+                    controls,
                     if running || app.control_busy { MF_GRAYED } else { MF_STRING },
                     CMD_START_STOP,
                     "Start driver",
                 );
-                unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null()) };
-                append(
-                    menu,
-                    checked(app.prefs.start_driver_on_launch),
-                    CMD_AUTOSTART,
-                    "Start driver when the panel opens",
-                );
-                append(
-                    menu,
-                    checked(startup::enabled()),
-                    CMD_START_WITH_WINDOWS,
-                    "Start with Windows (in the tray)",
-                );
+                append_submenu(menu, controls, "Device controls");
             }
             2 => {
-                append(menu, MF_STRING, CMD_ADD_DOTNET, "Add .NET plugin...");
-                append(menu, MF_STRING, CMD_ADD_NATIVE, "Add native plugin...");
-                unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null()) };
                 append(menu, MF_STRING, CMD_PLUGIN_MANAGER, "Plugin manager...");
+                let add = unsafe { CreatePopupMenu() };
+                append(add, MF_STRING, CMD_ADD_DOTNET, ".NET plugin...");
+                append(add, MF_STRING, CMD_ADD_NATIVE, "Native plugin...");
+                append_submenu(menu, add, "Add plugin");
+                append(menu, MF_SEPARATOR, 0, "");
+                append(menu, MF_STRING, CMD_SHOW_TOOLS, "Tool settings...");
             }
             3 => {
                 let theme = unsafe { CreatePopupMenu() };
@@ -458,15 +442,15 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                     _ => "Custom...".to_owned(),
                 };
                 append(colors, MFT_RADIOCHECK | checked(matches!(accent, Accent::Custom(_))), CMD_ACCENT_CUSTOM, &custom);
-                unsafe { AppendMenuW(theme, MF_POPUP, colors as usize, wide("Accent color").as_ptr()) };
-                unsafe { AppendMenuW(menu, MF_POPUP, theme as usize, wide("Theme").as_ptr()) };
-                append(menu, MF_STRING, CMD_NEXT_TAB, "Next tab\tCtrl+Tab");
-                append(
-                    menu,
-                    MF_STRING,
-                    CMD_PREV_TAB,
-                    "Previous tab\tCtrl+Shift+Tab",
-                );
+                append_submenu(theme, colors, "Accent color");
+                append_submenu(menu, theme, "Theme");
+                let startup_menu = unsafe { CreatePopupMenu() };
+                append(startup_menu, checked(app.prefs.start_driver_on_launch), CMD_AUTOSTART,
+                    "Start driver when the panel opens");
+                append(startup_menu, checked(startup::enabled()), CMD_START_WITH_WINDOWS,
+                    "Start with Windows (in the tray)");
+                append_submenu(menu, startup_menu, "Startup");
+                append(menu, MF_STRING, CMD_SHOW_EXPERIMENTAL, "Performance settings...");
             }
             _ => {
                 append(menu, MF_STRING, CMD_DOCS, "Open documentation...");
@@ -479,21 +463,28 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                     "Check for updates when the panel opens",
                 );
                 append(menu, MF_SEPARATOR, 0, "");
+                let diagnostics = unsafe { CreatePopupMenu() };
+                append(diagnostics, MF_STRING, CMD_SHOW_CONSOLE, "Console...");
+                append(diagnostics, MF_STRING, CMD_SAVE_LOG, "Save console log...");
+                append(diagnostics, MF_STRING, CMD_DEBUGGER, "Tablet debugger...");
+                append(diagnostics, MF_STRING, CMD_DEVICE_STRINGS, "Device string reader...");
+                append(diagnostics, MF_SEPARATOR, 0, "");
                 append(
-                    menu,
+                    diagnostics,
                     MF_STRING,
                     CMD_EXPORT_DIAGNOSTICS,
                     "Export redacted native diagnostics...",
                 );
                 append(
-                    menu,
+                    diagnostics,
                     MF_STRING,
                     CMD_COPY_DIAGNOSTICS,
                     "Copy redacted native diagnostics",
                 );
-                append(menu, MF_SEPARATOR, 0, "");
-                append(menu,MF_STRING,CMD_EXPORT_ORIGINAL_DIAGNOSTICS,"Export original daemon diagnostics (includes environment/logs)...");
-                append(menu,MF_STRING,CMD_COPY_ORIGINAL_DIAGNOSTICS,"Copy original daemon diagnostics (includes environment/logs)");
+                append(diagnostics, MF_SEPARATOR, 0, "");
+                append(diagnostics, MF_STRING, CMD_EXPORT_ORIGINAL_DIAGNOSTICS, "Export original diagnostics (includes environment/logs)...");
+                append(diagnostics, MF_STRING, CMD_COPY_ORIGINAL_DIAGNOSTICS, "Copy original diagnostics (includes environment/logs)");
+                append_submenu(menu, diagnostics, "Diagnostics");
                 append(menu, MF_STRING, CMD_ABOUT, "About...\tF1");
             }
         }
@@ -563,7 +554,22 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
             bindings::choose(window, control);
         }
         id if (ID_TAB..ID_TAB + TABS.len() as u16).contains(&id) => {
-            with_app(|app| app.select_tab(TABS[(id - ID_TAB) as usize].0));
+            with_app(|app| app.select_primary_tab(TABS[(id - ID_TAB) as usize].0));
+        }
+        id if (ID_BUTTON_SECTION..ID_BUTTON_SECTION + BUTTON_SECTIONS.len() as u16).contains(&id) => {
+            with_app(|app| app.select_tab(BUTTON_SECTIONS[(id - ID_BUTTON_SECTION) as usize].0));
+        }
+        CMD_SHOW_TOOLS => {
+            with_app(|app| app.select_tab(Tab::Tools));
+        }
+        CMD_SHOW_EXPERIMENTAL => {
+            with_app(|app| app.select_tab(Tab::Experimental));
+        }
+        CMD_SHOW_CONSOLE => {
+            with_app(|app| app.select_tab(Tab::Console));
+        }
+        CMD_NAV_BACK => {
+            with_app(App::navigate_back);
         }
         CMD_NEXT_TAB => {
             with_app(|app| app.cycle_tab(1));
@@ -1037,4 +1043,57 @@ pub(super) fn text_save_dialog(
         .position(|c| *c == 0)
         .ok_or("invalid file dialog path")?;
     Ok(Some(OsString::from_wide(&buffer[..length]).into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn main_menu_command_ids_do_not_overlap_dispatch_ranges() {
+        macro_rules! commands {
+            ($($id:path),* $(,)?) => { [$(($id, stringify!($id))),*] };
+        }
+        let fixed = commands![
+            CMD_LOAD, CMD_SAVE, CMD_SAVE_AS, CMD_RESET, CMD_APPLY, CMD_IMPORT,
+            CMD_OPEN_FOLDER, CMD_QUIT, CMD_RECOVER_BACKUP, CMD_DETECT, CMD_DEBUGGER,
+            CMD_CHECK_UPDATES, CMD_START_WITH_WINDOWS, CMD_UPDATE_ON_OPEN, CMD_TABLET_ANY,
+            CMD_DEVICE_START, CMD_DEVICE_STOP, CMD_ADD_DOTNET, CMD_ADD_NATIVE,
+            CMD_PLUGIN_MANAGER, CMD_REMOVE_FILTER, CMD_FILTER_DEFAULTS,
+            CMD_PROPERTY_PREV, CMD_PROPERTY_NEXT, CMD_THEME_SYSTEM, CMD_THEME_LIGHT,
+            CMD_THEME_DARK, CMD_ACCENT_WINDOWS, CMD_ACCENT_CUSTOM, CMD_DOCS, CMD_ABOUT,
+            CMD_NEXT_TAB, CMD_PREV_TAB, CMD_START_STOP, CMD_COPY_LOG, CMD_SAVE_LOG,
+            CMD_EXPORT_DIAGNOSTICS, CMD_COPY_DIAGNOSTICS, CMD_DEVICE_STRINGS, CMD_GUIDE,
+            CMD_CLEAR_LOG, CMD_AUTOSTART, CMD_SHOW, CMD_NAV_BACK, CMD_SHOW_TOOLS,
+            CMD_SHOW_EXPERIMENTAL, CMD_SHOW_CONSOLE, AREA_CONVERT,
+            original_settings::CMD_LOAD, original_settings::CMD_EXPORT,
+            original_settings::CMD_APPLY, original_settings::CMD_SAVE_PRESET,
+            original_settings::CMD_SAVE_DEFAULT, original_settings::CMD_RESET,
+            original_settings::CMD_SAVE_AS, CMD_EXPORT_ORIGINAL_DIAGNOSTICS,
+            CMD_COPY_ORIGINAL_DIAGNOSTICS, presets::CMD_PRESET_SAVE,
+            presets::CMD_PRESET_FOLDER, presets::CMD_PRESET_PREVIOUS,
+            presets::CMD_PRESET_NEXT, presets::CMD_PRESET_REFRESH,
+        ];
+        let mut used = std::collections::BTreeMap::new();
+        let mut reserve = |id, name| {
+            if let Some(previous) = used.insert(id, name) {
+                panic!("Command ID {id} is shared by {previous} and {name}");
+            }
+        };
+        for (id, name) in fixed { reserve(id, name); }
+        for (first, count, name) in [
+            (CMD_ACCENT_FIRST, Accent::PRESETS.len() as u16, "accent presets"),
+            (CMD_TABLET_FIRST, TABLET_CHOICES, "tablet choices"),
+            (CMD_DEVICE_FIRST, DEVICE_CHOICES, "device sessions"),
+            (presets::CMD_PRESET_FIRST, presets::PRESET_CHOICES, "profile presets"),
+            (ID_MENU, MENUS.len() as u16, "menu buttons"),
+            (ID_TAB, TABS.len() as u16, "tabs"),
+            (ID_BUTTON_SECTION, BUTTON_SECTIONS.len() as u16, "button sections"),
+            (bindings::ID_BINDING, bindings::MAX_BINDING_ROWS, "binding rows"),
+            (ID_PROPERTY, MAX_PROPERTY_ROWS, "plugin properties"),
+            (ID_PEN_POLICY, 3, "pen policies"),
+        ] {
+            for id in first..first + count { reserve(id, name); }
+        }
+    }
 }

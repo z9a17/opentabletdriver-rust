@@ -545,6 +545,10 @@ impl Manager {
                 };
             }
         }
+        // Populating the catalog can add a vertical scrollbar. Fit the name
+        // column to the resulting client width so it does not create a second,
+        // horizontal scrollbar on an otherwise wide enough window.
+        self.layout();
         self.selection_changed();
     }
 

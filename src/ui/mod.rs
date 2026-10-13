@@ -1,5 +1,5 @@
 //! Native Windows control panel laid out like OpenTabletDriver's UX: a menu
-//! bar, Output / Filters / Pen Settings / Console tabs with graphical area
+//! bar, Area / Filters / Pen / Buttons tabs with graphical area
 //! editors, and a Save / Apply bar. It follows the Windows light or dark
 //! setting unless the user picks one, and uses system colors in high
 //! contrast. A bounded background IPC client keeps pipe calls off the UI thread.
@@ -109,6 +109,11 @@ use theme::{Accent, Palette, Rgb, ThemeMode, UiPrefs};
 // Menu bar, tabs and commands. Button controls use their command's ID.
 const ID_MENU: u16 = 100;
 const ID_TAB: u16 = 110;
+const ID_BUTTON_SECTION: u16 = 120;
+const CMD_NAV_BACK: u16 = 271;
+const CMD_SHOW_TOOLS: u16 = 272;
+const CMD_SHOW_EXPERIMENTAL: u16 = 273;
+const CMD_SHOW_CONSOLE: u16 = 274;
 /// The absolute pen output, as the panel names it. Windows Ink applications
 /// receive pressure and tilt from it.
 const PEN_MODE_LABEL: &str = "Windows Ink Mode (pen)";
@@ -233,7 +238,7 @@ const RELATIVE_FIELDS: [(&str, &str); 4] = [
     ("Rotation", "°"),
     ("Reset Time", "ms"),
 ];
-const MENUS: [&str; 5] = ["&File", "&Tablets", "&Plugins", "&View", "&Help"];
+const MENUS: [&str; 5] = ["&File", "&Tablets", "&Plugins", "&Settings", "&Help"];
 const DOCS_URL: &str = "https://github.com/z9a17/opentabletdriver-rust#readme";
 const LOG_LIMIT: usize = 1_000;
 
@@ -404,15 +409,33 @@ enum Tab {
 }
 
 const TABS: [(Tab, &str); 8] = [
-    (Tab::Output, "Output"),
+    (Tab::Output, "Area"),
     (Tab::Filters, "Filters"),
-    (Tab::Tools, "Tools"),
-    (Tab::Pen, "Pen Settings"),
-    (Tab::Mouse, "Mouse Settings"),
-    (Tab::Aux, "Auxiliary Settings"),
-    (Tab::Experimental, "Experimental"),
+    (Tab::Tools, "Tool settings"),
+    (Tab::Pen, "Pen"),
+    (Tab::Mouse, "Mouse tool"),
+    (Tab::Aux, "Buttons"),
+    (Tab::Experimental, "Performance settings"),
     (Tab::Console, "Console"),
 ];
+
+// Keep page IDs stable, but only expose everyday tasks in the main tab row.
+const PRIMARY_TABS: [Tab; 4] = [Tab::Output, Tab::Filters, Tab::Pen, Tab::Aux];
+const BUTTON_SECTIONS: [(Tab, &str); 2] = [(Tab::Aux, "Tablet buttons"), (Tab::Mouse, "Mouse tool")];
+
+impl Tab {
+    fn primary(self) -> Option<Self> {
+        match self {
+            Self::Output | Self::Filters | Self::Pen => Some(self),
+            Self::Aux | Self::Mouse => Some(Self::Aux),
+            Self::Tools | Self::Experimental | Self::Console => None,
+        }
+    }
+
+    fn index(self) -> usize {
+        TABS.iter().position(|(tab, _)| *tab == self).unwrap_or(0)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Surface {
@@ -425,6 +448,7 @@ enum Surface {
 enum Kind {
     Menu,
     Tab(Tab),
+    Section(Tab),
     Button,
     Dropdown,
     Check,
@@ -676,6 +700,8 @@ struct Drag {
 struct Controls {
     menus: Vec<HWND>,
     tabs: Vec<HWND>,
+    button_sections: [HWND; 2],
+    back: HWND,
     mode: HWND,
     display: [HWND; 4],
     tablet: [HWND; 5],
@@ -756,6 +782,8 @@ struct App {
     c: Controls,
     experimental: Option<experimental::Page>,
     tab: Tab,
+    buttons_tab: Tab,
+    return_tab: Tab,
     items: Vec<Item>,
     display_view: Option<AreaView>,
     tablet_view: Option<AreaView>,
@@ -1475,7 +1503,7 @@ pub fn run() -> Result<(), String> {
             Err(error) => (
                 Profile::default(),
                 Err(format!(
-                    "Could not load profile: {error}. Use File > Recover backup if a backup is available; recovered settings must be saved to a new file."
+                    "Could not load profile: {error}. Use File > Advanced > Recover backup if a backup is available; recovered settings must be saved to a new file."
                 )),
             ),
         }

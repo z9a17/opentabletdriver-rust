@@ -12,11 +12,11 @@ pub struct Rect {
 
 impl Rect {
     pub fn width(self) -> i32 {
-        self.right - self.left
+        self.right.checked_sub(self.left).unwrap_or(0)
     }
 
     pub fn height(self) -> i32 {
-        self.bottom - self.top
+        self.bottom.checked_sub(self.top).unwrap_or(0)
     }
 
     pub fn valid(self) -> bool {
@@ -201,6 +201,10 @@ impl Mapper {
             clipping: settings.clipping,
             limiting: settings.limiting,
         };
+        if ![a, b, c, d, tx, ty, transform.min_x, transform.max_x,
+            transform.min_y, transform.max_y].into_iter().all(f64::is_finite) {
+            return None;
+        }
         Some(Self {
             crop: Crop::default(),
             rotation: 0,
@@ -233,12 +237,14 @@ impl Mapper {
         let px = self.destination.left + Self::scale(u, w, self.destination.width() - 1);
         let py = self.destination.top + Self::scale(v, h, self.destination.height() - 1);
         let nx = Self::scale(
-            (px - self.virtual_screen.left) as u32,
+            (i64::from(px) - i64::from(self.virtual_screen.left))
+                .clamp(0, i64::from(self.virtual_screen.width() - 1)) as u32,
             (self.virtual_screen.width() - 1).max(1) as u32,
             65_535,
         );
         let ny = Self::scale(
-            (py - self.virtual_screen.top) as u32,
+            (i64::from(py) - i64::from(self.virtual_screen.top))
+                .clamp(0, i64::from(self.virtual_screen.height() - 1)) as u32,
             (self.virtual_screen.height() - 1).max(1) as u32,
             65_535,
         );
@@ -375,6 +381,52 @@ mod tests {
             ..Crop::default()
         };
         assert!(Mapper::new(crop, 0, screen, screen).is_none());
+    }
+
+    #[test]
+    fn invalid_rectangle_spans_are_rejected_without_overflow() {
+        let screen = Rect { left: 0, top: 0, right: 1920, bottom: 1080 };
+        for invalid in [
+            Rect { left: i32::MIN, right: i32::MAX, ..screen },
+            Rect { top: i32::MIN, bottom: i32::MAX, ..screen },
+            Rect { left: i32::MAX, right: i32::MIN, ..screen },
+            Rect { top: i32::MAX, bottom: i32::MIN, ..screen },
+        ] {
+            assert!(!invalid.valid());
+            assert!(Mapper::new(Crop::default(), 0, invalid, screen).is_none());
+            assert!(Mapper::new(Crop::default(), 0, screen, invalid).is_none());
+        }
+    }
+
+    #[test]
+    fn positions_outside_virtual_desktop_clamp_to_the_nearest_edge() {
+        let screen = Rect { left: 0, top: 0, right: 1920, bottom: 1080 };
+        let destination = Rect { left: -1920, top: -1080, right: 3840, bottom: 2160 };
+        let mapper = Mapper::new(Crop::default(), 0, destination, screen).unwrap();
+        assert_eq!(mapper.map(0, 0), Some((0, 0)));
+        assert_eq!(mapper.map(MAX_X, MAX_Y), Some((65_535, 65_535)));
+        assert_eq!(mapper.map(0, MAX_Y), Some((0, 65_535)));
+        // Subtraction itself must also be safe when two individually valid
+        // rectangles occupy opposite ends of the signed coordinate range.
+        let far_screen = Rect { left: i32::MAX - 1920, right: i32::MAX, ..screen };
+        let far_destination = Rect { left: i32::MIN, right: i32::MIN + 1920, ..screen };
+        let far = Mapper::new(Crop::default(), 0, far_destination, far_screen).unwrap();
+        assert_eq!(far.map(MAX_X, MAX_Y), Some((0, 65_535)));
+    }
+
+    #[test]
+    fn overflowing_original_area_transform_is_rejected_during_setup() {
+        let screen = Rect { left: 0, top: 0, right: 1920, bottom: 1080 };
+        let area = OtdArea { width: 100.0, height: 100.0, x: 50.0, y: 50.0, rotation: 0.0 };
+        for tablet in [
+            OtdArea { width: f64::MIN_POSITIVE, ..area },
+            OtdArea { x: f64::MAX, ..area },
+        ] {
+            assert!(Mapper::from_otd(OtdMapping {
+                display: OtdArea { width: 1920.0, height: 1080.0, ..area },
+                tablet, clipping: true, limiting: false,
+            }, screen).is_none());
+        }
     }
 
     #[test]

@@ -12,6 +12,16 @@ use super::*;
 const ICON_ID: u32 = 1;
 const NIN_KEYSELECT: u32 = NIN_SELECT | NINF_KEY;
 
+thread_local! {
+    // The panel owns one icon on its UI thread. Cache only successful shell
+    // updates, so a failed update remains eligible for the next status poll.
+    static LAST_TIP: RefCell<Option<(isize, String)>> = const { RefCell::new(None) };
+}
+
+fn remember_tip(window: HWND, tip: &str) {
+    LAST_TIP.with(|last| *last.borrow_mut() = Some((window as isize, tip.to_owned())));
+}
+
 fn data(window: HWND, tip: &str) -> NOTIFYICONDATAW {
     let mut data = NOTIFYICONDATAW {
         cbSize: size_of::<NOTIFYICONDATAW>() as u32,
@@ -27,23 +37,35 @@ fn data(window: HWND, tip: &str) -> NOTIFYICONDATAW {
 
 /// Adds the icon and returns whether the notification area has it.
 pub(super) fn add(window: HWND, icon: HICON, tip: &str) -> bool {
+    // Explorer may have lost the icon even when its text did not change.
+    // Always reapply on add/recovery, and retry later if recovery fails.
+    LAST_TIP.with(|last| *last.borrow_mut() = None);
     let mut data = data(window, tip);
     data.uFlags |= NIF_MESSAGE | NIF_ICON;
     data.uCallbackMessage = WM_TRAY;
     data.hIcon = icon;
-    unsafe {
+    let added = unsafe {
         if Shell_NotifyIconW(NIM_ADD, &data) == 0 {
             // Explorer can repeat TaskbarCreated while the icon still exists.
-            return Shell_NotifyIconW(NIM_MODIFY, &data) != 0;
+            Shell_NotifyIconW(NIM_MODIFY, &data) != 0
+        } else {
+            data.Anonymous.uVersion = NOTIFYICON_VERSION_4;
+            Shell_NotifyIconW(NIM_SETVERSION, &data);
+            true
         }
-        data.Anonymous.uVersion = NOTIFYICON_VERSION_4;
-        Shell_NotifyIconW(NIM_SETVERSION, &data);
-    }
-    true
+    };
+    if added { remember_tip(window, tip); }
+    added
 }
 
 pub(super) fn set_tip(window: HWND, tip: &str) {
-    unsafe { Shell_NotifyIconW(NIM_MODIFY, &data(window, tip)) };
+    if LAST_TIP.with(|last| last.borrow().as_ref()
+        .is_some_and(|(owner, text)| *owner == window as isize && text == tip)) {
+        return;
+    }
+    if unsafe { Shell_NotifyIconW(NIM_MODIFY, &data(window, tip)) } != 0 {
+        remember_tip(window, tip);
+    }
 }
 
 /// Shows a notification from the icon. It never takes focus, and Windows
@@ -69,6 +91,10 @@ pub(super) fn balloon(window: HWND, title: &str, text: &str) -> bool {
 }
 
 pub(super) fn remove(window: HWND) {
+    LAST_TIP.with(|last| {
+        let owned = last.borrow().as_ref().is_some_and(|(owner, _)| *owner == window as isize);
+        if owned { *last.borrow_mut() = None; }
+    });
     unsafe { Shell_NotifyIconW(NIM_DELETE, &data(window, "")) };
 }
 
