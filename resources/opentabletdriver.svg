@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- OpenTabletDriver (Rust) app icon: a pen on a tablet's mapped active area. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#2E9BFF"/>
+      <stop offset="1" stop-color="#0058C0"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.22"/>
+      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="slab" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E4EEFA"/>
+    </linearGradient>
+    <linearGradient id="barrel" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2A3442"/>
+      <stop offset="0.45" stop-color="#3C4859"/>
+      <stop offset="1" stop-color="#151B24"/>
+    </linearGradient>
+    <linearGradient id="grip" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#E5531A"/>
+      <stop offset="0.45" stop-color="#FF7A3D"/>
+      <stop offset="1" stop-color="#B83F10"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feDropShadow dx="0" dy="8" stdDeviation="9" flood-color="#002A66" flood-opacity="0.45"/>
+    </filter>
+    <filter id="penshadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feDropShadow dx="-6" dy="8" stdDeviation="5" flood-color="#002A66" flood-opacity="0.4"/>
+    </filter>
+  </defs>
+
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#bg)"/>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#sheen)"/>
+  <rect x="9" y="9" width="238" height="238" rx="55" fill="none" stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="2"/>
+
+  <!-- Tablet -->
+  <g filter="url(#shadow)">
+    <rect x="34" y="70" width="188" height="132" rx="22" fill="url(#slab)"/>
+  </g>
+  <rect x="35" y="71" width="186" height="130" rx="21" fill="none" stroke="#FFFFFF" stroke-width="2"/>
+  <!-- Express keys -->
+  <rect x="46" y="96" width="8" height="22" rx="4" fill="#B9CDE6"/>
+  <rect x="46" y="124" width="8" height="22" rx="4" fill="#B9CDE6"/>
+  <rect x="46" y="152" width="8" height="22" rx="4" fill="#B9CDE6"/>
+  <!-- Active area -->
+  <rect x="66" y="88" width="140" height="96" rx="10" fill="#D7E6F8"/>
+  <!-- Mapped-area corner brackets -->
+  <g fill="none" stroke="#0A74E0" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M78 112 V100 H92"/>
+    <path d="M180 100 H194 V112"/>
+    <path d="M194 160 V172 H180"/>
+    <path d="M92 172 H78 V160"/>
+  </g>
+  <!-- Ink stroke ending at the nib -->
+  <path d="M84 156 C 100 128, 112 162, 126 142 S 140 126, 142 138" fill="none" stroke="#0A74E0" stroke-width="6" stroke-linecap="round" stroke-opacity="0.85"/>
+
+  <!-- Pen, nib at (142,138) -->
+  <g transform="translate(142 138) rotate(38)" filter="url(#penshadow)">
+    <path d="M0 0 L-11 -26 H11 Z" fill="#E8EDF3"/>
+    <path d="M0 0 L-3.5 -8.5 H3.5 Z" fill="#151B24"/>
+    <rect x="-12" y="-128" width="24" height="104" rx="12" fill="url(#barrel)"/>
+    <rect x="-12" y="-58" width="24" height="30" rx="3" fill="url(#grip)"/>
+    <rect x="-12" y="-128" width="24" height="10" rx="5" fill="#FF7A3D"/>
+    <rect x="-4" y="-104" width="3" height="40" rx="1.5" fill="#FFFFFF" fill-opacity="0.35"/>
+  </g>
+</svg>
