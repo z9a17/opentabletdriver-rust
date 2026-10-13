@@ -1,13 +1,15 @@
 //! Explicit original collection files/presets, separate from selected native profiles.
 use super::*;
 use serde_json::{Value,json};
-pub(super) const CMD_LOAD:u16=280;
-pub(super) const CMD_EXPORT:u16=281;
-pub(super) const CMD_APPLY:u16=282;
-pub(super) const CMD_SAVE_PRESET:u16=283;
-pub(super) const CMD_SAVE_DEFAULT:u16=284;
-pub(super) const CMD_RESET:u16=285;
-pub(super) const CMD_SAVE_AS:u16=286;
+// 6300..=6308 is reserved for original collection and diagnostic commands.
+// Accent presets use 280 onward; native preset actions use 6200 onward.
+pub(super) const CMD_LOAD:u16=6300;
+pub(super) const CMD_EXPORT:u16=6301;
+pub(super) const CMD_APPLY:u16=6302;
+pub(super) const CMD_SAVE_PRESET:u16=6303;
+pub(super) const CMD_SAVE_DEFAULT:u16=6304;
+pub(super) const CMD_RESET:u16=6305;
+pub(super) const CMD_SAVE_AS:u16=6306;
 pub(super) const PRESET_PREFIX:&str="Original: ";
 
 fn read(path:&Path)->Result<String,String>{

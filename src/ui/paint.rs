@@ -246,8 +246,12 @@ pub(super) fn custom_draw(draw: &mut NMCUSTOMDRAW) -> LRESULT {
                         draw::flat_button(&mut canvas, client, &label, &style, surface, state);
                     }
                     Kind::Tab(tab) => {
-                        state.selected = look.tab == tab;
+                        state.selected = look.tab.primary() == Some(tab);
                         draw::tab(&mut canvas, client, &label, &style, state);
+                    }
+                    Kind::Section(tab) => {
+                        state.selected = look.tab == tab;
+                        draw::flat_button(&mut canvas, client, &label, &style, surface, state);
                     }
                     Kind::Dropdown => {
                         state.selected = look.menu_open == hwnd as isize;

@@ -168,6 +168,8 @@ impl App {
             c: Controls {
                 menus: Vec::new(),
                 tabs: Vec::new(),
+                button_sections: [null; 2],
+                back: null,
                 mode: null,
                 display: [null; 4],
                 tablet: [null; 5],
@@ -194,6 +196,8 @@ impl App {
                 apply: null,
             },
             tab: Tab::Output,
+            buttons_tab: Tab::Aux,
+            return_tab: Tab::Output,
             items: Vec::new(),
             experimental: None,
             display_view: None,
@@ -279,6 +283,11 @@ impl App {
             )?;
             self.c.tabs.push(hwnd);
         }
+        for (index, (tab, label)) in BUTTON_SECTIONS.iter().enumerate() {
+            self.c.button_sections[index] = self.button(label, ID_BUTTON_SECTION + index as u16,
+                Kind::Section(*tab), Surface::Page)?;
+        }
+        self.c.back = self.button("Back", CMD_NAV_BACK, Kind::Button, Surface::Page)?;
         // Creation order is the Tab order: the pages top to bottom, then the bar.
         for (index, (label, _)) in DISPLAY_FIELDS.iter().enumerate() {
             self.c.display[index] = self.labeled_field(ID_DISPLAY + index as u16, label)?;
@@ -411,9 +420,11 @@ impl App {
             c.clear_log,
             c.save,
             c.apply,
+            c.back,
         ];
         all.extend_from_slice(&c.menus);
         all.extend_from_slice(&c.tabs);
+        all.extend_from_slice(&c.button_sections);
         all.extend_from_slice(&c.display);
         all.extend_from_slice(&c.tablet);
         all.extend_from_slice(&c.relative);
@@ -1922,6 +1933,12 @@ impl App {
         if matches!(self.tab, Tab::Filters | Tab::Tools) && !self.can_leave_filter() {
             return;
         }
+        if tab.primary().is_none() && self.tab.primary().is_some() {
+            self.return_tab = self.tab;
+        }
+        if matches!(tab, Tab::Aux | Tab::Mouse) {
+            self.buttons_tab = tab;
+        }
         self.tab = tab;
         self.drag = None;
         update_look(|look| look.tab = tab);
@@ -1931,16 +1948,25 @@ impl App {
             self.property_page = 0;
             self.refresh_filters();
         }
-        for hwnd in &self.c.tabs {
+        for hwnd in self.c.tabs.iter().chain(self.c.button_sections.iter()) {
             unsafe { InvalidateRect(*hwnd, ptr::null(), 0) };
         }
         self.layout();
     }
 
     pub(super) fn cycle_tab(&mut self, step: isize) {
-        let index = TABS.iter().position(|(t, _)| *t == self.tab).unwrap_or(0) as isize;
-        let next = (index + step).rem_euclid(TABS.len() as isize) as usize;
-        self.select_tab(TABS[next].0);
+        let current = self.tab.primary().or_else(|| self.return_tab.primary());
+        let index = PRIMARY_TABS.iter().position(|tab| Some(*tab) == current).unwrap_or(0) as isize;
+        let next = (index + step).rem_euclid(PRIMARY_TABS.len() as isize) as usize;
+        self.select_primary_tab(PRIMARY_TABS[next]);
+    }
+
+    pub(super) fn select_primary_tab(&mut self, tab: Tab) {
+        self.select_tab(if tab == Tab::Aux { self.buttons_tab } else { tab });
+    }
+
+    pub(super) fn navigate_back(&mut self) {
+        self.select_tab(self.return_tab);
     }
 
     pub(super) fn apply_theme(&mut self) {
