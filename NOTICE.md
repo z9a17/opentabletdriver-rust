@@ -18,9 +18,11 @@ The Windows release's `data/compat` directory includes actual OpenTabletDriver C
 
 The closure includes Newtonsoft.Json, JetBrains.Annotations, MessagePack, Microsoft dependencies, Nerdbank.Streams, Octokit and SharpZipLib under MIT, HidSharpCore under Apache-2.0, and WaylandNET under ISC. Exact versions, authors, licenses and redistributed third-party notices are consolidated in `compat/THIRD_PARTY_NOTICES.txt` and packaged as `data/licenses/DOTNET-BRIDGE-NOTICES.txt`. The Desktop license/source provenance are separately included and hashed. The .NET hosting library `nethost.dll` is distributed under Microsoft's MIT license; its SDK license and third-party notices are under `data/licenses`. The .NET runtime itself is not bundled. The compatibility bridge and sample native plugin source are in this repository; the developer sample plugin is not included in runtime downloads. The original third-party RadialFollow DLL is used unchanged for tests and is not included in releases; users retain their original plugin and its licensing terms.
 
-## Windows application icon
+## Project application artwork
 
-`resources/opentabletdriver.ico` is this project's blue tablet icon, generated from the native panel's earlier drawing in [v0.15.5 canvas.rs](https://github.com/z9a17/opentabletdriver-rust/blob/v0.15.5/src/ui/canvas.rs) by `scripts/generate-app-icon.py`. It is embedded in both Windows executables and used by the native panel, under this project's GPL-3.0-only license.
+`resources/opentabletdriver.ico` is this project's blue tablet-and-pen icon, generated from `resources/opentabletdriver.svg` and `resources/opentabletdriver-small.svg` by `scripts/generate-app-icon.py`. It is embedded in both Windows executables and used by the native panel, under this project's GPL-3.0-only license.
+
+The same ICO and its 256-pixel PNG image replace `compat/UpstreamUX/Assets/otd.ico` and `otd.png` in the packaged Linux/macOS frontends. These artwork overrides use the project's GPL-3.0-only license; the pinned upstream frontend source retains its LGPL-3.0-or-later attribution. See `compat/UpstreamUX/PROVENANCE.md`.
 
 ## Platform runtime licenses
 

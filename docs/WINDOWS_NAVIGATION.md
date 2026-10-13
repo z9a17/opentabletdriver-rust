@@ -41,4 +41,7 @@ Validation used hidden native controls and menus without launching the panel,
 daemon or computer-use tools. Ten UI layout/navigation tests, one binding-menu
 test and one command-ID collision test passed. Offscreen dark/light renders were
 inspected, with existing high-contrast/DPI layout coverage retained. Interactive
-desktop and physical tablet behavior were not retested during this cleanup.
+desktop and physical tablet behavior were not retested during that initial
+cleanup. The subsequent [authorized Windows review](BACKGROUND_AUDIT_2026-10-13.md)
+records interactive checks of the new navigation with a connected PTH-660;
+physical pen-motion and latency acceptance remain open.

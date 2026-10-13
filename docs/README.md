@@ -18,7 +18,7 @@ Use the [project README](../README.md) for downloads and quick setup. These guid
 - [Evidence ledger](parity/EVIDENCE_LEDGER.md), [validation rules](parity/VALIDATION.md)
 - [Performance](PERFORMANCE.md), [input latency](INPUT_LATENCY.md): measurement methods and limits
 - [13 October reliability review](BACKGROUND_AUDIT_2026-10-13.md): reader fairness, shutdown, cleanup and offline regression results
-- [0.18 release notes](RELEASE_0.18.0.md), [porting status and historical release snapshots](PORTING_STATUS.md)
+- [0.18.2 release notes](RELEASE_0.18.2.md), [0.18 implementation release](RELEASE_0.18.0.md), [porting status and historical release snapshots](PORTING_STATUS.md)
 
 ## Development
 

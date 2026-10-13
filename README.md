@@ -1,3 +1,5 @@
+<img src="resources/opentabletdriver.svg" width="72" height="72" alt="OpenTabletDriver Rust tablet and pen logo">
+
 # OpenTabletDriver Rust
 
 A Rust drawing-tablet driver based on [OpenTabletDriver](https://github.com/OpenTabletDriver/OpenTabletDriver), with a native Windows control panel, Linux/macOS command-line drivers, and the original Gtk/Eto frontends on Linux/macOS. It imports OpenTabletDriver settings and hosts supported existing .NET plugins unchanged.

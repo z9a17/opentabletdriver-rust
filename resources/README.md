@@ -1,11 +1,20 @@
-# Windows application icon
+# Project application artwork
 
-`opentabletdriver.ico` restores this project's blue rounded-tablet icon from
-[v0.15.5 canvas.rs](https://github.com/z9a17/opentabletdriver-rust/blob/v0.15.5/src/ui/canvas.rs).
-It contains 16, 32, 48, 64, 128 and 256 pixel images, with Windows blue
-`#0078D7`, a white active-area outline and a white center dot. It uses this
-project's GPL-3.0-only license. Regenerate it with
-`python scripts/generate-app-icon.py`; the script preserves the earlier geometry.
+`opentabletdriver.svg` is the application icon: a pen with a rust-orange grip
+drawing on a tablet's mapped active area, on a Windows-blue tile.
+`opentabletdriver-small.svg` is a simplified drawing of the same icon with
+thicker strokes, so it stays legible at 16-24 pixels in the notification area
+and title bar. Both use this project's GPL-3.0-only license.
+
+`opentabletdriver.ico` is generated from them with
+`python scripts/generate-app-icon.py --frontend-assets` (requires `resvg`, installed with
+`cargo install resvg`). It contains PNG images at 16, 20 and 24 pixels from the
+small drawing and 32, 40, 48, 64, 96, 128 and 256 pixels from the full one.
+Edit the SVGs, then regenerate the icon; do not edit the `.ico` by hand.
+The `--frontend-assets` option also writes the matching ICO and 256-pixel PNG
+to `compat/UpstreamUX/Assets` for the Linux/macOS frontends. These replace the
+upstream artwork while retaining its resource names; see the frontend's
+`PROVENANCE.md`. They do not add a Linux desktop entry or macOS app bundle.
 
 `build.rs` embeds it as Windows icon resource 1 in both executables. The native
 panel loads owned copies at the current DPI for its window, taskbar, tray and

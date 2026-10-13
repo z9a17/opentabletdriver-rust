@@ -1,4 +1,4 @@
-# Release 0.16 startup and CPU affinity
+# Windows startup and CPU affinity
 
 Open `opentabletdriver-rust-ui.exe`. It opens the panel and starts the sibling
 `opentabletdriver-rust.exe daemon` as a separate hidden process. If a daemon
@@ -6,7 +6,7 @@ already exists, the panel connects to it and keeps its active profile.
 Concurrent launches still use the existing per-user daemon endpoint and
 panel instance guard.
 
-The panel launches the daemon even when Tablets > Start driver when the panel
+The panel launches the daemon even when Settings > Startup > Start driver when the panel
 opens is disabled or a profile failed to load. That daemon stays idle until
 Start driver is requested. With the default launch preference and valid
 settings, tablet input starts automatically. A daemon already observed
@@ -32,14 +32,14 @@ already-running daemon does not understand the new CPU settings request.
 
 ## Choose CPUs
 
-Open the Experimental tab. The page has separate GUI CPUs and
+Open Settings > Performance settings. The page has separate GUI CPUs and
 Driver CPUs fields. These numbers match Windows logical processor numbers,
 starting at zero. A physical core may have more than one logical processor.
 
-The page follows the theme selected under View, including the system theme
+The page follows the theme selected under Settings, including the system theme
 and Windows high contrast. Its labels, fields, buttons, focus and validation
-colors use the same palette and drawing as the panel. Theme changes reach an
-page, and fonts and control sizes follow the panel's DPI.
+colors use the same palette and drawing as the panel. Theme changes reach the
+open page, and fonts and control sizes follow the panel's DPI.
 
 - `All` or a blank field lets Windows schedule the process on available CPUs.
 - `2` pins that process to logical CPU 2.
@@ -59,7 +59,7 @@ Choices are stored in `%LOCALAPPDATA%\OpenTabletDriverRust\experimental.toml`,
 or under `OTD_RUST_PORTABLE_DIR` in portable mode. The previous file is retained
 as `experimental.toml.bak`. UI preferences remain in `ui.toml`, and tablet
 settings remain in `driver.toml`. Corrupt scheduling settings produce a
-Console warning rather than preventing driver control; the Experimental tab
+Console warning rather than preventing driver control; the Performance settings page
 offers valid defaults that can replace them while retaining a backup.
 
 Defaults do not pin the GUI. A newly launched daemon clears affinity inherited
@@ -73,18 +73,17 @@ Windows group scheduling in place. Invalid or duplicate CPU numbers and
 reversed ranges are rejected. This uses Windows
 [process affinity](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-setprocessaffinitymask).
 Affinity is experimental; this release makes no latency improvement claim.
-Linux/macOS downloads retain their CLI behavior and have no settings tab.
+These performance controls are specific to the native Windows panel.
 
 ## Blue icon and validation
 
-Both Windows apps embed the earlier blue rounded-tablet icon, with its white
-active-area outline and center dot. Explorer, shortcuts, taskbar, tray and
+Both Windows apps embed the blue tablet-and-pen icon. Explorer, shortcuts, taskbar, tray and
 the plugin manager share the resource. The icon generator and provenance are
 documented in [resources/README.md](../resources/README.md).
 
 Actual release builds and archive/architecture/source/icon/checksum inspection
-are required for all four packages. The owner's pre-release
-format/Clippy/test/build-check suite and CI were not run. Focused checks after
-publication use an isolated test process for affinity and a fake, test-only
-daemon endpoint for panel attachment. Interactive UI, real driver scheduling,
-physical tablet input and native Linux/macOS execution remain unverified.
+are required for all four packages. Release notes identify the checks performed.
+The [October audit](BACKGROUND_AUDIT_2026-10-13.md) separates source checks,
+Windows UI observations and idle CPU samples from physical latency evidence.
+CPU affinity and scheduling changes still require measurement under the intended
+workload; their presence is not proof of better latency.

@@ -169,7 +169,9 @@ to rendering or tablet latency from these totals.
 
 The native Windows release-mode apps and managed dependencies were rebuilt
 from clean commit `2ca106377ee179d77407ff1321865219b19b02e1` and copied to
-`E:/OTD RUST TEST`. Later PR changes update this audit documentation only.
+`E:/OTD RUST TEST`. The audit checkpoint that followed changed documentation
+only. Subsequent release preparation adds the logo integration and version bump;
+the release notes distinguish those changes from this live-tested checkpoint.
 
 | Artifact | SHA-256 |
 | --- | --- |
