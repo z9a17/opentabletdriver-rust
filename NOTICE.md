@@ -20,7 +20,7 @@ The closure includes Newtonsoft.Json, JetBrains.Annotations, MessagePack, Micros
 
 ## Windows application icon
 
-`resources/opentabletdriver.ico` is this project's blue tablet icon, generated from the native panel's earlier drawing in [v0.15.5 canvas.rs](https://github.com/z9a17/opentabletdriver-rust/blob/v0.15.5/src/ui/canvas.rs) by `scripts/generate-app-icon.py`. It is embedded in both Windows executables and used by the native panel, under this project's GPL-3.0-only license.
+`resources/opentabletdriver.ico` is this project's blue tablet-and-pen icon, generated from `resources/opentabletdriver.svg` and `resources/opentabletdriver-small.svg` by `scripts/generate-app-icon.py`. It is embedded in both Windows executables and used by the native panel, under this project's GPL-3.0-only license.
 
 ## Platform runtime licenses
 
