@@ -20,7 +20,7 @@ Native-only profiles and panel workflows need no .NET runtime. Existing OpenTabl
 .NET filters, output modes, bindings, tools and custom report parsers, original
 RPC hosting, registered type discovery and default-store construction need
 Microsoft's **x64 .NET 10 runtime or newer**:
-[download .NET](https://dotnet.microsoft.com/en-us/download/dotnet/8.0).
+[download .NET](https://dotnet.microsoft.com/en-us/download/dotnet/10.0).
 
 Settings are stored in `%LOCALAPPDATA%\OpenTabletDriverRust`. Updating or moving
 this extracted folder does not move your settings. To update, use the panel's
