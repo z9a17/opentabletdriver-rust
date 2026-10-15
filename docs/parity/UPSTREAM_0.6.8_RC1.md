@@ -92,13 +92,14 @@ filters, early pressure admission before ordinary filters can retain reports,
 duplicate/retained report identities, output-mode integration, dependency
 injection, async frequency bootstrap, rotation and placeholder metadata.
 
-Asynchronous Internal filters are explicitly unsupported. Late or foreign
-Internal emissions use the graph fault/held-output cleanup, and late custom-mode
-entry through Internal elements requests a mode restart. Ordinary
-PreTransform/PostTransform background continuation remains supported with owned
-snapshots. Native-only profiles retain their raw contact/pressure behavior.
-Implementation of the reviewed scope does not claim arbitrary Internal-filter
-or complete unchanged-plugin ecosystem compatibility.
+Release 0.19.0 explicitly rejected asynchronous Internal filters. The
+[autonomous follow-up](AUTONOMOUS_FOLLOWUP_2026-10-15.md) extends support to SDK
+Internal timers and concrete owned foreign/late snapshots, carrying pressure
+admission and explicit-reset identity through the bounded FIFO. See the
+[managed record](UP068_PLUGIN.md) for identity, arbitrary mutation and range-loss
+limits. Ordinary PreTransform/PostTransform continuation and native-only raw
+contact/pressure behavior are preserved. The scoped fixtures do not establish
+arbitrary Internal-filter or complete unchanged-plugin ecosystem compatibility.
 
 ### UP068-INTEGRATION: control, console and packaging
 

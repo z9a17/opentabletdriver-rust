@@ -504,6 +504,7 @@ fn import_profile(settings:&Value,index:usize) -> Result<Profile,String> {
 struct Services { handle:Handle,platform:Arc<dyn Platform> }
 impl crate::managed_services::Backend for Services {
     fn maintain(&self,lane:usize){if lane==4{crate::input_owner::maintain();}}
+    fn maintenance_deadline(&self,lane:usize)->Option<Instant>{if lane==4{crate::input_owner::maintenance_deadline()}else{None}}
     fn shutdown(&self,lane:usize){if lane==4{crate::input_owner::shutdown();}}
     fn execute(&self,request:crate::managed_services::Request) -> Result<Value,String> {
         use crate::managed_services::Operation;

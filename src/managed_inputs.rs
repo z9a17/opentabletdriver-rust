@@ -88,4 +88,9 @@ pub fn maintain(){
         for id in expired{if let Err(error)=release(&mut state,id){if let Some(scope)=state.scopes.get_mut(&id){scope.expires=now+Duration::from_secs(1);}eprintln!("Original input lease cleanup failed: {error}");}}
     }
 }
+pub fn maintenance_deadline()->Option<Instant>{
+    // Scopes only change on the independent input lane. That lane recomputes
+    // after each request, including renewal and failed-release retry leases.
+    state().lock().ok()?.scopes.values().map(|scope|scope.expires).min()
+}
 pub fn shutdown(){if let Ok(mut state)=state().lock(){let ids:Vec<_>=state.scopes.keys().copied().collect();for id in ids{if let Err(error)=release(&mut state,id){eprintln!("Original input scope cleanup failed: {error}");}}}}

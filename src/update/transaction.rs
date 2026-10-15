@@ -94,13 +94,78 @@ fn valid(path: &Path) -> bool {
     !path.as_os_str().is_empty()
         && path
             .components()
-            .all(|part| matches!(part, Component::Normal(_)))
+            .all(|part| match part {
+                Component::Normal(name) => {
+                    // Win32 strips trailing dots/spaces and interprets colons
+                    // as streams. Such aliases cannot own independent files.
+                    #[cfg(windows)]
+                    { let name = name.to_string_lossy(); !name.ends_with(['.', ' ']) && !name.contains(':') }
+                    #[cfg(not(windows))]
+                    { let _ = name; true }
+                }
+                _ => false,
+            })
         && !path.components().next().is_some_and(|part| {
             part.as_os_str()
                 .to_string_lossy()
                 .to_lowercase()
                 .starts_with(".otd-")
         })
+}
+fn valid_paths<'a>(paths: impl IntoIterator<Item = &'a Path>) -> bool {
+    let mut seen = std::collections::BTreeSet::new();
+    for path in paths {
+        if !valid(path) { return false; }
+        // Normalize separators as well as case: Windows treats a/b and a\b
+        // as the same file. A file entry may not also own another entry's parent.
+        let key = path.components().map(|part| part.as_os_str().to_string_lossy().to_lowercase())
+            .collect::<Vec<_>>().join("/");
+        if !seen.insert(key) { return false; }
+    }
+    seen.iter().all(|key| key.match_indices('/').all(|(index, _)| !seen.contains(&key[..index])))
+}
+/// Inspect relative parents without following links. The installation root may
+/// itself be a junction; only entries below the caller-selected root are owned.
+/// This preflight does not arbitrate concurrent changes by unrelated processes.
+fn relative_metadata(root: &Path, relative: &Path) -> Result<Option<fs::Metadata>, String> {
+    let mut current = root.to_path_buf();
+    let mut parts = relative.components().peekable();
+    while let Some(part) = parts.next() {
+        if !matches!(part, Component::Normal(_)) { return Err("invalid relative update entry".into()); }
+        current.push(part);
+        let metadata = match fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(format!("cannot inspect {}: {error}", current.display())),
+        };
+        #[cfg(windows)]
+        let reparse = {
+            use std::os::windows::fs::MetadataExt;
+            metadata.file_attributes() & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT != 0
+        };
+        #[cfg(not(windows))]
+        let reparse = false;
+        if metadata.file_type().is_symlink() || reparse {
+            return Err(format!("update entry is a link or reparse point; files preserved: {}", current.display()));
+        }
+        if parts.peek().is_none() { return Ok(Some(metadata)); }
+        if !metadata.is_dir() { return Err(format!("update parent is not a directory: {}", current.display())); }
+    }
+    Err("empty relative update entry".into())
+}
+fn regular_file_or_absent(root: &Path, relative: &Path) -> Result<bool, String> {
+    match relative_metadata(root, relative)? {
+        Some(metadata) if !metadata.is_file() => Err(format!("cannot replace non-file installation entry {}", root.join(relative).display())),
+        Some(_) => Ok(true),
+        None => Ok(false),
+    }
+}
+fn directory_or_absent(root: &Path, relative: &Path) -> Result<bool, String> {
+    match relative_metadata(root, relative)? {
+        Some(metadata) if !metadata.is_dir() => Err(format!("update journal entry is not a directory: {}", root.join(relative).display())),
+        Some(_) => Ok(true),
+        None => Ok(false),
+    }
 }
 fn sync_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut file = File::create(path).map_err(|error| error.to_string())?;
@@ -113,8 +178,14 @@ fn sync_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 /// old binaries until a later startup can delete them; it is already usable.
 pub(super) fn recover(install: &Path) -> Result<bool, String> {
     let journal = install.join(JOURNAL);
-    if !journal.exists() {
+    if !directory_or_absent(install, Path::new(JOURNAL))? {
         return Ok(false);
+    }
+    for name in ["staged", "backup", "discarded"] {
+        directory_or_absent(install, &Path::new(JOURNAL).join(name))?;
+    }
+    for name in ["plan.json", "plan.next", "committed", "rolled-back"] {
+        regular_file_or_absent(install, &Path::new(JOURNAL).join(name))?;
     }
     if journal.join("committed").exists() || journal.join("rolled-back").exists() {
         let _ = clean_terminal(&journal);
@@ -131,8 +202,16 @@ pub(super) fn recover(install: &Path) -> Result<bool, String> {
         &fs::read(&plan_path).map_err(|error| error.to_string())?,
     )
     .map_err(|error| format!("update recovery plan is invalid; backups preserved: {error}"))?;
-    if plan.version != 1 || plan.entries.iter().any(|entry| !valid(&entry.path)) {
+    if plan.version != 1 || !valid_paths(plan.entries.iter().map(|entry| entry.path.as_path())) {
         return Err("unsupported or invalid update recovery plan; backups preserved".into());
+    }
+    // Validate the entire rollback before moving any installed file. A local
+    // directory collision must not become discarded data recursively removed
+    // with the terminal journal, nor may a linked backup parent escape it.
+    for entry in &plan.entries {
+        regular_file_or_absent(install, &entry.path)?;
+        regular_file_or_absent(install, &Path::new(JOURNAL).join("backup").join(&entry.path))?;
+        regular_file_or_absent(install, &Path::new(JOURNAL).join("discarded").join(&entry.path))?;
     }
     let mut restored = false;
     for entry in plan.entries.iter().rev() {
@@ -189,14 +268,14 @@ fn clean_terminal(journal: &Path) -> Result<(), String> {
 
 fn prepare(source: &Path, install: &Path, relative: &[PathBuf]) -> Result<Plan, String> {
     let journal = install.join(JOURNAL);
-    if journal.exists() {
+    if directory_or_absent(install, Path::new(JOURNAL))? {
         return Err("a completed update still has loaded backups; restart the running driver and panel before updating again".into());
     }
-    let mut seen = std::collections::BTreeSet::new();
+    if !valid_paths(relative.iter().map(PathBuf::as_path)) {
+        return Err("invalid, duplicate or overlapping package path".into());
+    }
     for path in relative {
-        if !valid(path) || !seen.insert(path.to_string_lossy().to_lowercase()) {
-            return Err("invalid or duplicate package path".into());
-        }
+        regular_file_or_absent(install, path)?;
     }
     fs::create_dir(&journal).map_err(|error| error.to_string())?;
     let mut entries = Vec::new();
@@ -305,6 +384,186 @@ mod tests {
                 windows_sys::Win32::Foundation::FreeLibrary(self.0);
             }
         }
+    }
+
+    #[test]
+    fn recovery_retries_interrupted_backup_and_discard_steps() {
+        let root = crate::update::temporary_work("otd-recovery-steps").unwrap();
+        let source = root.join("source");
+        let install = root.join("install");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&install).unwrap();
+        fs::write(source.join("driver.exe"), b"new").unwrap();
+        let paths = [PathBuf::from("driver.exe")];
+        for phase in 0..3 {
+            fs::write(install.join("driver.exe"), b"old").unwrap();
+            let lock = InstallLock::acquire(&install, ".otd-update.lock").unwrap();
+            let plan = prepare(&source, &install, &paths).unwrap();
+            let journal = install.join(JOURNAL);
+            if phase == 0 {
+                // Crash after moving the old file but before publishing the new one.
+                fs::create_dir_all(journal.join("backup")).unwrap();
+                fs::rename(install.join("driver.exe"), journal.join("backup/driver.exe")).unwrap();
+            } else {
+                apply(&install, &plan.entries[0]).unwrap();
+                // Crash after setting the new file aside during rollback.
+                discard(&journal, &paths[0], &install.join(&paths[0])).unwrap();
+                if phase == 2 {
+                    // A locked backup makes rollback fail. Its journal must survive
+                    // for the next attempt rather than losing the only old copy.
+                    use std::os::windows::fs::OpenOptionsExt;
+                    let locked = OpenOptions::new().read(true).share_mode(1)
+                        .open(journal.join("backup/driver.exe")).unwrap();
+                    assert!(recover(&install).is_err());
+                    assert!(journal.join("plan.json").exists());
+                    assert!(!journal.join("rolled-back").exists());
+                    drop(locked);
+                }
+            }
+            drop(lock);
+            assert!(startup(&install).unwrap());
+            assert_eq!(fs::read(install.join("driver.exe")).unwrap(), b"old");
+            assert!(!startup(&install).unwrap());
+            assert!(!journal.exists());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn invalid_recovery_plans_preserve_installed_files_and_backups() {
+        let root = crate::update::temporary_work("otd-invalid-recovery").unwrap();
+        let journal = root.join(JOURNAL);
+        fs::create_dir_all(journal.join("backup")).unwrap();
+        fs::write(root.join("driver.exe"), b"current").unwrap();
+        fs::write(journal.join("backup/driver.exe"), b"old").unwrap();
+        for conflicting in ["driver.exe", "DRIVER.EXE", "driver.exe/child.dll", "../outside", "driver.exe.", "driver.exe ", "driver.exe:payload"] {
+            let plan = Plan { version: 1, entries: vec![
+                Entry { path: "driver.exe".into(), existed: false },
+                Entry { path: conflicting.into(), existed: true },
+            ] };
+            fs::write(journal.join("plan.json"), serde_json::to_vec(&plan).unwrap()).unwrap();
+            assert!(startup(&root).is_err());
+            assert_eq!(fs::read(root.join("driver.exe")).unwrap(), b"current");
+            assert_eq!(fs::read(journal.join("backup/driver.exe")).unwrap(), b"old");
+            assert!(!journal.join("rolled-back").exists());
+        }
+        assert!(!valid_paths([Path::new("lib/a.dll"), Path::new("lib\\a.dll")]));
+        for alias in ["driver.exe.", "driver.exe ", "lib./driver.exe", "lib /driver.exe", "driver.exe:payload"] {
+            assert!(!valid_paths([Path::new(alias)]), "Win32 alias accepted: {alias}");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovery_preflights_all_directory_collisions_before_moving_any_file() {
+        let root = crate::update::temporary_work("otd-recovery-collision").unwrap();
+        let journal = root.join(JOURNAL);
+        fs::create_dir_all(journal.join("backup")).unwrap();
+        fs::create_dir_all(root.join("plugin.dll")).unwrap();
+        fs::write(root.join("plugin.dll/local-settings.json"), b"local").unwrap();
+        fs::write(root.join("driver.exe"), b"current").unwrap();
+        fs::write(journal.join("backup/plugin.dll"), b"old").unwrap();
+        let plan = Plan { version: 1, entries: vec![
+            Entry { path: "plugin.dll".into(), existed: true },
+            Entry { path: "driver.exe".into(), existed: false },
+        ] };
+        fs::write(journal.join("plan.json"), serde_json::to_vec(&plan).unwrap()).unwrap();
+        assert!(startup(&root).unwrap_err().contains("non-file installation entry"));
+        assert_eq!(fs::read(root.join("driver.exe")).unwrap(), b"current");
+        assert_eq!(fs::read(root.join("plugin.dll/local-settings.json")).unwrap(), b"local");
+        assert_eq!(fs::read(journal.join("backup/plugin.dll")).unwrap(), b"old");
+        assert!(!journal.join("discarded").exists());
+        // A malformed non-file backup must also leave the current target and
+        // journal intact, even when another rollback entry is otherwise valid.
+        fs::remove_dir_all(root.join("plugin.dll")).unwrap();
+        fs::write(root.join("plugin.dll"), b"current plugin").unwrap();
+        fs::remove_file(journal.join("backup/plugin.dll")).unwrap();
+        fs::create_dir(journal.join("backup/plugin.dll")).unwrap();
+        fs::write(journal.join("backup/plugin.dll/local.json"), b"backup local").unwrap();
+        assert!(startup(&root).is_err());
+        assert_eq!(fs::read(root.join("driver.exe")).unwrap(), b"current");
+        assert_eq!(fs::read(root.join("plugin.dll")).unwrap(), b"current plugin");
+        assert_eq!(fs::read(journal.join("backup/plugin.dll/local.json")).unwrap(), b"backup local");
+        assert!(journal.join("plan.json").exists());
+        assert!(!journal.join("rolled-back").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // Junction creation needs no symbolic-link privilege. Run the built-in in
+    // a hidden, noninteractive child; remove only the temporary junction itself.
+    fn junction(link: &Path, target: &Path) {
+        use std::{ffi::OsString, os::windows::{ffi::{OsStrExt, OsStringExt}, process::CommandExt}};
+        let windows_path = |path: &Path| {
+            let units: Vec<_> = path.as_os_str().encode_wide().map(|unit| if unit == b'/' as u16 { b'\\' as u16 } else { unit }).collect();
+            OsString::from_wide(&units)
+        };
+        let output = std::process::Command::new("cmd.exe").args(["/d", "/c", "mklink", "/J"])
+            .arg(windows_path(link)).arg(windows_path(target)).creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+            .output().unwrap();
+        assert!(output.status.success(), "junction fixture failed: {}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    #[test]
+    fn relative_junctions_preserve_external_files_but_root_junctions_remain_supported() {
+        let root = crate::update::temporary_work("otd-relative-junction").unwrap();
+        let source = root.join("source");
+        let install = root.join("install");
+        let external = root.join("external");
+        fs::create_dir_all(source.join("lib")).unwrap();
+        fs::create_dir_all(&install).unwrap();
+        fs::create_dir_all(&external).unwrap();
+        fs::write(source.join("lib/plugin.dll"), b"package").unwrap();
+        fs::write(external.join("plugin.dll"), b"local external").unwrap();
+        let paths = [PathBuf::from("lib/plugin.dll")];
+        junction(&install.join("lib"), &external);
+        assert!(replace(&source, &install, &paths).unwrap_err().contains("reparse point"));
+        assert_eq!(fs::read(external.join("plugin.dll")).unwrap(), b"local external");
+        assert!(!install.join(JOURNAL).exists());
+        fs::remove_dir(install.join("lib")).unwrap();
+        // The journal itself is relative to the install root and cannot be a
+        // junction either, including an empty/uncommitted journal.
+        junction(&install.join(JOURNAL), &external);
+        assert!(startup(&install).unwrap_err().contains("reparse point"));
+        assert_eq!(fs::read(external.join("plugin.dll")).unwrap(), b"local external");
+        fs::remove_dir(install.join(JOURNAL)).unwrap();
+        let journal = install.join(JOURNAL);
+        fs::create_dir_all(journal.join("backup")).unwrap();
+        fs::create_dir_all(install.join("lib")).unwrap();
+        fs::write(install.join(&paths[0]), b"current").unwrap();
+        junction(&journal.join("backup/lib"), &external);
+        let plan = Plan { version: 1, entries: vec![Entry { path: paths[0].clone(), existed: true }] };
+        fs::write(journal.join("plan.json"), serde_json::to_vec(&plan).unwrap()).unwrap();
+        assert!(startup(&install).unwrap_err().contains("reparse point"));
+        assert_eq!(fs::read(install.join(&paths[0])).unwrap(), b"current");
+        assert_eq!(fs::read(external.join("plugin.dll")).unwrap(), b"local external");
+        assert!(journal.join("plan.json").exists());
+        fs::remove_dir(journal.join("backup/lib")).unwrap();
+        fs::remove_dir_all(&journal).unwrap();
+        // The explicitly selected installation root may legitimately be a
+        // junction. Relative package entries are still inspected beneath it.
+        let linked_root = root.join("linked-install");
+        junction(&linked_root, &install);
+        replace(&source, &linked_root, &paths).unwrap();
+        assert_eq!(fs::read(install.join(&paths[0])).unwrap(), b"package");
+        assert!(!startup(&linked_root).unwrap());
+        fs::remove_dir(linked_root).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replacement_rejects_directory_collision_without_moving_local_files() {
+        let root = crate::update::temporary_work("otd-directory-collision").unwrap();
+        let source = root.join("source");
+        let install = root.join("install");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(install.join("plugin.dll")).unwrap();
+        fs::write(source.join("plugin.dll"), b"package").unwrap();
+        fs::write(install.join("plugin.dll/local-settings.json"), b"preserve").unwrap();
+        assert!(replace(&source, &install, &[PathBuf::from("plugin.dll")]).unwrap_err()
+            .contains("non-file installation entry"));
+        assert_eq!(fs::read(install.join("plugin.dll/local-settings.json")).unwrap(), b"preserve");
+        assert!(!install.join(JOURNAL).exists());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

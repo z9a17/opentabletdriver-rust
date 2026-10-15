@@ -72,6 +72,9 @@ pub struct Request { pub operation: Operation, pub scope: u64, pub payload: Valu
 pub trait Backend: Send + Sync + 'static {
     fn execute(&self, request: Request) -> Result<Value, String>;
     fn maintain(&self,_lane:usize) {}
+    /// Supply the next lease or cleanup retry deadline. None means no timer
+    /// work: admission and shutdown still wake the condition.
+    fn maintenance_deadline(&self,_lane:usize) -> Option<Instant> { None }
     fn shutdown(&self,_lane:usize) {}
 }
 struct Ticket { deadline: Instant, reply: Option<Arc<[u8]>> }
@@ -135,23 +138,10 @@ fn snapshot_reply(snapshot: &Snapshot, cache_version: u64) -> Result<Arc<[u8]>, 
 pub struct Host { engine: Arc<Engine>, workers: Vec<std::thread::JoinHandle<()>> }
 #[derive(Clone)]
 pub struct Publisher { engine: Arc<Engine> }
-impl Host {
-    pub fn start(snapshot: Snapshot, backend: Arc<dyn Backend>) -> Result<Self, String> {
-        let cache_version = next_cache_version()?;
-        let bytes = snapshot_reply(&snapshot, cache_version)?;
-        let mut slot = HOST.get_or_init(|| Mutex::new(None)).lock().map_err(|_| "Managed owner lock poisoned.")?;
-        if slot.is_some() { return Err("Managed service owner already installed.".into()); }
-        SNAPSHOTS_REQUESTED.store(false, Ordering::Release);
-        let engine = Arc::new(Engine { state: Mutex::new(State { stopped: false,
-            snapshot: bytes, version: snapshot.version, cache_version, daemon_identity: snapshot.daemon_identity, tickets: HashMap::new(),
-            source_sessions: snapshot.source_sessions,
-            queue: VecDeque::new(), queued_bytes: 0 }), ready: Condvar::new() });
-        let mut workers = Vec::new();
-        for lane in 0..5 {
-        let worker = engine.clone();
-        let backend = Arc::clone(&backend);
-        let join = std::thread::Builder::new().name(["managed-services","managed-device-io","managed-output-owner","managed-device-detect","managed-input-owner"][lane].into()).spawn(move || loop {
+fn run_lane(worker: Arc<Engine>, backend: Arc<dyn Backend>, lane: usize) {
+    loop {
             backend.maintain(lane);
+            let deadline = backend.maintenance_deadline(lane);
             let work = {
                 let Ok(mut state) = worker.state.lock() else { return };
                 // A real plugin constructor can ask for shared endpoint I/O
@@ -164,9 +154,10 @@ impl Host {
                         let operation_lane=match request.operation {Operation::Daemon=>0,Operation::Detect=>3,Operation::OutputOwner=>2,Operation::InputHold|Operation::InputRelease=>4,_=>1};
                         operation_lane==lane
                     }) { break Some(index); }
-                    if lane==4{
-                        let Ok((next,timeout))=worker.ready.wait_timeout(state,Duration::from_millis(250)) else{return};state=next;
-                        if timeout.timed_out(){break None;}
+                    if let Some(deadline)=deadline {
+                        let remaining=deadline.saturating_duration_since(Instant::now());
+                        if remaining.is_zero(){break None;}
+                        let Ok((next,_))=worker.ready.wait_timeout(state,remaining) else{return};state=next;
                     }else{let Ok(next)=worker.ready.wait(state) else{return};state=next;}
                 };
                 let Some(index)=index else{continue};
@@ -183,7 +174,24 @@ impl Host {
             if let Ok(mut state) = worker.state.lock() {
                 if !state.stopped { if let Some(ticket) = state.tickets.get_mut(&work.0) { ticket.reply = Some(bytes); } }
             }
-        });
+    }
+}
+impl Host {
+    pub fn start(snapshot: Snapshot, backend: Arc<dyn Backend>) -> Result<Self, String> {
+        let cache_version = next_cache_version()?;
+        let bytes = snapshot_reply(&snapshot, cache_version)?;
+        let mut slot = HOST.get_or_init(|| Mutex::new(None)).lock().map_err(|_| "Managed owner lock poisoned.")?;
+        if slot.is_some() { return Err("Managed service owner already installed.".into()); }
+        SNAPSHOTS_REQUESTED.store(false, Ordering::Release);
+        let engine = Arc::new(Engine { state: Mutex::new(State { stopped: false,
+            snapshot: bytes, version: snapshot.version, cache_version, daemon_identity: snapshot.daemon_identity, tickets: HashMap::new(),
+            source_sessions: snapshot.source_sessions,
+            queue: VecDeque::new(), queued_bytes: 0 }), ready: Condvar::new() });
+        let mut workers = Vec::new();
+        for lane in 0..5 {
+        let worker = engine.clone();
+        let backend = Arc::clone(&backend);
+        let join = std::thread::Builder::new().name(["managed-services","managed-device-io","managed-output-owner","managed-device-detect","managed-input-owner"][lane].into()).spawn(move || run_lane(worker, backend, lane));
         match join {
             Ok(join) => workers.push(join),
             Err(error) => {
@@ -278,7 +286,10 @@ unsafe extern "C" fn request(op: u32, scope: u64, input: *const u8, len: u32, ou
         Some((source.id.clone(), source.device_generation))
     } else { None };
     if operation == Operation::Snapshot {
-        SNAPSHOTS_REQUESTED.store(true, Ordering::Release);
+        if !SNAPSHOTS_REQUESTED.swap(true, Ordering::AcqRel) {
+            #[cfg(windows)]
+            crate::managed_host::wake_observer();
+        }
         return match state.snapshot_ticket(scope, len as usize, Instant::now()) {
             Ok(ticket) => { unsafe { *output = ticket; } 0 }, Err(code) => code,
         };
@@ -400,5 +411,70 @@ mod snapshot_tests {
         assert_eq!(state.snapshot_ticket(current, 0, now + TTL).unwrap(), 0);
         assert!(state.tickets.is_empty());
         assert!(retained.upgrade().is_none());
+    }
+
+    #[test]
+    fn input_lane_sleeps_without_leases_and_recomputes_renewed_deadlines() {
+        use std::sync::mpsc;
+        #[derive(Debug, PartialEq)]
+        enum Event { Maintained, Executed, Stopped }
+        struct Fake {
+            deadline: Mutex<Option<Instant>>,
+            events: mpsc::Sender<Event>,
+        }
+        impl Backend for Fake {
+            fn execute(&self, request: Request) -> Result<Value, String> {
+                *self.deadline.lock().unwrap() = Some(Instant::now() + Duration::from_millis(request.payload.as_u64().unwrap()));
+                self.events.send(Event::Executed).unwrap();
+                Ok(Value::Null)
+            }
+            fn maintain(&self, _: usize) {
+                let mut deadline = self.deadline.lock().unwrap();
+                if deadline.is_some_and(|deadline| deadline <= Instant::now()) { *deadline = None; }
+                self.events.send(Event::Maintained).unwrap();
+            }
+            fn maintenance_deadline(&self, _: usize) -> Option<Instant> { *self.deadline.lock().unwrap() }
+            fn shutdown(&self, _: usize) { self.events.send(Event::Stopped).unwrap(); }
+        }
+        fn admit(engine: &Engine, id: u64, lease: u64) {
+            let mut state = engine.state.lock().unwrap();
+            state.tickets.insert(id, Ticket { deadline: Instant::now() + TTL, reply: None });
+            state.queue.push_back((id, 0, Request { operation: Operation::InputHold, scope: 1,
+                payload: Value::from(lease), expected_daemon: None, expected_source: None }));
+            engine.ready.notify_all();
+        }
+        let publisher = publisher();
+        let engine = publisher.engine.clone();
+        let (events, received) = mpsc::channel();
+        let backend = Arc::new(Fake { deadline: Mutex::new(None), events });
+        let worker = {
+            let engine = engine.clone();
+            std::thread::spawn(move || run_lane(engine, backend, 4))
+        };
+        let check = || {
+            let next = || received.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert_eq!(next(), Event::Maintained);
+            // A different lane's admission can wake this condition. It must
+            // neither trigger maintenance nor reinstate the old 250ms tick.
+            engine.ready.notify_all();
+            assert!(received.recv_timeout(Duration::from_millis(300)).is_err());
+            admit(&engine, 1, 80);
+            assert_eq!(next(), Event::Executed);
+            assert_eq!(next(), Event::Maintained);
+            admit(&engine, 2, 250);
+            assert_eq!(next(), Event::Executed);
+            assert_eq!(next(), Event::Maintained);
+            // Renewal supersedes the first lease, even after spurious wakes.
+            engine.ready.notify_all();
+            assert!(received.recv_timeout(Duration::from_millis(120)).is_err());
+            assert_eq!(next(), Event::Maintained);
+            assert!(received.recv_timeout(Duration::from_millis(300)).is_err());
+        };
+        // Always wake/join the fake owner, including a failed assertion.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(check));
+        { let mut state = engine.state.lock().unwrap(); state.stopped = true; engine.ready.notify_all(); }
+        worker.join().unwrap();
+        if let Err(error) = result { std::panic::resume_unwind(error); }
+        assert_eq!(received.recv_timeout(Duration::from_secs(2)).unwrap(), Event::Stopped);
     }
 }

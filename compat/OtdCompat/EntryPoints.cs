@@ -188,8 +188,6 @@ sealed class Instance : IDisposable
             // PluginManager.ConstructObject injects services before
             // PluginSettingStore.ApplySettings, so Frequency finds its timer.
             services = new HostServices(() => {
-                if (filter.Position == PipelinePosition.Internal)
-                    throw new NotSupportedException("Internal filters cannot acquire asynchronous timers before pressure rewriting.");
                 if (Environment.CurrentManagedThreadId != ownerThread)
                     throw new InvalidOperationException("Pipeline timers must be acquired on the graph's owning thread.");
                 var timer = new SessionTimer(); timers.Add(timer); return timer;
@@ -202,8 +200,6 @@ sealed class Instance : IDisposable
             Position = filter.Position;
             if (Position is not (PipelinePosition.Internal or PipelinePosition.PreTransform or PipelinePosition.PostTransform))
                 throw new NotSupportedException($"Unsupported plugin pipeline position: {Position}.");
-            if (Position == PipelinePosition.Internal && IsAsyncFilter(type))
-                throw new NotSupportedException("Asynchronous Internal filters are unsupported: pressure rewriting must run once before ordinary filters. Use a synchronous Internal filter or a PreTransform asynchronous filter.");
             filter.Emit += OnEmit;
         }
         catch

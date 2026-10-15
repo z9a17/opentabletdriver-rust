@@ -13,6 +13,7 @@ struct Published {
     snapshot: Snapshot,
     last_devices: Option<Instant>,
     sessions: Vec<(String, u64, Option<u64>)>,
+    observed_sessions: Arc<crate::device_sessions::SessionList>,
     retained: Option<Arc<Value>>,
     projection_pending: bool,
     dirty: bool,
@@ -39,7 +40,29 @@ impl Published {
 }
 struct NativeBackend {
     stopped: Arc<AtomicBool>, published: Mutex<Published>, activated: AtomicBool,
+    native: Mutex<NativeState>, refreshing: Mutex<()>,
     observer_thread: OnceLock<std::thread::Thread>,
+}
+struct NativeState {
+    identity: WorkerIdentity,
+    devices: Option<crate::device_sessions::Handle>,
+    log_sequence: u64,
+    logs: Option<Arc<Value>>,
+}
+impl NativeState {
+    fn update(&mut self, identity: WorkerIdentity, devices: Option<crate::device_sessions::Handle>,
+        sequence: u64, logs: impl FnOnce() -> Value) -> bool {
+        let changed = self.logs.is_none() || self.identity != identity || self.log_sequence != sequence
+            || !same_devices(&self.devices, &devices);
+        if self.log_sequence != sequence || self.logs.is_none() { self.logs = Some(Arc::new(logs())); }
+        self.identity = identity;
+        self.devices = devices;
+        self.log_sequence = sequence;
+        changed
+    }
+}
+fn same_devices(a: &Option<crate::device_sessions::Handle>, b: &Option<crate::device_sessions::Handle>) -> bool {
+    match (a, b) { (Some(a), Some(b)) => Arc::ptr_eq(&a.registry, &b.registry), (None, None) => true, _ => false }
 }
 
 pub struct Owner {
@@ -57,7 +80,7 @@ impl Owner {
         });
         // Malformed optional compatibility settings must not stop a native-only
         // driver. Their unavailable provider returns an explicit error later.
-        let snapshot = Snapshot { version: 1, daemon_identity: Some(identity),
+        let snapshot = Snapshot { version: 1, daemon_identity: Some(identity.clone()),
             diagnostic_app_version: Some(env!("CARGO_PKG_VERSION").into()),
             diagnostic_build_date: Some(env!("OTD_BUILD_DATE").into()),
             settings: crate::upstream_rpc::initial_original_settings().ok(),
@@ -65,8 +88,10 @@ impl Owner {
             configurations, tablets: Some(json!([])), ..Snapshot::default() };
         let stop = Arc::new(AtomicBool::new(false));
         let backend = Arc::new(NativeBackend { stopped: Arc::clone(&stop), activated: AtomicBool::new(crate::dotnet::initialized()),
+            native: Mutex::new(NativeState { identity, devices: None, log_sequence: 0, logs: None }), refreshing: Mutex::new(()),
             observer_thread: OnceLock::new(), published: Mutex::new(Published {
             publisher: None, snapshot: snapshot.clone(), last_devices: None, sessions: Vec::new(),
+            observed_sessions: Arc::default(),
             retained: crate::upstream_rpc::cached_original_settings(),
             projection_pending: true,
             dirty: false,
@@ -86,11 +111,18 @@ impl Owner {
                 // or send recurring control requests for managed services.
                 if crate::dotnet::initialized() && crate::managed_services::snapshots_requested() {
                     let _ = observer_backend.refresh(false, false, true);
+                    std::thread::park_timeout(Duration::from_millis(250));
+                } else {
+                    // The first Snapshot request explicitly wakes this owner;
+                    // CLR initialization alone does not need recurring work.
+                    std::thread::park();
                 }
-                std::thread::park_timeout(Duration::from_millis(250));
             }
         }).map_err(|error| error.to_string())?;
         let _ = backend.observer_thread.set(observer.thread().clone());
+        // A prime/first request can race thread-handle installation. Its flag
+        // is already visible; this token prevents losing that initial wake.
+        observer.thread().unpark();
         // Establish teardown ownership before any later startup step can fail.
         // Dropping a bare JoinHandle would leave the parked observer and its
         // retained backend alive after a failed tool-owner initialization.
@@ -130,10 +162,27 @@ pub fn prime() {
         if let Some(observer) = backend.observer_thread.get() { observer.unpark(); }
     }
 }
+pub(crate) fn wake_observer() {
+    let backend = CURRENT.get_or_init(|| Mutex::new(Weak::new())).lock().ok().and_then(|current| current.upgrade());
+    if let Some(backend) = backend {
+        if let Some(observer) = backend.observer_thread.get() { observer.unpark(); }
+    }
+}
 fn call(command: Command) -> Result<Reply, String> {
     let response = control::request_owned(&control::Request::new(1, command), Duration::from_secs(2), std::process::id())
         .map_err(|error| format!("Managed native control: {error}; query state before retrying a mutation"))?;
     match response.reply { Reply::Error { error } => Err(error.message), reply => Ok(reply) }
+}
+/// Called by the native control owner after polling and before returning a
+/// mutation receipt. This copies no device tree or log history when unchanged.
+/// The observer never needs to send read-only requests to its own control pipe.
+pub(crate) fn publish_native_state(identity: WorkerIdentity, devices: Option<crate::device_sessions::Handle>,
+    sequence: u64, logs: impl FnOnce() -> Value) {
+    let backend = CURRENT.get_or_init(|| Mutex::new(Weak::new())).lock().ok().and_then(|current| current.upgrade());
+    if let Some(backend) = backend {
+        let changed = backend.native.lock().ok().is_some_and(|mut state| state.update(identity, devices, sequence, logs));
+        if changed { if let Some(observer) = backend.observer_thread.get() { observer.unpark(); } }
+    }
 }
 impl NativeBackend {
     fn prime_metadata(&self) -> Result<(), String> {
@@ -148,42 +197,64 @@ impl NativeBackend {
     }
     fn refresh(&self, full_settings: bool, force_devices: bool, allow_projection: bool) -> Result<(), String> {
         if self.stopped.load(Ordering::Acquire) { return Err("Managed native owner is stopping".into()); }
-        let mut state = self.published.lock().map_err(|_| "Managed snapshot lock poisoned")?;
-        let status = match call(Command::Status)? { Reply::Status { status } => status, _ => return Err("Unexpected managed status reply".into()) };
-        let sessions = match call(Command::ListDeviceSessions)? { Reply::DeviceSessions { sessions, .. } => sessions, _ => return Err("Unexpected managed device reply".into()) };
-        let session_generations: Vec<_> = sessions.iter().map(|session| (session.id.clone(), session.device_generation, session.pending_generation)).collect();
-        let mut changed = replace_if_changed(&mut state.snapshot.source_sessions, sessions.iter().map(|session| SourceSession {
-            id: session.id.clone(), tablet: session.tablet.clone(), device_generation: session.device_generation,
-            pending_generation: session.pending_generation, connected: session.connected, state: session.state,
-        }).collect());
-        let retained = crate::upstream_rpc::cached_original_settings();
-        let retained_changed = match (&state.retained, &retained) {
-            (Some(old), Some(new)) => !Arc::ptr_eq(old, new), (None, None) => false, _ => true,
+        // Serialize observer/detect refreshes without holding the publication
+        // lock across a settings projection's control transaction. Cold CLR
+        // priming on that control thread must be able to publish metadata.
+        let _refresh = self.refreshing.lock().map_err(|_| "Managed refresh lock poisoned")?;
+        let (identity, devices, sequence, logs) = {
+            let native = self.native.lock().map_err(|_| "Managed native state lock poisoned")?;
+            (native.identity.clone(), native.devices.clone(), native.log_sequence, native.logs.clone())
         };
-        let settings_changed = full_settings || state.projection_pending || retained_changed || state.sessions != session_generations
-            || state.snapshot.daemon_identity.as_ref() != Some(&status.identity());
-        let tablets: Vec<_> = sessions.iter().filter(|session| session.connected).filter_map(|session| {
-            session.opened_identifiers.as_ref().map(|identifiers| json!({"Properties": session.properties, "Identifiers": identifiers}))
-        }).collect();
-        changed |= replace_if_changed(&mut state.snapshot.tablets, Some(json!(tablets)));
-        if allow_projection && settings_changed {
-            changed |= replace_if_changed(&mut state.snapshot.settings, crate::upstream_rpc::get_original_settings().ok());
+        let previous = self.published.lock().map_err(|_| "Managed snapshot lock poisoned")?.observed_sessions.clone();
+        let observed = match devices {
+            Some(handle) => handle.snapshot_cached(&previous)?,
+            None if previous.sessions.is_empty() && previous.selected_id.is_none() => previous.clone(),
+            None => Arc::default(),
+        };
+        let sessions_changed = !Arc::ptr_eq(&previous, &observed);
+        let sessions = &observed.sessions;
+        let session_generations = sessions_changed.then(|| sessions.iter()
+            .map(|session| (session.id.clone(), session.device_generation, session.pending_generation)).collect::<Vec<_>>());
+        let retained = crate::upstream_rpc::cached_original_settings();
+        let (settings_changed, refresh_devices) = {
+            let state = self.published.lock().map_err(|_| "Managed snapshot lock poisoned")?;
+            let retained_changed = match (&state.retained, &retained) {
+                (Some(old), Some(new)) => !Arc::ptr_eq(old, new), (None, None) => false, _ => true,
+            };
+            (full_settings || state.projection_pending || retained_changed || session_generations.as_ref().is_some_and(|next| state.sessions != *next)
+                || state.snapshot.daemon_identity.as_ref() != Some(&identity),
+                force_devices || state.last_devices.is_none_or(|last| last.elapsed() >= Duration::from_secs(3)))
+        };
+        let projected = (allow_projection && settings_changed).then(|| crate::upstream_rpc::get_original_settings().ok());
+        let devices = refresh_devices.then(|| service_devices().ok().map(|devices| json!(devices)));
+        let mut state = self.published.lock().map_err(|_| "Managed snapshot lock poisoned")?;
+        let mut changed = false;
+        if sessions_changed {
+            changed |= replace_if_changed(&mut state.snapshot.source_sessions, sessions.iter().map(|session| SourceSession {
+                id: session.id.clone(), tablet: session.tablet.clone(), device_generation: session.device_generation,
+                pending_generation: session.pending_generation, connected: session.connected, state: session.state,
+            }).collect());
+            let tablets: Vec<_> = sessions.iter().filter(|session| session.connected).filter_map(|session| {
+                session.opened_identifiers.as_ref().map(|identifiers| json!({"Properties": session.properties, "Identifiers": identifiers}))
+            }).collect();
+            changed |= replace_if_changed(&mut state.snapshot.tablets, Some(json!(tablets)));
+        }
+        if let Some(projected) = projected {
+            changed |= replace_if_changed(&mut state.snapshot.settings, projected);
             state.projection_pending = false;
         }
-        if force_devices || state.last_devices.is_none_or(|last| last.elapsed() >= Duration::from_secs(3)) {
-            changed |= replace_if_changed(&mut state.snapshot.devices, service_devices().ok().map(|devices| json!(devices)));
+        if let Some(devices) = devices {
+            changed |= replace_if_changed(&mut state.snapshot.devices, devices);
             state.last_devices = Some(Instant::now());
         }
-        let logs = match call(Command::GetUpstreamLog) {
-            Ok(Reply::UpstreamLog { messages, sequence, .. }) => {
-                changed |= replace_if_changed(&mut state.snapshot.log_sequence, sequence);
-                Some(json!(messages))
-            }, _ => None,
-        };
-        changed |= replace_if_changed(&mut state.snapshot.logs, logs);
+        if state.snapshot.log_sequence != sequence || (state.snapshot.logs.is_none() && logs.is_some()) {
+            changed |= replace_if_changed(&mut state.snapshot.log_sequence, sequence);
+            changed |= replace_if_changed(&mut state.snapshot.logs, logs.as_deref().cloned());
+        }
         changed |= replace_if_changed(&mut state.snapshot.resynchronize, crate::upstream_rpc::original_resynchronize_epoch());
-        changed |= replace_if_changed(&mut state.snapshot.daemon_identity, Some(status.identity()));
-        state.sessions = session_generations;
+        changed |= replace_if_changed(&mut state.snapshot.daemon_identity, Some(identity));
+        if let Some(generations) = session_generations { state.sessions = generations; }
+        state.observed_sessions = observed;
         state.retained = crate::upstream_rpc::cached_original_settings();
         state.dirty |= changed;
         state.publish_if_changed()
@@ -243,6 +314,7 @@ impl NativeBackend {
 }
 impl Backend for NativeBackend {
     fn maintain(&self,lane:usize){if lane==4{crate::managed_inputs::maintain();}}
+    fn maintenance_deadline(&self,lane:usize)->Option<Instant>{if lane==4{crate::managed_inputs::maintenance_deadline()}else{None}}
     fn shutdown(&self,lane:usize){if lane==4{crate::managed_inputs::shutdown();}}
     fn execute(&self, request: Request) -> Result<Value, String> {
         if self.stopped.load(Ordering::Acquire) { return Err("Managed native owner is stopping".into()); }
@@ -307,6 +379,33 @@ mod snapshot_tests {
     use super::*;
 
     #[test]
+    fn native_publication_reuses_logs_and_tracks_replacement_owner_and_registry() {
+        let identity = WorkerIdentity { instance: "fixture".into(), generation: 1 };
+        let mut state = NativeState { identity: identity.clone(), devices: None, log_sequence: 0, logs: None };
+        assert!(state.update(identity.clone(), None, 0, || json!([])));
+        let retained = state.logs.clone().unwrap();
+        assert!(!state.update(identity.clone(), None, 0, || panic!("unchanged history cloned")));
+        assert!(Arc::ptr_eq(&retained, state.logs.as_ref().unwrap()));
+        let (first, _) = crate::device_sessions::Handle::channel(crate::hid::Event::create(true).unwrap());
+        assert!(state.update(identity.clone(), Some(first.clone()), 0, || panic!("unchanged history cloned")));
+        let candidate = crate::device_sessions::tests::candidate("managed-state-fixture", "managed-state-parent");
+        let id = first.discover(&crate::device_sessions::tests::selected(&candidate)).unwrap();
+        first.commit(&id, 7, crate::config::Profile::default());
+        first.state(&id, crate::device_sessions::SessionState::Waiting, None);
+        assert!(!state.update(identity.clone(), Some(first), 0, || panic!("unchanged history cloned")));
+        // The retained handle sees changes even if identity, logical device
+        // generation and log sequence are all unchanged.
+        let current = state.devices.as_ref().unwrap().snapshot().unwrap();
+        assert_eq!(current.sessions[0].device_generation, 7);
+        assert_eq!(current.sessions[0].state, crate::device_sessions::SessionState::Waiting);
+        let (replacement, _) = crate::device_sessions::Handle::channel(crate::hid::Event::create(true).unwrap());
+        assert!(state.update(identity.clone(), Some(replacement), 0, || panic!("unchanged history cloned")));
+        assert!(state.update(WorkerIdentity { instance: "replacement".into(), generation: 0 }, None, 1, || json!(["new log"])));
+        assert!(!Arc::ptr_eq(&retained, state.logs.as_ref().unwrap()));
+        assert_eq!(**state.logs.as_ref().unwrap(), json!(["new log"]));
+    }
+
+    #[test]
     fn source_state_changes_are_observed_without_generation_changes() {
         let source = SourceSession { id: "offline-fixture".into(), tablet: "fixture".into(), device_generation: 7,
             pending_generation: None, connected: true, state: crate::device_sessions::SessionState::Running };
@@ -323,7 +422,7 @@ mod snapshot_tests {
     #[test]
     fn unchanged_state_does_not_require_publication_and_failed_publication_retries() {
         let mut state = Published { publisher: None, snapshot: Snapshot { version: 1, ..Snapshot::default() },
-            last_devices: None, sessions: Vec::new(), retained: None, projection_pending: false, dirty: false };
+            last_devices: None, sessions: Vec::new(), observed_sessions: Arc::default(), retained: None, projection_pending: false, dirty: false };
         state.publish_if_changed().unwrap();
         assert_eq!(state.snapshot.version, 1);
         state.dirty = true;

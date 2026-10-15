@@ -1019,3 +1019,9 @@ fn main() {
         std::process::exit(if error.starts_with("Usage:") { 2 } else { 1 });
     }
 }
+// Exercise the portable Unix ownership/deadline state with fake writers on the
+// Windows development host too. This never initializes platform I/O.
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../crates/otd-platform/src/input_owner.rs"]
+mod unix_input_owner_fixture;

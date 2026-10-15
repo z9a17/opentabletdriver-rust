@@ -6,7 +6,7 @@ The first ledger has one row for each of the 52 capability IDs, 339 device confi
 
 ## Current device catalog
 
-Release 0.14.5 uses [device-catalog.json](device-catalog.json) for the current 0.6.x device snapshot, while this inventory, ledger and managed plugin API retain the stable 0.6.7 baseline. Every current-catalog hardware field remains unverified. Importing newer device definitions does not advance this ledger or certify old results against changed parsers. See [the source audit](../TABLET_CATALOG_0.14.5.md).
+The 0.19 release series uses [device-catalog.json](device-catalog.json) for the pinned 0.6.8-rc1 snapshot: 359 configurations and 54 referenced parser names. The managed SDK also adopts RC source with documented legacy compatibility changes. The inventory and ledger in this document remain the historical 0.6.7 acceptance baseline. Every current-catalog hardware field remains unverified. Importing newer definitions does not advance this ledger or certify old results against changed parsers. See the [current evidence map](CURRENT_STATUS.md), [source composition](UPSTREAM_0.6.8_RC1.md) and [device audit](../TABLET_CATALOG_0.6.8_RC1.md).
 
 ## Record evidence
 
@@ -25,7 +25,7 @@ python scripts/parity-evidence.py validate
 python -m unittest discover -s scripts/tests -p 'test_parity_*.py'
 ```
 
-CI runs both commands. The validator rejects missing or extra IDs, changed inventory contents, stale source revisions, invalid task IDs, malformed evidence and completion states without their required tests. It checks record structure; reviewers must still judge whether linked results substantiate the claim. The Git history and [workstream issues](GITHUB_TRACKING.md) remain the record of review and ownership.
+Run these commands locally when changing the ledger schema or baseline; GitHub CI is disabled by owner preference. The validator rejects missing or extra IDs, changed inventory contents, stale source revisions, invalid task IDs, malformed evidence and completion states without their required tests. It checks record structure; reviewers must still judge whether linked results substantiate the claim. The Git history and [workstream issues](GITHUB_TRACKING.md) remain the record of review and ownership.
 
 ## Change the pinned baseline
 

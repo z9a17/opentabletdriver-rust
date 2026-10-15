@@ -370,6 +370,10 @@ impl Daemon {
             },
         }
     }
+    fn publish_managed_state(&self) {
+        crate::managed_host::publish_native_state(self.identity(), self.device_sessions(), self.log_sequence,
+            || serde_json::json!(self.upstream_logs.iter().map(|(message, _)| message).collect::<Vec<_>>()));
+    }
     fn prepare(text: Option<String>) -> Result<(Profile, String), ControlError> {
         let profile = match text {
             Some(text) => Profile::from_toml_text(&text, Path::new("daemon-request.toml")),
@@ -1118,8 +1122,10 @@ impl ControlHandler for Daemon {
             }
         }
         self.reap();
+        self.publish_managed_state();
     }
     fn handle(&mut self, command: Command) -> Result<Reply, ControlError> {
+        let result = (|| {
         // Cancel before polling so an already queued Prepared/Ready notice
         // cannot activate a replacement in response to a Stop request.
         match &command {
@@ -1377,5 +1383,10 @@ impl ControlHandler for Daemon {
                 Ok(Reply::DebugCaptureReleased)
             }
         }
+        })();
+        // Publish failures/rollbacks too: a rejected request can still have
+        // advanced cleanup, and the caller must observe that actual identity.
+        self.publish_managed_state();
+        result
     }
 }

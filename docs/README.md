@@ -12,6 +12,8 @@ Use the [project README](../README.md) for downloads and quick setup. These guid
 
 ## Compatibility and evidence
 
+- [Current source and evidence map](parity/CURRENT_STATUS.md), separating selected RC components, offline results and historical acceptance
+- [Autonomous compatibility and recovery follow-up](parity/AUTONOMOUS_FOLLOWUP_2026-10-15.md), including the [unchanged filter corpus](parity/OFFLINE_PLUGIN_CORPUS_2026-10-15.md)
 - [0.6.8 RC adoption and deferred acceptance](parity/UPSTREAM_0.6.8_RC1.md), building on the [0.18 implementation scope](parity/IMPLEMENTATION_0.18.md); full verified parity remains open
 - [Current tablet catalog coverage](TABLET_CATALOG_0.6.8_RC1.md): 359 configurations and 54 referenced parser names, with hardware limits
 - [Historical hardware checklist and test scenarios](HARDWARE_VALIDATION.md): includes early-release limitations; use the current implementation report for present capability scope
@@ -19,7 +21,7 @@ Use the [project README](../README.md) for downloads and quick setup. These guid
 - [Performance](PERFORMANCE.md), [input latency](INPUT_LATENCY.md): measurement methods and limits
 - [13 October reliability review](BACKGROUND_AUDIT_2026-10-13.md): reader fairness, shutdown, cleanup and offline regression results
 - [15 October driver overhead review](PERFORMANCE_IMPROVEMENTS_2026-10-15.md): managed graph, snapshot, wake and debugger improvements with offline measurements
-- [0.19.0 release notes](RELEASE_0.19.0.md), [0.18.2 release notes](RELEASE_0.18.2.md), [porting status and historical release snapshots](PORTING_STATUS.md)
+- [0.19.1 release notes](RELEASE_0.19.1.md), [0.19.0 release notes](RELEASE_0.19.0.md), [porting status and historical release snapshots](PORTING_STATUS.md)
 
 ## Development
 

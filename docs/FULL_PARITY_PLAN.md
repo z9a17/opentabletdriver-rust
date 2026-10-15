@@ -1,6 +1,6 @@
 # Full OpenTabletDriver parity plan
 
-Status: pinned implementation source completion is recorded in [0.18](parity/IMPLEMENTATION_0.18.md); acceptance/backlog evidence remains open and is deferred by the owner. The starting-point audit used Rust [v0.4.0 / 8d4d90e](https://github.com/z9a17/opentabletdriver-rust/tree/8d4d90eb0d7d2faeac248082c7da7a4c97c669e6) on 2026-09-21. For shipped behavior, use [PORTING_STATUS.md](PORTING_STATUS.md); the baseline and acceptance gates below remain in force.
+Status: the [current source and evidence map](parity/CURRENT_STATUS.md) separates the selected 0.6.8 RC adoption, targeted offline results and remaining acceptance. The [0.18 report](parity/IMPLEMENTATION_0.18.md) records the earlier 0.6.7 source-completion milestone. The starting-point audit used Rust [v0.4.0 / 8d4d90e](https://github.com/z9a17/opentabletdriver-rust/tree/8d4d90eb0d7d2faeac248082c7da7a4c97c669e6) on 2026-09-21. The historical baseline inventory below remains intact; it does not certify the newer adopted components.
 
 The objective is a Rust implementation of the observable functionality of stable OpenTabletDriver, with efficient native report processing and **unchanged existing .NET plugins**. Windows PTH-660 support is the starting point. Full parity includes the upstream device database, Windows/Linux/macOS behavior, configuration and presets, desktop workflows, command-line and daemon interfaces, and the plugin ecosystem.
 
@@ -21,7 +21,7 @@ The original [implementation plan](IMPLEMENTATION_PLAN.md) is historical. Its fi
 
 ## 1. Compatibility baseline and scope
 
-Pin core behavior to upstream [v0.6.7, commit 736003ed72c8bbb28033b039d5a0bb76c344145c](https://github.com/OpenTabletDriver/OpenTabletDriver/tree/736003ed72c8bbb28033b039d5a0bb76c344145c), the latest stable release found during this audit. Its source, public contracts, configuration data, settings format, and working behavior are the reference. The observed development branch was `0.6.x` at `cadb51af69e8a69db1ab8d0a9c960176db1ba65c`; later development changes are a separate, explicit baseline update.
+The original acceptance inventory pins upstream [v0.6.7, commit 736003ed72c8bbb28033b039d5a0bb76c344145c](https://github.com/OpenTabletDriver/OpenTabletDriver/tree/736003ed72c8bbb28033b039d5a0bb76c344145c). Its source, public contracts, configuration data, settings format, and working behavior remain the historical reference for that ledger. The selected [0.6.8-rc1 adoption](parity/UPSTREAM_0.6.8_RC1.md) explicitly records newer component revisions and modifications; it is not a wholesale replacement of the copied Core/Desktop/UX sources or an automatic advance of historical acceptance results.
 
 Pin catalog coverage to [Plugin-Repository at 2dfdff1cd77d274eb19c4d359b240167537c4db2](https://github.com/OpenTabletDriver/Plugin-Repository/tree/2dfdff1cd77d274eb19c4d359b240167537c4db2). The inventory contains:
 

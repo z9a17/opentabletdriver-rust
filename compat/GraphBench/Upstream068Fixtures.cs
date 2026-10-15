@@ -172,8 +172,8 @@ unsafe static class Upstream068Probe
             if (graph.Tick(&Callback, 0) != 0 || admissions != 1 || outputs != 3 || packet.Pressure != 500)
                 throw new Exception("A retained asynchronous report was rewritten twice.");
             Filter(internalFilter).GetType().GetMethod("EmitLate")!.Invoke(Filter(internalFilter), [packet]);
-            if (graph.Tick(&Callback, 0) == 0 || graph.FailedIndex != 0)
-                throw new Exception("Late Internal emissions must report an unsupported-stage fault.");
+            if (graph.Tick(&Callback, 0) != 0 || admissions != 1 || outputs != 4 || packet.Pressure != 500)
+                throw new Exception("Late Internal emissions must retain prepared pressure across their owned snapshot.");
         }
         finally { second.Free(); first.Free(); }
         using (var output = new OutputInstance(new JObject {
@@ -207,8 +207,7 @@ unsafe static class Upstream068Probe
             if (!queue.Take(out var command) || command.Rotation != 0.5f || (command.Flags & 128) == 0)
                 throw new Exception("Normalized native rotation service command changed.");
         }
-        try { using var invalid = Load(args, "AsyncInternalFilter"); throw new Exception("Async Internal construction was accepted."); }
-        catch (NotSupportedException) { }
+        using var internalAsync = Load(args, "AsyncInternalFilter");
         using var ordinaryAsync = Load(args, "OrdinaryAsyncFilter"); // SDK timer injection bootstrap must be finite.
         Console.WriteLine("PASS 0.6.8 admission, SDK async, injection and rotation fixtures");
     }

@@ -346,7 +346,9 @@ fn supervise(profile: Profile, handle: Handle, requests: mpsc::Receiver<Request>
                 scanned = std::time::Instant::now();
                 rescan = false;
             }
+            let mut request_count = 0;
             for request in requests.try_iter().take(16) {
+                request_count += 1;
                 let request = match request {
                     Request::Refresh(reply) => {
                         if refresh_replies.len() == 16 { let _ = reply.send(Err("device discovery queue is full".into())); }
@@ -417,9 +419,11 @@ fn supervise(profile: Profile, handle: Handle, requests: mpsc::Receiver<Request>
                     transaction.phase = None;
                 }
             }
-            // Control transactions progress even without reports or PnP. This
-            // bounded wait has no work on the successful HID report path.
-            rescan |= crate::session::companion_wake(&notification, &wake, Duration::from_millis(20)).map_err(|error| error.to_string())?;
+            // Worker lifecycle notices, completion and admitted requests wake
+            // this event. Poll every device before draining another bounded
+            // request batch; a consumed signal must not strand queued work.
+            let timeout = supervisor_wait(rescan || request_count == 16, failed_scan, scanned.elapsed());
+            rescan |= crate::session::companion_wake(&notification, &wake, timeout).map_err(|error| error.to_string())?;
         }
         Ok(())
     })).unwrap_or_else(|_| Err("device supervision panicked".into()));
@@ -432,6 +436,10 @@ fn supervise(profile: Profile, handle: Handle, requests: mpsc::Receiver<Request>
     }
     if let Err(error) = outcome { errors.push(error); }
     if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
+}
+fn supervisor_wait(immediate: bool, failed_scan: bool, elapsed: Duration) -> Duration {
+    if immediate { Duration::ZERO }
+    else { (if failed_scan { Duration::from_secs(2) } else { super::RESCAN }).saturating_sub(elapsed) }
 }
 impl Drop for Transaction {
     fn drop(&mut self) {
@@ -447,6 +455,13 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
     type Observed = Arc<Mutex<Vec<(String, Directive)>>>;
+    #[test]
+    fn idle_supervisor_waits_for_events_but_queued_batches_and_refreshes_do_not_sleep() {
+        assert_eq!(supervisor_wait(false, false, Duration::from_secs(1)), super::super::RESCAN - Duration::from_secs(1));
+        assert_eq!(supervisor_wait(false, true, Duration::from_millis(750)), Duration::from_millis(1250));
+        assert_eq!(supervisor_wait(false, true, Duration::from_secs(3)), Duration::ZERO);
+        assert_eq!(supervisor_wait(true, false, Duration::ZERO), Duration::ZERO);
+    }
     fn scripted(name: &str, prepared: bool, fail: bool, observed: &Observed) -> Worker {
         let name = name.to_owned();
         let observed = Arc::clone(observed);

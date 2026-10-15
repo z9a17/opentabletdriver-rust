@@ -1,0 +1,137 @@
+{
+  "schema_version": 1,
+  "recorded_utc": "2026-10-15T14:37:31.804789+00:00",
+  "scope": "Source-reviewed unchanged release DLLs, offline graph and direct upstream-interface reference. Per-class cases; no whole-package, ecosystem, physical-input or timing-jitter acceptance.",
+  "validation_layer": "Windows x64 managed offline fixture; no actual device/native output or original daemon process",
+  "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+  "manifest": "docs/parity/plugin-offline-corpus-2026-10-15.json",
+  "manifest_sha256": "eddcf827e562eaf5d740b29c684e0e251d061e6efd270eb2b54483a6abe997b9",
+  "fixture": "compat/GraphBench/CorpusFixtures.cs",
+  "fixture_sha256": "d1e58702ec57bacf4668ac05264bb4a98f3d7c0815b22d0fe167d7792620fc33",
+  "runner": "scripts/offline-plugin-corpus.py",
+  "runner_sha256": "48a72ff56fa213902456a7810dd847d0b3c0c11ecb53e1853a40305b0151a128",
+  "fixture_tablet": "crates/otd-core/tablets/Wacom/PTH-660.json",
+  "fixture_tablet_sha256": "cce48ae27b4d7a0e22c71eabfa817ce1a84dff4937b1d761dac1fcf1c347a265",
+  "command": "python scripts/offline-plugin-corpus.py --artifacts <temporary-artifact-directory> --graphbench <built-GraphBench.dll> --tablet crates/otd-core/tablets/Wacom/PTH-660.json --output <temporary-results.json>",
+  "invoked_command_normalized": [
+    "dotnet",
+    "<built-GraphBench.dll>",
+    "unused",
+    "<repo-root>/crates/otd-core/tablets/Wacom/PTH-660.json",
+    "corpus",
+    "<repo-root>/docs/parity/plugin-offline-corpus-2026-10-15.json",
+    "<temporary-artifact-directory>"
+  ],
+  "normalization_note": "Only absolute local command paths were replaced with documented placeholders. Full stdout/stderr retained. Original full results JSON remains unchanged in the integrator scratch evidence directory.",
+  "exit_code": 0,
+  "stdout": "PASS corpus RadialFollow.RadialFollowSmoothingTabletSpace constructor-defaults/cycle0 settings/reference/reset/retire outputs=25\nPASS corpus RadialFollow.RadialFollowSmoothingTabletSpace constructor-defaults/cycle1 settings/reference/reset/retire outputs=25\nPASS corpus RadialFollow.RadialFollowSmoothingTabletSpace explicit-attribute-defaults/cycle0 settings/reference/reset/retire outputs=25\nPASS corpus RadialFollow.RadialFollowSmoothingTabletSpace explicit-attribute-defaults/cycle1 settings/reference/reset/retire outputs=25\nPASS corpus RadialFollow.RadialFollowSmoothingTabletSpace configured/cycle0 settings/reference/reset/retire outputs=25\nPASS corpus RadialFollow.RadialFollowSmoothingTabletSpace configured/cycle1 settings/reference/reset/retire outputs=25\nPASS corpus RadialFollow.RadialFollowSmoothingTabletSpace clamped-and-unknown/cycle0 settings/reference/reset/retire outputs=25\nPASS corpus RadialFollow.RadialFollowSmoothingTabletSpace clamped-and-unknown/cycle1 settings/reference/reset/retire outputs=25\nPASS corpus RadialFollow.RadialFollowSmoothingScreenSpace constructor-defaults/cycle0 settings/reference/reset/retire outputs=25\nPASS corpus RadialFollow.RadialFollowSmoothingScreenSpace constructor-defaults/cycle1 settings/reference/reset/retire outputs=25\nPASS corpus RadialFollow.RadialFollowSmoothingScreenSpace explicit-attribute-defaults/cycle0 settings/reference/reset/retire outputs=25\nPASS corpus RadialFollow.RadialFollowSmoothingScreenSpace explicit-attribute-defaults/cycle1 settings/reference/reset/retire outputs=25\nPASS corpus RadialFollow.RadialFollowSmoothingScreenSpace configured/cycle0 settings/reference/reset/retire outputs=25\nPASS corpus RadialFollow.RadialFollowSmoothingScreenSpace configured/cycle1 settings/reference/reset/retire outputs=25\nPASS corpus RadialFollow.RadialFollowSmoothingScreenSpace clamped-and-unknown/cycle0 settings/reference/reset/retire outputs=25\nPASS corpus RadialFollow.RadialFollowSmoothingScreenSpace clamped-and-unknown/cycle1 settings/reference/reset/retire outputs=25\nPASS corpus BezierInterpolator.BezierInterp constructor-defaults/cycle0 settings/reference/reset/retire outputs=2\nPASS corpus BezierInterpolator.BezierInterp constructor-defaults/cycle1 settings/reference/reset/retire outputs=2\nPASS corpus BezierInterpolator.BezierInterp explicit-attribute-defaults/cycle0 settings/reference/reset/retire outputs=2\nPASS corpus BezierInterpolator.BezierInterp explicit-attribute-defaults/cycle1 settings/reference/reset/retire outputs=2\nPASS corpus BezierInterpolator.BezierInterp configured/cycle0 settings/reference/reset/retire outputs=2\nPASS corpus BezierInterpolator.BezierInterp configured/cycle1 settings/reference/reset/retire outputs=2\nPASS corpus BezierInterpolator.BezierInterp clamped-and-unknown/cycle0 settings/reference/reset/retire outputs=2\nPASS corpus BezierInterpolator.BezierInterp clamped-and-unknown/cycle1 settings/reference/reset/retire outputs=2\nPASS corpus Flip_Axes.Flip_Tablet_Axes constructor-defaults/cycle0 settings/reference/reset/retire outputs=25\nPASS corpus Flip_Axes.Flip_Tablet_Axes constructor-defaults/cycle1 settings/reference/reset/retire outputs=25\nPASS corpus Flip_Axes.Flip_Tablet_Axes explicit-null/cycle0 settings/reference/reset/retire outputs=25\nPASS corpus Flip_Axes.Flip_Tablet_Axes explicit-null/cycle1 settings/reference/reset/retire outputs=25\nPASS corpus Flip_Axes.Flip_Tablet_Axes flip-x/cycle0 settings/reference/reset/retire outputs=25\nPASS corpus Flip_Axes.Flip_Tablet_Axes flip-x/cycle1 settings/reference/reset/retire outputs=25\nPASS corpus Flip_Axes.Flip_Tablet_Axes flip-y/cycle0 settings/reference/reset/retire outputs=25\nPASS corpus Flip_Axes.Flip_Tablet_Axes flip-y/cycle1 settings/reference/reset/retire outputs=25\nPASS corpus Flip_Axes.Flip_Tablet_Axes flip-both-and-unknown/cycle0 settings/reference/reset/retire outputs=25\nPASS corpus Flip_Axes.Flip_Tablet_Axes flip-both-and-unknown/cycle1 settings/reference/reset/retire outputs=25\nPASS corpus Flip_Axes.Flip_Area_Axes constructor-defaults/cycle0 settings/reference/reset/retire outputs=25\nPASS corpus Flip_Axes.Flip_Area_Axes constructor-defaults/cycle1 settings/reference/reset/retire outputs=25\nPASS corpus Flip_Axes.Flip_Area_Axes explicit-null/cycle0 settings/reference/reset/retire outputs=25\nPASS corpus Flip_Axes.Flip_Area_Axes explicit-null/cycle1 settings/reference/reset/retire outputs=25\nPASS corpus Flip_Axes.Flip_Area_Axes flip-x/cycle0 settings/reference/reset/retire outputs=25\nPASS corpus Flip_Axes.Flip_Area_Axes flip-x/cycle1 settings/reference/reset/retire outputs=25\nPASS corpus Flip_Axes.Flip_Area_Axes flip-y/cycle0 settings/reference/reset/retire outputs=25\nPASS corpus Flip_Axes.Flip_Area_Axes flip-y/cycle1 settings/reference/reset/retire outputs=25\nPASS corpus Flip_Axes.Flip_Area_Axes flip-both-and-unknown/cycle0 settings/reference/reset/retire outputs=25\nPASS corpus Flip_Axes.Flip_Area_Axes flip-both-and-unknown/cycle1 settings/reference/reset/retire outputs=25\nPASS unchanged corpus classes=5 settings_cases=22 lifecycle_cycles=44; no device/native output\n",
+  "stderr": "",
+  "counts": {
+    "identities": 3,
+    "classes": 5,
+    "settings_cases": 22,
+    "fresh_lifecycle_cycles": 44
+  },
+  "records": [
+    {
+      "catalog_path": "Repository/0.6.0.0/AbstractQbit/AbstractOTDPlugins/RadialFollow.json",
+      "identity": {
+        "name": "AbstractQbit's Radial Follow Smoothing",
+        "owner": "AbstractQbit",
+        "repository_url": "https://github.com/AbstractQbit/AbstractOTDPlugins"
+      },
+      "plugin_version": "0.3.0.0",
+      "type_name": "RadialFollow.RadialFollowSmoothingTabletSpace",
+      "status": "offline_fixture_passed",
+      "settings_cases": 4,
+      "fresh_lifecycle_cycles": 8,
+      "archive_sha256": "d3f5b0200015e6e90948ee5d7870742ac28d82922cc745e9f1f78527e59f8160",
+      "dll_sha256": "830d61f29c07b109398f1e001df3c7fbd359b1ad2491a6d12ccc243dacf16383",
+      "assembly_identity": "RadialFollow, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+      "source_revision": "58846450e9a5f6f3cfada9dd1b4d4909a5ca25bb",
+      "special_conditions": "RadialFollow fixed-zero elapsed"
+    },
+    {
+      "catalog_path": "Repository/0.6.0.0/AbstractQbit/AbstractOTDPlugins/RadialFollow.json",
+      "identity": {
+        "name": "AbstractQbit's Radial Follow Smoothing",
+        "owner": "AbstractQbit",
+        "repository_url": "https://github.com/AbstractQbit/AbstractOTDPlugins"
+      },
+      "plugin_version": "0.3.0.0",
+      "type_name": "RadialFollow.RadialFollowSmoothingScreenSpace",
+      "status": "offline_fixture_passed",
+      "settings_cases": 4,
+      "fresh_lifecycle_cycles": 8,
+      "archive_sha256": "d3f5b0200015e6e90948ee5d7870742ac28d82922cc745e9f1f78527e59f8160",
+      "dll_sha256": "830d61f29c07b109398f1e001df3c7fbd359b1ad2491a6d12ccc243dacf16383",
+      "assembly_identity": "RadialFollow, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+      "source_revision": "58846450e9a5f6f3cfada9dd1b4d4909a5ca25bb",
+      "special_conditions": "RadialFollow fixed-zero elapsed"
+    },
+    {
+      "catalog_path": "Repository/0.6.0.0/AbstractQbit/AbstractOTDPlugins/BezierInterpolator.json",
+      "identity": {
+        "name": "BezierInterpolator",
+        "owner": "AbstractQbit",
+        "repository_url": "https://github.com/AbstractQbit/AbstractOTDPlugins"
+      },
+      "plugin_version": "0.3.1.0",
+      "type_name": "BezierInterpolator.BezierInterp",
+      "status": "offline_fixture_passed",
+      "settings_cases": 4,
+      "fresh_lifecycle_cycles": 8,
+      "archive_sha256": "9e0e57bb1aad3ba4c17318e6f3bb7095bf20b17c5c711821a2e105d61bee4c44",
+      "dll_sha256": "73859303b607dd41168379b53c1ada37a959b0c96b6541a08f61a332e131da83",
+      "assembly_identity": "BezierInterpolator, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+      "source_revision": "da220ed3c7d962f8fa2fd1fd34f7a9ddee8a5b7d",
+      "special_conditions": "Bezier constant-zero trace, forced host timer deadlines and controlled worker event injection"
+    },
+    {
+      "catalog_path": "Repository/0.6.1.0/Kuuuube/Flip_Axes/Flip_Axes.json",
+      "identity": {
+        "name": "Flip Axes",
+        "owner": "Kuuuube",
+        "repository_url": "https://github.com/Kuuuube/Flip_Axes"
+      },
+      "plugin_version": "0.0.4.0",
+      "type_name": "Flip_Axes.Flip_Tablet_Axes",
+      "status": "offline_fixture_passed",
+      "settings_cases": 5,
+      "fresh_lifecycle_cycles": 10,
+      "archive_sha256": "de6232bb592a59f1120d3d83ea64184bcf080b5fe0ad7d3b8d7900ca810f4ef8",
+      "dll_sha256": "2181f718b54639aacdc8f89ef57c0f916055400eaf45263f3dcc5b9bbb5b29db",
+      "assembly_identity": "Flip_Axes, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+      "source_revision": "11d49af1af13f59e232a98126cae719558bc97f5",
+      "special_conditions": "Private output-model cache receives pure fake AbsoluteOutputMode with null pointer. Concrete Driver/discovery resolution remains unverified."
+    },
+    {
+      "catalog_path": "Repository/0.6.1.0/Kuuuube/Flip_Axes/Flip_Axes.json",
+      "identity": {
+        "name": "Flip Axes",
+        "owner": "Kuuuube",
+        "repository_url": "https://github.com/Kuuuube/Flip_Axes"
+      },
+      "plugin_version": "0.0.4.0",
+      "type_name": "Flip_Axes.Flip_Area_Axes",
+      "status": "offline_fixture_passed",
+      "settings_cases": 5,
+      "fresh_lifecycle_cycles": 10,
+      "archive_sha256": "de6232bb592a59f1120d3d83ea64184bcf080b5fe0ad7d3b8d7900ca810f4ef8",
+      "dll_sha256": "2181f718b54639aacdc8f89ef57c0f916055400eaf45263f3dcc5b9bbb5b29db",
+      "assembly_identity": "Flip_Axes, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",
+      "source_revision": "11d49af1af13f59e232a98126cae719558bc97f5",
+      "special_conditions": "Private output-model cache receives pure fake AbsoluteOutputMode with null pointer. Concrete Driver/discovery resolution remains unverified."
+    }
+  ],
+  "validation_limits": [
+    "No app, daemon, device discovery, native OS output, UI or saved settings.",
+    "Same vendored SDK direct-interface reference; not a separate upstream daemon process.",
+    "Bezier uses a constant zero trace and forced test-owned timer deadlines; no jitter/nonzero timing equivalence claim.",
+    "Per-class cases do not establish whole-package or catalog compatibility.",
+    "RadialFollow50ms re-entry branch excluded; paired elapsed delta fixed at zero.",
+    "Flip Axes concrete Driver/output discovery excluded; private coordinate-model cache supplied by fixture.",
+    "No whole-package or catalog compatibility acceptance; only these classes/settings/lifecycles.",
+    "Source review and hashes do not prove reproducible source-to-DLL builds."
+  ]
+}
