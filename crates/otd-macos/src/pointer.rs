@@ -58,6 +58,7 @@ impl Pointer {
     fn attributes(&mut self,attributes:MouseAttributes)->io::Result<()>{
         if let Some(pressure)=attributes.pressure{if !pressure.is_finite(){return Err(io::Error::new(io::ErrorKind::InvalidData,"Nonfinite pointer pressure"));}self.attributes.pressure=Some(pressure);}
         if let Some(tilt)=attributes.tilt{if tilt.iter().any(|value|!value.is_finite()){return Err(io::Error::new(io::ErrorKind::InvalidData,"Nonfinite pointer tilt"));}self.attributes.tilt=Some(tilt);}
+        if let Some(rotation)=attributes.rotation{if !rotation.is_finite(){return Err(io::Error::new(io::ErrorKind::InvalidData,"Nonfinite pointer rotation"));}self.attributes.rotation=Some(rotation.clamp(0.0,1.0));}
         if let Some(eraser)=attributes.eraser{if self.attributes.eraser!=Some(eraser){self.attributes.eraser=Some(eraser);self.proximity()?;self.last_proximity=Instant::now();}}
         // Original Reset releases owned buttons; setters retain their values.
         Ok(())
@@ -80,6 +81,8 @@ impl Pointer {
         else{let pressure=f64::from(self.attributes.pressure.unwrap_or(1.0));let tablet_buttons=if buttons&1!=0{1}else if buttons&2!=0{2}else if buttons&4!=0{4}else{0};unsafe{
             ffi::CGEventSetDoubleValueField(event.0,2,pressure);ffi::CGEventSetIntegerValueField(event.0,7,1);ffi::CGEventSetIntegerValueField(event.0,18,tablet_buttons);ffi::CGEventSetIntegerValueField(event.0,24,DEVICE_ID);ffi::CGEventSetDoubleValueField(event.0,19,pressure);
             if let Some(tilt)=self.attributes.tilt{ffi::CGEventSetDoubleValueField(event.0,20,f64::from(tilt[0])/90.0);ffi::CGEventSetDoubleValueField(event.0,21,-f64::from(tilt[1])/90.0);}
+            // kCGTabletEventRotation (22): tablet pen rotation in degrees.
+            if let Some(rotation)=self.attributes.rotation{ffi::CGEventSetDoubleValueField(event.0,22,f64::from(rotation)*360.0);}
         }}
         unsafe{ffi::CGEventSetFlags(event.0,if flags==0{u32::MAX as u64}else{flags});ffi::CGEventSetTimestamp(event.0,event_timestamp()?);ffi::post_event(event.0);}Ok(())
     }

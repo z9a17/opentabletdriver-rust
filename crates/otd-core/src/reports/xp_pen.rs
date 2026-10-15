@@ -1,6 +1,6 @@
 //! Complete stateless XP-Pen parser variants from the pinned baseline.
 //!
-//! Current catalog parser updates: a126f7b241e417399be6c6a760c0a9d4b987ecfd.
+//! Current catalog parser updates: v0.6.8-rc1, 126f4828564abb673d39e97a093fd815aab335c2.
 //! Older unchanged fields retain the 0.6.7 reference below.
 //!
 //! Source: OpenTabletDriver 0.6.7, 736003ed72c8bbb28033b039d5a0bb76c344145c,
@@ -14,7 +14,7 @@
 //!
 //! Actual packet length is part of upstream dispatch: callers must not pad or
 //! trim packets to select a layout. The complete raw slice is borrowed. These
-//! parsers inspect byte 1 without an ID whitelist and never manufacture eraser,
+//! parsers inspect byte 1 and never manufacture eraser,
 //! proximity, or other capabilities absent from the selected source report.
 //! The stateful Deco03 parser keeps the previous wheel byte.
 //! No device selection, initialization, bindings or live output is enabled.
@@ -25,7 +25,8 @@ use super::{
 };
 
 /// Decode `OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenReportParser`.
-/// 0xC0 means OutOfRange; bit 4 selects auxiliary. Otherwise lengths >=12,
+/// 0xC0 means OutOfRange; B4/F2/F8 are status-only; bit 4 selects auxiliary.
+/// Otherwise lengths >=12,
 /// >=10 and >=8 select overflow tilt, ordinary tilt and standard pen layouts.
 pub fn parse_xp_pen(
     raw: &[u8],
@@ -45,7 +46,7 @@ pub fn parse_xp_pen_gen2(
 }
 
 /// Decode `OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenOffsetPressureReportParser`.
-/// Dispatch matches the base parser, but all pen layouts expose eraser/two pen
+/// Dispatch (including status-only packets) matches the base parser, but all pen layouts expose eraser/two pen
 /// buttons. Only layouts >=10 mask pressure; the short source report does not.
 pub fn parse_xp_pen_offset_pressure(
     raw: &[u8],
@@ -165,7 +166,11 @@ fn parse(
                 }
             }
             Parser::Base | Parser::OffsetPressure => {
-                if raw[1] & 0x10 != 0 {
+                // Initialization echoes, idle packets, and wireless power-on
+                // notifications carry bit 4 but are not auxiliary input (#4989).
+                if matches!(raw[1], 0xb4 | 0xf2 | 0xf8) {
+                    ReportValues::default()
+                } else if raw[1] & 0x10 != 0 {
                     auxiliary(raw, 2)?
                 } else {
                     pen(raw, matches!(parser, Parser::OffsetPressure), true)?

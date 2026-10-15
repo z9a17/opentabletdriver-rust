@@ -473,7 +473,7 @@ impl State {
                 if installed.len()!=1{return Err("Plugin must uniquely identify an installed name or directory".into());}
                 crate::plugin_catalog::uninstall(&installed[0].0)?;Ok(json!(true))},
             "DownloadPlugin"=>{let metadata:crate::plugin_catalog::PluginMetadata=serde_json::from_value(first()?.clone()).map_err(|error|error.to_string())?;
-                if !metadata.supports_driver(){return Err("Plugin does not support pinned OpenTabletDriver 0.6.7".into());}
+                if !metadata.supports_driver(){return Err("Plugin does not support pinned OpenTabletDriver 0.6.8".into());}
                 crate::plugin_catalog::install(&metadata)?;Ok(json!(true))},
             "GetDiagnosticInfo"=>Ok(json!({"App Version":format!("OpenTabletDriver Rust v{}",env!("OTD_RELEASE_VERSION")),"Build Date":env!("OTD_BUILD_DATE"),
                 "Operating System":crate::cold_services::operating_system()?,"Environment Variables":std::env::vars().collect::<BTreeMap<_,_>>(),

@@ -46,7 +46,7 @@ rustup target add x86_64-unknown-linux-gnu
 scripts/package-unix.sh linux-x64
 ```
 
-The original frontend and managed plugins require the .NET 8 runtime; the Gtk frontend requires native GTK3. Plain native profiles do not initialize CLR. Its udev setup is documented in [the Linux guide](../crates/otd-linux/README.md).
+The original frontend and managed plugins require the .NET 10 runtime; the Gtk frontend requires native GTK3. Plain native profiles do not initialize CLR. Its udev setup is documented in [the Linux guide](../crates/otd-linux/README.md).
 
 The 0.18 Linux distribution is linked against an official Debian 11 (bullseye) sysroot with glibc 2.31 and GCC 10 CRT objects. Windows cross-builds use Rust's `rust-lld` with the GNU Linux target, that sysroot and the PIE CRT objects `Scrt1.o`, `crti.o`, `crtbeginS.o`, `crtendS.o` and `crtn.o`; the executable interpreter is `/lib64/ld-linux-x86-64.so.2`. Using the non-PIE `crtbegin.o` with a PIE Rust binary is insufficient.
 
@@ -79,7 +79,7 @@ OTD_APPLE_TARGET=aarch64-apple-darwin scripts/package-unix.sh macos-arm64
 
 ## Windows
 
-On Windows with Rust stable MSVC, Python 3.11+ and the .NET 8+ SDK:
+On Windows with Rust stable MSVC, Python 3.11+ and the .NET 10+ SDK:
 
 ```powershell
 python scripts/release.py build --platform win-x64 --rust-target x86_64-pc-windows-msvc
@@ -87,7 +87,7 @@ python scripts/release.py build --platform win-x64 --rust-target x86_64-pc-windo
 
 `package.ps1` delegates to this same Windows build/packager. MSVC builds require the Windows SDK resource compiler, resolved from `RC`, PATH or the installed SDK; GNU builds use `WINDRES`. Missing/failed resource compilation fails the build. Publishing uses recorded builds in `target/releases` and requires all platforms.
 
-For a Linux cross-build, provide a GNU [MinGW-w64 toolchain](https://www.mingw-w64.org/) with GCC, binutils, CRT, headers and winpthreads, a .NET 8+ SDK, and `nethost.dll` from Microsoft's Windows x64 host pack. Obtain the host pack from the installed Windows SDK or the official `Microsoft.NETCore.App.Host.win-x64` NuGet package for that SDK's runtime version. Preserve its licenses. No system package installation is needed.
+For a Linux cross-build, provide a GNU [MinGW-w64 toolchain](https://www.mingw-w64.org/) with GCC, binutils, CRT, headers and winpthreads, a .NET 10+ SDK, and `nethost.dll` from Microsoft's Windows x64 host pack. Obtain the host pack from the installed Windows SDK or the official `Microsoft.NETCore.App.Host.win-x64` NuGet package for that SDK's runtime version. Preserve its licenses. No system package installation is needed.
 
 ```sh
 rustup target add x86_64-pc-windows-gnu

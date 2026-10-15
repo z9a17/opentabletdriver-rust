@@ -100,6 +100,11 @@ pub struct DigitizerSpecifications {
 pub struct PenSpecifications {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_pressure: Option<u32>,
+    /// Raw pen-axis bounds used by upstream's IRotationHandler normalization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_rotation: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rotation: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub button_count: Option<u32>,
     /// The legacy `Buttons` object, still read by OpenTabletDriver.
@@ -426,6 +431,11 @@ impl TabletConfiguration {
                     Some(pen) => {
                         if pen.max_pressure.is_none() {
                             check.error("Specifications.Pen.MaxPressure must be defined".into());
+                        }
+                        if let (Some(min), Some(max)) = (pen.min_rotation, pen.max_rotation)
+                            && i64::from(max) <= i64::from(min)
+                        {
+                            check.error("Specifications.Pen: MaxRotation must exceed MinRotation".into());
                         }
                         match (pen.button_count, &pen.legacy_buttons) {
                             (None, None) => check.count("Specifications.Pen", None),
@@ -996,7 +1006,7 @@ mod tests {
         let records = inventory["configurations"].as_array().unwrap();
         let database = Database::builtin();
         assert_eq!(database.entries().len(), records.len());
-        assert_eq!(records.len(), 357);
+        assert_eq!(records.len(), 359);
         let revision = inventory["upstream"]["revision"].as_str().unwrap();
         assert_eq!(
             source_revision(),
@@ -1082,7 +1092,7 @@ mod tests {
         }
     }
 
-    /// Every one of the 53 referenced parser types has a decoder.
+    /// Every one of the 54 referenced parser types has a decoder.
     #[test]
     fn referenced_parsers_resolve_to_partial_or_missing() {
         let inventory = inventory();
@@ -1093,7 +1103,7 @@ mod tests {
             .map(|parser| parser["type"].as_str().unwrap())
             .collect();
         referenced.sort_unstable();
-        assert_eq!(referenced.len(), 53);
+        assert_eq!(referenced.len(), 54);
         let database = Database::builtin();
         let used: Vec<&str> = database.parsers().into_keys().collect();
         assert_eq!(used, referenced);

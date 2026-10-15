@@ -133,6 +133,8 @@ impl Request {
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
     Status,
+    /// Optional handshake, separate from the stable protocol-v2 status schema.
+    BuildInfo,
     ListDeviceSessions,
     DetectDeviceSessions,
     BeginUpdate { expected: WorkerIdentity },
@@ -301,6 +303,7 @@ pub struct Response {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Reply {
+    BuildInfo { instance: String, version: String, source_commit: String },
     UpdateAccepted { token: String },
     UpdateState { token: String, ready: bool, error: Option<String> },
     UpdateCancelled,

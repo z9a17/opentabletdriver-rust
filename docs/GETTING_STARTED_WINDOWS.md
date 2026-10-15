@@ -4,7 +4,7 @@ Download the Windows x64 ZIP from [the latest release](https://github.com/z9a17/
 
 ## Prerequisites
 
-Native-only profiles and the native panel run without .NET until a managed feature is requested. Existing OpenTabletDriver `.NET` plugins, original fixed RPC hosting, registered type discovery and default-store construction need the Windows **x64 .NET 8 or newer runtime** from [Microsoft's download page](https://dotnet.microsoft.com/en-us/download/dotnet/8.0). This includes registered type lists/selectors and Console commands that construct plugin stores; simple native Console collection reads/edits do not themselves require CLR. Choose the x64 installer under **.NET Runtime**; the x64 Desktop Runtime also includes it. Keep the release's `data` folder beside the executables; plugin dependencies are in `data/compat`.
+Native-only profiles and the native panel run without .NET until a managed feature is requested. Existing OpenTabletDriver `.NET` plugins, original fixed RPC hosting, registered type discovery and default-store construction need the Windows **x64 .NET 10 or newer runtime** from [Microsoft's download page](https://dotnet.microsoft.com/en-us/download/dotnet/10.0). This includes registered type lists/selectors and Console commands that construct plugin stores; simple native Console collection reads/edits do not themselves require CLR. Choose the x64 installer under **.NET Runtime**; the x64 Desktop Runtime also includes it. Keep the release's `data` folder beside the executables; plugin dependencies are in `data/compat`.
 
 ## Install and start
 

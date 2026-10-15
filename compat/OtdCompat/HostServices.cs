@@ -46,7 +46,7 @@ sealed class HostServices(Func<ITimer>? timer = null, Func<Type, object?>? input
         using var setup = ServiceClient.Setup();
         foreach (MemberInfo member in Members(type))
         {
-            if (member.GetCustomAttribute<ResolvedAttribute>() == null) continue;
+            if (member.GetCustomAttribute<ResolvedAttribute>(inherit: false) == null) continue;
             Type dependency = member is PropertyInfo property ? property.PropertyType : ((FieldInfo)member).FieldType;
             // Like upstream, an unavailable optional service preserves the
             // constructor value. Plugins can test provider.GetService(null).
@@ -66,7 +66,7 @@ sealed class HostServices(Func<ITimer>? timer = null, Func<Type, object?>? input
             Type dependency = member is PropertyInfo property ? property.PropertyType : ((FieldInfo)member).FieldType;
             if (dependency != typeof(TabletReference)) continue;
             if (member.GetCustomAttribute<TabletReferenceAttribute>() != null
-                || (tablet != null && member.GetCustomAttribute<ResolvedAttribute>() != null))
+                || (tablet != null && member.GetCustomAttribute<ResolvedAttribute>(inherit: false) != null))
                 Assign(member, value, tablet);
         }
         // Preserve upstream GetMethods order and public inherited callbacks.
@@ -86,9 +86,16 @@ sealed class HostServices(Func<ITimer>? timer = null, Func<Type, object?>? input
     static IEnumerable<MemberInfo> Members(Type type)
     {
         const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+        var virtualSlots = new HashSet<MethodInfo>();
         for (Type? owner = type; owner != null; owner = owner.BaseType)
         {
-            foreach (PropertyInfo property in owner.GetProperties(flags)) yield return property;
+            foreach (PropertyInfo property in owner.GetProperties(flags))
+            {
+                // Do not inject an unmarked override through its base setter.
+                MethodInfo? accessor = property.SetMethod ?? property.GetMethod;
+                if (accessor is { IsVirtual: true } && !virtualSlots.Add(accessor.GetBaseDefinition())) continue;
+                yield return property;
+            }
             foreach (FieldInfo field in owner.GetFields(flags)) yield return field;
         }
     }

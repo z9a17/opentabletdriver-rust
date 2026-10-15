@@ -38,6 +38,11 @@ namespace OpenTabletDriver.Devices.WinUSB
                     throw new IOException(
                         "skipping device with idVendor 0x2833 (Meta/Facebook/Oculus) due to known issues with Quest headsets");
                 }
+                else if (deviceDescriptor.idVendor == 0x18D1)
+                {
+                    throw new IOException(
+                        "skipping device with idVendor 0x18D1 (Google) due to known issues with android bootloaders in fastboot mode");
+                }
 
                 var interfaceDescriptor = new InterfaceDescriptor();
                 if (!WinUsb_QueryInterfaceSettings(winUsbHandle, 0, &interfaceDescriptor))
@@ -169,6 +174,18 @@ namespace OpenTabletDriver.Devices.WinUSB
                     return StringDescriptor.GetString((StringDescriptor*)bufferPtr);
                 }
             });
+        }
+
+        public void OpenAndSendFeatureInit(byte[] initData)
+        {
+            using var stream = Open();
+            stream.SetFeature(initData);
+        }
+
+        public void OpenAndSendOutputInit(byte[] initData)
+        {
+            using var stream = Open();
+            stream.Write(initData);
         }
 
         public IDeviceEndpointStream Open()

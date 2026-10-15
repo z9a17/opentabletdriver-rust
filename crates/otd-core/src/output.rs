@@ -47,6 +47,8 @@ pub struct MouseAttributes {
     pub has_position: bool,
     pub pressure: Option<f32>,
     pub tilt: Option<[f32; 2]>,
+    /// Normalized pen-axis rotation (0..=1); None retains the prior value.
+    pub rotation: Option<f32>,
     pub eraser: Option<bool>,
     pub reset: bool,
 }

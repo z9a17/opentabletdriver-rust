@@ -23,6 +23,9 @@ pub struct DispatchInput<'a> {
 /// Host-owned stages. A suppressed transform returns false and never reaches
 /// bindings/output. Each final emission invokes output separately, in order.
 pub trait PipelineRuntime {
+    /// Runs once after synchronous Internal elements and before ordinary filters.
+    /// Timer/late continuations must resume downstream without repeating this.
+    fn prepare_report(&mut self, _values: &mut ReportValues) -> io::Result<()> { Ok(()) }
     fn builtins(&mut self, values: &mut ReportValues) -> io::Result<()>;
     fn transform(&mut self, kind: ReportKind, values: &mut ReportValues) -> io::Result<bool>;
     fn output(&mut self, kind: ReportKind, values: &ReportValues, raw: &[u8]) -> io::Result<()>;
@@ -42,6 +45,7 @@ pub trait PipelineRuntime {
 pub struct ManagedCommand {
     pub kind: u32, pub owner: u32, pub x: f32, pub y: f32,
     pub value: u32, pub flags: u32, pub tilt: [f32; 2],
+    pub rotation: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -64,6 +68,7 @@ impl PluginKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PipelineStage {
+    Internal,
     PreTransform,
     Pixels,
 }

@@ -30,6 +30,7 @@ namespace OpenTabletDriver
         private readonly IDeviceConfigurationProvider _deviceConfigurationProvider;
         private readonly object _detectSync = new object();
         private ImmutableArray<InputDeviceTree> _inputDeviceTrees = ImmutableArray<InputDeviceTree>.Empty;
+        private Dictionary<IDeviceEndpoint, Dictionary<byte, string?>> DeviceStringCache = [];
 
         public event EventHandler<IEnumerable<TabletReference>>? TabletsChanged;
 
@@ -76,6 +77,7 @@ namespace OpenTabletDriver
         {
             lock (_detectSync)
             {
+                DeviceStringCache = []; // Reconnect/redetect must not retain stale strings.
                 bool success = false;
 
                 Log.Write("Detect", "Searching for tablets...");
@@ -194,21 +196,22 @@ namespace OpenTabletDriver
             return null;
         }
 
-        private IEnumerable<IDeviceEndpoint> GetMatchingDevices(TabletConfiguration configuration, DeviceIdentifier identifier)
+        private IDeviceEndpoint[] GetMatchingDevices(TabletConfiguration configuration, DeviceIdentifier identifier)
         {
-            return from device in CompositeDeviceHub.GetDevices()
+            return [.. from device in CompositeDeviceHub.GetDevices()
                    where identifier.VendorID == device.VendorID
                    where identifier.ProductID == device.ProductID
                    where device.CanOpen
                    where identifier.InputReportLength == null || identifier.InputReportLength == device.InputReportLength
                    where identifier.OutputReportLength == null || identifier.OutputReportLength == device.OutputReportLength
                    where identifier.FeatureReportLength == null || identifier.FeatureReportLength == device.FeatureReportLength
-                   where DeviceMatchesStrings(device, identifier.DeviceStrings)
+                   where DeviceMatchesStrings(device, identifier.DeviceStrings, DeviceStringCache)
                    where DeviceMatchesAttribute(device, identifier.Attributes, configuration.Attributes)
-                   select device;
+                   select device];
         }
 
-        private static bool DeviceMatchesStrings(IDeviceEndpoint device, Dictionary<byte, string>? deviceStrings)
+        private static bool DeviceMatchesStrings(IDeviceEndpoint device, Dictionary<byte, string>? deviceStrings,
+            Dictionary<IDeviceEndpoint, Dictionary<byte, string?>> stringCache)
         {
             if (deviceStrings == null || deviceStrings.Count == 0)
                 return true;
@@ -217,8 +220,15 @@ namespace OpenTabletDriver
             {
                 try
                 {
-                    // Iterate through each device string, if one doesn't match then its the wrong configuration.
-                    var input = device.GetDeviceString(matchQuery.Key);
+                    if (!stringCache.TryGetValue(device, out var cached))
+                        stringCache.Add(device, cached = []);
+                    if (!cached.TryGetValue(matchQuery.Key, out var input))
+                    {
+                        input = device.GetDeviceString(matchQuery.Key);
+                        cached.Add(matchQuery.Key, input);
+                    }
+                    if (input == null)
+                        return false;
                     var pattern = matchQuery.Value;
                     if (!Regex.IsMatch(input, pattern))
                         return false;
@@ -264,6 +274,11 @@ namespace OpenTabletDriver
 
             static bool matchInterface(Dictionary<string, string> identifierAttributes, IDictionary<string, string> deviceAttributes)
             {
+                if (identifierAttributes.TryGetValue("HidReports", out var hidReports)
+                    && deviceAttributes.TryGetValue("HID_REPORTS", out var reports)
+                    && !Regex.IsMatch(reports, hidReports))
+                    return false;
+
                 if (!identifierAttributes.TryGetValue("Interface", out var identifierInterface))
                     return true; // No interface specified, match.
 

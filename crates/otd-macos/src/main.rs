@@ -30,7 +30,7 @@ Daemon: daemon [--upstream-rpc | --upstream-pipe NAME]\n\
 Default original endpoint: OpenTabletDriver.Daemon\n\
 Original frontend: ui; native control: status/start/stop/shutdown/detect/request/console\n\
 Original Console needs its listener or the frontend watchdog.\n\
-Original frontend/Console/RPC, registered types and managed plugins need the matching .NET 8 runtime.\n\
+Original frontend/Console/RPC, registered types and managed plugins need the matching .NET 10 runtime.\n\
 macOS 11+; grant Input Monitoring and Accessibility to your terminal.\n\
 USB/Bluetooth HID and absolute/relative tablet mouse output; macOS hardware validation pending.";
 

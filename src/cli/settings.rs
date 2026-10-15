@@ -44,13 +44,29 @@ pub fn format_stores(stores:&Value)->String{
     if values.is_empty(){"None".into()}else{values.join(", ")}
 }
 fn area(area:&Value)->String{format!("[{}x{}@<{}, {}>:{}°],",area["Width"],area["Height"],area["X"],area["Y"],area["Rotation"])}
+fn wheel_lines(bindings: &Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (index, wheel) in bindings["WheelBindings"].as_array().into_iter().flatten().enumerate() {
+        let number = index + 1;
+        lines.push(format!("Wheel {number} Button Bindings: [{}]", format_stores(&wheel["WheelButtons"])));
+        for (direction, binding, threshold) in [
+            ("Clockwise", "ClockwiseRotation", "ClockwiseActivationThreshold"),
+            ("Counter-Clockwise", "CounterClockwiseRotation", "CounterClockwiseActivationThreshold"),
+        ] {
+            lines.push(format!("Wheel {number} {direction} Rotation: [{}]@{}°",
+                format_store(&wheel[binding]).unwrap_or_else(|| "None".into()), wheel[threshold]));
+        }
+    }
+    if lines.is_empty() { lines.push("None".into()); }
+    lines
+}
 pub fn getter(command:&str,row:&Value){
     let absolute=&row["AbsoluteModeSettings"];let relative=&row["RelativeModeSettings"];let bindings=&row["Bindings"];
     match command {
         "getoutputmode"=>println!("Output Mode: {}",format_store(&row["OutputMode"]).unwrap_or_else(||"None".into())),
         "getareas"=>{println!("Display area: {}",area(&absolute["Display"]));println!("Tablet area: {}",area(&absolute["Tablet"]));},
         "getsensitivity"=>{println!("Horizontal Sensitivity: {}px/mm",relative["XSensitivity"]);println!("Vertical Sensitivity: {}px/mm",relative["YSensitivity"]);println!("Relative mode rotation: {}°",relative["RelativeRotation"]);println!("Reset time: {}",relative["RelativeResetDelay"].as_str().unwrap_or(""));},
-        "getbindings"=>{println!("Tip Binding: {}@{}%",format_store(&bindings["TipButton"]).unwrap_or_else(||"None".into()),bindings["TipActivationThreshold"]);println!("Pen Bindings: {}",format_stores(&bindings["PenButtons"]));println!("Express Key Bindings: {}",format_stores(&bindings["AuxButtons"]));},
+        "getbindings"=>{println!("Tip Binding: {}@{}%",format_store(&bindings["TipButton"]).unwrap_or_else(||"None".into()),bindings["TipActivationThreshold"]);println!("Pen Bindings: {}",format_stores(&bindings["PenButtons"]));println!("Express Key Bindings: {}",format_stores(&bindings["AuxButtons"]));println!("Wheel Bindings:\n{}",wheel_lines(bindings).join("\n"));},
         "getmiscsettings"=>{for(field,label)in[("EnableClipping","Area clipping"),("EnableAreaLimiting","Tablet area limiting"),("LockAspectRatio","Lock aspect ratio")]{println!("{label}: {}",if absolute[field].as_bool().unwrap_or(false){"True"}else{"False"});}},
         "getfilters"=>println!("Filters: {}",format_stores(&row["Filters"])),
         _=>{}

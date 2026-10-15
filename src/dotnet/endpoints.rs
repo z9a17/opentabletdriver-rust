@@ -51,7 +51,8 @@ fn envelope(config: &PluginConfig, profile: &Profile, tablet: &TabletConfigurati
         .map(|(name, usage)| (name.into(), serde_json::json!(usage.usage()))).collect() };
     Ok(serde_json::json!({ "assembly_path": config.path.canonicalize().map_err(|error| format!("{}: {error}", config.path.display()))?,
         "type_name": config.type_name, "settings": serde_json::from_str::<serde_json::Value>(&config.settings_json).map_err(|error| error.to_string())?,
-        "tablet": tablet, "identifiers": identifiers, "source_session":super::source_session_json(), "pen": profile.output == OutputKind::Pen, "relative": profile.relative.is_some(), "owner": owner, "keys": keys }))
+        "tablet": tablet, "identifiers": identifiers, "source_session":super::source_session_json(), "pen": profile.output == OutputKind::Pen,
+        "rotation_supported": profile.output == OutputKind::Pen || cfg!(target_os = "macos"), "relative": profile.relative.is_some(), "owner": owner, "keys": keys }))
 }
 struct Endpoint { context: *mut c_void }
 impl Endpoint {
@@ -88,6 +89,7 @@ impl OutputSession {
         let mut value = envelope(config, profile, tablet, 4096, identifiers)?;
         if let Some(graph) = graph { value["graph_context"] = serde_json::json!(graph.context_handle() as usize); }
         value["disable_pressure"] = profile.contact.disable_pressure.into(); value["disable_tilt"] = profile.contact.disable_tilt.into();
+        value["disable_rotation"] = profile.contact.disable_rotation.into();
         if let Some(relative) = profile.relative {
             value["sensitivity_x"] = serde_json::json!(relative.sensitivity.0); value["sensitivity_y"] = serde_json::json!(relative.sensitivity.1);
             value["rotation"] = serde_json::json!(relative.rotation); value["reset_ms"] = serde_json::json!(relative.reset_delay.as_secs_f64() * 1000.0);

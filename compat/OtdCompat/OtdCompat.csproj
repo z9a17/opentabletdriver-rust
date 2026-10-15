@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -14,7 +14,7 @@
   <ItemGroup>
     <InternalsVisibleTo Include="GraphBench" />
     <ProjectReference Include="../UpstreamDesktop/OpenTabletDriver.Desktop.csproj" />
-    <PackageReference Include="OpenTabletDriver.Plugin" Version="0.6.7" />
-    <PackageReference Include="OpenTabletDriver.Configurations" Version="[0.6.7]" />
+    <ProjectReference Include="../UpstreamPlugin/OpenTabletDriver.Plugin.csproj" />
+    <PackageReference Include="OpenTabletDriver.Configurations" Version="[0.6.8]" />
   </ItemGroup>
 </Project>

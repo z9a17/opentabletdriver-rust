@@ -7,6 +7,18 @@ namespace OpenTabletDriver.Console
 {
     public static class Extensions
     {
+        public static IEnumerable<string> Format(this IEnumerable<OpenTabletDriver.Desktop.Profiles.WheelBindingSettings> wheelBindings)
+        {
+            var index = 0;
+            foreach (var wheel in wheelBindings)
+            {
+                ++index;
+                yield return $"Wheel {index} Button Bindings: [{string.Join(", ", wheel.WheelButtons.Format())}]";
+                yield return $"Wheel {index} Clockwise Rotation: [{wheel.ClockwiseRotation.Format() ?? "None"}]@{wheel.ClockwiseActivationThreshold}°";
+                yield return $"Wheel {index} Counter-Clockwise Rotation: [{wheel.CounterClockwiseRotation.Format() ?? "None"}]@{wheel.CounterClockwiseActivationThreshold}°";
+            }
+            if (index == 0) yield return "None";
+        }
         public static void AddCommands(this Command command, IEnumerable<Command> commands)
         {
             foreach (var addedCommand in commands)

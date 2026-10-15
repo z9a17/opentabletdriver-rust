@@ -35,7 +35,7 @@ pub use uc_logic::{
 pub use veikk::{parse_veikk, parse_veikk_a15, parse_veikk_tilt, parse_veikk_v1};
 pub use vendors::{
     AcepenParser, parse_bosto, parse_floogoo, parse_genius, parse_genius_v2, parse_lifetec,
-    parse_robot_pen, parse_wood_pad, parse_xencelabs, parse_xenx,
+    parse_robot_pen, parse_silvercrest, parse_wood_pad, parse_xencelabs, parse_xenx,
 };
 pub use wacom::{
     CintiqV1Parser, Intuos3Parser, Intuos4Parser, IntuosProParser, IntuosV1Parser, PlParser,
@@ -275,7 +275,7 @@ pub struct ReportValues {
     /// PTH-660 transport extensions, not invented upstream interfaces.
     pub sense: Option<bool>,
     pub tip_switch: Option<bool>,
-    pub rotation: Option<i16>,
+    pub rotation: Option<i32>,
     pub aux_buttons: Option<Buttons>,
     /// IMouseReport/puck: absolute position plus buttons and 2D scroll.
     pub mouse_buttons: Option<Buttons>,
@@ -397,7 +397,7 @@ pub fn from_pth660(
         hover_distance: pen.hover_distance.map(u32::from),
         sense: Some(pen.sense),
         tip_switch: Some(pen.tip_switch),
-        rotation: pen.rotation,
+        rotation: pen.rotation.map(i32::from),
         ..ReportValues::default()
     };
     Ok(ReportEnvelope {

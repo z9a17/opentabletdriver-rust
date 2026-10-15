@@ -99,6 +99,8 @@ pub struct TabletSpec {
     pub max_y: u32,
     /// Largest raw pressure value.
     pub max_pressure: u16,
+    /// Raw rotation bounds; absent when the selected pen has no declared axis.
+    pub rotation_range: Option<(i32, u32)>,
     /// Active area in millimetres.
     pub width_mm: f64,
     pub height_mm: f64,
@@ -118,6 +120,7 @@ impl TabletSpec {
         max_x: MAX_X,
         max_y: MAX_Y,
         max_pressure: MAX_PRESSURE,
+        rotation_range: Some((-899, 900)),
         width_mm: WIDTH_MM,
         height_mm: HEIGHT_MM,
         // Two side buttons, eight express keys and the 72-position touch
@@ -169,10 +172,19 @@ impl TabletSpec {
             max_y: whole(positive(digitizer.max_y, "MaxY")?, "MaxY")?,
             max_pressure: u16::try_from(max_pressure)
                 .map_err(|_| format!("{name} pen MaxPressure {max_pressure} exceeds 65535"))?,
+            rotation_range: pen.min_rotation.zip(pen.max_rotation)
+                .filter(|(min, max)| i64::from(*max) > i64::from(*min)),
             width_mm: positive(digitizer.width, "Width")?,
             height_mm: positive(digitizer.height, "Height")?,
             controls: Controls::from_specifications(specifications),
         })
+    }
+
+    /// Upstream's (raw - minimum) / (maximum - minimum), bounded for native APIs.
+    pub fn normalize_rotation(self, raw: i32) -> Option<f32> {
+        let (min, max) = self.rotation_range?;
+        let span = f64::from(max) - f64::from(min);
+        (span > 0.0).then(|| ((f64::from(raw) - f64::from(min)) / span).clamp(0.0, 1.0) as f32)
     }
 
     /// Millimetres per raw unit on each axis.

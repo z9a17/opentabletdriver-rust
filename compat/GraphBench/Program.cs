@@ -18,6 +18,7 @@ unsafe class GraphProbe
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     static int FusedOutput(nint scope, uint op, uint index, GraphReport* report)
     {
+        if (op == 7) return 0;
         if (op != 4 || report->X != 101) return -1;
         outputs++;
         return 0;
@@ -74,6 +75,7 @@ unsafe class GraphProbe
         System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
         if (args.Length > 2 && args[2] == "cleanup") { CleanupProbe.Run(args); return; }
         if (args.Length > 2 && args[2] == "background") { BackgroundProbe.Run(args); return; }
+        if (args.Length > 2 && args[2] == "upstream068") { Upstream068Probe.Run(args); return; }
         if (args.Length > 2 && args[2] == "contracts") { Contracts(args); return; }
         if (args.Length > 2 && args[2] == "registry") { RegistryProbe.Run(args); return; }
         if (args.Length > 2 && args[2] == "endpoints") { EndpointProbe.Run(args); return; }

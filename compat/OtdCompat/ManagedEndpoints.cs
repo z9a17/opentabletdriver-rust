@@ -21,6 +21,7 @@ public struct ManagedCommand
     public float X, Y;
     public uint Value, Flags;
     public float TiltX, TiltY;
+    public float Rotation;
 }
 
 sealed class CommandQueue : IDisposable
@@ -62,7 +63,7 @@ sealed class CommandQueue : IDisposable
 
 // Services target the already prepared native session, never an independent
 // SendInput injector. Per-plugin owners keep held keys/buttons independent.
-sealed class SessionPointer(CommandQueue queue, bool relative, bool pen) : IAbsolutePointer, IRelativePointer,
+class SessionPointer(CommandQueue queue, bool relative, bool pen) : IAbsolutePointer, IRelativePointer,
     ISynchronousPointer, IMouseButtonHandler, IMouseScrollHandler, IPressureHandler,
     ITiltHandler, IEraserHandler, IPenActionHandler
 {
@@ -76,6 +77,11 @@ sealed class SessionPointer(CommandQueue queue, bool relative, bool pen) : IAbso
         lock (stateGate) { state.Value = BitConverter.SingleToUInt32Bits(percentage); state.Flags |= 4; dirty = true; }
     }
     public void SetTilt(Vector2 tilt) { lock (stateGate) { state.TiltX = tilt.X; state.TiltY = tilt.Y; state.Flags |= 8; dirty = true; } }
+    public void SetRotation(float percentage)
+    {
+        if (!float.IsFinite(percentage) || percentage < 0 || percentage > 1) throw new ArgumentOutOfRangeException(nameof(percentage));
+        lock (stateGate) { state.Rotation = percentage; state.Flags |= 128; dirty = true; }
+    }
     public void SetEraser(bool eraser) { lock (stateGate) { state.Flags = (state.Flags & ~16u) | (eraser ? 16u : 0) | 64u; dirty = true; } }
     // Synthetic Windows pointer injection has no physical hover-distance field.
     // Expose that optional provider only when a backend actually supports it.
@@ -104,10 +110,14 @@ sealed class SessionPointer(CommandQueue queue, bool relative, bool pen) : IAbso
     {
         if (type == typeof(IAbsolutePointer) && !relative || type == typeof(IRelativePointer) && relative
             || type == typeof(ISynchronousPointer) || type == typeof(IMouseButtonHandler) || type == typeof(IMouseScrollHandler)) return this;
+        if (type == typeof(IRotationHandler) && this is IRotationHandler) return this;
         if (pen && (type == typeof(IPenActionHandler) || type == typeof(IPressureHandler) || type == typeof(ITiltHandler) || type == typeof(IEraserHandler))) return this;
         return null;
     }
 }
+
+sealed class RotatingSessionPointer(CommandQueue queue, bool relative, bool pen)
+    : SessionPointer(queue, relative, pen), IRotationHandler { }
 
 sealed class SessionKeyboard(CommandQueue queue, JObject keys) : IVirtualKeyboard
 {
@@ -148,7 +158,9 @@ abstract class EndpointInstance : IDisposable
         try
         {
         Queue.Owner = config.Value<uint>("owner");
-        Pointer = new SessionPointer(Queue, config.Value<bool>("relative"), config.Value<bool>("pen"));
+        bool pen = config.Value<bool>("pen"), isRelative = config.Value<bool>("relative");
+        Pointer = (config.Value<bool?>("rotation_supported") ?? pen)
+            ? new RotatingSessionPointer(Queue, isRelative, pen) : new SessionPointer(Queue, isRelative, pen);
         var keyboard = new SessionKeyboard(Queue, config["keys"] as JObject ?? new JObject());
         object? actualPointer = null;
         if (config.Value<ulong?>("output_context") is { } handle)
@@ -189,7 +201,7 @@ abstract class EndpointInstance : IDisposable
     }
     static bool IsPointerService(Type type) => type == typeof(IAbsolutePointer) || type == typeof(IRelativePointer)
         || type == typeof(ISynchronousPointer) || type == typeof(IMouseButtonHandler) || type == typeof(IMouseScrollHandler)
-        || type == typeof(IPenActionHandler) || type == typeof(IPressureHandler) || type == typeof(ITiltHandler) || type == typeof(IEraserHandler)
+        || type == typeof(IPenActionHandler) || type == typeof(IPressureHandler) || type == typeof(ITiltHandler) || type == typeof(IEraserHandler) || type == typeof(IRotationHandler)
         || type == typeof(IHoverDistanceHandler);
     protected void CheckThread()
     {
@@ -259,6 +271,7 @@ sealed class OutputInstance : EndpointInstance
         {
             Queue.Owner = 4096;
             Mode.DisablePressure = config.Value<bool>("disable_pressure"); Mode.DisableTilt = config.Value<bool>("disable_tilt");
+            Mode.DisableRotation = config.Value<bool>("disable_rotation");
             if (Mode is AbsoluteOutputMode absolute)
             {
                 if (config.Value<bool>("relative")) throw new NotSupportedException("An absolute output mode requires absolute profile areas.");

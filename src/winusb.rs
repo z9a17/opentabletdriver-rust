@@ -48,6 +48,12 @@ impl Interface {
             return Err(io::Error::last_os_error());
         }
         let mut this = Self { raw, file, number: 0, input: None, output: None };
+        // Defend callers without reliable instance metadata before querying
+        // interfaces/pipes, matching upstream's WinUSB device-descriptor guard.
+        let device = this.device_descriptor()?;
+        if excluded_vendor(u16::from_le_bytes([device[8], device[9]])) {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "excluded WinUSB vendor (Quest or Google fastboot)"));
+        }
         let mut interface = USB_INTERFACE_DESCRIPTOR::default();
         if unsafe { WinUsb_QueryInterfaceSettings(raw, 0, &mut interface) } == 0 {
             return Err(io::Error::last_os_error());
@@ -251,6 +257,9 @@ fn usb_ids(instance: &str) -> Option<(u16, u16)> {
     vendor.zip(product)
 }
 
+// Match upstream hub exclusions: Quest headsets and Android fastboot devices.
+fn excluded_vendor(vendor: u16) -> bool { matches!(vendor, 0x2833 | 0x18d1) }
+
 fn paths() -> io::Result<Vec<(Vec<u16>, u32)>> {
     let mut paths = BTreeMap::new();
     for guid in &INTERFACE_GUIDS {
@@ -275,7 +284,7 @@ fn paths() -> io::Result<Vec<(Vec<u16>, u32)>> {
 
 fn inspect(path: &[u16], instance: u32, database: Option<&Database>) -> io::Result<(Candidate, serde_json::Value)> {
     if let Some((vendor, product)) = hid::instance_id(instance).as_deref().and_then(usb_ids) {
-        if vendor == 0x2833 || database.is_some_and(|db| db.find(vendor, product).next().is_none()) {
+        if excluded_vendor(vendor) || database.is_some_and(|db| db.find(vendor, product).next().is_none()) {
             return Err(io::Error::new(io::ErrorKind::NotFound, "unrelated WinUSB device"));
         }
     }
@@ -285,7 +294,7 @@ fn inspect(path: &[u16], instance: u32, database: Option<&Database>) -> io::Resu
     let device = interface.device_descriptor()?;
     let vendor = u16::from_le_bytes([device[8], device[9]]);
     let product = u16::from_le_bytes([device[10], device[11]]);
-    if vendor == 0x2833 || database.is_some_and(|db| db.find(vendor, product).next().is_none()) {
+    if excluded_vendor(vendor) || database.is_some_and(|db| db.find(vendor, product).next().is_none()) {
         return Err(io::Error::new(io::ErrorKind::NotFound, "unrelated WinUSB device"));
     }
     let mut report = [0; 256];
@@ -337,7 +346,7 @@ pub fn rpc_devices() -> io::Result<Vec<serde_json::Value>> {
 pub fn service_metadata() -> io::Result<Vec<serde_json::Value>> {
     Ok(paths()?.into_iter().filter_map(|(path, instance)| {
         let (vendor, product) = hid::instance_id(instance).as_deref().and_then(usb_ids)?;
-        if vendor == 0x2833 { return None; }
+        if excluded_vendor(vendor) { return None; }
         Some(serde_json::json!({"DevicePath":String::from_utf16_lossy(&path[..path.len().saturating_sub(1)]),
             "VendorID":vendor,"ProductID":product,"Manufacturer":null,"ProductName":null,
             "FriendlyName":null,"SerialNumber":null,"InputReportLength":null,"OutputReportLength":null,
@@ -350,7 +359,7 @@ pub fn read_strings(vendor: u16, product: u16, indices: &[u8]) -> io::Result<Vec
     for (path, instance) in paths()? {
         if let Some(ids) = hid::instance_id(instance).as_deref().and_then(usb_ids)
             && ids != (vendor, product) { continue; }
-        if vendor == 0x2833 { continue; }
+        if excluded_vendor(vendor) { continue; }
         let Ok(handle) = hid::open_path(&path, true) else { continue; };
         let Ok(interface) = Interface::open(&handle) else { continue; };
         let Ok(device) = interface.device_descriptor() else { continue; };
@@ -365,6 +374,13 @@ pub fn read_strings(vendor: u16, product: u16, indices: &[u8]) -> io::Result<Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unrelated_sensitive_usb_vendors_are_excluded() {
+        assert!(excluded_vendor(0x18d1));
+        assert!(excluded_vendor(0x2833));
+        assert!(!excluded_vendor(0x056a));
+        assert!(!excluded_vendor(0x256c));
+    }
     #[test]
     fn descriptor_strings_are_bounded_and_strict_utf16() {
         assert_eq!(decode_string(&[6, 3, 65, 0, 66, 0]).unwrap(), "AB");

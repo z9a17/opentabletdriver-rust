@@ -304,6 +304,7 @@ pub fn position(context: *mut c_void) -> Result<crate::plugins::PipelineStage, S
     match unsafe { (bridge()?.get_position)(context) } {
         1 => Ok(crate::plugins::PipelineStage::PreTransform),
         2 => Ok(crate::plugins::PipelineStage::Pixels),
+        4 => Ok(crate::plugins::PipelineStage::Internal),
         -1 => Err(last_error()),
         other => Err(format!("unsupported .NET pipeline position {other}")),
     }
@@ -374,6 +375,8 @@ pub struct PropertyMetadata {
     pub display_name: Option<String>,
     pub unit: Option<String>,
     pub tooltip: Option<String>,
+    #[serde(default)]
+    pub placeholder: Option<String>,
     #[serde(default)]
     pub property_type: String,
     #[serde(default = "property_writable")]

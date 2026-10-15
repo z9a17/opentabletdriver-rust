@@ -194,7 +194,17 @@ impl Dialog {
             unsafe { EnableWindow(hwnd, i32::from(field.value.field_writable())); }
             if class == "EDIT" {
                 unsafe { SendMessageW(hwnd, EM_LIMITTEXT, 4096, 0); }
-                if field.value.uses_default() { let cue = wide("Constructor / declared value"); unsafe { SendMessageW(hwnd, EM_SETCUEBANNER, 1, cue.as_ptr() as isize); } }
+                let placeholder = match &field.value {
+                    model::PropertyValue::Typed { metadata, .. }
+                        if metadata.property_type == "System.String" && metadata.valid_values.is_none() => metadata.placeholder.as_deref(),
+                    _ => None,
+                };
+                if let Some(placeholder) = placeholder.or_else(|| field.value.uses_default().then_some("Constructor / declared value")) {
+                    // A cue is presentation only: it must never become a saved
+                    // value, constructor default or an edit notification.
+                    let cue = wide(placeholder);
+                    unsafe { SendMessageW(hwnd, EM_SETCUEBANNER, 1, cue.as_ptr() as isize); }
+                }
             }
             self.rows.push(Row { hwnd, field, invalid: false });
         }

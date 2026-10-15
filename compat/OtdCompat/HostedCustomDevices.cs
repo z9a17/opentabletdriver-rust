@@ -122,7 +122,7 @@ static class HostedCustomDevices
         lock (Gate) endpoint = Endpoints.TryGetValue(token, out var found) && found.Active
             ? found : throw new IOException("Custom endpoint retired.");
         endpoint.Cancellation.ThrowIfCancellationRequested();
-        return endpoint.Original.GetDeviceString(index);
+        return endpoint.Original.GetDeviceString(index) ?? throw new IOException("The custom endpoint returned no device string for this index.");
     }
     internal static Stream Get(ulong token) {
         lock (Gate) return Streams.TryGetValue(token, out var stream) && Volatile.Read(ref stream.Closed) == 0
@@ -148,14 +148,14 @@ static class HostedCustomDevices
         public int InputReportLength => entry.Original.InputReportLength;
         public int OutputReportLength => entry.Original.OutputReportLength;
         public int FeatureReportLength => entry.Original.FeatureReportLength;
-        public string Manufacturer => entry.Original.Manufacturer;
-        public string ProductName => entry.Original.ProductName;
-        public string FriendlyName => entry.Original.FriendlyName;
-        public string SerialNumber => entry.Original.SerialNumber;
+        public string? Manufacturer => entry.Original.Manufacturer;
+        public string? ProductName => entry.Original.ProductName;
+        public string? FriendlyName => entry.Original.FriendlyName;
+        public string? SerialNumber => entry.Original.SerialNumber;
         public string DevicePath => entry.Original.DevicePath;
         public bool CanOpen => entry.Original.CanOpen;
         public IDictionary<string, string> DeviceAttributes => entry.Original.DeviceAttributes;
-        public string GetDeviceString(byte index) => entry.Original.GetDeviceString(index);
+        public string? GetDeviceString(byte index) => entry.Original.GetDeviceString(index);
         public IDeviceEndpointStream Open() {
             entry.Cancellation.ThrowIfCancellationRequested();
             return HostedSharedStream.Open(new JObject { ["DevicePath"] = DevicePath, ["custom_endpoint"] = entry.Token }, entry.Scope, entry.Cancellation);

@@ -76,14 +76,14 @@ mod app {
        opentabletdriver-rust-linux original-console [ARGS ...] (alias: otd)\n\
        opentabletdriver-rust-linux --version\n\n\
 Run discovers Hyprland, Sway or X11 monitors natively at startup.\n\
-Other Wayland compositors use the original display provider and need .NET 8.\n\
+Other Wayland compositors use the original display provider and need .NET 10.\n\
 Explicit --screen bypasses discovery; no desktop size is assumed on failure.\n\
 Capture reads reports for up to 10 seconds by default and never creates uinput output.\n\
 Both commands may send the tablet's configured initialization reports.\n\
 Daemon: daemon [--upstream-rpc | --upstream-pipe NAME]\n\
 Default original endpoint: OpenTabletDriver.Daemon\n\
 Original frontend: ui; original Console needs its listener or the frontend watchdog.\n\
-Original frontend/Console/RPC, registered types and managed plugins need .NET 8; ui also needs GTK3.\n\
+Original frontend/Console/RPC, registered types and managed plugins need .NET 10; ui also needs GTK3.\n\
 Native control: status/start/stop/shutdown/detect/request/console\n\
 Linux release setup: sudo ./setup/install.sh install\n\
 Source checkout setup: sudo ./packaging/linux/install.sh install";

@@ -925,18 +925,14 @@ impl ButtonOutput {
     }
 
     /// Upstream's `HandleWheelDelta`: a turn accumulates in its direction and
-    /// clears the other; no movement clears both.
+    /// clears the other; stationary reports preserve partial movement (#5006).
     fn rotate(&mut self, wheel: usize, steps: i32) -> io::Result<()> {
         let rotation = &mut self.rotations[wheel];
         let degrees = f64::from(steps) * rotation.degrees_per_step;
         let mut taps = 0u32;
         let clockwise = steps > 0;
         match steps {
-            0 => {
-                rotation.clockwise_delta = 0.0;
-                rotation.counter_clockwise_delta = 0.0;
-                return Ok(());
-            }
+            0 => return Ok(()),
             1.. => {
                 rotation.counter_clockwise_delta = 0.0;
                 rotation.clockwise_delta += degrees;
@@ -1563,6 +1559,30 @@ mod tests {
         assert_eq!(taps(&log, page_down()), 2);
         turn(&mut out, &[Some(11)]);
         assert_eq!(taps(&log, page_down()), 3);
+    }
+
+    #[test]
+    fn stationary_ring_reports_preserve_partial_turns_in_both_directions() {
+        let (mut out, log, _) = ring_output(Some(15.0));
+        turn(&mut out, &[Some(0), Some(1), Some(1), Some(2), Some(2), Some(3)]);
+        assert_eq!(taps(&log, page_down()), 1);
+        turn(&mut out, &[Some(2), Some(2), Some(1), Some(1), Some(0)]);
+        assert_eq!(taps(&log, page_up()), 1);
+    }
+
+    #[test]
+    fn zero_relative_wheel_reports_preserve_the_activation_threshold() {
+        let (mut out, log, _) = ring_output(Some(15.0));
+        for delta in [1, 0, 1, 0, 1, -1, 0, -1, 0, -1] {
+            out.apply_auxiliary(&ReportValues {
+                relative_analog: Some(RelativeAnalogReport {
+                    kind: AnalogKind::Wheel,
+                    deltas: RelativeAnalog::from_slice(&[delta]).unwrap(),
+                }),
+                ..ReportValues::default()
+            }).unwrap();
+        }
+        assert_eq!((taps(&log, page_down()), taps(&log, page_up())), (1, 1));
     }
 
     #[test]

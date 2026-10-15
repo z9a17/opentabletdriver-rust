@@ -65,6 +65,7 @@ pub const TYPE_NAMES: &[&str] = &[
     "OpenTabletDriver.Configurations.Parsers.Huion.InspiroyReportParser",
     "OpenTabletDriver.Configurations.Parsers.Lifetec.LifetecReportParser",
     "OpenTabletDriver.Configurations.Parsers.RobotPen.RobotPenReportParser",
+    "OpenTabletDriver.Configurations.Parsers.Silvercrest.SilvercrestReportParser",
     "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicReportParser",
     "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicTiltReportParser",
     "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicV1ReportParser",
@@ -129,6 +130,7 @@ impl ReportParser {
             "Huion.InspiroyReportParser" => Self::Stateless(parse_huion_inspiroy),
             "Lifetec.LifetecReportParser" => Self::Stateless(parse_lifetec),
             "RobotPen.RobotPenReportParser" => Self::Stateless(parse_robot_pen),
+            "Silvercrest.SilvercrestReportParser" => Self::Stateless(parse_silvercrest),
             "UCLogic.UCLogicReportParser" => Self::Stateless(parse_uc_logic),
             "UCLogic.UCLogicTiltReportParser" => Self::Stateless(parse_uc_logic_tilt),
             "UCLogic.UCLogicV1ReportParser" => Self::Stateless(parse_uc_logic_v1),
@@ -554,7 +556,7 @@ pub fn pen_from_values(
         tip_switch: pressure > 0,
         eraser,
         tilt,
-        rotation: values.rotation,
+        rotation: values.rotation.and_then(|rotation| i16::try_from(rotation).ok()),
         hover_distance: values
             .hover_distance
             .map(|distance| distance.min(u32::from(u8::MAX)) as u8),
@@ -610,6 +612,7 @@ mod tests {
             max_x: 100,
             max_y: 100,
             max_pressure: 1023,
+            rotation_range: None,
             width_mm: 10.0,
             height_mm: 10.0,
             controls: Default::default(),

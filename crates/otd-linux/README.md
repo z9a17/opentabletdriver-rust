@@ -7,7 +7,7 @@ The Linux package includes the native multi-device daemon, original Gtk frontend
 original Console client, managed plugin host, setup files and source notices.
 It uses GNU dynamic linking. Native input with native display discovery or an
 explicit `--screen` needs no .NET runtime; the original
-frontend, Console and managed plugins need the x64 .NET 8 runtime, and the
+frontend, Console and managed plugins need the x64 .NET 10 runtime, and the
 frontend additionally needs GTK3. Explicit network operations need system curl.
 Keep the adjacent managed assemblies and the `data/compat` directory intact.
 
@@ -118,12 +118,12 @@ daemon services without enabling that original listener. Native `status`,
 separate native control channel. Start only one driver owner at a time.
 
 `otd` is an alias for `original-console`; both forward arguments to the packaged
-original Console assembly and need .NET 8. Original operations need the running
+original Console assembly and need .NET 10. Original operations need the running
 original listener or the frontend's watchdog. Native installation commands are
 `update [--check | check | install]` and
 `plugins catalog|installed|install NAME|install-file PATH|remove NAME`.
-Plugin ZIP extraction also uses a packaged .NET 8 helper. Registered type
-discovery, default-store construction and original RPC hosting need .NET 8.
+Plugin ZIP extraction also uses a packaged .NET 10 helper. Registered type
+discovery, default-store construction and original RPC hosting need .NET 10.
 
 Capture is bounded to 1 through 60 seconds and 100,000 reports. It initializes
 the tablet according to its configuration, then logs decoded/raw report
@@ -137,7 +137,7 @@ Run discovers monitor rectangles once at startup from Hyprland's `hyprctl`,
 Sway's `swaymsg` or X11's `xrandr`. Hyprland uses logical desktop coordinates,
 including output scaling and rotation. Sway provides its logical rectangles.
 Xwayland's monitor list is not used for a Wayland session. Other Wayland
-compositors use the original display-provider fallback, which needs .NET 8.
+compositors use the original display-provider fallback, which needs .NET 10.
 If discovery fails, supply `--screen WIDTHxHEIGHT`; there is no assumed desktop
 size. Explicit `--screen` bypasses display discovery and describes a single
 rectangle at the origin. Restart after changing

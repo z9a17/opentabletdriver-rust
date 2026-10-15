@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 const CATALOG: &str = "https://api.github.com/repos/OpenTabletDriver/Plugin-Repository/tarball";
 /// The OpenTabletDriver version this driver's plugin support follows.
-pub const DRIVER_VERSION: [u64; 4] = [0, 6, 7, 0];
+pub const DRIVER_VERSION: [u64; 4] = [0, 6, 8, 0];
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "PascalCase")]
@@ -65,7 +65,7 @@ pub fn version(text: &str) -> Option<[u64; 4]> {
 }
 
 // System.Version uses -1 for unspecified build/revision. This distinction
-// matters for upper bounds: 0.6.7 is less than the baseline 0.6.7.0.
+// matters for upper bounds: 0.6.8 is less than the baseline 0.6.8.0.
 fn clr_version(text: &str) -> Option<[i64; 4]> {
     version(text)?;
     let mut parts = [-1; 4];
@@ -86,7 +86,7 @@ impl PluginMetadata {
         version(&self.plugin_version).unwrap_or_default()
     }
 
-    /// Whether the plugin declares support for OpenTabletDriver 0.6.7.
+    /// Whether the plugin declares support for OpenTabletDriver 0.6.8.
     pub fn supports_driver(&self) -> bool {
         let Some(minimum) = self.supported_driver_version.as_deref().and_then(clr_version) else {
             return false;
@@ -190,7 +190,7 @@ fn json_files(directory: &Path, found: &mut Vec<PathBuf>) {
     }
 }
 
-/// Every catalog entry that supports OpenTabletDriver 0.6.7, newest version
+/// Every catalog entry that supports OpenTabletDriver 0.6.8, newest version
 /// per name, owner and repository identity, sorted by name.
 pub fn fetch() -> Result<Vec<PluginMetadata>, String> {
     let work = crate::update::temporary_work("otd-rust-catalog")?;
@@ -385,7 +385,7 @@ fn install_archive_with_cancel(
 ) -> Result<PathBuf, String> {
     crate::download::cancelled(cancel)?;
     if !entry.supports_driver() {
-        return Err(format!("{} does not support OpenTabletDriver 0.6.7", entry.name));
+        return Err(format!("{} does not support OpenTabletDriver 0.6.8", entry.name));
     }
     let expected = entry
         .sha256
@@ -758,7 +758,7 @@ pub fn run(arguments: Vec<String>) -> Result<(), String> {
                 return Err(format!("{name} matches multiple catalog identities; select a unique owner/name or repository URL"));
             }
             let plugin = candidates.into_iter().next().ok_or_else(|| {
-                format!("no catalog plugin named {name} supports OpenTabletDriver 0.6.7")
+                format!("no catalog plugin named {name} supports OpenTabletDriver 0.6.8")
             })?;
             let folder = install(&plugin)?;
             println!(
@@ -823,8 +823,10 @@ mod tests {
         assert!(!entry("0.3.0.0", "0.7.0.0", None).supports_driver());
         assert!(!entry("0.3.0.0", "0.5.0.0", Some("0.6.6.0")).supports_driver());
         assert!(!entry("0.3.0.0", "0.5.0.0", Some("0.6.7.0")).supports_driver());
-        assert!(entry("0.3.0.0", "0.6.7.99", None).supports_driver());
-        assert!(!entry("0.3.0.0", "0.6.0.0", Some("0.6.7")).supports_driver());
+        assert!(entry("0.3.0.0", "0.6.8.99", None).supports_driver());
+        assert!(entry("0.3.0.0", "0.6.0.0", Some("0.6.8.0")).supports_driver());
+        assert!(!entry("0.3.0.0", "0.6.9.0", None).supports_driver());
+        assert!(!entry("0.3.0.0", "0.6.0.0", Some("0.6.8")).supports_driver());
         assert!(!entry("0.3.0.0", "bad", None).supports_driver());
         assert!(!entry("0.3.0.0", "0.6.0.0", Some("bad")).supports_driver());
         assert_eq!(version("0.6.7"), Some([0, 6, 7, 0]));

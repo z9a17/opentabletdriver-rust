@@ -709,7 +709,7 @@ impl App {
         let policy_top = content.top + height + gap;
         let body = self.group("Pen Output", rect(content.left, policy_top, content.right, policy_top + s(70)), items);
         let inner = draw::inset(body, s(12), s(8));
-        let width = (inner.right - inner.left) / 3;
+        let width = (inner.right - inner.left) / self.c.pen_policy.len() as i32;
         for (index, hwnd) in self.c.pen_policy.iter().enumerate() {
             let left = inner.left + index as i32 * width;
             shown.push((*hwnd, rect(left, inner.top, left + width, inner.top + s(28))));

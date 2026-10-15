@@ -1,10 +1,11 @@
 {
   "schema_version": 1,
-  "scope": "Current device catalog source coverage only. Does not change the 0.6.7 managed API or certify physical hardware, auxiliary output, or every transport.",
+  "scope": "Pinned 0.6.8-rc1 device catalog source coverage only. Configuration and parser presence do not certify physical hardware, auxiliary output, managed plugin compatibility, or every transport.",
   "upstream": {
     "repository": "https://github.com/OpenTabletDriver/OpenTabletDriver",
     "branch": "0.6.x",
-    "revision": "a126f7b241e417399be6c6a760c0a9d4b987ecfd"
+    "revision": "126f4828564abb673d39e97a093fd815aab335c2",
+    "tag": "v0.6.8-rc1"
   },
   "configurations": [
     {
@@ -4753,6 +4754,33 @@
       "specification_source_coverage": "positive native ranges"
     },
     {
+      "path": "OpenTabletDriver.Configurations/Configurations/Parblo/A610 Plus.json",
+      "git_blob": "fac5bb92c9ad68c8b04cdb73b14ee011337a679a",
+      "name": "Parblo A610 Plus",
+      "parsers": [
+        "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenReportParser"
+      ],
+      "hardware_evidence": "unverified",
+      "manufacturer_directory": "Parblo",
+      "digitizer": [
+        {
+          "vendor_id": 10429,
+          "product_id": 6401,
+          "parser": "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenReportParser",
+          "input_report_length": 10,
+          "output_report_length": 8,
+          "feature_report_length": null,
+          "feature_init_reports": 0,
+          "output_init_reports": 1,
+          "initialization_strings": 0,
+          "device_string_indices": [],
+          "attribute_names": []
+        }
+      ],
+      "auxiliary": [],
+      "specification_source_coverage": "positive native ranges"
+    },
+    {
       "path": "OpenTabletDriver.Configurations/Configurations/Parblo/A610 Pro (Variant 2).json",
       "git_blob": "e49663c9d5a8287c7d408e47f5700d5312b83b89",
       "name": "Parblo A610 Pro (Variant 2)",
@@ -5237,6 +5265,33 @@
           "feature_report_length": null,
           "feature_init_reports": 0,
           "output_init_reports": 1,
+          "initialization_strings": 0,
+          "device_string_indices": [],
+          "attribute_names": []
+        }
+      ],
+      "auxiliary": [],
+      "specification_source_coverage": "positive native ranges"
+    },
+    {
+      "path": "OpenTabletDriver.Configurations/Configurations/Silvercrest/Silvercrest SGT 10.6 A2.json",
+      "git_blob": "619cff81bf6e417c978047ee49c5c937ee17b286",
+      "name": "Silvercrest SGT 10.6 A2",
+      "parsers": [
+        "OpenTabletDriver.Configurations.Parsers.Silvercrest.SilvercrestReportParser"
+      ],
+      "hardware_evidence": "unverified",
+      "manufacturer_directory": "Silvercrest",
+      "digitizer": [
+        {
+          "vendor_id": 5935,
+          "product_id": 1281,
+          "parser": "OpenTabletDriver.Configurations.Parsers.Silvercrest.SilvercrestReportParser",
+          "input_report_length": 8,
+          "output_report_length": null,
+          "feature_report_length": null,
+          "feature_init_reports": 3,
+          "output_init_reports": 0,
           "initialization_strings": 0,
           "device_string_indices": [],
           "attribute_names": []
@@ -6777,9 +6832,10 @@
     },
     {
       "path": "OpenTabletDriver.Configurations/Configurations/Wacom/CTH-460.json",
-      "git_blob": "65d40b7085ae66b606da414d53004a2aa9dbfd92",
+      "git_blob": "51c04c337ba4cdf63aac5e4a6215f2d9ba1f0039",
       "name": "Wacom CTH-460",
       "parsers": [
+        "OpenTabletDriver.Configurations.Parsers.Wacom.BambooV2.BambooV2AuxReportParser",
         "OpenTabletDriver.Configurations.Parsers.Wacom.Intuos.IntuosReportParser",
         "OpenTabletDriver.Configurations.Parsers.Wacom.Intuos.WacomDriverIntuosReportParser",
         "OpenTabletDriver.Configurations.Parsers.Wacom.Wacom64bAuxReportParser"
@@ -6844,8 +6900,8 @@
         {
           "vendor_id": 1386,
           "product_id": 214,
-          "parser": "OpenTabletDriver.Configurations.Parsers.Wacom.Wacom64bAuxReportParser",
-          "input_report_length": 64,
+          "parser": "OpenTabletDriver.Configurations.Parsers.Wacom.BambooV2.BambooV2AuxReportParser",
+          "input_report_length": 20,
           "output_report_length": null,
           "feature_report_length": null,
           "feature_init_reports": 0,
@@ -7465,7 +7521,7 @@
     },
     {
       "path": "OpenTabletDriver.Configurations/Configurations/Wacom/CTL-4100WL.json",
-      "git_blob": "199271d268b9128f85e0c46cc3d52d089e6ed3dd",
+      "git_blob": "f62ef1a0300b5835262064d3391acae62985b1e5",
       "name": "Wacom CTL-4100WL",
       "parsers": [
         "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV2.IntuosV2ReportParser",
@@ -7919,7 +7975,7 @@
     },
     {
       "path": "OpenTabletDriver.Configurations/Configurations/Wacom/CTL-6100WL.json",
-      "git_blob": "d6e9b3cecc56c03e0274707cf5d528953c9022da",
+      "git_blob": "4c4a047f9926bd9d2cd333a67517706078024d67",
       "name": "Wacom CTL-6100WL",
       "parsers": [
         "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV2.IntuosV2ReportParser"
@@ -13010,6 +13066,10 @@
       "hardware_evidence": "unverified"
     },
     {
+      "type": "OpenTabletDriver.Configurations.Parsers.Silvercrest.SilvercrestReportParser",
+      "hardware_evidence": "unverified"
+    },
+    {
       "type": "OpenTabletDriver.Configurations.Parsers.SkipByteTabletReportParser",
       "hardware_evidence": "unverified"
     },
@@ -13179,8 +13239,8 @@
     }
   ],
   "counts": {
-    "configurations": 357,
-    "referenced_parser_types": 53,
+    "configurations": 359,
+    "referenced_parser_types": 54,
     "specification_source_gaps": 0
   }
 }

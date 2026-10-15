@@ -110,7 +110,9 @@ impl Graph {
     /// The source report is consumed once by its owner thread; stale tokens
     /// fail before any native continuation or plugin executes.
     pub unsafe fn dispatch_parsed(&self, token: ManagedReportToken, frame: &GraphReport, callback: Callback, scope: *mut c_void) -> io::Result<()> {
-        let code = unsafe { (api().map_err(io::Error::other)?.dispatch)(self.context_handle(), token.parser, token.sequence, frame, callback, scope, i32::from(self.runs_builtins_in_host())) };
+        // Fusing transform/output no longer skips graph admission or moves
+        // built-ins ahead of Internal elements.
+        let code = unsafe { (api().map_err(io::Error::other)?.dispatch)(self.context_handle(), token.parser, token.sequence, frame, callback, scope, 1) };
         if code == 0 { Ok(()) } else { Err(io::Error::other(last_error())) }
     }
 }

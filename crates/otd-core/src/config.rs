@@ -37,6 +37,7 @@ pub struct ContactPolicy {
     pub drag_only: bool,
     pub disable_pressure: bool,
     pub disable_tilt: bool,
+    pub disable_rotation: bool,
 }
 
 impl Default for ContactPolicy {
@@ -51,6 +52,7 @@ impl Default for ContactPolicy {
             drag_only: false,
             disable_pressure: false,
             disable_tilt: false,
+            disable_rotation: false,
         }
     }
 }
@@ -542,6 +544,8 @@ struct OtdBindings {
     disable_pressure: bool,
     #[serde(default)]
     disable_tilt: bool,
+    #[serde(default)]
+    disable_rotation: bool,
 }
 
 fn default_activation_percent() -> f64 {
@@ -564,6 +568,7 @@ impl Default for OtdBindings {
             enable_drag_bindings: false,
             disable_pressure: false,
             disable_tilt: false,
+            disable_rotation: false,
         }
     }
 }
@@ -1335,6 +1340,7 @@ impl Profile {
                     drag_only: selected.bindings.enable_drag_bindings,
                     disable_pressure: selected.bindings.disable_pressure,
                     disable_tilt: selected.bindings.disable_tilt,
+                    disable_rotation: selected.bindings.disable_rotation,
                     tip_threshold_percent: Some(0.0),
                     eraser_threshold_percent: Some(0.0),
                     tip_threshold_raw: Some(1),
@@ -1347,6 +1353,7 @@ impl Profile {
                     drag_only: selected.bindings.enable_drag_bindings,
                     disable_pressure: selected.bindings.disable_pressure,
                     disable_tilt: selected.bindings.disable_tilt,
+                    disable_rotation: selected.bindings.disable_rotation,
                     tip_threshold_percent: Some(selected.bindings.tip_activation_threshold as f32),
                     eraser_threshold_percent: Some(selected.bindings.eraser_activation_threshold as f32),
                     tip_threshold_raw: Some(activation_raw_for(

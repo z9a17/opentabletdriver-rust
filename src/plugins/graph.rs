@@ -29,6 +29,7 @@ pub(super) fn create_if(plugins: &[Plugin], builtin_slot: Option<usize>, force: 
             },
             index: index as u32,
             stage: match plugin.stage {
+                PipelineStage::Internal => 4,
                 PipelineStage::PreTransform => 1,
                 PipelineStage::Pixels => 2,
             },
@@ -143,6 +144,11 @@ impl Scope<'_> {
                 keep
             }
             5 => { self.runtime.bindings(kind, &mut values, unsafe { frame.raw()? })?; true }
+            7 => {
+                if index != 0 { self.runtime.prepare_report(&mut values)?; }
+                if !self.builtins_in_graph { self.runtime.builtins(&mut values)?; }
+                true
+            }
             3 => {
                 // .NET pins this report's current Raw array until the callback
                 // returns. The output stage cannot retain this borrowed view.
@@ -152,7 +158,7 @@ impl Scope<'_> {
             }
             _ => return Err(io::Error::other("unknown synchronous graph operation")),
         };
-        if operation == 5 { frame.pressure = values.pressure.unwrap_or(0); }
+        if operation == 5 || operation == 7 { frame.pressure = values.pressure.unwrap_or(0); }
         if operation != 3 && operation != 5 {
             frame.set_position(&values);
         }
@@ -258,9 +264,8 @@ impl PluginChain {
             // them. The fused bridge leaves them to the host, which saves a
             // native continuation per report.
             let builtins_in_graph = self.builtin_slot.is_some();
-            if graph.runs_builtins_in_host() && !builtins_in_graph {
-                runtime.builtins(&mut values)?;
-            }
+            // Admission in the graph runs pressure rewriting and host built-ins
+            // after Internal elements, including when transform/output is fused.
             let frame = GraphReport::new(input.kind, &values, raw)?;
             // Disjoint field borrows: graph owns only managed references; this
             // callback scope owns the native nodes and host stages for this call.

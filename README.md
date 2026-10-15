@@ -4,7 +4,7 @@
 
 A Rust drawing-tablet driver based on [OpenTabletDriver](https://github.com/OpenTabletDriver/OpenTabletDriver), with a native Windows control panel, Linux/macOS command-line drivers, and the original Gtk/Eto frontends on Linux/macOS. It imports OpenTabletDriver settings and hosts supported existing .NET plugins unchanged.
 
-**Experimental compatibility:** the project includes 357 tablet configurations and native entries for all 53 referenced parsers. Only the **Wacom PTH-660 (Intuos Pro M) on Windows** has confirmed hardware evidence. Catalog/parser coverage does not establish working initialization, transport or output for every tablet. Linux/macOS runtime and hardware acceptance, the unchanged plugin corpus, and full verified parity remain open. See [implementation scope and evidence limits](docs/parity/IMPLEMENTATION_0.18.md).
+**Experimental compatibility:** the project includes 359 tablet configurations and native entries for all 54 referenced parsers. Only the **Wacom PTH-660 (Intuos Pro M) on Windows** has confirmed hardware evidence. Catalog/parser coverage does not establish working initialization, transport or output for every tablet. Linux/macOS runtime and hardware acceptance, the unchanged plugin corpus, and full verified parity remain open. See [RC adoption and evidence limits](docs/parity/UPSTREAM_0.6.8_RC1.md).
 
 ## Download
 
@@ -19,7 +19,7 @@ Get the archives and SHA-256 checksums from [the latest release](https://github.
 
 Archive names begin with `opentabletdriver-rust-v<version>-`. Upstream distribution packages and Flatpak install the original driver; use this project's archives for the Rust version.
 
-Native-only input needs no .NET runtime. Original .NET plugins, registered type/default-store requests, original RPC hosting and original frontends/Console need the **architecture-matching .NET 8 runtime or newer**. Linux's frontend also needs GTK3; generic Wayland display discovery needs .NET, while Hyprland/Sway/X11 discovery and explicit `--screen` remain native. Unix network operations need system curl. macOS packages are unsigned and not notarized.
+Native-only input needs no .NET runtime. Original .NET plugins, registered type/default-store requests, original RPC hosting and original frontends/Console need the **architecture-matching .NET 10 runtime or newer**. Linux's frontend also needs GTK3; generic Wayland display discovery needs .NET, while Hyprland/Sway/X11 discovery and explicit `--screen` remain native. Unix network operations need system curl. macOS packages are unsigned and not notarized.
 
 ## Get started
 
@@ -54,7 +54,7 @@ Use `./opentabletdriver-rust-macos ui` for the original Eto frontend. See the [m
 - Pen and auxiliary buttons, keyboard shortcuts, express keys, wheels and scroll bindings.
 - Multiple tablet sessions, native daemon control, original settings collections/presets, original Console/RPC workflows and plugin installation.
 - Windows native panel with light/dark/system themes, accent colors, tray controls and a tablet debugger. Linux/macOS packages include the original graphical frontends.
-- Windows Ink pressure/tilt/eraser and Linux Artist Mode are implemented but still need application/hardware acceptance. macOS follows the original mouse/keyboard output contract.
+- Windows Ink pressure/tilt/rotation/eraser and Linux Artist Mode are implemented but still need application/hardware acceptance. macOS follows the original mouse/keyboard output contract.
 
 Native report processing uses inline/borrowed storage; managed compatibility paths may allocate and add work. [Performance measurements](docs/PERFORMANCE.md) and [latency analysis](docs/INPUT_LATENCY.md) distinguish offline processing from physical pen-to-display latency. No general low-latency or osu!/OBS improvement is established by source coverage or package builds.
 
@@ -72,7 +72,7 @@ cargo build --locked --release -p otd-linux
 cargo build --locked --release -p otd-macos
 ```
 
-Complete packages also need the .NET 8+ SDK and the managed dependencies. Use `pwsh -File scripts/package.ps1` on Windows or `scripts/package-unix.sh <platform>` on Unix. See [releasing](docs/RELEASING.md) for dependency/toolchain details and all four platform packages, and [the parity plan](docs/FULL_PARITY_PLAN.md) for contribution contracts and deferred acceptance gates.
+Complete packages also need the .NET 10+ SDK and the managed dependencies. Use `pwsh -File scripts/package.ps1` on Windows or `scripts/package-unix.sh <platform>` on Unix. See [releasing](docs/RELEASING.md) for dependency/toolchain details and all four platform packages, and [the parity plan](docs/FULL_PARITY_PLAN.md) for contribution contracts and deferred acceptance gates.
 
 ## License
 

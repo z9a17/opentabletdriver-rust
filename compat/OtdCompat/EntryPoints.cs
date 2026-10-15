@@ -133,8 +133,8 @@ class PenSnapshot : ITabletReport
 
 class Report : PenSnapshot, IEraserReport { public bool Eraser { get; set; } }
 
-// Implement only real pinned 0.6.7 interfaces. There is no rotation interface;
-// rotation and the other transport-only fields remain available through Raw.
+// Snapshot interfaces match the selected SDK. Rotation is supplied by dedicated
+// shapes in Snapshots.cs only when the source actually carries that capability.
 class TiltReport : Report, ITiltReport
 {
     public Vector2 Tilt { get; set; }
@@ -181,9 +181,15 @@ sealed class Instance : IDisposable
                 throw new NotSupportedException("Only OTD position filters are supported; output modes and bindings are not supported.");
             created = HostServices.Construct(type) ?? throw new InvalidOperationException("Cannot construct filter");
             filter = (IPositionedPipelineElement<IDeviceReport>)created;
+            // SDK 0.6.8's Scheduler setter immediately derives its interval from
+            // Frequency. Initialize that SDK-owned property before injection so
+            // an untouched default does not request an infinite host interval.
+            PrepareAsyncFrequency(type, created, config["settings"] as JObject ?? new JObject());
             // PluginManager.ConstructObject injects services before
             // PluginSettingStore.ApplySettings, so Frequency finds its timer.
             services = new HostServices(() => {
+                if (filter.Position == PipelinePosition.Internal)
+                    throw new NotSupportedException("Internal filters cannot acquire asynchronous timers before pressure rewriting.");
                 if (Environment.CurrentManagedThreadId != ownerThread)
                     throw new InvalidOperationException("Pipeline timers must be acquired on the graph's owning thread.");
                 var timer = new SessionTimer(); timers.Add(timer); return timer;
@@ -191,11 +197,13 @@ sealed class Instance : IDisposable
             services.ConfigureSource(config);
             services.Inject(type, created);
             providerTimers = services.ProviderInjected;
-            ApplySettings(type, created, config["settings"] as JObject ?? new JObject());
+            ApplySettings(type, created, config["settings"] as JObject ?? new JObject(), preparedAsyncFrequency: true);
             HostServices.Complete(type, created, CreateTabletReference(config));
             Position = filter.Position;
-            if (Position is not (PipelinePosition.PreTransform or PipelinePosition.PostTransform))
+            if (Position is not (PipelinePosition.Internal or PipelinePosition.PreTransform or PipelinePosition.PostTransform))
                 throw new NotSupportedException($"Unsupported plugin pipeline position: {Position}.");
+            if (Position == PipelinePosition.Internal && IsAsyncFilter(type))
+                throw new NotSupportedException("Asynchronous Internal filters are unsupported: pressure rewriting must run once before ordinary filters. Use a synchronous Internal filter or a PreTransform asynchronous filter.");
             filter.Emit += OnEmit;
         }
         catch
@@ -214,7 +222,7 @@ sealed class Instance : IDisposable
         }
     }
 
-    internal static void ApplySettings(Type type, object value, JObject settings)
+    internal static void ApplySettings(Type type, object value, JObject settings, bool preparedAsyncFrequency = false)
     {
         using var setup = ServiceClient.Setup();
         var properties = type.GetProperties().Where(p => p.GetCustomAttribute<PropertyAttribute>() != null).ToArray();
@@ -222,6 +230,7 @@ sealed class Instance : IDisposable
         // those keys in the Rust profile for upgrades and rollback.
         foreach (var property in properties)
         {
+            if (preparedAsyncFrequency && property.Name == "Frequency" && property.DeclaringType == AsyncBase(type)) continue;
             if (!property.CanWrite) continue;
             // PluginSettingStore.ApplySettings visits saved entries only. Missing
             // entries keep the constructor value; an explicit null selects the
@@ -235,6 +244,26 @@ sealed class Instance : IDisposable
             else
                 property.SetValue(value, token.ToObject(property.PropertyType));
         }
+    }
+
+    static Type? AsyncBase(Type type)
+    {
+        for (Type? owner = type; owner != null; owner = owner.BaseType)
+            if (owner.IsGenericType && owner.GetGenericTypeDefinition() == typeof(AsyncPositionedPipelineElement<>)) return owner;
+        return null;
+    }
+    static bool IsAsyncFilter(Type type) => AsyncBase(type) != null;
+    static void PrepareAsyncFrequency(Type type, object value, JObject settings)
+    {
+        using var setup = ServiceClient.Setup();
+        if (AsyncBase(type)?.GetProperty("Frequency", BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly) is not { } property) return;
+        float frequency = (float)property.GetValue(value)!;
+        if (type.GetProperty(property.Name)?.DeclaringType == property.DeclaringType && settings.TryGetValue(property.Name, out JToken? token))
+            frequency = token is null || token.Type == JTokenType.Null
+                ? (float)property.GetCustomAttribute<DefaultPropertyValueAttribute>()!.Value : token.ToObject<float>();
+        else if (frequency == 0) frequency = (float)property.GetCustomAttribute<DefaultPropertyValueAttribute>()!.Value;
+        if (!float.IsFinite(frequency)) throw new ArgumentOutOfRangeException("Frequency", "Async filter frequency must be finite.");
+        property.SetValue(value, frequency);
     }
 
     /// Microseconds until this filter's next timer tick, or -1 without one.
@@ -691,6 +720,8 @@ public static unsafe partial class EntryPoints
                 display_name = p.GetCustomAttribute<PropertyAttribute>()?.DisplayName,
                 unit = p.GetCustomAttribute<UnitAttribute>()?.Unit,
                 tooltip = p.GetCustomAttribute<ToolTipAttribute>()?.ToolTip,
+                placeholder = p.PropertyType == typeof(string) && p.GetCustomAttribute<PropertyValidatedAttribute>() == null
+                    ? p.GetCustomAttribute<PropertyUnvalidatedStringPlaceholderAttribute>()?.Placeholder : null,
                 property_type = (Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType).FullName,
                 writable = p.SetMethod?.IsPublic == true && p.GetIndexParameters().Length == 0,
                 default_is_attribute = p.GetCustomAttribute<DefaultPropertyValueAttribute>() != null,

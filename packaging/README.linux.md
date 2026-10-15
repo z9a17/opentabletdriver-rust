@@ -6,7 +6,7 @@ Extract the archive, then open a terminal in its directory:
 sudo ./setup/install.sh install
 ```
 
-Install the .NET 8 runtime and native GTK3
+Install the .NET 10 runtime and native GTK3
 for the original desktop frontend/managed plugins. The native GNU Linux binary
 also requires your distribution's glibc. Reconnect your tablet and start the
 original desktop frontend as your normal user:
@@ -28,7 +28,7 @@ The pinned original Console client is included beside the native executable:
 ```
 
 Its commands connect to the original compatibility service on the daemon; use
-the original client only with that listener enabled. It runs through .NET 8 and
+the original client only with that listener enabled. It runs through .NET 10 and
 retains the original command names and API overloads. This does not establish
 runtime compatibility of every managed plugin or original client operation.
 

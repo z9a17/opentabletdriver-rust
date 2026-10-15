@@ -78,7 +78,7 @@ pub mod managed_host {
 }
 pub mod upstream_rpc {
     pub use crate::original_rpc_protocol as protocol;
-    pub mod collection { pub fn empty() -> serde_json::Value { serde_json::json!({"Revision":"0.6.7.0","Profiles":[],"Tools":[],"LockUsableAreaDisplay":true,"LockUsableAreaTablet":true}) } }
+    pub mod collection { pub fn empty() -> serde_json::Value { serde_json::json!({"Revision":"0.6.8.0","Profiles":[],"Tools":[],"LockUsableAreaDisplay":true,"LockUsableAreaTablet":true}) } }
     pub fn original_application_info() -> Result<serde_json::Value, String> {
         let data = otd_core::storage::data_directory()?;
         Ok(serde_json::json!({"AppDataDirectory":data,"SettingsFile":data.join("settings.json"),

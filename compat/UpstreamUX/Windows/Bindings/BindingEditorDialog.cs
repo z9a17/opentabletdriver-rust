@@ -13,7 +13,7 @@ namespace OpenTabletDriver.UX.Windows.Bindings
         public BindingEditorDialog(PluginSettingStore currentBinding = null)
         {
             Title = "Binding Editor";
-            Result = currentBinding;
+            Result = currentBinding?.Clone();
 
             this.Content = new StackLayout
             {
@@ -27,7 +27,7 @@ namespace OpenTabletDriver.UX.Windows.Bindings
                         Expand = true,
                         Control = bindingController = new BindingController
                         {
-                            Store = currentBinding,
+                            Store = currentBinding?.Clone(),
                             Width = 300,
                             Height = 150
                         }
