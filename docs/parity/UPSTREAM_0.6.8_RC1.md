@@ -159,9 +159,10 @@ configurations, 52 parser types and 98 catalog records must not be confused with
 acceptance of the new 359-configuration catalog. Validating that historical
 ledger does not execute the new fixtures or certify the RC additions.
 
-Keep the integration PR unmerged. Stage the Windows package in
-`E:/OTD RUST TEST`, preserving destination-owned files/settings and recording
-source provenance. No active driver, app, game or device is to be started,
-stopped or probed for this adoption. No release publication or GitHub Actions
-is authorized by this handoff. Manual tablet/application testing remains with
-the owner.
+The initial Windows test package was staged in `E:/OTD RUST TEST` with verified
+hashes and source provenance. The owner subsequently authorized merging and
+publishing this adoption together with the driver overhead follow-up in
+[0.19.0](../RELEASE_0.19.0.md). Release preparation must preserve local files and
+settings and must not start, stop or probe an active driver, app, game or device.
+No GitHub Actions are used. Manual tablet/application testing remains with the
+owner.

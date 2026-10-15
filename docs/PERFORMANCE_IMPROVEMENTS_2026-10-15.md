@@ -106,8 +106,9 @@ no saved settings were edited. Whole-workspace test/format/clippy/check suites
 were not run. Physical input, hotplug, sleep/wake, third-party plugin behavior,
 native Unix runtime and pen-to-display latency still require manual validation.
 
-The branch is intended for an unmerged Windows test package through
-`scripts/update-test-build.py`, which verifies hashes, preserves destination
-files/settings and records exact branch/commit provenance in
-`E:/OTD RUST TEST/data/TEST-BUILD.json`. PR handoff records the package outcome;
-this document does not claim a merged release.
+The reviewed branch was delivered as a Windows test package before release
+preparation, with all 101 package files verified and provenance recorded in
+`E:/OTD RUST TEST/data/TEST-BUILD.json`. The owner subsequently authorized merging
+and publishing. [The 0.19.0 release notes](RELEASE_0.19.0.md) describe the combined
+RC adoption and optimization scope; package delivery remains separate from the
+offline implementation evidence above.
