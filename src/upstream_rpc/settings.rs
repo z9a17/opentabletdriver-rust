@@ -66,7 +66,7 @@ pub fn defaults(tablets: &[TabletConfiguration], screen: Rect) -> Result<Value, 
                 "MouseButtons":vec![Value::Null;usize::from(controls.mouse_buttons)],"MouseScrollUp":null,"MouseScrollDown":null,
                 "WheelBindings":wheels,"EnableDragBindings":false,"DisablePressure":false,"DisableTilt":false},"Filters":[]}));
     }
-    Ok(json!({"Revision":"0.6.7.0","Profiles":profiles,"Tools":[],"LockUsableAreaDisplay":true,"LockUsableAreaTablet":true}))
+    Ok(json!({"Revision":"0.6.8.0","Profiles":profiles,"Tools":[],"LockUsableAreaDisplay":true,"LockUsableAreaTablet":true}))
 }
 
 pub fn canonical_copy(profile: &Profile, tablet: &TabletConfiguration, screen: Rect) -> Result<Profile, Error> {

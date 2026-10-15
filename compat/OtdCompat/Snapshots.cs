@@ -5,6 +5,15 @@ using OpenTabletDriver.Plugin.Tablet.Wheel;
 
 namespace OtdCompat;
 
+sealed class RotationPenSnapshot : PenSnapshot, IRotationReport { public int Rotation { get; set; } }
+sealed class RotationTiltProximitySnapshot : TiltPenSnapshot, IProximityReport, IRotationReport
+{
+    public bool NearProximity { get; set; }
+    public uint HoverDistance { get; set; }
+    public int Rotation { get; set; }
+}
+sealed class RotationProximityReport : ProximityReport, IRotationReport { public int Rotation { get; set; } }
+
 // Concrete interface sets are observable to unchanged plugins. A report with
 // no tilt or eraser field must not acquire those capabilities in the bridge.
 class TiltPenSnapshot : PenSnapshot, ITiltReport { public Vector2 Tilt { get; set; } }

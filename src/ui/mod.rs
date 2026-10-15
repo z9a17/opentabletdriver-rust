@@ -718,7 +718,7 @@ struct Controls {
     tip_slider: HWND,
     tip_field: HWND,
     eraser_binding: HWND,
-    pen_policy: [HWND; 3],
+    pen_policy: [HWND; 4],
     eraser_slider: HWND,
     eraser_field: HWND,
     log: HWND,

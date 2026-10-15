@@ -31,7 +31,7 @@ COMPAT_FILES = ['OtdCompat.dll', 'OtdCompat.runtimeconfig.json', 'OtdCompat.deps
                 'Microsoft.NET.StringTools.dll', 'Microsoft.VisualStudio.Threading.dll',
                 'Microsoft.VisualStudio.Validation.dll', 'Nerdbank.Streams.dll', 'Octokit.dll',
                 'ICSharpCode.SharpZipLib.dll', 'StreamJsonRpc.dll', 'System.CommandLine.dll',
-                'System.IO.Pipelines.dll',
+                'Nerdbank.MessagePack.dll', 'PolyType.dll',
                 'WaylandNET.dll', 'nethost.dll']
 # Preserve the original dependency satellites, not only their English fallback.
 COMPAT_FILES += [f'{locale}/{assembly}.resources.dll'
@@ -39,15 +39,17 @@ COMPAT_FILES += [f'{locale}/{assembly}.resources.dll'
                                 'ru', 'tr', 'zh-Hans', 'zh-Hant']
                  for assembly in ['Microsoft.VisualStudio.Threading', 'Microsoft.VisualStudio.Validation',
                                   'StreamJsonRpc', 'System.CommandLine']]
-# Exact runtime DLL closure from the net8.0 restored projects, pinned by both
+# Exact runtime DLL closure from the net10.0 restored projects, pinned by their
 # packages.lock.json files. This remains an allowlist, not an arbitrary-output glob.
-# System.ComponentModel.Annotations resolves from the shared net8.0 framework;
-# it is not a copy-local runtime dependency in OtdCompat.deps.json.
+# System.ComponentModel.Annotations and System.IO.Pipelines resolve from the
+# shared net10.0 framework, not copy-local assets in OtdCompat.deps.json.
 BRIDGE_LICENSES = {'DOTNET-BRIDGE-NOTICES.txt': 'compat/THIRD_PARTY_NOTICES.txt',
                   'OTD-DESKTOP-LICENSE.txt': 'compat/UpstreamDesktop/LICENSE',
                   'OTD-DESKTOP-SOURCE.txt': 'compat/UpstreamDesktop/PROVENANCE.md',
                   'OTD-CORE-LICENSE.txt':'compat/UpstreamCore/LICENSE',
-                  'OTD-CORE-SOURCE.txt':'compat/UpstreamCore/PROVENANCE.md'}
+                  'OTD-CORE-SOURCE.txt':'compat/UpstreamCore/PROVENANCE.md',
+                  'OTD-PLUGIN-LICENSE.txt':'compat/UpstreamPlugin/LICENSE',
+                  'OTD-PLUGIN-SOURCE.txt':'compat/UpstreamPlugin/PROVENANCE.md'}
 LINUX_SETUP = ['install.sh', '70-opentabletdriver-rust.rules', 'opentabletdriver-rust.conf', 'generate-rules.py']
 
 RID = {'win-x64':'win-x64','linux-x64':'linux-x64','macos-x64':'osx-x64','macos-arm64':'osx-arm64'}

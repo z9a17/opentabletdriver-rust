@@ -265,8 +265,7 @@ impl Transaction {
 
 fn supervise(profile: Profile, handle: Handle, requests: mpsc::Receiver<Request>, wake: Event,
     stop: Arc<AtomicBool>, enabled: Arc<AtomicBool>) -> Result<(), String> {
-    let configured = crate::check_tablet_configurations()?;
-    let database = configured.as_ref();
+    let mut configured = crate::check_tablet_configurations()?;
     let notification = Notification::register().map_err(|error| error.to_string())?;
     let mut sessions = BTreeMap::<String, Transaction>::new();
     let mut rescan = true;
@@ -282,6 +281,7 @@ fn supervise(profile: Profile, handle: Handle, requests: mpsc::Receiver<Request>
             if now_enabled && !was_enabled { rescan = true; }
             was_enabled = now_enabled;
             if rescan || scanned.elapsed() >= if failed_scan { Duration::from_secs(2) } else { super::RESCAN } {
+                let database = configured.as_ref();
                 match hid::enumerate_with_database(database) {
                 Ok(devices) => {
                 failed_scan = false;
@@ -350,7 +350,19 @@ fn supervise(profile: Profile, handle: Handle, requests: mpsc::Receiver<Request>
                 let request = match request {
                     Request::Refresh(reply) => {
                         if refresh_replies.len() == 16 { let _ = reply.send(Err("device discovery queue is full".into())); }
-                        else { refresh_replies.push(reply); rescan = true; }
+                        else {
+                            // Replace only after the complete override set validates. A bad
+                            // edit must not discard the last usable database or stop workers.
+                            let reloaded = crate::check_tablet_configurations().and_then(|database| {
+                                let invalid = database.entries().iter().filter(|entry| entry.usable().is_none()).count();
+                                if invalid != 0 { return Err(format!("{invalid} tablet configuration files are invalid")); }
+                                Ok(database)
+                            });
+                            match reloaded {
+                                Ok(reloaded) => { configured = reloaded; refresh_replies.push(reply); rescan = true; }
+                                Err(error) => { let _ = reply.send(Err(format!("Configuration reload failed; existing sessions remain active: {error}"))); }
+                            }
+                        }
                         continue;
                     }
                     request => request,

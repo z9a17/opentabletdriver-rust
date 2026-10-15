@@ -1,5 +1,5 @@
 pub use crate::original_rpc_protocol as protocol;
-pub mod collection { pub fn empty() -> serde_json::Value { serde_json::json!({"Revision":"0.6.7.0","Profiles":[],"Tools":[],"LockUsableAreaDisplay":true,"LockUsableAreaTablet":true}) } }
+pub mod collection { pub fn empty() -> serde_json::Value { serde_json::json!({"Revision":"0.6.8.0","Profiles":[],"Tools":[],"LockUsableAreaDisplay":true,"LockUsableAreaTablet":true}) } }
 #[path = "../../../src/upstream_rpc/settings.rs"]
 mod common;
 pub fn defaults(tablets: &[otd_core::tablets::TabletConfiguration], screen: otd_core::mapping::Rect) -> Result<serde_json::Value, String> {

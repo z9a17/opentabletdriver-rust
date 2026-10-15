@@ -80,10 +80,10 @@ pub(super) fn import_diagnostics(
     )];
     if let Some(revision) = document.get("Revision").and_then(Value::as_str) {
         let version = revision.split(['+', '-']).next().unwrap_or(revision);
-        if !matches!(version, "0.6.7" | "0.6.7.0") {
+        if !matches!(version, "0.6.7" | "0.6.7.0" | "0.6.8" | "0.6.8.0") {
             diagnostics.push(ProfileDiagnostic::warning(
                 "Revision",
-                format!("Source revision {revision} differs from the pinned OTD 0.6.7 baseline; unsupported settings remain preserved."),
+                format!("Source revision {revision} differs from the supported OTD 0.6.7/0.6.8 settings revisions; unsupported settings remain preserved."),
             ));
         }
     }
@@ -101,7 +101,7 @@ pub(super) fn import_diagnostics(
             if matches!(
                 name.as_str(),
                 "TipButton" | "EraserButton" | "PenButtons" | "AuxButtons" | "MouseButtons" | "MouseScrollUp" | "MouseScrollDown" | "WheelBindings"
-                    | "DisablePressure" | "DisableTilt" | "EnableDragBindings"
+                    | "DisablePressure" | "DisableTilt" | "DisableRotation" | "EnableDragBindings"
             ) {
                 continue;
             }
@@ -247,6 +247,7 @@ pub(super) fn extract_unknown_fields(document: &mut toml::Value) -> BTreeMap<Str
                 "drag_only",
                 "disable_pressure",
                 "disable_tilt",
+                "disable_rotation",
             ][..],
         ),
         (
@@ -890,6 +891,7 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
         ("EnableDragBindings", profile.contact.drag_only, baseline.contact.drag_only),
         ("DisablePressure", profile.contact.disable_pressure, baseline.contact.disable_pressure),
         ("DisableTilt", profile.contact.disable_tilt, baseline.contact.disable_tilt),
+        ("DisableRotation", profile.contact.disable_rotation, baseline.contact.disable_rotation),
     ] {
         if current != old { set_field(&mut selected["Bindings"], name, json!(current))?; }
     }

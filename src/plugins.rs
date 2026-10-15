@@ -707,6 +707,7 @@ impl PluginChain {
             }
             let entry = format!("{} {}", plugin.name, config.settings_json);
             match plugin.stage {
+                PipelineStage::Internal => before.push(format!("Internal: {entry}")),
                 PipelineStage::PreTransform => before.push(entry),
                 PipelineStage::Pixels => after.push(entry),
             }

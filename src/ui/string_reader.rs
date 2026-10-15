@@ -5,11 +5,17 @@ use std::sync::{Arc,atomic::{AtomicBool,AtomicU64,Ordering},mpsc};
 use windows_sys::Win32::UI::HiDpi::{DDC_DISABLE_ALL,SetDialogDpiChangeBehavior};
 const DEVICE:u16=101;const VENDOR:u16=102;const PRODUCT:u16=103;const INDEX:u16=104;
 const REQUEST:u16=105;const DUMP:u16=106;const RECONNECT:u16=107;const CANCEL:u16=108;const COPY:u16=109;
+const DANGEROUS:u16=110;
 const WM_RESULT:u32=WM_APP+51;
 static SERIAL:AtomicU64=AtomicU64::new(1);
 thread_local!{static WINDOW:Cell<HWND>=const{Cell::new(ptr::null_mut())};}
 pub(super) fn refresh_theme(){WINDOW.with(|window|{if !window.get().is_null(){unsafe{SendMessageW(window.get(),WM_THEMECHANGED,0,0);}}});}
-enum Event{Devices(Result<Vec<Value>,String>),String(u64,u8,Result<String,String>),Done(u64)}
+enum Event{Devices(Result<Vec<Value>,String>),String(u64,u8,Result<String,String>),Skipped(u64,u8,&'static str),Done(u64)}
+/// RC #4841: bulk reads can invoke firmware commands rather than return text.
+/// Explicit single-index requests remain deliberate requests, as upstream.
+fn skipped_dump_string(vendor:u16,index:u8,dangerous:bool)->Option<&'static str>{
+    (!dangerous && vendor==10429 && index==200).then_some("Common DFU String")
+}
 #[repr(C,align(4))]struct Template{dialog:DLGTEMPLATE,menu:u16,class:u16,title:u16}
 struct Dialog{
     window:HWND,fields:[HWND;3],device:HWND,result:HWND,reconnect:HWND,controls:Vec<(HWND,RECT)>,fonts:Option<FontSet>,
@@ -30,7 +36,9 @@ impl Dialog{
         self.reconnect=self.add("BUTTON","Require reconnect on fail",RECONNECT,WS_TABSTOP|BS_AUTOCHECKBOX as u32,rect(20,136,272,166),Kind::Check)?;
         self.add("BUTTON","Send request",REQUEST,WS_TABSTOP|BS_DEFPUSHBUTTON as u32,rect(288,136,424,168),Kind::Button)?;
         self.add("BUTTON","Dump all",DUMP,WS_TABSTOP|BS_PUSHBUTTON as u32,rect(436,136,580,168),Kind::Button)?;
-        self.result=self.add("EDIT","",0,WS_TABSTOP|WS_VSCROLL|ES_MULTILINE as u32|ES_READONLY as u32|ES_AUTOVSCROLL as u32,rect(20,184,580,366),Kind::Field)?;
+        self.add("BUTTON","Dump potentially dangerous strings",DANGEROUS,WS_TABSTOP|BS_AUTOCHECKBOX as u32,rect(20,176,580,202),Kind::Check)?;
+        self.add("STATIC","May disrupt the tablet or enter firmware update mode. Off by default.",0,SS_LEFT|SS_NOPREFIX,rect(20,204,580,224),Kind::Label)?;
+        self.result=self.add("EDIT","",0,WS_TABSTOP|WS_VSCROLL|ES_MULTILINE as u32|ES_READONLY as u32|ES_AUTOVSCROLL as u32,rect(20,230,580,366),Kind::Field)?;
         unsafe{SendMessageW(self.result,EM_LIMITTEXT,crate::control::MAX_PROFILE_BYTES,0);}
         self.add("BUTTON","Copy",COPY,WS_TABSTOP|BS_PUSHBUTTON as u32,rect(20,388,140,420),Kind::Button)?;
         self.add("BUTTON","Cancel request",CANCEL,WS_TABSTOP|BS_PUSHBUTTON as u32,rect(288,388,424,420),Kind::Button)?;
@@ -50,9 +58,14 @@ impl Dialog{
         self.cancellations.retain(|stop|Arc::strong_count(stop)>1);self.cancel=Arc::new(AtomicBool::new(false));let stop=Arc::clone(&self.cancel);self.cancellations.push(Arc::clone(&stop));self.query_epoch=self.query_epoch.checked_add(1).ok_or("string request generation exhausted")?;let epoch=self.query_epoch;let sender=self.sender.clone();let window=self.window as isize;let token=self.token;
         let (resume,answers)=mpsc::sync_channel(1);self.resume=Some(resume);
         let reconnect=unsafe{SendMessageW(self.reconnect,BM_GETCHECK,0,0)}==BST_CHECKED as isize;
+        let dangerous=unsafe{SendMessageW(GetDlgItem(self.window,DANGEROUS as i32),BM_GETCHECK,0,0)}==BST_CHECKED as isize;
         std::thread::Builder::new().name("device-string-query".into()).spawn(move||{
             let mut client=None;let indices:Vec<u8>=if all{(1..=255).collect()}else{vec![index]};
             for index in indices{
+                if all && let Some(reason)=skipped_dump_string(vendor,index,dangerous){
+                    if !send(&sender,Event::Skipped(epoch,index,reason),window,token,&stop){return;}
+                    continue;
+                }
                 loop{
                     if stop.load(Ordering::Acquire){break;}
                     let result=(||{
@@ -75,11 +88,11 @@ impl Dialog{
     }
     fn set_busy(&mut self,busy:bool){
         self.busy=busy;
-        for id in [DEVICE,VENDOR,PRODUCT,INDEX,REQUEST,DUMP,RECONNECT]{unsafe{EnableWindow(GetDlgItem(self.window,id as i32),i32::from(!busy));}}
+        for id in [DEVICE,VENDOR,PRODUCT,INDEX,REQUEST,DUMP,RECONNECT,DANGEROUS]{unsafe{EnableWindow(GetDlgItem(self.window,id as i32),i32::from(!busy));}}
     }
     fn resize(&mut self,dpi:u32,suggested:Option<RECT>){
         self.dpi=dpi;let fonts=FontSet::new(dpi);let mut work=RECT::default();unsafe{SystemParametersInfoW(SPI_GETWORKAREA,0,(&mut work as *mut RECT).cast(),0);}
-        let height=442.min(((work.bottom-work.top-72)*96/dpi as i32).max(280));
+        let height=442.min(((work.bottom-work.top-72)*96/dpi as i32).max(340));
         for(control,bounds)in &self.controls{let mut bounds=*bounds;if *control==self.result{bounds.bottom=height-76;}else if bounds.top>=388{bounds.top=height-54;bounds.bottom=height-22;}unsafe{SendMessageW(*control,WM_SETFONT,fonts.fonts.ui as usize,1);SetWindowPos(*control,ptr::null_mut(),scale(bounds.left,dpi),scale(bounds.top,dpi),scale(bounds.right-bounds.left,dpi),scale(bounds.bottom-bounds.top,dpi),SWP_NOZORDER|SWP_NOACTIVATE);}}
         self.fonts=Some(fonts);let mut bounds=rect(0,0,scale(600,dpi),scale(height,dpi));unsafe{AdjustWindowRectExForDpi(&mut bounds,WS_CAPTION|WS_SYSMENU|DS_MODALFRAME as u32,0,WS_EX_DLGMODALFRAME,dpi);let mut parent=RECT::default();GetWindowRect(GetParent(self.window),&mut parent);let(width,height)=(bounds.right-bounds.left,bounds.bottom-bounds.top);let(left,top)=suggested.map(|r|(r.left,r.top)).unwrap_or(((parent.left+parent.right-width)/2,(parent.top+parent.bottom-height)/2));SetWindowPos(self.window,ptr::null_mut(),left,top,width,height,SWP_NOZORDER|SWP_NOACTIVATE);SendMessageW(self.window,DM_REPOSITION,0,0);}
     }
@@ -105,6 +118,7 @@ unsafe extern "system" fn procedure(window:HWND,message:u32,wp:WPARAM,lp:LPARAM)
                 let Ok(mut state)=unsafe{&*state}.try_borrow_mut()else{return 0;};if state.token!=wp as u64{return 0;}
                 while let Ok(event)=state.receiver.try_recv(){match event{
                     Event::Devices(Ok(devices))=>state.devices=devices,Event::Devices(Err(error))=>{state.output=format!("Cannot list connected devices: {error}\r\nEnter VID/PID manually.");set_text(state.result,&state.output);},
+                    Event::Skipped(epoch,index,reason)=>{if epoch!=state.query_epoch{continue;}state.output.push_str(&format!("String index {index}: {{ OTD: {reason}; skipped }}\r\n"));set_text(state.result,&state.output);},
                     Event::String(epoch,index,result)=>{if epoch!=state.query_epoch{continue;}let failed=result.is_err();let value=result.map(|value|serde_json::to_string(&value).unwrap_or(value)).unwrap_or_else(|error|format!("Error: {error}"));state.output.push_str(&format!("String index {index}: {value}\r\n"));if state.output.len()>crate::control::MAX_PROFILE_BYTES{state.cancel.store(true,Ordering::Release);state.output.push_str("Output exceeds 128 KiB; dump stopped.");state.set_busy(false);}set_text(state.result,&state.output);if failed&&state.dump&&unsafe{SendMessageW(state.reconnect,BM_GETCHECK,0,0)}==BST_CHECKED as isize{reconnect=state.resume.clone();break;}},
                     Event::Done(epoch)=>{if epoch==state.query_epoch{state.set_busy(false);state.resume=None;}},
                 }}
@@ -123,4 +137,17 @@ unsafe extern "system" fn procedure(window:HWND,message:u32,wp:WPARAM,lp:LPARAM)
 }
 pub(super) fn show(parent:HWND)->Result<(),String>{
     let state=RefCell::new(Dialog::new());let template=Template{dialog:DLGTEMPLATE{style:WS_POPUP|WS_CAPTION|WS_SYSMENU|DS_MODALFRAME as u32,dwExtendedStyle:WS_EX_DLGMODALFRAME,cx:360,cy:260,..Default::default()},menu:0,class:0,title:0};let result=unsafe{DialogBoxIndirectParamW(GetModuleHandleW(ptr::null()),&template.dialog,parent,Some(procedure),&state as *const RefCell<Dialog>as isize)};if let Some(error)=state.borrow_mut().error.take(){return Err(error);}if result== -1{return Err(std::io::Error::last_os_error().to_string());}Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::skipped_dump_string;
+
+    #[test]
+    fn bulk_dump_excludes_dfu_request_unless_explicitly_enabled() {
+        assert_eq!(skipped_dump_string(10429, 200, false), Some("Common DFU String"));
+        assert_eq!(skipped_dump_string(10429, 200, true), None);
+        assert_eq!(skipped_dump_string(10429, 199, false), None);
+        assert_eq!(skipped_dump_string(1386, 200, false), None);
+    }
 }

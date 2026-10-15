@@ -8,7 +8,7 @@ using OpenTabletDriver.Plugin.Tablet;
 
 namespace OpenTabletDriver.Devices
 {
-    public class DeviceReader<T> : IDisposable where T : IDeviceReport
+    public class DeviceReader<T> : IDisposable where T : class, IDeviceReport
     {
         public DeviceReader(IDeviceEndpoint endpoint, IReportParser<T> reportParser)
         {
@@ -44,7 +44,7 @@ namespace OpenTabletDriver.Devices
         public IReportParser<T> Parser { private set; get; }
 
         /// <summary>
-        /// Whether to make an extra cloned report with data left unmodified.
+        /// Whether to deliver the parsed report to raw observers before processing.
         /// </summary>
         public bool RawClone { set; get; }
 
@@ -105,19 +105,32 @@ namespace OpenTabletDriver.Devices
 
         protected void Main()
         {
+            byte[] data = null;
             try
             {
                 Connected = true;
                 while (Connected)
                 {
-                    var data = ReportStream.Read();
+                    data = ReportStream.Read();
                     using var hostedCallback = HostedReportScope?.Invoke();
-                    if (Parser.Parse(data) is T report)
-                        OnReport(report);
+                    T parsed;
+                    try
+                    {
+                        parsed = Parser.Parse(data);
+                    }
+                    catch (IndexOutOfRangeException ex)
+                    {
+                        Log.Write("Device", $"Unable to parse tablet data {FormatReport(data)}", LogLevel.Warning);
+                        Log.Exception(ex);
+                        parsed = new DeviceReport(data) as T;
+                    }
 
-                    // We create a clone of the report to avoid data being modified on the tablet debugger.
-                    if (RawClone && RawReport != null && Parser.Parse(data) is T debugReport)
-                        OnRawReport(debugReport);
+                    if (parsed is not { } report) continue;
+                    // Stateful parsers must advance once, even with the debugger open.
+                    // Raw observers snapshot before filters can mutate the report.
+                    if (RawClone)
+                        OnRawReport(report);
+                    OnReport(report);
                 }
             }
             catch (ObjectDisposedException dex)
@@ -135,6 +148,7 @@ namespace OpenTabletDriver.Devices
             catch (Exception ex)
             {
                 Log.Exception(ex);
+                Log.Write("Device", $"Last report read from tablet: {FormatReport(data)}");
             }
             finally
             {
@@ -142,6 +156,9 @@ namespace OpenTabletDriver.Devices
                 finally { hostedCompletion.TrySetResult(); }
             }
         }
+
+        private static string FormatReport(byte[] data) =>
+            data == null ? "<null>" : "{ " + BitConverter.ToString(data).Replace('-', ' ') + " }";
 
         protected virtual void OnReport(T report) => Report?.Invoke(this, report);
         protected virtual void OnRawReport(T report) => RawReport?.Invoke(this, report);

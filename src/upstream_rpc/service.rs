@@ -686,7 +686,7 @@ impl Service for Connection {
             "DownloadPlugin" => {
                 let metadata: crate::plugin_catalog::PluginMetadata = serde_json::from_value(protocol::argument(params, "metadata")?.clone())
                     .map_err(|error| Error::invalid(error.to_string()))?;
-                if !metadata.supports_driver() { return Err(Error::invalid("plugin does not support pinned OpenTabletDriver 0.6.7")); }
+                if !metadata.supports_driver() { return Err(Error::invalid("plugin does not support pinned OpenTabletDriver 0.6.8")); }
                 crate::plugin_catalog::install_with_cancel(&metadata, Some(&self.stop))?; Ok(json!(true))
             }
             "RequestDeviceString" => {

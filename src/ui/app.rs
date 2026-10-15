@@ -186,7 +186,7 @@ impl App {
                 tip_slider: null,
                 tip_field: null,
                 eraser_binding: null,
-                pen_policy: [null; 3],
+                pen_policy: [null; 4],
                 eraser_slider: null,
                 eraser_field: null,
                 log: null,
@@ -340,7 +340,7 @@ impl App {
         self.labels.insert(self.c.eraser_binding as isize, label);
         self.c.eraser_field = self.labeled_field(ID_ERASER_FIELD, "Eraser Threshold")?;
         self.c.eraser_slider = self.slider(ID_ERASER_SLIDER)?;
-        for (index, label) in ["Drag only", "Disable pressure", "Disable tilt"].iter().enumerate() {
+        for (index, label) in ["Drag only", "Disable pressure", "Disable tilt", "Disable rotation"].iter().enumerate() {
             self.c.pen_policy[index] = self.control("BUTTON", label, ID_PEN_POLICY + index as u16,
                 WS_TABSTOP | BS_AUTOCHECKBOX as u32, Kind::Check, Surface::Group)?;
         }
@@ -521,6 +521,7 @@ impl App {
             "Pen buttons require pressure to activate. Changes take effect with Save or Apply.",
             "Suppress pen pressure when the output supports pressure.",
             "Suppress pen tilt when the output supports tilt.",
+            "Suppress pen rotation when the output supports rotation.",
         ]) { self.add_tool(hwnd, 0, tip); }
         // Upstream's area editor tool tips.
         self.add_tool(self.hwnd, 1, "You can right click the area editor to set the area to a display, adjust alignment, or resize the area.");
@@ -666,7 +667,7 @@ impl App {
 
     pub(super) fn sync_pen(&mut self, skip: Option<HWND>) {
         let contact = &self.editor.profile.contact;
-        for (hwnd, checked) in self.c.pen_policy.into_iter().zip([contact.drag_only, contact.disable_pressure, contact.disable_tilt]) {
+        for (hwnd, checked) in self.c.pen_policy.into_iter().zip([contact.drag_only, contact.disable_pressure, contact.disable_tilt, contact.disable_rotation]) {
             unsafe { SendMessageW(hwnd, BM_SETCHECK, usize::from(checked), 0); }
         }
         for eraser in [false, true] {
@@ -1276,16 +1277,21 @@ impl App {
         aspect: Option<AspectSource>,
         skip: Option<HWND>,
     ) {
-        if self.prefs.lock_aspect_ratio
-            && let Some(source) = aspect
-        {
-            model::lock_aspect(&mut mapping, source);
-        }
         if self.prefs.lock_display_to_usable_area {
             model::constrain(&mut mapping.display, self.bounds(AreaKind::Display));
         }
-        if self.prefs.lock_tablet_to_usable_area {
-            model::constrain(&mut mapping.tablet, self.bounds(AreaKind::Tablet));
+        // A saved tablet specification is not a connected tablet. Display
+        // edits must not resize the pending tablet mapping while disconnected.
+        if let Some(view) = self.tablet_view {
+            if self.prefs.lock_tablet_to_usable_area {
+                model::constrain(&mut mapping.tablet, view.bounds);
+            }
+            if self.prefs.lock_aspect_ratio && let Some(source) = aspect {
+                model::lock_aspect(&mut mapping, source, view.bounds);
+            }
+            if self.prefs.lock_tablet_to_usable_area {
+                model::constrain(&mut mapping.tablet, view.bounds);
+            }
         }
         if mapping != self.editor.absolute(&self.displays) {
             self.editor.set_absolute(mapping);
@@ -1307,7 +1313,6 @@ impl App {
         };
         self.set_invalid(hwnd, false, None);
         let mut mapping = self.editor.absolute(&self.displays);
-        let previous = (mapping.display.width, mapping.display.height);
         let area = which.area_mut(&mut mapping);
         match index {
             0 => area.width = value,
@@ -1319,12 +1324,8 @@ impl App {
         let aspect = match (which, index) {
             (AreaKind::Tablet, 0) => Some(AspectSource::TabletWidth),
             (AreaKind::Tablet, 1) => Some(AspectSource::TabletHeight),
-            (AreaKind::Display, 0) => Some(AspectSource::DisplayWidth {
-                previous: previous.0,
-            }),
-            (AreaKind::Display, 1) => Some(AspectSource::DisplayHeight {
-                previous: previous.1,
-            }),
+            (AreaKind::Display, 0) => Some(AspectSource::DisplayWidth),
+            (AreaKind::Display, 1) => Some(AspectSource::DisplayHeight),
             _ => None,
         };
         self.commit_mapping(mapping, aspect, Some(hwnd));
@@ -1655,7 +1656,8 @@ impl App {
         let slot = match index {
             0 => &mut self.editor.profile.contact.drag_only,
             1 => &mut self.editor.profile.contact.disable_pressure,
-            _ => &mut self.editor.profile.contact.disable_tilt,
+            2 => &mut self.editor.profile.contact.disable_tilt,
+            _ => &mut self.editor.profile.contact.disable_rotation,
         };
         if *slot != value { *slot = value; self.mark_dirty(); }
     }
@@ -1840,7 +1842,6 @@ impl App {
         }
         let bounds = self.bounds(which);
         let mut mapping = self.editor.absolute(&self.displays);
-        let previous = (mapping.display.width, mapping.display.height);
         let mut aspect = None;
         {
             let area = which.area_mut(&mut mapping);
@@ -1860,7 +1861,8 @@ impl App {
                     (area.x, area.y) = bounds.center();
                 }
                 AREA_QUARTER => {
-                    (area.width, area.height) = (bounds.width() / 2.0, bounds.height() / 2.0)
+                    (area.width, area.height) = (bounds.width() / 2.0, bounds.height() / 2.0);
+                    (area.x, area.y) = bounds.center();
                 }
                 AREA_FLIP_H => model::flip_horizontal(area, bounds),
                 AREA_FLIP_V => model::flip_vertical(area, bounds),
@@ -1895,31 +1897,24 @@ impl App {
             AREA_CLIPPING => mapping.clipping ^= true,
             AREA_LIMITING => mapping.limiting ^= true,
             AREA_FULL | AREA_QUARTER if which == AreaKind::Tablet => {
-                if self.prefs.lock_aspect_ratio && command == AREA_FULL {
-                    let ratio = mapping.display.width / mapping.display.height;
-                    (mapping.tablet.width, mapping.tablet.height) =
-                        model::fit_aspect(bounds, ratio);
+                let (width, height) = if self.prefs.lock_aspect_ratio {
+                    otd_core::areas::fit_rotated_aspect(bounds, mapping.tablet.rotation,
+                        mapping.display.width / mapping.display.height)
                 } else {
-                    aspect = Some(AspectSource::TabletWidth);
-                }
+                    otd_core::areas::fit_rotated(bounds, mapping.tablet.rotation)
+                };
+                let divisor = if command == AREA_QUARTER { 2.0 } else { 1.0 };
+                (mapping.tablet.width, mapping.tablet.height) = (width / divisor, height / divisor);
+                (mapping.tablet.x, mapping.tablet.y) = bounds.center();
             }
-            _ if which == AreaKind::Display => {
-                aspect = Some(AspectSource::DisplayWidth {
-                    previous: previous.0,
-                });
+            AREA_FULL | AREA_QUARTER if which == AreaKind::Display => {
+                aspect = Some(AspectSource::DisplayArea);
             }
+            c if which == AreaKind::Display && c >= AREA_DISPLAY => aspect = Some(AspectSource::DisplayArea),
             _ => {}
         }
         if matches!(command, AREA_LOCK_USABLE | AREA_LOCK_ASPECT) {
             self.save_prefs();
-        }
-        if which == AreaKind::Display && aspect.is_some() && self.prefs.lock_aspect_ratio {
-            model::lock_aspect(
-                &mut mapping,
-                AspectSource::DisplayHeight {
-                    previous: previous.1,
-                },
-            );
         }
         self.commit_mapping(mapping, aspect, None);
     }
@@ -2558,6 +2553,10 @@ impl App {
                         Ok(()) => self.log(Level::Info, "Daemon", "The separate daemon process is available."),
                         Err(error) => self.log(Level::Error, "Daemon", error),
                     }
+                }
+                client::ClientEvent::VersionWarning(message) => {
+                    self.log(Level::Warning, "Version", &message);
+                    tray::balloon(self.hwnd, "Driver and panel versions", &message);
                 }
                 client::ClientEvent::CloseFinished(result) => {
                     match result {

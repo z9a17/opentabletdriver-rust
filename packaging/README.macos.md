@@ -3,7 +3,7 @@
 Use the archive for your Mac's processor, Intel x64 or Apple Silicon arm64.
 macOS 11 or newer is required. Extract it and open a terminal in its directory.
 
-Install the .NET 8 runtime for this CPU.
+Install the .NET 10 runtime for this CPU.
 Grant Input Monitoring and Accessibility permissions in System Settings, then
 start the original desktop frontend:
 
@@ -24,7 +24,7 @@ The pinned original Console client is included beside the native executable:
 ```
 
 Its commands connect to the original compatibility service on the daemon; use
-the original client only with that listener enabled. It runs through .NET 8 and
+the original client only with that listener enabled. It runs through .NET 10 and
 retains the original command names and API overloads. This does not establish
 runtime compatibility of every managed plugin or original client operation.
 

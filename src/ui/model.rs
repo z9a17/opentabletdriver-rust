@@ -27,7 +27,7 @@ use otd_core::spec::TabletSpec;
 pub const TABLET_WIDTH_MM: f64 = WIDTH_MM;
 
 pub use otd_core::areas::{
-    Align, AspectSource, Bounds, align, constrain, fit_aspect, flip_handedness, flip_horizontal,
+    Align, AspectSource, Bounds, align, constrain, flip_handedness, flip_horizontal,
     flip_vertical, lock_aspect,
 };
 
@@ -1557,17 +1557,18 @@ Minimum: 0, Maximum: 2"
         assert_eq!(area.x, 40.0);
         flip_handedness(&mut area, bounds);
         assert_eq!((area.x, area.y, area.rotation), (184.0, 128.0, 180.0));
-        assert_eq!(fit_aspect(bounds, 16.0 / 9.0), (224.0, 126.0));
+        assert_eq!(otd_core::areas::fit_aspect(bounds, 16.0 / 9.0), (224.0, 126.0));
         let mut mapping = simple_mapping(&Profile::default(), &displays());
         mapping.display.width = 2560.0;
         mapping.display.height = 1440.0;
         mapping.tablet.width = 160.0;
-        lock_aspect(&mut mapping, AspectSource::TabletWidth);
+        lock_aspect(&mut mapping, AspectSource::TabletWidth, bounds);
         assert_eq!(mapping.tablet.height, 90.0);
         mapping.display.width = 1280.0;
         lock_aspect(
             &mut mapping,
-            AspectSource::DisplayWidth { previous: 2560.0 },
+            AspectSource::DisplayWidth,
+            bounds,
         );
         assert_eq!(mapping.tablet.width, 80.0);
     }

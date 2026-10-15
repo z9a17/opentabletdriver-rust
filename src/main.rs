@@ -91,8 +91,8 @@ fn usage() -> &'static str {
 Without a profile argument, use the saved Rust driver.toml, then OTD settings if present.
 Original Console commands use the running daemon's JSON collection; explicit .toml load/save stays native.
 Native presets use the presets subcommands. Original stdio uses text; native-stdio uses JSON lines.
-The explicit original RPC listener defaults to OpenTabletDriver.Daemon and requires .NET 8+.
-Registered types/default constructors and managed plugins also require .NET 8+.
+The explicit original RPC listener defaults to OpenTabletDriver.Daemon and requires .NET 10+.
+Registered types/default constructors and managed plugins also require .NET 10+.
 OTD_RUST_PORTABLE_DIR selects portable storage and disables automatic OTD import.
 Capture does not inject cursor input. Plugin inspection/checks load trusted executable code."
 }

@@ -690,7 +690,7 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
                 }
             });
         }
-        id if (ID_PEN_POLICY..ID_PEN_POLICY + 3).contains(&id) => {
+        id if (ID_PEN_POLICY..ID_PEN_POLICY + 4).contains(&id) => {
             with_app(|app| app.pen_policy_toggled(usize::from(id - ID_PEN_POLICY)));
         }
         CMD_DEBUGGER => {

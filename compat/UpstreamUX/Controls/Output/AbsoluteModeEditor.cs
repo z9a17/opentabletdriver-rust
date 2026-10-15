@@ -29,7 +29,7 @@ namespace OpenTabletDriver.UX.Controls.Output
                         Control = new Group
                         {
                             Text = "Display",
-                            Content = displayAreaEditor = new DisplayAreaEditor
+                            Content = displayAreaEditor = new DisplayAreaEditor(() => HandleAspectRatioLock(displayAreaEditor, EventArgs.Empty))
                             {
                                 InvalidForegroundError = "Invalid display area.",
                                 Unit = "px"
@@ -52,6 +52,14 @@ namespace OpenTabletDriver.UX.Controls.Output
                     }
                 }
             };
+
+            // Both dimensions change as one operation; no intermediate aspect correction.
+            var tabletResize = tabletAreaEditor.ContextMenu.Items.GetSubmenu("Resize");
+            tabletResize.Items.Clear();
+            tabletResize.Items.AddRange(new Command[] {
+                new ActionCommand { MenuText = "Full area", Action = () => ResizeTabletArea(false) },
+                new ActionCommand { MenuText = "Quarter area", Action = () => ResizeTabletArea(true) }
+            });
 
             displayAreaEditor.AreaBinding.Bind(SettingsBinding.Child(c => c.Display));
             displayAreaEditor.LockToUsableAreaBinding.Bind(App.Current, c => c.Settings.LockUsableAreaDisplay);
@@ -96,8 +104,6 @@ namespace OpenTabletDriver.UX.Controls.Output
         private bool handlingArLock;
         private bool handlingForcedArConstraint;
         private bool handlingSettingsChanging;
-        private float? prevDisplayWidth;
-        private float? prevDisplayHeight;
         private DirectBinding<float> displayWidth;
         private DirectBinding<float> displayHeight;
         private DirectBinding<float> tabletWidth;
@@ -170,43 +176,51 @@ namespace OpenTabletDriver.UX.Controls.Output
 
         private void HandleAspectRatioLock(object sender, EventArgs e)
         {
-            if (!handlingArLock && !handlingSettingsChanging)
+            if (!tabletAreaEditor.LockAspectRatio) return;
+            if (handlingArLock || handlingSettingsChanging || displayAreaEditor.handlingDisplayAreaResize) return;
+
+            if (tabletAreaEditor.Area == null || displayAreaEditor.Area == null
+                || tabletAreaEditor.FullAreaBounds.Width <= 0 || tabletAreaEditor.FullAreaBounds.Height <= 0
+                || displayAreaEditor.Area.Width <= 0 || displayAreaEditor.Area.Height <= 0) return;
+
+            // Avoids looping
+            handlingArLock = true;
+
+            var displayRatio = displayAreaEditor.Area.Width / displayAreaEditor.Area.Height;
+
+            var tryHeightFirst = sender == tabletWidth || sender == displayHeight || sender == tabletAreaEditor || sender == displayAreaEditor && displayRatio <= 1;
+            var tryWidthFirst = sender == tabletHeight || sender == displayWidth || sender == displayAreaEditor && displayRatio > 1;
+
+            if (tryHeightFirst)
             {
-                // Avoids looping
-                handlingArLock = true;
-
-                if (sender == tabletWidth || sender == tabletAreaEditor)
+                var fullHeight = tabletAreaEditor.FullAreaBounds.Height;
+                var scaledHeight = displayHeight.DataValue / displayWidth.DataValue * tabletWidth.DataValue;
+                if (scaledHeight > fullHeight)
                 {
-                    var fullHeight = tabletAreaEditor.FullAreaBounds.Height;
-                    var scaledHeight = displayHeight.DataValue / displayWidth.DataValue * tabletWidth.DataValue;
-                    if (tabletAreaEditor.FullAreaCommandExecuting && scaledHeight > fullHeight)
-                    {
-                        tabletHeight.DataValue = fullHeight;
-                        tabletWidth.DataValue = displayWidth.DataValue / displayHeight.DataValue * fullHeight;
-                    }
-                    else
-                    {
-                        tabletHeight.DataValue = scaledHeight;
-                    }
+                    tabletHeight.DataValue = fullHeight;
+                    tabletWidth.DataValue = displayWidth.DataValue / displayHeight.DataValue * fullHeight;
                 }
-                else if (sender == tabletHeight)
+                else
                 {
-                    tabletWidth.DataValue = displayWidth.DataValue / displayHeight.DataValue * tabletHeight.DataValue;
+                    tabletHeight.DataValue = scaledHeight;
                 }
-                else if ((sender == displayWidth) && prevDisplayWidth is float prevWidth)
-                {
-                    tabletWidth.DataValue *= displayWidth.DataValue / prevWidth;
-                }
-                else if ((sender == displayHeight) && prevDisplayHeight is float prevHeight)
-                {
-                    tabletHeight.DataValue *= displayHeight.DataValue / prevHeight;
-                }
-
-                prevDisplayWidth = displayWidth.DataValue;
-                prevDisplayHeight = displayHeight.DataValue;
-
-                handlingArLock = false;
             }
+            else if (tryWidthFirst)
+            {
+                var fullWidth = tabletAreaEditor.FullAreaBounds.Width;
+                var scaledWidth = displayWidth.DataValue / displayHeight.DataValue * tabletHeight.DataValue;
+                if (scaledWidth > fullWidth)
+                {
+                    tabletWidth.DataValue = fullWidth;
+                    tabletHeight.DataValue = displayHeight.DataValue / displayWidth.DataValue * fullWidth;
+                }
+                else
+                {
+                    tabletWidth.DataValue = scaledWidth;
+                }
+            }
+
+            handlingArLock = false;
         }
 
         private void HandleTabletAreaConstraint(object sender, EventArgs args)
@@ -277,16 +291,86 @@ namespace OpenTabletDriver.UX.Controls.Output
             };
         }
 
+        private void ResizeTabletArea(bool quarter)
+        {
+            var area = tabletAreaEditor.Area;
+            var bounds = tabletAreaEditor.FullAreaBounds;
+            if (area == null || bounds.Width <= 0 || bounds.Height <= 0 || displayAreaEditor.Area == null) return;
+            var dimensions = new Vector2(bounds.Width, bounds.Height);
+            var ratio = displayAreaEditor.Area.Width / displayAreaEditor.Area.Height;
+            var size = tabletAreaEditor.LockAspectRatio
+                ? GetLargestRectInRotatedRectRatioLocked(dimensions, area.Rotation, ratio)
+                : GetLargestRectInRotatedRect(dimensions, area.Rotation);
+            handlingArLock = true;
+            handlingForcedArConstraint = true;
+            try
+            {
+                area.Width = size.X / (quarter ? 2 : 1);
+                area.Height = size.Y / (quarter ? 2 : 1);
+                area.X = bounds.Center.X;
+                area.Y = bounds.Center.Y;
+            }
+            finally { handlingArLock = false; handlingForcedArConstraint = false; }
+            HandleTabletAreaConstraint(tabletAreaEditor, EventArgs.Empty);
+        }
+
+        // RC #5102: maximal free rectangle inside rotated bounds.
+        public static Vector2 GetLargestRectInRotatedRect(Vector2 size, float rotation)
+        {
+            double width = size.X, height = size.Y;
+            if (width <= 0 || height <= 0 || !float.IsFinite(rotation)) return Vector2.Zero;
+            double angle = rotation * Math.PI / 180;
+            double sin = Math.Abs(Math.Sin(angle)), cos = Math.Abs(Math.Cos(angle));
+            bool widthIsLonger = width >= height;
+            double longer = Math.Max(width, height), shorter = Math.Min(width, height);
+            if (shorter <= 2 * sin * cos * longer || Math.Abs(sin - cos) < 1e-10)
+            {
+                double half = shorter / 2;
+                return widthIsLonger ? new Vector2((float)(half / sin), (float)(half / cos))
+                    : new Vector2((float)(half / cos), (float)(half / sin));
+            }
+            double cosTwo = cos * cos - sin * sin;
+            return new Vector2((float)((width * cos - height * sin) / cosTwo),
+                (float)((height * cos - width * sin) / cosTwo));
+        }
+
+        // Same edge intersections and four-decimal rounding as RC #5102,
+        // expressed without the infinite slopes at cardinal rotations.
+        public static Vector2 GetLargestRectInRotatedRectRatioLocked(Vector2 size, float rotation, float ratio)
+        {
+            if (size.X <= 0 || size.Y <= 0 || !float.IsFinite(rotation) || !float.IsFinite(ratio) || ratio <= 0) return Vector2.Zero;
+            double angle = rotation * Math.PI / 180;
+            double sin = Math.Abs(Math.Sin(angle)), cos = Math.Abs(Math.Cos(angle));
+            double height = Math.Min(size.X / (ratio * cos + sin), size.Y / (ratio * sin + cos));
+            double width = height * ratio;
+            if (Math.Abs(width - Math.Round(width)) <= Math.Abs(height - Math.Round(height)))
+            {
+                width = Math.Round(width, 4);
+                height = width / ratio;
+            }
+            else { height = Math.Round(height, 4); width = height * ratio; }
+            return new Vector2((float)width, (float)height);
+        }
+
         public class DisplayAreaEditor : AreaEditor
         {
-            public DisplayAreaEditor()
+            public bool handlingDisplayAreaResize;
+            private readonly Action triggerAspectRatioLock;
+            public DisplayAreaEditor(Action triggerAspectRatioLock)
             {
+                this.triggerAspectRatioLock = triggerAspectRatioLock;
                 this.ToolTip = "You can right click the area editor to set the area to a display, adjust alignment, or resize the area.";
             }
 
             protected override void CreateMenu()
             {
                 base.CreateMenu();
+                var resize = ContextMenu.Items.GetSubmenu("Resize");
+                resize.Items.Clear();
+                resize.Items.AddRange(new Command[] {
+                    new ActionCommand { MenuText = "Full area", Action = () => SetArea(FullAreaBounds.Width, FullAreaBounds.Height, FullAreaBounds.Center.X, FullAreaBounds.Center.Y) },
+                    new ActionCommand { MenuText = "Quarter area", Action = () => SetArea(FullAreaBounds.Width / 2, FullAreaBounds.Height / 2, FullAreaBounds.Center.X, FullAreaBounds.Center.Y) }
+                });
 
                 base.ContextMenu.Items.AddSeparator();
 
@@ -307,23 +391,31 @@ namespace OpenTabletDriver.UX.Controls.Output
                             MenuText = display.ToString(),
                             Action = () =>
                             {
-                                this.Area.Width = display.Width;
-                                this.Area.Height = display.Height;
+                                float x, y;
                                 if (display is IVirtualScreen virtualScreen)
                                 {
-                                    this.Area.X = virtualScreen.Width / 2;
-                                    this.Area.Y = virtualScreen.Height / 2;
+                                    x = virtualScreen.Width / 2;
+                                    y = virtualScreen.Height / 2;
                                 }
                                 else
                                 {
                                     virtualScreen = DesktopInterop.VirtualScreen;
-                                    this.Area.X = display.Position.X - xOffset + virtualScreen.Position.X + (display.Width / 2);
-                                    this.Area.Y = display.Position.Y - yOffset + virtualScreen.Position.Y + (display.Height / 2);
+                                    x = display.Position.X - xOffset + virtualScreen.Position.X + display.Width / 2;
+                                    y = display.Position.Y - yOffset + virtualScreen.Position.Y + display.Height / 2;
                                 }
+                                SetArea(display.Width, display.Height, x, y);
                             }
                         }
                     );
                 }
+            }
+            private void SetArea(float width, float height, float x, float y)
+            {
+                if (Area == null || width <= 0 || height <= 0) return;
+                handlingDisplayAreaResize = true;
+                try { Area.Width = width; Area.Height = height; Area.X = x; Area.Y = y; }
+                finally { handlingDisplayAreaResize = false; }
+                triggerAspectRatioLock();
             }
         }
 

@@ -13,7 +13,7 @@ namespace OpenTabletDriver.UX.Windows.Bindings
         public AdvancedBindingEditorDialog(PluginSettingStore currentBinding = null)
         {
             Title = "Advanced Binding Editor";
-            Result = currentBinding;
+            Result = currentBinding?.Clone();
             Padding = 5;
 
             this.Content = new StackLayout
@@ -72,7 +72,20 @@ namespace OpenTabletDriver.UX.Windows.Bindings
 
             bindingTypeDropDown.SelectedItemBinding.Convert(t => new PluginSettingStore(t)).Bind(settingStoreEditor.StoreBinding);
             bindingTypeDropDown.SelectedItem = currentBinding?.GetTypeInfo();
-            settingStoreEditor.Store = currentBinding;
+            settingStoreEditor.Store = currentBinding?.Clone();
+            var initialType = Result?.GetTypeInfo();
+            bool restoring = false;
+            settingStoreEditor.StoreChanged += (_, _) =>
+            {
+                // Returning to the original type restores its saved values;
+                // edits to other types cannot mutate the cancel snapshot.
+                if (!restoring && initialType != null && settingStoreEditor.Store?.GetTypeInfo() == initialType)
+                {
+                    restoring = true;
+                    try { settingStoreEditor.Store = Result.Clone(); }
+                    finally { restoring = false; }
+                }
+            };
         }
 
         private TypeDropDown<IBinding> bindingTypeDropDown;

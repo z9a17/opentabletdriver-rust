@@ -65,7 +65,7 @@ impl Collection {
     }
 }
 pub fn empty() -> Value {
-    json!({"Revision":"0.6.7.0","Profiles":[],"Tools":[],
+    json!({"Revision":"0.6.8.0","Profiles":[],"Tools":[],
         "LockUsableAreaDisplay":true,"LockUsableAreaTablet":true})
 }
 /// Preserve all unknown fields and disconnected rows. Do not construct or

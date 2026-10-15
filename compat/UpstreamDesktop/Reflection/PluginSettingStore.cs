@@ -178,5 +178,9 @@ namespace OpenTabletDriver.Desktop.Reflection
             foreach (var method in methods)
                 method.Invoke(obj, Array.Empty<object>());
         }
+        public PluginSettingStore Clone()
+        {
+            return JsonConvert.DeserializeObject<PluginSettingStore>(JsonConvert.SerializeObject(this));
+        }
     }
 }

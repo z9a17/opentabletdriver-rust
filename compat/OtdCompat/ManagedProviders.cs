@@ -119,7 +119,7 @@ sealed partial class ManagedProviders : IDriver, IDeviceConfigurationProvider, I
         add { lock (gate) { ObjectDisposedException.ThrowIf(disposed, this); tabletsChanged += value; StartMonitor(); } }
         remove { lock (gate) tabletsChanged -= value; }
     }
-    public event EventHandler<DevicesChangedEventArgs> DevicesChanged {
+    public event EventHandler<DevicesChangedEventArgs>? DevicesChanged {
         add { lock (gate) { ObjectDisposedException.ThrowIf(disposed, this); devicesChanged += value; StartMonitor(); } }
         remove { lock (gate) devicesChanged -= value; }
     }
@@ -261,7 +261,7 @@ sealed partial class ManagedProviders : IDriver, IDeviceConfigurationProvider, I
     sealed class HostedNativeHub(ManagedProviders owner) : IDeviceHub
     {
         public IEnumerable<IDeviceEndpoint> GetDevices() => owner.GetDevices();
-        public event EventHandler<DevicesChangedEventArgs> DevicesChanged {
+        public event EventHandler<DevicesChangedEventArgs>? DevicesChanged {
             add => owner.DevicesChanged += value; remove => owner.DevicesChanged -= value;
         }
     }
@@ -284,7 +284,7 @@ sealed class ProviderParser : IReportParser<IDeviceReport>, IDisposable
             services.Inject(selected.Type, value); parser = (IReportParser<IDeviceReport>)value; }
         catch { try { HostServices.DisposePlugin(value); } finally { try { services.Dispose(); } finally { if (generation != null) InstalledRegistry.Release(generation); } } throw; }
     }
-    public IDeviceReport Parse(byte[] data) { using var reportScope = ServiceClient.Report(); lock (gate) { ObjectDisposedException.ThrowIf(disposed, this); return parser.Parse(data); } }
+    public IDeviceReport? Parse(byte[] data) { using var reportScope = ServiceClient.Report(); lock (gate) { ObjectDisposedException.ThrowIf(disposed, this); return parser.Parse(data); } }
     public void Dispose() { lock (gate) { if (disposed) return; disposed = true;
         try { HostServices.DisposePlugin(parser); }
         finally { try { services.Dispose(); } finally { if (generation != null) InstalledRegistry.Release(generation); } }

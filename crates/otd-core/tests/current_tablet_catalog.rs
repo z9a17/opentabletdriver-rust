@@ -1,4 +1,4 @@
-//! Literal cases transcribed from the current 0.6.x parser source at a126f7b.
+//! Literal cases transcribed from v0.6.8-rc1 parser source at 126f4828.
 //! These are separate from the unchanged-family 0.6.7 differential corpus.
 use otd_core::{config::Profile, decoders::ReportParser, reports::*};
 use std::{path::Path, time::Duration};
@@ -65,6 +65,46 @@ fn xp_pen_status_bits_do_not_maximize_pressure() {
     raw[13] = 0;
     let (_, report) = parser("XP_Pen.XP_PenGen2ReportParser").parse(&raw, metadata()).unwrap();
     assert_eq!(report.values.pressure, Some(8191));
+}
+
+#[test]
+fn xp_pen_status_packets_cannot_press_auxiliary_buttons() {
+    for name in ["XP_Pen.XP_PenReportParser", "XP_Pen.XP_PenOffsetPressureReportParser", "XP_Pen.XP_PenGen2ReportParser"] {
+        let mut decoder = parser(name);
+        for flag in [0xb4, 0xf2, 0xf8] {
+            // Firmware notifications may be short or contain arbitrary payload.
+            for raw in [vec![8, flag], vec![8, flag, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]] {
+                let (kind, report) = decoder.parse(&raw, metadata()).unwrap();
+                assert_eq!(kind, ReportKind::Data);
+                assert_eq!(report.values, ReportValues::default());
+                assert_eq!(report.raw, raw.as_slice());
+            }
+        }
+        let (_, report) = decoder.parse(&[8, 0xf0, 1, 0, 0, 0, 0, 0], metadata()).unwrap();
+        assert_eq!(report.values.aux_buttons.unwrap().get(0), Some(true));
+    }
+}
+
+#[test]
+fn silvercrest_pen_wheel_buttons_and_signed_rotation_match_the_rc() {
+    let mut decoder = parser("Silvercrest.SilvercrestReportParser");
+    let (_, pen) = decoder.parse(&[2, 0x34, 0x12, 0x78, 0x56, 0x1c, 0xff, 3], metadata()).unwrap();
+    assert_eq!(pen.values.position, Some([4660.0, 22136.0]));
+    assert_eq!(pen.values.pressure, Some(1023));
+    assert_eq!(pen.values.pen_buttons.unwrap().bits(), 3);
+    for delta in [0xff, 0, 1, 0x80, 0x7f] {
+        let raw = [0x0a, 0x14, delta, 1];
+        let (_, wheel) = decoder.parse(&raw, metadata()).unwrap();
+        assert_eq!(wheel.values.relative_analog.unwrap().deltas.as_slice(), &[i32::from(delta as i8)]);
+        let buttons = wheel.values.aux_buttons.unwrap();
+        assert_eq!((buttons.get(0), buttons.get(1), buttons.get(2)), (Some(true), Some(false), Some(true)));
+        assert_eq!(wheel.values.wheel_buttons.unwrap().as_slice()[0].get(0), Some(true));
+    }
+    for raw in [&[][..], &[2, 0], &[0x0a, 0, 1]] {
+        assert!(decoder.parse(raw, metadata()).is_err());
+    }
+    let (_, unknown) = decoder.parse(&[0x05, 0xff], metadata()).unwrap();
+    assert_eq!(unknown.values, ReportValues::default());
 }
 
 #[test]

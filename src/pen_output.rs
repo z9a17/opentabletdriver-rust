@@ -1,5 +1,5 @@
 //! Pen output on Windows: a synthetic pen pointer device, which Windows Ink
-//! applications see with pressure, tilt, eraser and hover. Other applications
+//! applications see with pressure, tilt, rotation, eraser and hover. Other applications
 //! receive the pen's mouse emulation. Windows 10 1809 or later.
 //! <https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-injectsyntheticpointerinput>
 //!
@@ -28,7 +28,7 @@ use windows_sys::Win32::UI::Input::Pointer::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, PEN_FLAG_BARREL, PEN_FLAG_ERASER, PEN_FLAG_INVERTED, PEN_FLAG_NONE,
-    PEN_MASK_PRESSURE, PEN_MASK_TILT_X, PEN_MASK_TILT_Y, PT_PEN,
+    PEN_MASK_PRESSURE, PEN_MASK_ROTATION, PEN_MASK_TILT_X, PEN_MASK_TILT_Y, PT_PEN,
 };
 
 /// Windows pen pressure runs 0..=1024.
@@ -144,6 +144,7 @@ fn pen_info(
         y: packet.y.round() as i32,
     });
     let tilt = packet.and_then(|packet| packet.tilt);
+    let rotation = packet.and_then(|packet| packet.rotation).filter(|value| value.is_finite());
     POINTER_TYPE_INFO {
         r#type: PT_PEN,
         Anonymous: POINTER_TYPE_INFO_0 {
@@ -163,9 +164,11 @@ fn pen_info(
                         PEN_MASK_TILT_X | PEN_MASK_TILT_Y
                     } else {
                         0
-                    },
+                    }
+                    | if rotation.is_some() { PEN_MASK_ROTATION } else { 0 },
                 pressure: 0,
-                rotation: 0,
+                // POINTER_PEN_INFO represents clockwise twist in integer degrees 0..359.
+                rotation: rotation.map_or(0, |value| (value.clamp(0.0, 1.0) * 359.0).round() as u32),
                 tiltX: tilt.map_or(0, |tilt| tilt[0].round() as i32),
                 tiltY: tilt.map_or(0, |tilt| tilt[1].round() as i32),
             },
@@ -184,6 +187,7 @@ mod tests {
             y: 1079.4,
             pressure: 0.5,
             tilt: Some([12.4, -90.0]),
+            rotation: None,
             eraser,
             barrel: 0,
         }
@@ -192,6 +196,27 @@ mod tests {
     fn read(info: POINTER_TYPE_INFO) -> POINTER_PEN_INFO {
         assert_eq!(info.r#type, PT_PEN);
         unsafe { info.Anonymous.penInfo }
+    }
+
+    #[test]
+    fn rotation_output_windows_mask_and_range() {
+        // Pure packet construction: never creates or injects a pointer device.
+        for (rotation, expected) in [(-1.0, 0), (0.0, 0), (0.5, 180), (1.0, 359), (2.0, 359)] {
+            let pen = read(pointer_info(PenPacket {
+                rotation: Some(rotation),
+                ..packet(PenPhase::Hover, false)
+            }));
+            assert_eq!(pen.rotation, expected);
+            assert_eq!(pen.penMask & PEN_MASK_ROTATION, PEN_MASK_ROTATION);
+        }
+        for rotation in [None, Some(f32::NAN), Some(f32::INFINITY)] {
+            let pen = read(pointer_info(PenPacket {
+                rotation,
+                ..packet(PenPhase::Hover, false)
+            }));
+            assert_eq!(pen.penMask & PEN_MASK_ROTATION, 0);
+            assert_eq!(pen.rotation, 0);
+        }
     }
 
     #[test]

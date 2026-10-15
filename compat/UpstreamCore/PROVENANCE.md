@@ -1,11 +1,12 @@
-# OpenTabletDriver Core 0.6.7 source host
+# OpenTabletDriver Core: 0.6.7 baseline with selected 0.6.8-rc1 changes
 
 Copied from OpenTabletDriver/OpenTabletDriver revision
 736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver, LGPL-3.0-or-later.
-Public assembly name/version and public type/member signatures remain original.
+The original assembly name and namespaces remain; the local assembly version is
+now 0.6.8 and the target framework is net10.0. This is not a wholesale RC checkout.
 This helper assembly is source-modified; third-party plugin DLLs remain unchanged.
 
-The tracked upstream C# source differs from the pin in these host adaptations:
+The retained host adaptations to that baseline are:
 
 - `Driver.cs`: internal `PublishHostedTrees` publishes original concrete trees
   over selected native readers, hooks newly attached tree disconnections,
@@ -39,8 +40,27 @@ The tracked upstream C# source differs from the pin in these host adaptations:
   list accesses are synchronized. Hosted RPC retains the actual Instance until
   listener/client/provider retirement completes.
 
-Apart from those listed adaptations, tracked upstream C# source remains pinned.
-The local project retains the original net8.0/0.6.7 assembly identity, references
-exact upstream dependency versions and grants OtdCompat internal access. Hosted
-physical endpoint readers use native-owned tee streams; these host adaptations
-do not create a second physical handle or duplicate built-in physical hub.
+## Selective RC adoption
+
+Source reference: [OpenTabletDriver v0.6.8-rc1, `126f4828564abb673d39e97a093fd815aab335c2`](https://github.com/OpenTabletDriver/OpenTabletDriver/tree/126f4828564abb673d39e97a093fd815aab335c2).
+
+- `Driver.cs` caches each endpoint's string results, including null, for a
+  detection attempt, materializes matching results once, and checks the
+  `HID_REPORTS` predicate. A new detection attempt clears the string cache.
+- `Devices/DeviceReader.cs` parses once, delivers raw observers before ordinary
+  filtered observers, recovers from individual packet index failures and logs
+  raw report bytes, while retaining hosted callback/completion scopes.
+- `Devices/WinUSB/WinUSBInterface.cs` rejects Google fastboot devices as well as
+  the existing Quest exclusion before querying interfaces.
+- `Devices/HidSharpBackend/HidSharpEndpoint.cs` supplies explicit feature/output
+  initialization helpers with owned stream disposal for the new SDK members.
+
+The local project references the vendored RC `../UpstreamPlugin` SDK and exact
+Configurations/Native NuGet 0.6.8 packages. Both packages identify the same RC
+source commit above. The Plugin SDK has documented legacy-interface defaults;
+see [its provenance](../UpstreamPlugin/PROVENANCE.md). Other dependency versions
+are fixed in the project/lock files, rather than asserted unchanged from 0.6.7.
+The host retains internal access for OtdCompat and native-owned tee streams;
+these adaptations do not add a second physical reader. Existing copyrights and
+LGPL-3.0-or-later `LICENSE` are retained. Compilation, unchanged-plugin loading
+and live input are separate validation steps, not established by this record.

@@ -19,6 +19,7 @@ const RELATIVE_WHEEL: u32 = 2048;
 const WHEEL_BUTTONS: u32 = 4096;
 const TOUCH: u32 = 8192;
 const NATIVE_TIP: u32 = 16384;
+const ROTATION: u32 = 32768;
 
 pub(super) type CreateGraph = unsafe extern "C" fn(*const GraphNode, u32) -> *mut c_void;
 pub(super) type DispatchGraph =
@@ -79,6 +80,7 @@ pub struct GraphReport {
     wheel_counts: [u32; MAX_WHEELS],
     touch_ids: [u32; MAX_TOUCH_POINTS],
     touch_xy: [f32; MAX_TOUCH_POINTS * 2],
+    rotation: i32,
 }
 
 fn invalid(message: &'static str) -> io::Error {
@@ -93,7 +95,7 @@ impl GraphReport {
     pub fn managed_command(&self) -> io::Result<otd_core::plugins::ManagedCommand> {
         if self.version != 2 || self.size != std::mem::size_of::<Self>() as u32 || self.kind > 4 { return Err(invalid("invalid managed service command")); }
         Ok(otd_core::plugins::ManagedCommand { kind: self.kind, owner: self.reserved, x: self.x, y: self.y,
-            value: self.pressure, flags: self.flags, tilt: [self.tilt_x, self.tilt_y] })
+            value: self.pressure, flags: self.flags, tilt: [self.tilt_x, self.tilt_y], rotation: f32::from_bits(self.rotation as u32) })
     }
     pub fn new(kind: ReportKind, values: &ReportValues, raw: &[u8]) -> io::Result<Self> {
         if raw.len() > usize::from(u16::MAX) {
@@ -211,13 +213,14 @@ impl GraphReport {
             frame.flags |= NATIVE_TIP;
             frame.tip_switch = u32::from(tip);
         }
+        if let Some(rotation) = values.rotation { frame.flags |= ROTATION; frame.rotation = rotation; }
         Ok(frame)
     }
 
     pub fn decode(&self) -> io::Result<(ReportKind, ReportValues)> {
         if self.version != 2
             || self.size != std::mem::size_of::<Self>() as u32
-            || self.flags & !32767 != 0
+            || self.flags & !65535 != 0
             || self.kind > 1
             || self.absolute_count as usize > MAX_ANALOG_CHANNELS
             || self.relative_count as usize > MAX_ANALOG_CHANNELS
@@ -245,6 +248,7 @@ impl GraphReport {
         if has(TILT) {
             values.tilt = Some([self.tilt_x, self.tilt_y]);
         }
+        if has(ROTATION) { values.rotation = Some(self.rotation); }
         if has(PROXIMITY) {
             values.near_proximity = Some(self.near != 0);
             values.hover_distance = Some(self.distance);
@@ -434,8 +438,7 @@ impl Graph {
     /// unchanged until this call returns; the bridge copies it on entry.
     /// `scope` must be valid for every invocation of `callback`, which must not
     /// unwind or retain any frame/raw pointers after returning.
-    /// When `runs_builtins_in_host` is true, the caller must already have run
-    /// the built-in filters on the frame's report.
+    /// Admission invokes built-in filters after Internal elements.
     pub unsafe fn dispatch(
         &self,
         frame: &GraphReport,
@@ -448,11 +451,6 @@ impl Graph {
             return Err(io::Error::other(super::last_error()));
         }
         Ok(())
-    }
-    /// Whether `dispatch` expects the built-in filters to have run already.
-    /// The fused bridge skips the continuation that would run them.
-    pub fn runs_builtins_in_host(&self) -> bool {
-        super::bridge().is_ok_and(|bridge| bridge.dispatch_graph2.is_some())
     }
     pub fn failed_index(&self) -> Option<usize> {
         let bridge = super::bridge().ok()?;

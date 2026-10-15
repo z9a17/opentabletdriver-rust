@@ -103,7 +103,7 @@ fn tilt_byte(value: u8) -> f32 {
 
 fn extended_pen(raw: &[u8]) -> Result<ReportValues, ReportError> {
     Ok(ReportValues {
-        rotation: Some(i16::from_le_bytes([raw[15], raw[16]])),
+        rotation: Some(i32::from(i16::from_le_bytes([raw[15], raw[16]]))),
         position: Some([
             u32::from_le_bytes([raw[3], raw[4], raw[5], 0]) as f32,
             u32::from_le_bytes([raw[6], raw[7], raw[8], 0]) as f32,

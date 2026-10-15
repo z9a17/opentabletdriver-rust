@@ -11,7 +11,8 @@
 //! that is too short is an error here. Tilt keeps upstream's signedness.
 
 use super::{
-    Buttons, ReportEnvelope, ReportError, ReportKind, ReportMetadata, ReportValues, parse_tablet,
+    AnalogKind, Buttons, RelativeAnalog, RelativeAnalogReport, ReportEnvelope, ReportError,
+    ReportKind, ReportMetadata, ReportValues, WheelButtons, parse_tablet,
     xp_pen,
 };
 
@@ -245,6 +246,34 @@ pub fn parse_genius_v2(raw: &[u8], metadata: ReportMetadata) -> Parsed<'_> {
                     ..ReportValues::default()
                 },
             )
+        }
+        _ => data(raw, metadata, ReportValues::default()),
+    }
+}
+
+/// Silvercrest SGT 10.6 A2, upstream v0.6.8-rc1 / 126f4828:
+/// Parsers/Silvercrest/{SilvercrestReportParser,SilvercrestWheelReport}.cs.
+/// Its pen layout is GeniusTabletReport; wheel packets carry three mode
+/// buttons, a signed relative delta and the wheel's push button.
+pub fn parse_silvercrest(raw: &[u8], metadata: ReportMetadata) -> Parsed<'_> {
+    let Some(&id) = raw.first() else {
+        return Err(ReportError::Empty);
+    };
+    match id {
+        0x02 => parse_genius_v2(raw, metadata),
+        0x0a => {
+            require_length(raw, 4)?;
+            data(raw, metadata, ReportValues {
+                aux_buttons: Some(buttons(raw[1], &[2, 3, 4])?),
+                relative_analog: Some(RelativeAnalogReport {
+                    kind: AnalogKind::Wheel,
+                    deltas: RelativeAnalog::from_slice(&[i32::from(raw[2] as i8)])?,
+                }),
+                wheel_buttons: Some(WheelButtons::from_slice(&[
+                    Buttons::from_bits(u64::from(raw[3] == 1), 1)?,
+                ])?),
+                ..ReportValues::default()
+            })
         }
         _ => data(raw, metadata, ReportValues::default()),
     }

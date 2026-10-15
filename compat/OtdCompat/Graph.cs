@@ -30,6 +30,7 @@ public unsafe struct GraphReport
     public fixed uint WheelCounts[8];
     public fixed uint TouchIDs[32];
     public fixed float TouchXY[64];
+    public int Rotation;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -67,7 +68,7 @@ unsafe sealed class SynchronousGraph : IDisposable
 {
     internal const uint Position = 1, Tablet = 2, Eraser = 4, Tilt = 8, Proximity = 16,
         Tool = 32, Aux = 64, Mouse = 128, Absolute = 256, Relative = 512,
-        AbsoluteWheel = 1024, RelativeWheel = 2048, WheelButtons = 4096, Touch = 8192, NativeTip = 16384;
+        AbsoluteWheel = 1024, RelativeWheel = 2048, WheelButtons = 4096, Touch = 8192, NativeTip = 16384, Rotation = 32768;
     sealed class Node(GraphNode description, Action<IDeviceReport> emit)
     {
         public readonly uint Index = description.Index;
@@ -94,7 +95,8 @@ unsafe sealed class SynchronousGraph : IDisposable
             ClearPending();
             asyncFailure = null; asyncError = null;
         }
-        foreach (Node node in pre.Concat(post)) node.Filter?.AttachAsyncSink(null);
+        foreach (Node node in AllNodes()) node.Filter?.AttachAsyncSink(null);
+        admitted.Clear();
         if (sourceGeneration is { } generation)
         {
             sourceGeneration = null;
@@ -102,7 +104,10 @@ unsafe sealed class SynchronousGraph : IDisposable
         }
         else ManagedRetirements.Track(snapshots);
     }
-    readonly Node[] pre, post, timed;
+    readonly Node[] internalNodes, pre, post, timed;
+    IEnumerable<Node> AllNodes() => internalNodes.Concat(pre).Concat(post);
+    readonly ConditionalWeakTable<IDeviceReport, object> admitted = new();
+    static readonly object admissionMarker = new();
     readonly Action<IDeviceReport> transform, output;
     readonly int ownerThread = Environment.CurrentManagedThreadId;
     delegate* unmanaged[Cdecl]<nint, uint, uint, GraphReport*, int> callback;
@@ -151,11 +156,20 @@ unsafe sealed class SynchronousGraph : IDisposable
     }
     void Enqueue(Node node, IDeviceReport? report, Action<IDeviceReport>? resume = null)
     {
+        // An output mode may replay an already admitted report through its
+        // first ordinary element. Carry admission across the owned snapshot so
+        // that replay does not remap the same pressure a second time.
+        bool wasAdmitted = report != null && admitted.TryGetValue(report, out _);
         PendingEmission item;
         ulong ticket;
         lock (asyncGate)
         {
             if (disposed || outputFailure != null || node.Disabled || asyncFailure != null) return;
+            if (node.Filter?.Position == PipelinePosition.Internal)
+            {
+                AsyncError(node, "Asynchronous Internal emissions are unsupported: retained reports cannot re-enter pressure rewriting.");
+                return;
+            }
             // Reserve worst-case bytes before copying. Concurrent snapshots are
             // included in the same budget, and FIFO order is admission order.
             if (pendingCount == MaxPending || node.Pending == MaxNodePending
@@ -188,6 +202,7 @@ unsafe sealed class SynchronousGraph : IDisposable
                 if (inFlightBytes == 0) completed = inFlightCompletion;
                 if (disposed || item.Reservation != ticket) return;
                 if (error != null) { AsyncError(node, error); return; }
+                if (wasAdmitted && copy != null) admitted.Add(copy, admissionMarker);
                 pendingBytes += bytes;
                 item.Bytes = bytes; item.Report = copy; item.Ready = true;
             }
@@ -257,21 +272,22 @@ unsafe sealed class SynchronousGraph : IDisposable
     {
         if (nodes.Length > 32) throw new ArgumentException("The synchronous graph supports at most 32 filters.");
         GraphNode[] owned = nodes.ToArray();
-        if (owned.Any(node => node.Stage is not (1 or 2)))
+        if (owned.Any(node => node.Stage is not (1 or 2 or 4)))
             throw new ArgumentException("Invalid synchronous pipeline stage.");
         transform = Transform; output = Output;
         pre = CreateStage(owned, 1, transform);
         post = CreateStage(owned, 2, output);
-        timed = pre.Concat(post).Where(node => node.Filter is { HasTimers: true }).ToArray();
-        hasManagedFilters = pre.Concat(post).Any(node => node.Filter != null);
+        internalNodes = CreateStage(owned, 4, Admit);
+        timed = AllNodes().Where(node => node.Filter is { HasTimers: true }).ToArray();
+        hasManagedFilters = AllNodes().Any(node => node.Filter != null);
         Precompiler.Bridge();
-        foreach (Node node in pre.Concat(post)) node.Filter?.PrecompileConsume();
+        foreach (Node node in AllNodes()) node.Filter?.PrecompileConsume();
         if (captureRegistry) {
-            var generations = pre.Concat(post).Select(node => node.Filter?.SourceGeneration).Where(value => value != null).Distinct().ToArray();
+            var generations = AllNodes().Select(node => node.Filter?.SourceGeneration).Where(value => value != null).Distinct().ToArray();
             if (generations.Length > 1) throw new InvalidOperationException("Installed registry changed while constructing the report graph; retry startup.");
             sourceGeneration = InstalledRegistry.RetainForGraph(generations.FirstOrDefault());
         }
-        foreach (Node node in pre.Concat(post)) node.Filter?.AttachAsyncSink(report => Enqueue(node, report), ResetPending);
+        foreach (Node node in AllNodes()) node.Filter?.AttachAsyncSink(report => Enqueue(node, report), ResetPending);
     }
 
     Node[] CreateStage(GraphNode[] descriptions, uint stage, Action<IDeviceReport> end)
@@ -307,15 +323,13 @@ unsafe sealed class SynchronousGraph : IDisposable
         {
             if (hasManagedFilters || managedOutput != null) DrainPending();
             IDeviceReport report = originalReport ?? Import(input);
+            admitted.Remove(report); // A source parser may reuse its input object.
             // Host built-ins can modify position before the graph dispatch. The
             // concrete original report object remains the downstream identity.
             if (originalReport is IAbsolutePositionReport position && (input->Flags & Position) != 0)
                 position.Position = new Vector2(input->X, input->Y);
-            if (fused || Call(0, 0, report))
-            {
-                if (managedOutput is { } endpoint) { endpoint.Mode.Read(report); DrainOutput(); }
-                else Visit(pre, 0, report, transform);
-            }
+            if (managedOutput is { } endpoint) { endpoint.Mode.Read(report); DrainOutput(); }
+            else Visit(internalNodes, 0, report, Admit);
             return failed ? -1 : 0;
         }
         catch (GraphAbort) { return -1; }
@@ -404,18 +418,26 @@ unsafe sealed class SynchronousGraph : IDisposable
         readonly SynchronousGraph graph;
         readonly Node? node;
         readonly Action<IDeviceReport> queuedConsume;
+        readonly uint operation;
         public PipelinePosition Position { get; }
-        public ModeElement(SynchronousGraph graph, Node? node, PipelinePosition position)
+        public ModeElement(SynchronousGraph graph, Node? node, PipelinePosition position, uint operation = 5)
         {
-            this.graph = graph; this.node = node; Position = position;
+            this.graph = graph; this.node = node; Position = position; this.operation = operation;
             queuedConsume = Consume;
         }
-        public event Action<IDeviceReport> Emit = delegate { };
-        public void Continue(IDeviceReport report) => Emit(report);
-        public void Consume(IDeviceReport report)
+        public event Action<IDeviceReport?>? Emit = delegate { };
+        public void Continue(IDeviceReport report) => Emit?.Invoke(report);
+        public void Consume(IDeviceReport? report)
         {
+            if (report == null) return;
             if (!graph.running || Environment.CurrentManagedThreadId != graph.ownerThread)
             {
+                if (Position == PipelinePosition.Internal)
+                {
+                    lock (graph.asyncGate) graph.AsyncError(graph.modeSource,
+                        "Asynchronous output-mode entry through Internal filters is unsupported; resume after Internal elements.");
+                    return;
+                }
                 // This is an output mode's own pipeline handoff, before this
                 // element (distinct from filter Emit continuing after a node).
                 graph.Enqueue(graph.modeSource, report, queuedConsume);
@@ -424,11 +446,11 @@ unsafe sealed class SynchronousGraph : IDisposable
             if (graph.failed) throw new GraphAbort();
             if (node == null)
             {
-                if (graph.Call(5, 0, report)) { Emit(report); graph.DrainOutput(); }
+                if ((operation == 7 ? graph.Prepare(report) : graph.Call(operation, 0, report))) { Emit?.Invoke(report); graph.DrainOutput(); }
                 return;
             }
-            if (node.Disabled) { Emit(report); return; }
-            if (node.Filter == null) { if (graph.Call(1, node.Index, report)) Emit(report); return; }
+            if (node.Disabled) { Emit?.Invoke(report); return; }
+            if (node.Filter == null) { if (graph.Call(1, node.Index, report)) Emit?.Invoke(report); return; }
             try { node.Filter.ConsumeGraph(report, Continue); if (graph.failed) throw new GraphAbort(); }
             catch (GraphAbort) { throw; }
             catch (Exception error) { node.Disabled = true; graph.FailedIndex = checked((int)node.Index); graph.Error = error.GetBaseException().Message; graph.failed = true; throw new GraphAbort(); }
@@ -438,6 +460,8 @@ unsafe sealed class SynchronousGraph : IDisposable
     {
         if (managedOutput != null || running || Environment.CurrentManagedThreadId != ownerThread) throw new InvalidOperationException("Invalid output attachment lifecycle.");
         var elements = new List<IPositionedPipelineElement<IDeviceReport>>();
+        foreach (Node node in internalNodes) { var element = new ModeElement(this, node, PipelinePosition.Internal); elements.Add(element); node.ModeEmit = element.Continue; }
+        elements.Add(new ModeElement(this, null, PipelinePosition.PreTransform, 7));
         foreach (Node node in pre) { var element = new ModeElement(this, node, PipelinePosition.PreTransform); elements.Add(element); node.ModeEmit = element.Continue; }
         foreach (Node node in post) { var element = new ModeElement(this, node, PipelinePosition.PostTransform); elements.Add(element); node.ModeEmit = element.Continue; }
         elements.Add(new ModeElement(this, null, PipelinePosition.PostTransform));
@@ -461,7 +485,7 @@ unsafe sealed class SynchronousGraph : IDisposable
                 throw new GraphAbort();
             }
             GraphReport frame = new() { Version = 2, Size = (uint)sizeof(GraphReport), Kind = command.Kind, Reserved = command.Owner,
-                X = command.X, Y = command.Y, Pressure = command.Value, Flags = command.Flags, TiltX = command.TiltX, TiltY = command.TiltY };
+                X = command.X, Y = command.Y, Pressure = command.Value, Flags = command.Flags, TiltX = command.TiltX, TiltY = command.TiltY, Rotation = BitConverter.SingleToInt32Bits(command.Rotation) };
             if (callback(scope, 6, 0, &frame) != 0) { failed = true; throw new GraphAbort(); }
         }
     }
@@ -473,6 +497,17 @@ unsafe sealed class SynchronousGraph : IDisposable
         if (Call(2, 0, report)) Visit(post, 0, report, output);
     }
     void Output(IDeviceReport report) { Call(3, 0, report); }
+
+    bool Prepare(IDeviceReport report)
+    {
+        bool first = !admitted.TryGetValue(report, out _);
+        // Built-in ordinary filters still consume every Internal emission;
+        // only the pressure rewrite is skipped for a previously admitted object.
+        if (!Call(7, first ? 1u : 0u, report)) return false;
+        if (first) admitted.Add(report, admissionMarker);
+        return true;
+    }
+    void Admit(IDeviceReport report) { if (Prepare(report)) Visit(pre, 0, report, transform); }
 
     // Exact upstream PipelineManager subscription semantics: Emit immediately
     // consumes the same object downstream, then returns to the emitting filter.
@@ -527,7 +562,7 @@ unsafe sealed class SynchronousGraph : IDisposable
                 try { result = callback(scope, operation, index, &frame); }
                 finally { CurrentReport = previous; }
                 if (result < 0) { failed = true; throw new GraphAbort(); }
-                if (operation == 5 && (capabilities & Tablet) != 0)
+                if ((operation is 5 or 7) && (capabilities & Tablet) != 0)
                     Unsafe.As<ITabletReport>(report).Pressure = frame.Pressure;
                 var updatedPosition = new Vector2(frame.X, frame.Y);
                 // Transform (2, or 4 fused with output) moves the report itself,
@@ -545,8 +580,7 @@ unsafe sealed class SynchronousGraph : IDisposable
             if (currentEmitter >= 0)
             {
                 FailedIndex = currentEmitter;
-                foreach (Node node in pre) if (node.Index == (uint)currentEmitter) node.Disabled = true;
-                foreach (Node node in post) if (node.Index == (uint)currentEmitter) node.Disabled = true;
+                foreach (Node node in AllNodes()) if (node.Index == (uint)currentEmitter) node.Disabled = true;
             }
             failed = true;
             throw new GraphAbort();
@@ -587,6 +621,7 @@ unsafe sealed class SynchronousGraph : IDisposable
         if (report is ITabletReport) value |= Tablet;
         if (report is IEraserReport) value |= Eraser;
         if (report is ITiltReport) value |= Tilt;
+        if (report is IRotationReport) value |= Rotation;
         if (report is IProximityReport) value |= Proximity;
         if (report is IToolReport) value |= Tool;
         if (report is IAuxReport) value |= Aux;
@@ -627,6 +662,7 @@ unsafe sealed class SynchronousGraph : IDisposable
         if ((s & Eraser) != 0) { f.Flags |= Eraser; f.Eraser = Unsafe.As<IEraserReport>(report).Eraser ? 1u : 0; }
         if ((s & Tilt) != 0)
         { Vector2 value = Unsafe.As<ITiltReport>(report).Tilt; f.Flags |= Tilt; f.TiltX = value.X; f.TiltY = value.Y; }
+        if ((s & Rotation) != 0) { f.Flags |= Rotation; f.Rotation = Unsafe.As<IRotationReport>(report).Rotation; }
         if ((s & Proximity) != 0)
         {
             var proximity = Unsafe.As<IProximityReport>(report);
@@ -674,7 +710,7 @@ unsafe sealed class SynchronousGraph : IDisposable
         }
         if ((s & Touch) != 0)
         {
-            TouchPoint[] values = Unsafe.As<ITouchReport>(report).Touches ?? throw new InvalidOperationException("Null touch array.");
+            TouchPoint?[] values = Unsafe.As<ITouchReport>(report).Touches ?? throw new InvalidOperationException("Null touch array.");
             if (values.Length > 32) throw new NotSupportedException("Report exceeds 32 touches.");
             f.Flags |= Touch; f.TouchCount = (uint)values.Length;
             for (int i = 0; i < values.Length; i++) if (values[i] is { } point)
@@ -711,6 +747,9 @@ unsafe sealed class SynchronousGraph : IDisposable
             Position | Tablet | Eraser | Proximity => new EraserProximitySnapshot(),
             Position | Tablet | Tilt | Proximity => new TiltProximityPenSnapshot(),
             Position | Tablet | Eraser | Tilt | Proximity => new ProximityReport(),
+            Position | Tablet | Rotation => new RotationPenSnapshot(),
+            Position | Tablet | Tilt | Proximity | Rotation => new RotationTiltProximitySnapshot(),
+            Position | Tablet | Eraser | Tilt | Proximity | Rotation => new RotationProximityReport(),
             Position | Tablet | Eraser | Proximity | Aux => new AuxPenSnapshot(),
             Tool | Eraser | Proximity => new ToolSnapshot(),
             Position | Mouse => new MouseSnapshot(),
@@ -742,6 +781,7 @@ unsafe sealed class SynchronousGraph : IDisposable
             Unsafe.As<PenSnapshot>(report).NativeTipSwitch = (f->Flags & NativeTip) != 0 ? f->TipSwitch != 0 : null;
         if ((s & Eraser) != 0) Unsafe.As<IEraserReport>(report).Eraser = f->Eraser != 0;
         if ((s & Tilt) != 0) Unsafe.As<ITiltReport>(report).Tilt = new Vector2(f->TiltX, f->TiltY);
+        if ((s & Rotation) != 0) Unsafe.As<IRotationReport>(report).Rotation = f->Rotation;
         if ((s & Proximity) != 0)
         {
             var proximity = Unsafe.As<IProximityReport>(report);

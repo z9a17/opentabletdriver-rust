@@ -1144,6 +1144,11 @@ impl ControlHandler for Daemon {
         }
         match command {
             Command::Status => Ok(self.status()),
+            Command::BuildInfo => Ok(Reply::BuildInfo {
+                instance: self.instance.clone(),
+                version: env!("CARGO_PKG_VERSION").into(),
+                source_commit: env!("OTD_BUILD_COMMIT").into(),
+            }),
             Command::BeginUpdate { expected } => {
                 self.check_identity(&expected)?;
                 if self.update_reservation.is_some() { return Err(ControlError::new(ErrorCode::Busy, "another update is already reserved")); }

@@ -1,4 +1,4 @@
-//! Pen output: position, pressure, tilt and eraser with a hover/contact
+//! Pen output: position, pressure, tilt, rotation and eraser with a hover/contact
 //! lifecycle, for platform pen devices (Windows synthetic pointer injection,
 //! a Linux virtual tablet). OpenTabletDriver has no such mode in core on
 //! Windows; its Windows Ink plugin drives a VMulti digitizer. This follows
@@ -39,6 +39,8 @@ pub struct PenPacket {
     pub pressure: f32,
     /// Degrees in -90..=90, when the tablet reports tilt.
     pub tilt: Option<[f32; 2]>,
+    /// Rotation fraction of the configured raw range, 0..=1.
+    pub rotation: Option<f32>,
     /// The eraser end, or the pen tip inverted.
     pub eraser: bool,
     /// Barrel buttons held: bit 0 is barrel button 1, bit 2 is button 3.
@@ -63,6 +65,8 @@ pub struct PenSample {
     pub y: f64,
     pub pressure: Option<u32>,
     pub tilt: Option<[f32; 2]>,
+    /// Normalized rotation; absence preserves the last assigned orientation.
+    pub rotation: Option<f32>,
     pub eraser: bool,
     /// The tip (or eraser) binding holds contact.
     pub contact: bool,
@@ -120,12 +124,16 @@ impl PenOutput {
         } else {
             0.0
         };
+        let rotation = sample.rotation.filter(|value| value.is_finite())
+            .map(|value| value.clamp(0.0, 1.0))
+            .or_else(|| self.last.and_then(|last| last.rotation));
         let packet = |phase| PenPacket {
             phase,
             x: sample.x,
             y: sample.y,
             pressure,
             tilt,
+            rotation,
             eraser: sample.eraser,
             barrel: sample.barrel,
         };
@@ -161,6 +169,17 @@ impl PenOutput {
         pressure: Option<u32>,
         barrel: u8,
     ) -> io::Result<bool> {
+        self.contact_with_rotation(contact, pressure, barrel, None)
+    }
+
+    /// An orientation-only report updates the pen at its last accepted position.
+    pub fn contact_with_rotation(
+        &mut self,
+        contact: bool,
+        pressure: Option<u32>,
+        barrel: u8,
+        rotation: Option<f32>,
+    ) -> io::Result<bool> {
         let Some(last) = self.last else {
             return Ok(false);
         };
@@ -171,6 +190,7 @@ impl PenOutput {
                 (last.pressure > 0.0).then(|| (last.pressure * self.max_pressure).round() as u32)
             }),
             tilt: last.tilt,
+            rotation: rotation.or(last.rotation),
             eraser: last.eraser,
             contact,
             barrel,
@@ -208,7 +228,7 @@ impl PenOutput {
     }
 }
 
-/// Unchanged position, pressure, tilt, tool and barrel buttons.
+/// Unchanged position, pressure, tilt, rotation, tool and barrel buttons.
 fn same_state(last: PenPacket, next: PenPacket) -> bool {
     let contact = |phase| matches!(phase, PenPhase::Down | PenPhase::Contact);
     contact(last.phase) == contact(next.phase)
@@ -216,6 +236,7 @@ fn same_state(last: PenPacket, next: PenPacket) -> bool {
         && last.y == next.y
         && last.pressure == next.pressure
         && last.tilt == next.tilt
+        && last.rotation == next.rotation
         && last.eraser == next.eraser
         && last.barrel == next.barrel
 }
@@ -247,6 +268,7 @@ mod tests {
             y: 20.0,
             pressure: Some(pressure),
             tilt: Some([10.0, -120.0]),
+            rotation: None,
             eraser: false,
             contact,
             barrel: 0,
@@ -259,6 +281,24 @@ mod tests {
             .drain(..)
             .map(|packet| packet.phase)
             .collect()
+    }
+
+    #[test]
+    fn rotation_output_emits_orientation_changes_once_and_retains_absent_values() {
+        let (mut pen, packets) = output();
+        pen.sample(at(7.0, 0, false)).unwrap();
+        assert!(pen.sample(PenSample {
+            rotation: Some(0.25),
+            ..at(7.0, 0, false)
+        }).unwrap());
+        assert!(pen.contact_with_rotation(false, None, 0, Some(0.75)).unwrap());
+        assert!(!pen.contact_with_rotation(false, None, 0, Some(0.75)).unwrap());
+        assert!(!pen.contact(false, None, 0).unwrap());
+        assert!(!pen.sample(at(7.0, 0, false)).unwrap());
+        let sent = packets.borrow();
+        assert_eq!(sent.len(), 3);
+        assert_eq!(sent.iter().map(|packet| packet.rotation).collect::<Vec<_>>(), [None, Some(0.25), Some(0.75)]);
+        assert!(sent.iter().all(|packet| (packet.x, packet.y, packet.phase) == (7.0, 20.0, PenPhase::Hover)));
     }
 
     #[test]

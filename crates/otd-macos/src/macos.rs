@@ -692,6 +692,7 @@ impl Mouse {
         self.position_emitted=false;self.attributes.has_position=attributes.has_position;
         if let Some(pressure)=attributes.pressure{self.attributes.pressure=Some(pressure);}
         if let Some(tilt)=attributes.tilt{self.attributes.tilt=Some(tilt);}
+        if let Some(rotation)=attributes.rotation{self.attributes.rotation=Some(rotation);}
         if let Some(eraser)=attributes.eraser{self.attributes.eraser=Some(eraser);}
         if attributes.reset{self.contact_owner.release()?;self.contact=false;self.last_absolute=None;}
         Ok(())

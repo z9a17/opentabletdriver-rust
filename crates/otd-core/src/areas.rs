@@ -305,27 +305,136 @@ pub fn fit_aspect(bounds: Bounds, ratio: f64) -> (f64, f64) {
 pub enum AspectSource {
     TabletWidth,
     TabletHeight,
-    DisplayWidth { previous: f64 },
-    DisplayHeight { previous: f64 },
+    DisplayWidth,
+    DisplayHeight,
+    /// A completed Full/Quarter/Set to display operation, with both sizes set.
+    DisplayArea,
 }
 
 /// OpenTabletDriver's "Lock aspect ratio": the tablet area follows the
 /// display area's shape.
-pub fn lock_aspect(mapping: &mut OtdMapping, source: AspectSource) {
+pub fn lock_aspect(mapping: &mut OtdMapping, source: AspectSource, bounds: Bounds) {
     let display = mapping.display;
-    if !(display.width > 0.0 && display.height > 0.0) {
+    if !(display.width > 0.0 && display.height > 0.0) || !bounds.valid() {
         return;
     }
+    let ratio = display.width / display.height;
     let tablet = &mut mapping.tablet;
-    match source {
-        AspectSource::TabletWidth => tablet.height = display.height / display.width * tablet.width,
-        AspectSource::TabletHeight => tablet.width = display.width / display.height * tablet.height,
-        AspectSource::DisplayWidth { previous } if previous > 0.0 => {
-            tablet.width *= display.width / previous;
+    // RC #5101 derives the other dimension from the current ratio, rather
+    // than scaling by the previous display size. Clamp and recompute together
+    // so the subsequent usable-area constraint cannot break the ratio.
+    let height_first = matches!(source, AspectSource::TabletWidth | AspectSource::DisplayHeight)
+        || matches!(source, AspectSource::DisplayArea) && ratio <= 1.0;
+    if height_first {
+        tablet.height = tablet.width / ratio;
+        if tablet.height > bounds.height() {
+            tablet.height = bounds.height();
+            tablet.width = tablet.height * ratio;
         }
-        AspectSource::DisplayHeight { previous } if previous > 0.0 => {
-            tablet.height *= display.height / previous;
+    } else {
+        tablet.width = tablet.height * ratio;
+        if tablet.width > bounds.width() {
+            tablet.width = bounds.width();
+            tablet.height = tablet.width / ratio;
         }
-        _ => {}
+    }
+}
+
+/// RC #5102's largest freely sized rectangle at this rotation. The result
+/// describes the area before rotation, in the tablet's millimetres.
+pub fn fit_rotated(bounds: Bounds, rotation: f64) -> (f64, f64) {
+    let (width, height) = (bounds.width(), bounds.height());
+    if !bounds.valid() || !rotation.is_finite() { return (0.0, 0.0); }
+    let (sin, cos) = rotation.to_radians().sin_cos();
+    let (sin, cos) = (sin.abs(), cos.abs());
+    let width_is_longer = width >= height;
+    let (long, short) = if width_is_longer { (width, height) } else { (height, width) };
+    if short <= 2.0 * sin * cos * long || (sin - cos).abs() < 1e-10 {
+        let half = short / 2.0;
+        if width_is_longer { (half / sin, half / cos) } else { (half / cos, half / sin) }
+    } else {
+        let cos_two = cos * cos - sin * sin;
+        ((width * cos - height * sin) / cos_two, (height * cos - width * sin) / cos_two)
+    }
+}
+
+/// Largest rectangle with a fixed width/height ratio that fits after rotation.
+/// These two linear bounds are the same edge intersections used by RC #5102,
+/// without infinite slopes at 0/90/180/270 degrees.
+pub fn fit_rotated_aspect(bounds: Bounds, rotation: f64, ratio: f64) -> (f64, f64) {
+    if !bounds.valid() || !rotation.is_finite() || !ratio.is_finite() || ratio <= 0.0 {
+        return (0.0, 0.0);
+    }
+    let (sin, cos) = rotation.to_radians().sin_cos();
+    let (sin, cos) = (sin.abs(), cos.abs());
+    let height = (bounds.width() / (ratio * cos + sin))
+        .min(bounds.height() / (ratio * sin + cos));
+    let width = height * ratio;
+    // Upstream rounds whichever dimension is closer to a whole millimetre
+    // to four decimal places, then derives the other to preserve the ratio.
+    if (width - width.round()).abs() <= (height - height.round()).abs() {
+        let width = (width * 10_000.0).round_ties_even() / 10_000.0;
+        (width, width / ratio)
+    } else {
+        let height = (height * 10_000.0).round_ties_even() / 10_000.0;
+        (height * ratio, height)
+    }
+}
+
+#[cfg(test)]
+mod rc_area_tests {
+    use super::*;
+
+    fn mapping() -> OtdMapping {
+        OtdMapping {
+            display: OtdArea { width: 1920.0, height: 1080.0, x: 960.0, y: 540.0, rotation: 0.0 },
+            tablet: OtdArea { width: 200.0, height: 112.5, x: 112.0, y: 74.0, rotation: 0.0 },
+            clipping: true, limiting: false,
+        }
+    }
+
+    #[test]
+    fn changing_display_width_keeps_ratio_when_tablet_hits_its_width_limit() {
+        let mut mapping = mapping();
+        mapping.display.width = 3840.0;
+        lock_aspect(&mut mapping, AspectSource::DisplayWidth, Bounds::tablet());
+        constrain(&mut mapping.tablet, Bounds::tablet());
+        assert_eq!((mapping.tablet.width, mapping.tablet.height), (224.0, 63.0));
+    }
+
+    #[test]
+    fn complete_display_resize_uses_final_ratio_and_preserves_existing_scale() {
+        let mut mapping = mapping();
+        mapping.display.width /= 2.0;
+        mapping.display.height /= 2.0;
+        lock_aspect(&mut mapping, AspectSource::DisplayArea, Bounds::tablet());
+        assert_eq!((mapping.tablet.width, mapping.tablet.height), (200.0, 112.5));
+        mapping.display.width = 1080.0;
+        mapping.display.height = 1920.0;
+        lock_aspect(&mut mapping, AspectSource::DisplayArea, Bounds::tablet());
+        assert_eq!(mapping.tablet.height, 148.0);
+        assert_eq!(mapping.tablet.width, 83.25);
+    }
+
+    #[test]
+    fn rotated_full_area_and_extreme_portrait_ratios_fit_inside_tablet() {
+        let bounds = Bounds::tablet();
+        assert_eq!(fit_rotated_aspect(bounds, 90.0, 16.0 / 9.0), (148.0, 83.25));
+        for rotation in [0.0, 13.0, 45.0, 89.0, 90.0, 180.0, 270.0, -23.0] {
+            for ratio in [0.05, 9.0 / 16.0, 1.0, 16.0 / 9.0, 20.0] {
+                let (width, height) = fit_rotated_aspect(bounds, rotation, ratio);
+                assert!((width / height - ratio).abs() < 1e-10);
+                let area = OtdArea { width, height, rotation, x: 112.0, y: 74.0 };
+                let (x, y) = rotated_extent(&area);
+                // RC rounds one dimension to 0.0001 mm; allow that precision.
+                assert!(2.0 * x <= bounds.width() + 0.001, "{rotation} degrees, ratio {ratio}");
+                assert!(2.0 * y <= bounds.height() + 0.001, "{rotation} degrees, ratio {ratio}");
+            }
+            let (width, height) = fit_rotated(bounds, rotation);
+            let area = OtdArea { width, height, rotation, x: 112.0, y: 74.0 };
+            let (x, y) = rotated_extent(&area);
+            assert!(width > 0.0 && height > 0.0);
+            assert!(2.0 * x <= bounds.width() + 1e-9 && 2.0 * y <= bounds.height() + 1e-9);
+        }
     }
 }

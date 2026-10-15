@@ -122,7 +122,7 @@ fn v1_tablet(raw: &[u8], state: &mut IntuosV1State) -> Result<ReportValues, Repo
         rotation: state.rotation,
     };
     Ok(ReportValues {
-        rotation: Some(state.rotation),
+        rotation: Some(i32::from(state.rotation)),
         position: Some(high_resolution_position(raw)),
         tilt: Some(tilt),
         pressure: Some(pressure),
@@ -138,7 +138,7 @@ fn v1_rotation(raw: &[u8], state: &mut IntuosV1State) -> Result<ReportValues, Re
     let magnitude = (i16::from(raw[6]) << 2) | i16::from(raw[7] >> 6);
     state.rotation = if raw[7] & 0x20 != 0 { magnitude } else { -magnitude };
     Ok(ReportValues {
-        rotation: Some(state.rotation),
+        rotation: Some(i32::from(state.rotation)),
         position: Some(high_resolution_position(raw)),
         tilt: Some(state.tilt),
         pressure: Some(state.pressure),

@@ -14,6 +14,7 @@ pub const EV_ABS: u16 = 0x03;
 pub const SYN_REPORT: u16 = 0x00;
 pub const ABS_X: u16 = 0x00;
 pub const ABS_Y: u16 = 0x01;
+pub const ABS_Z: u16 = 0x02;
 pub const ABS_PRESSURE: u16 = 0x18;
 pub const ABS_TILT_X: u16 = 0x1a;
 pub const ABS_TILT_Y: u16 = 0x1b;
@@ -41,6 +42,7 @@ pub const BARREL_KEYS: [u16; 3] = [BTN_STYLUS, BTN_STYLUS2, BTN_STYLUS3];
 /// Subpixels per screen pixel on the position axes.
 pub const RESOLUTION: i32 = 1000;
 pub const MAX_PRESSURE: i32 = u16::MAX as i32;
+pub const MAX_ROTATION: i32 = u16::MAX as i32;
 pub const TILT_RANGE: (i32, i32) = (-64, 63);
 /// Tilt units per radian: about one per degree.
 pub const TILT_RESOLUTION: i32 = 57;
@@ -49,7 +51,7 @@ pub const TILT_RESOLUTION: i32 = 57;
 pub type Axis = (u16, i32, i32, i32);
 
 /// The absolute axes for a virtual screen.
-pub fn axes(screen: Rect) -> [Axis; 5] {
+pub fn axes(screen: Rect) -> [Axis; 6] {
     [
         (ABS_X, 0, screen.width().saturating_mul(RESOLUTION), 100_000),
         (
@@ -59,14 +61,15 @@ pub fn axes(screen: Rect) -> [Axis; 5] {
             100_000,
         ),
         (ABS_PRESSURE, 0, MAX_PRESSURE, 0),
+        (ABS_Z, 0, MAX_ROTATION, 0),
         (ABS_TILT_X, TILT_RANGE.0, TILT_RANGE.1, TILT_RESOLUTION),
         (ABS_TILT_Y, TILT_RANGE.0, TILT_RANGE.1, TILT_RESOLUTION),
     ]
 }
 
 /// The most events one packet needs: tool, X, Y, touch, pressure, two tilt
-/// axes, three barrel buttons and the sync.
-pub const FRAME_EVENTS: usize = 11;
+/// axes, rotation, three barrel buttons and the sync.
+pub const FRAME_EVENTS: usize = 12;
 
 /// A fixed-size evdev frame; one packet never needs more events.
 pub struct Frame {
@@ -128,6 +131,10 @@ pub fn frame(packet: PenPacket, screen: Rect) -> Frame {
             frame.push(EV_ABS, ABS_TILT_X, tilt(x));
             frame.push(EV_ABS, ABS_TILT_Y, tilt(y));
         }
+        if let Some(rotation) = packet.rotation.filter(|value| value.is_finite()) {
+            // Match RC EvdevVirtualTablet.SetRotation's normalized ABS_Z axis.
+            frame.push(EV_ABS, ABS_Z, (rotation.clamp(0.0, 1.0) * MAX_ROTATION as f32) as i32);
+        }
         // The kernel drops a key event that repeats a key's state.
         for (index, key) in BARREL_KEYS.into_iter().enumerate() {
             frame.push(EV_KEY, key, i32::from(packet.barrel & (1 << index) != 0));
@@ -155,9 +162,30 @@ mod tests {
             y: 2000.0,
             pressure: 0.5,
             tilt: Some([12.4, -80.0]),
+            rotation: None,
             eraser,
             barrel: 0,
         }
+    }
+
+    #[test]
+    fn rotation_output_linux_axis_fits_the_fixed_frame() {
+        assert!(axes(SCREEN).contains(&(ABS_Z, 0, MAX_ROTATION, 0)));
+        for (rotation, expected) in [(0.0, 0), (0.5, 32767), (1.0, 65535)] {
+            let frame = frame(PenPacket {
+                rotation: Some(rotation),
+                barrel: 0b111,
+                ..packet(PenPhase::Contact, false)
+            }, SCREEN);
+            assert_eq!(frame.count, FRAME_EVENTS);
+            assert!(frame.as_slice().contains(&(EV_ABS, ABS_Z, expected)));
+            assert_eq!(frame.as_slice().last(), Some(&(EV_SYN, SYN_REPORT, 0)));
+            for key in BARREL_KEYS {
+                assert!(frame.as_slice().contains(&(EV_KEY, key, 1)));
+            }
+        }
+        let absent = frame(packet(PenPhase::Hover, false), SCREEN);
+        assert!(!absent.as_slice().iter().any(|&(kind, code, _)| kind == EV_ABS && code == ABS_Z));
     }
 
     #[test]

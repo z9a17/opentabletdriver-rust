@@ -36,6 +36,7 @@ pub(super) enum ClientCommand {
 
 pub(super) enum ClientEvent {
     DaemonReady(Result<(), String>),
+    VersionWarning(String),
     Snapshot {
         status: ControlStatus,
         profile: Option<Box<Profile>>,
@@ -109,6 +110,19 @@ fn call(command: Command) -> io::Result<Reply> {
             error.code, error.message
         ))),
         reply => Ok(reply),
+    }
+}
+
+fn build_warning(instance: &str, reply: Option<&Reply>) -> Option<String> {
+    let panel = env!("CARGO_PKG_VERSION");
+    let panel_commit = env!("OTD_BUILD_COMMIT");
+    match reply {
+        Some(Reply::BuildInfo { instance: returned, version, source_commit }) if returned == instance => {
+            (version != panel || source_commit != panel_commit).then(|| format!(
+                "Panel {panel} ({}) is connected to daemon {version} ({}). Use matching builds when you next restart the driver.",
+                &panel_commit[..panel_commit.len().min(8)], source_commit.chars().take(8).collect::<String>()))
+        }
+        _ => Some(format!("This daemon cannot confirm its build version. Panel {panel} remains connected; use matching builds when you next restart the driver.")),
     }
 }
 
@@ -393,6 +407,7 @@ fn run(
     // preference must not undo an explicit stop/shutdown from another client.
     let mut observed_active = false;
     let mut watched: Option<Watched> = None;
+    let mut checked_build: Option<String> = None;
     let ready = crate::daemon::ensure_running(&stop).map(|status| {
         observed_active = active(status.state);
     });
@@ -455,6 +470,16 @@ fn run(
         })();
         match snapshot {
             Ok((status, profile, sessions)) => {
+                if checked_build.as_deref() != Some(&status.instance) {
+                    let reply = call(Command::BuildInfo);
+                    let warning = build_warning(&status.instance, reply.as_ref().ok());
+                    if let Some(message) = warning {
+                        if !publish(&events, ClientEvent::VersionWarning(message), window, &stop, true) {
+                            return;
+                        }
+                    }
+                    checked_build = Some(status.instance.clone());
+                }
                 if watched
                     .as_ref()
                     .is_none_or(|watched| watched.instance != status.instance)
@@ -685,6 +710,18 @@ mod tests {
     }
 
     #[test]
+    fn build_warning_accepts_matching_build_and_reports_old_or_mismatched_daemons() {
+        let matching = Reply::BuildInfo { instance: "one".into(),
+            version: env!("CARGO_PKG_VERSION").into(), source_commit: env!("OTD_BUILD_COMMIT").into() };
+        assert_eq!(build_warning("one", Some(&matching)), None);
+        assert!(build_warning("one", None).unwrap().contains("cannot confirm"));
+        assert!(build_warning("other-instance", Some(&matching)).unwrap().contains("cannot confirm"));
+        let older = Reply::BuildInfo { instance: "one".into(), version: "0.18.2".into(), source_commit: "old".into() };
+        let warning = build_warning("one", Some(&older)).unwrap();
+        assert!(warning.contains("0.18.2") && warning.contains("next restart"));
+    }
+
+    #[test]
     fn watched_instances_need_a_process_id_and_start_time() {
         assert!(Watched::open("not-an-instance").is_none());
         assert!(Watched::open("123").is_none());
@@ -706,6 +743,10 @@ mod tests {
         impl ControlHandler for Fake {
             fn poll(&mut self) {}
             fn handle(&mut self, command: Command) -> Result<Reply, ControlError> {
+                if matches!(command, Command::BuildInfo) {
+                    return Ok(Reply::BuildInfo { instance: "fake-idle-daemon".into(),
+                        version: env!("CARGO_PKG_VERSION").into(), source_commit: env!("OTD_BUILD_COMMIT").into() });
+                }
                 assert!(matches!(command, Command::Status), "attachment must not start or replace input");
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 Ok(Reply::Status { status: ControlStatus { instance: "fake-idle-daemon".into(),

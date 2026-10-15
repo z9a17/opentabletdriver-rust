@@ -2,10 +2,10 @@
 
   <PropertyGroup Label="Project Properties">
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <AssemblyName>OpenTabletDriver.Console</AssemblyName>
     <RootNamespace>OpenTabletDriver.Console</RootNamespace>
-    <Version>0.6.7</Version>
+    <Version>0.6.8</Version>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <ImplicitUsings>disable</ImplicitUsings>
     <Nullable>disable</Nullable>

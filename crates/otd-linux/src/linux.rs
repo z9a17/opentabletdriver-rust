@@ -114,7 +114,7 @@ pub fn enumerate(database: &Database) -> io::Result<Vec<Device>> {
             uses_report_ids: lengths.uses_report_ids,
             kernel_driver: fs::read_to_string(hid.join("uevent")).ok().and_then(|uevent| {
                 uevent.lines().find_map(|line| line.strip_prefix("DRIVER=").map(str::to_owned))
-            }).filter(|driver| matches!(driver.as_str(), "wacom" | "hid_uclogic")),
+            }).filter(|driver| matches!(driver.as_str(), "wacom" | "hid_uclogic" | "hid_digimend_uclogic")),
             string_errors,
         });
     }

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -24,11 +25,14 @@ namespace OpenTabletDriver.UX.Windows
                 Text = "Send Request",
             };
 
-            sendRequestButton.Click += async (_, _) => await SendRequestWithTimeout(stringIndexText.Text,
+            sendRequestButton.Click += async (_, _) => {
+                if (dumpInProgress) return;
+                await SendRequestWithTimeout(stringIndexText.Text,
                 (s) => deviceStringText.Text = s != null ? System.Text.Json.JsonEncodedText.Encode(s).ToString() : s,
                 (e) => MessageBox.Show($"Error: {e.Message}", MessageBoxType.Error),
                 () => MessageBox.Show(OperationTimedOut)
             );
+            };
 
             var sendRequestAllStringsButton = new Button
             {
@@ -64,6 +68,13 @@ namespace OpenTabletDriver.UX.Windows
                 ToolTip = "Pauses string dump with a pop-up box if any string dump errors occur",
             };
 
+            this.requestDangerous = new CheckBox
+            {
+                Text = "Dump potentially dangerous strings",
+                Checked = false,
+                ToolTip = "Requests strings known to disrupt the tablet or enter firmware update mode",
+            };
+
             this.vendorIdCtrl = new Group("VendorID", vendorIdText, Orientation.Horizontal, false);
             this.productIdCtrl = new Group("ProductID", productIdText, Orientation.Horizontal, false);
             this.stringIndexCtrl = new Group("String Index", stringIndexText, Orientation.Horizontal, false);
@@ -75,11 +86,16 @@ namespace OpenTabletDriver.UX.Windows
                 HorizontalContentAlignment = HorizontalAlignment.Stretch,
                 Items =
                 {
+                    new Label {
+                        Text = "Arbitrary string requests may disrupt the tablet or enter firmware update mode.",
+                        Wrap = WrapMode.Word,
+                    },
                     new Group("Connected HIDs", deviceDropDown, Orientation.Horizontal, false),
                     vendorIdCtrl,
                     productIdCtrl,
                     stringIndexCtrl,
                     requireReconnect,
+                    requestDangerous,
                     new StackLayoutItem(
                         new StackLayout
                         {
@@ -138,70 +154,106 @@ namespace OpenTabletDriver.UX.Windows
         private const string OperationTimedOut = "Operation timed-out";
         private const string OperationFailed = "Operation failed";
 
+        private static Dictionary<int, string> GetDangerousStrings(int vendorId) => vendorId switch
+        {
+            // XP-Pen, UGEE, XenceLabs: this request can enter the bootloader.
+            10429 => new() { [200] = "Common DFU String" },
+            _ => new(),
+        };
+        private bool dumpInProgress;
+
         private async void SendRequestAllStrings(object sender, EventArgs args)
         {
-            var validVid = int.TryParse(vendorIdText.Text, out var vid);
-            var validPid = int.TryParse(productIdText.Text, out var pid);
-            var matchingDeviceFound = (await App.Driver.Instance.GetDevices()).Any(x => x.ProductID == pid && x.VendorID == vid);
-            // ensure requested device exists/is found
-            if (!validVid || !validPid || !matchingDeviceFound)
+            if (dumpInProgress) return;
+            dumpInProgress = true;
+            // Freeze device IDs and opt-in before awaiting device enumeration.
+            vendorIdText.Enabled = productIdText.Enabled = stringIndexText.Enabled = deviceDropDown.Enabled = requestDangerous.Enabled = false;
+            try
             {
-                MessageBox.Show($"Error: Device not found", MessageBoxType.Error);
-                return;
-            }
+                if (!App.Driver.IsConnected)
+                {
+                    MessageBox.Show("Unable to send request without an active daemon", MessageBoxType.Error);
+                    return;
+                }
+                var validVid = int.TryParse(vendorIdText.Text, out var vid);
+                var validPid = int.TryParse(productIdText.Text, out var pid);
+                var matchingDeviceFound = (await App.Driver.Instance.GetDevices()).Any(x => x.ProductID == pid && x.VendorID == vid);
+                // ensure requested device exists/is found
+                if (!validVid || !validPid || !matchingDeviceFound)
+                {
+                    MessageBox.Show($"Error: Device not found", MessageBoxType.Error);
+                    return;
+                }
 
-            var stringDump = new StringBuilder();
-
-            for (int i = 1; i < 256; i++)
-            {
-                bool shouldRead = true;
-                await SendRequestWithTimeout($"{i}",
-                    (str) => stringDump.AppendLine($"{StringIndex} {i}: {str}"),
-                    (e) =>
+                var dangerousStrings = requestDangerous.Checked == true ? new Dictionary<int, string>() : GetDangerousStrings(vid);
+                var stringDump = new StringBuilder();
+                for (int i = 1; i < 256; i++)
+                {
+                    if (dangerousStrings.TryGetValue(i, out var reason))
                     {
-                        if ((bool)requireReconnect.Checked)
+                        stringDump.AppendLine($"{StringIndex} {i}: {{ OTD: {reason}; skipped }}");
+                        continue;
+                    }
+                    bool shouldRead = true;
+                    await SendRequestWithTimeout($"{i}",
+                        (str) => stringDump.AppendLine($"{StringIndex} {i}: {str}"),
+                        (e) =>
                         {
-                            shouldRead = AskReconnection(stringDump, i);
-                        }
-                        else
-                        {
-                            stringDump.AppendLine($"{StringIndex} {i}: {{ OTD: {OperationFailed} }}");
-                        }
-                    },
-                    () => stringDump.AppendLine($"{StringIndex} {i}: {{ OTD: {OperationTimedOut} }}")
+                            if ((bool)requireReconnect.Checked)
+                            {
+                                shouldRead = AskReconnection(stringDump, i);
+                            }
+                            else
+                            {
+                                stringDump.AppendLine($"{StringIndex} {i}: {{ OTD: {OperationFailed} }}");
+                            }
+                        },
+                        () => stringDump.AppendLine($"{StringIndex} {i}: {{ OTD: {OperationTimedOut} }}"),
+                        vid.ToString(), pid.ToString()
+                    );
+
+                    // If user pressed "Cancel" return immediately
+                    if (!shouldRead)
+                        return;
+                }
+
+                var fileDialog = Extensions.SaveFileDialog(
+                    "Save string dump to...",
+                    Eto.EtoEnvironment.GetFolderPath(Eto.EtoSpecialFolder.Documents),
+                    [new FileFilter("String dump", ".txt")],
+                    $"string-dump_{vendorIdText.Text}-{productIdText.Text}.txt"
                 );
 
-                // If user pressed "Cancel" return immediately
-                if (!shouldRead)
-                    return;
+                switch (fileDialog.ShowDialog(this))
+                {
+                    case DialogResult.Ok:
+                    case DialogResult.Yes:
+                        var file = new FileInfo(fileDialog.FileName);
+                        if (file.Exists)
+                            file.Delete();
+
+                        await using (var fs = file.OpenWrite())
+                        await using (var sw = new StreamWriter(fs))
+                            await sw.WriteAsync(stringDump);
+                        break;
+                }
             }
-
-            var fileDialog = Extensions.SaveFileDialog(
-                "Save string dump to...",
-                Eto.EtoEnvironment.GetFolderPath(Eto.EtoSpecialFolder.Documents),
-                [new FileFilter("String dump", ".txt")],
-                $"string-dump_{vendorIdText.Text}-{productIdText.Text}.txt"
-            );
-
-            switch (fileDialog.ShowDialog(this))
+            finally
             {
-                case DialogResult.Ok:
-                case DialogResult.Yes:
-                    var file = new FileInfo(fileDialog.FileName);
-                    if (file.Exists)
-                        file.Delete();
-
-                    await using (var fs = file.OpenWrite())
-                    await using (var sw = new StreamWriter(fs))
-                        await sw.WriteAsync(stringDump);
-                    break;
+                dumpInProgress = false;
+                vendorIdText.Enabled = productIdText.Enabled = stringIndexText.Enabled = deviceDropDown.Enabled = requestDangerous.Enabled = true;
             }
         }
 
-        private async Task SendRequestWithTimeout(string strIndex, Action<string> action, Action<Exception> error, Action timeoutAction)
+        private async Task SendRequestWithTimeout(string strIndex, Action<string> action, Action<Exception> error, Action timeoutAction, string vendorId = null, string productId = null)
         {
-            var strVid = vendorIdText.Text;
-            var strPid = productIdText.Text;
+            if (!App.Driver.IsConnected)
+            {
+                error(new InvalidOperationException("Unable to send request without an active daemon"));
+                return;
+            }
+            var strVid = vendorId ?? vendorIdText.Text;
+            var strPid = productId ?? productIdText.Text;
             var request = SendRequest(strIndex, strVid, strPid);
             var timeout = Task.Delay(TimeSpan.FromSeconds(5));
             var completed = await Task.WhenAny(request, timeout);
@@ -244,6 +296,6 @@ namespace OpenTabletDriver.UX.Windows
         private readonly NumericMaskedTextBox<ushort> vendorIdText, productIdText, stringIndexText;
         private readonly TextBox deviceStringText;
         private readonly Group vendorIdCtrl, productIdCtrl, stringIndexCtrl;
-        private readonly CheckBox requireReconnect;
+        private readonly CheckBox requireReconnect, requestDangerous;
     }
 }

@@ -1,3 +1,110 @@
+Current source and version record: OpenTabletDriver 0.6.8-rc1 adoption (2026-10-15)
+============================================================================
+
+OpenTabletDriver contributors' copyright and LGPL-3.0-or-later attribution
+continue to apply. All original copyright and license text below is retained.
+Older version labels and statements that source was unchanged describe the
+historical dependency snapshots from which these notices were collected; the
+current modified/source-built component provenance is recorded here and in
+compat/Upstream*/PROVENANCE.md, rather than inferred from those older labels.
+
+OpenTabletDriver Core, Desktop, UX, Console and GTK/macOS launchers use their
+original assembly names, net10.0 and assembly version 0.6.8. Core/Desktop/UX/
+Console retain the 0.6.7 source baseline at commit
+736003ed72c8bbb28033b039d5a0bb76c344145c plus documented host adaptations and
+selected RC changes; these are modified source builds.
+
+The actual Plugin SDK source is vendored in compat/UpstreamPlugin from
+v0.6.8-rc1, commit 126f4828564abb673d39e97a093fd815aab335c2, with documented
+legacy-interface default bodies and restored legacy API compatibility members.
+It retains assembly version 0.6.8 and is not an unchanged NuGet Plugin DLL.
+The exact Configurations and Native NuGet 0.6.8 packages identify this same
+upstream source commit. Corresponding upstream source:
+https://github.com/OpenTabletDriver/OpenTabletDriver/tree/126f4828564abb673d39e97a093fd815aab335c2
+
+The bridge/Desktop lock files currently resolve these non-project dependencies
+(copyright/license texts below remain applicable; lock files are authoritative):
+HidSharpCore 1.3.0
+JetBrains.Annotations 2025.2.4
+MessagePack 2.5.302
+MessagePack.Annotations 2.5.302
+Microsoft.Extensions.DependencyInjection 10.0.1
+Microsoft.Extensions.DependencyInjection.Abstractions 10.0.1
+Microsoft.NET.StringTools 18.4.0
+Microsoft.VisualStudio.Threading.Only 17.14.15
+Microsoft.VisualStudio.Validation 17.13.22
+Nerdbank.MessagePack 1.2.4
+Nerdbank.Streams 2.13.16
+Newtonsoft.Json 13.0.4
+Octokit 14.0.0
+OpenTabletDriver.Configurations 0.6.8
+OpenTabletDriver.Native 0.6.8
+PolyType 1.3.1
+SharpZipLib 1.4.2
+StreamJsonRpc 2.25.29
+System.CommandLine 2.0.1
+System.ComponentModel.Annotations 5.0.0
+WaylandNET 0.2.0
+
+Shared UX/macOS projects retain Eto 2.5.10 and GTK retains Eto.Platform.Gtk
+2.5.11. Project artwork overrides remain separately attributed in NOTICE.md.
+The .NET runtime is not redistributed; nethost notices below remain applicable.
+System.IO.Pipelines is supplied by the .NET 10 framework rather than copied as
+a separate runtime DLL; its older package notice remains in the retained text.
+
+New runtime dependency license notices:
+
+Nerdbank.MessagePack 1.2.4
+Author: Andrew Arnott
+Source commit: 5a6876da3e77b84a15e3a46d632abdce3c2b0529
+https://github.com/AArnott/Nerdbank.MessagePack/blob/5a6876da3e77b84a15e3a46d632abdce3c2b0529/LICENSE
+Copyright (c) Andrew Arnott (https://github.com/aarnott/)
+
+PolyType 1.3.1
+Author: Eirik Tsarpalis
+Source commit: a887f0b4e39438bbde1713ca18acb11d81b03512
+https://github.com/eiriktsarpalis/PolyType/blob/a887f0b4e39438bbde1713ca18acb11d81b03512/LICENSE
+Copyright (c) 2023 Eirik Tsarpalis
+
+Both packages use the MIT License, reproduced here:
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Nerdbank.MessagePack 1.2.4 THIRD-PARTY-NOTICES.TXT:
+3rd party notices
+==================
+
+Parts of this library came from other parties, also under the MIT license.
+Notices appear in the individual source files, but are also listed here for convenience.
+
+- https://github.com/MessagePack-CSharp/MessagePack-CSharp/
+- https://github.com/eiriktsarpalis/PolyType/
+
+Copyright for the original work that was copied down (or derived from) belong to the original authors, including:
+
+- Eirik Tsarpalis - https://github.com/eiriktsarpalis/
+- Yoshifumi Kawai - https://github.com/neuecc
+- pCYSl5EDgo - https://github.com/pCYSl5EDgo
+
+Retained third-party notices and historical component records follow:
+============================================================================
+
 OpenTabletDriver.Plugin 0.6.7
 OpenTabletDriver.Configurations 0.6.7
 Authors: InfinityGhost, X9VoiD and OpenTabletDriver contributors

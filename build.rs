@@ -34,6 +34,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let date=Command::new("git").args(["show","-s","--format=%cI","HEAD"]).output()?;
     if !date.status.success() { return Err("cannot determine build source date".into()); }
     println!("cargo:rustc-env=OTD_BUILD_DATE={}",String::from_utf8(date.stdout)?.trim());
+    let commit = Command::new("git").args(["rev-parse", "HEAD"]).output()?;
+    if !commit.status.success() { return Err("cannot determine build source commit".into()); }
+    println!("cargo:rustc-env=OTD_BUILD_COMMIT={}", String::from_utf8(commit.stdout)?.trim());
     for name in ["HEAD","refs/heads"] {
         let path=Command::new("git").args(["rev-parse","--git-path",name]).output()?;
         if !path.status.success(){return Err("cannot determine source reference path".into());}

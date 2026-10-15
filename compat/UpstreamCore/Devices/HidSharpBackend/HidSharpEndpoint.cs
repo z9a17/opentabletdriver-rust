@@ -37,6 +37,20 @@ namespace OpenTabletDriver.Devices.HidSharpBackend
         public IDeviceEndpointStream Open() => device.TryOpen(out var stream) ? new HidSharpEndpointStream(stream) : null;
         public string GetDeviceString(byte index) => device.GetDeviceString(index);
 
+        // These helpers own only the stream opened for this initialization.
+        // Always release it, including when the feature/output request fails.
+        public void OpenAndSendFeatureInit(byte[] initData)
+        {
+            using var stream = device.Open();
+            stream.SetFeature(initData);
+        }
+
+        public void OpenAndSendOutputInit(byte[] initData)
+        {
+            using var stream = device.Open();
+            stream.Write(initData);
+        }
+
         private static Dictionary<string, string> GetDeviceAttributes(string devicePath, Func<ReportDescriptor> reportDescriptorFunc)
         {
             var deviceAttributes = new Dictionary<string, string>();

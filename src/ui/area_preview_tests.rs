@@ -22,7 +22,7 @@ pub(in crate::ui) fn fixture(hwnd: HWND) -> App {
             filter_list: null, add_dotnet: null, add_native: null, remove_filter: null,
             filter_defaults: null, property_prev: null, property_next: null, filter_enable: null,
             tip_binding: null, tip_slider: null, tip_field: null,
-            eraser_binding: null, eraser_slider: null, eraser_field: null, pen_policy: [null; 3],
+            eraser_binding: null, eraser_slider: null, eraser_field: null, pen_policy: [null; 4],
             log: null, copy_log: null, clear_log: null, save: null, apply: null,
         },
         tab: Tab::Output, buttons_tab: Tab::Aux, return_tab: Tab::Output,
@@ -560,12 +560,12 @@ fn tool_mouse_and_pen_policy_editors_preserve_other_settings() {
     app.set_binding_action(BindingTarget::MouseScrollDown, ButtonAction::None);
     assert_eq!(text(scrolls[1]), "None");
     app.select_tab(Tab::Pen);
-    for index in 0..3 {
+    for index in 0..4 {
         unsafe { SendMessageW(app.c.pen_policy[index], BM_SETCHECK, BST_CHECKED as usize, 0); }
         app.pen_policy_toggled(index);
     }
     assert!(app.editor.profile.contact.drag_only && app.editor.profile.contact.disable_pressure
-        && app.editor.profile.contact.disable_tilt);
+        && app.editor.profile.contact.disable_tilt && app.editor.profile.contact.disable_rotation);
 
     // New tabs wrap instead of pushing essential navigation beyond small windows.
     for (name, palette) in [("dark", Palette::dark()), ("light", Palette::light()), ("contrast", Palette::high_contrast())] {
