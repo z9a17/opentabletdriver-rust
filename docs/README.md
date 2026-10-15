@@ -12,13 +12,14 @@ Use the [project README](../README.md) for downloads and quick setup. These guid
 
 ## Compatibility and evidence
 
-- [0.18 implementation scope and deferred acceptance](parity/IMPLEMENTATION_0.18.md): current source completion against pinned OpenTabletDriver 0.6.7; full verified parity remains open
-- [Tablet catalog coverage](TABLET_CATALOG_0.14.5.md): 357 configurations and 53 referenced parser names, with hardware limits
+- [0.6.8 RC adoption and deferred acceptance](parity/UPSTREAM_0.6.8_RC1.md), building on the [0.18 implementation scope](parity/IMPLEMENTATION_0.18.md); full verified parity remains open
+- [Current tablet catalog coverage](TABLET_CATALOG_0.6.8_RC1.md): 359 configurations and 54 referenced parser names, with hardware limits
 - [Historical hardware checklist and test scenarios](HARDWARE_VALIDATION.md): includes early-release limitations; use the current implementation report for present capability scope
 - [Evidence ledger](parity/EVIDENCE_LEDGER.md), [validation rules](parity/VALIDATION.md)
 - [Performance](PERFORMANCE.md), [input latency](INPUT_LATENCY.md): measurement methods and limits
 - [13 October reliability review](BACKGROUND_AUDIT_2026-10-13.md): reader fairness, shutdown, cleanup and offline regression results
-- [0.18.2 release notes](RELEASE_0.18.2.md), [0.18 implementation release](RELEASE_0.18.0.md), [porting status and historical release snapshots](PORTING_STATUS.md)
+- [15 October driver overhead review](PERFORMANCE_IMPROVEMENTS_2026-10-15.md): managed graph, snapshot, wake and debugger improvements with offline measurements
+- [0.19.0 release notes](RELEASE_0.19.0.md), [0.18.2 release notes](RELEASE_0.18.2.md), [porting status and historical release snapshots](PORTING_STATUS.md)
 
 ## Development
 
@@ -26,4 +27,4 @@ Use the [project README](../README.md) for downloads and quick setup. These guid
 - [Behavior contracts](parity/BEHAVIOR_CONTRACTS.md), [capability matrix](parity/CAPABILITY_MATRIX.md), [source inventory](parity/upstream-inventory.json)
 - [Release/package procedure](RELEASING.md), [Unix runtime implementation](parity/UNIX_RUNTIME_COMPLETION.md)
 
-The [0.17.1 audit](parity/PARITY_AUDIT_2026-10-07.md) and [original implementation plan](IMPLEMENTATION_PLAN.md) are historical. Consult the current 0.18 implementation report before treating an older missing-feature list as current.
+The [0.17.1 audit](parity/PARITY_AUDIT_2026-10-07.md) and [original implementation plan](IMPLEMENTATION_PLAN.md) are historical. Consult the RC adoption report and its 0.18 baseline before treating an older missing-feature list as current.

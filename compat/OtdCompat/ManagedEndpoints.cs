@@ -24,13 +24,30 @@ public struct ManagedCommand
     public float Rotation;
 }
 
-sealed class CommandQueue : IDisposable
+unsafe sealed class CommandQueue : IDisposable
 {
     readonly ManagedCommand[] entries = new ManagedCommand[256];
     readonly object gate = new();
+    readonly int ownerThread = Environment.CurrentManagedThreadId;
     int head, count;
     bool closed;
     string? failure;
+    delegate* unmanaged[Cdecl]<nint, void> wake;
+    nint wakeScope;
+    public bool HasWake { get { lock (gate) return wake != null; } }
+    void WakePending() { if (wake != null) wake(wakeScope); }
+    // Owner-thread service calls are drained before the next source wait.
+    // Only foreign producers need a kernel signal on the report hot path.
+    void WakeProducer() { if (Environment.CurrentManagedThreadId != ownerThread) WakePending(); }
+    internal void SetWake(delegate* unmanaged[Cdecl]<nint, void> callback, nint scope)
+    {
+        lock (gate)
+        {
+            if (callback != null) ObjectDisposedException.ThrowIf(closed, this);
+            wake = callback; wakeScope = scope;
+            if (count != 0 || failure != null) WakePending();
+        }
+    }
     public uint Owner { get; set; }
     public bool Pending { get { lock (gate) return count != 0 || failure != null; } }
     public int PendingCount { get { lock (gate) return failure != null ? Math.Max(1, count) : count; } }
@@ -40,9 +57,10 @@ sealed class CommandQueue : IDisposable
         {
             ObjectDisposedException.ThrowIf(closed, this);
             if (failure != null) throw new InvalidOperationException(failure);
-            if (count == entries.Length) { failure = "Managed input service queue exceeded 256 commands."; throw new InvalidOperationException(failure); }
+            if (count == entries.Length) { failure = "Managed input service queue exceeded 256 commands."; WakeProducer(); throw new InvalidOperationException(failure); }
             command.Owner = Owner;
             entries[(head + count++) % entries.Length] = command;
+            WakeProducer();
         }
     }
     public bool Take(out ManagedCommand command)
@@ -58,7 +76,7 @@ sealed class CommandQueue : IDisposable
             command = entries[head]; head = (head + 1) % entries.Length; count--; return true;
         }
     }
-    public void Dispose() { lock (gate) { closed = true; count = 0; } }
+    public void Dispose() { lock (gate) { closed = true; count = 0; wake = null; wakeScope = 0; } }
 }
 
 // Services target the already prepared native session, never an independent
@@ -213,14 +231,15 @@ abstract class EndpointInstance : IDisposable
         CheckThread();
         if (Queue.Pending) return 0;
         long now = Stopwatch.GetTimestamp(), best = -1;
-        foreach (var timer in timers.Where(timer => timer.Enabled))
+        foreach (var timer in timers)
         {
+            if (!timer.Enabled) continue;
             long micros = (long)Math.Min(long.MaxValue, Math.Max(0, (timer.Due - (double)now) * 1_000_000 / Stopwatch.Frequency));
             if (best < 0 || micros < best) best = micros;
         }
-        // A foreign plugin timer can enqueue owned input requests. A bounded
-        // poll discovers those without borrowing a live native callback.
-        return best < 0 ? 5000 : Math.Min(best, 5000);
+        // Foreign-thread timer Start/Stop/Interval has no change notifier.
+        // Keep bounded polling for timer-capable endpoints or an older host.
+        return Queue.HasWake && timers.Count == 0 && !services.ProviderInjected ? best : best < 0 ? 5000 : Math.Min(best, 5000);
     }
     public void Tick()
     {
@@ -361,6 +380,12 @@ public static unsafe partial class EntryPoints
     {
         try { return ((EndpointInstance)GCHandle.FromIntPtr(context).Target!).NextTickMicros(); }
         catch (Exception error) { lastError = error.GetBaseException().Message; return -3; }
+    }
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static int SetEndpointWake(nint context, delegate* unmanaged[Cdecl]<nint, void> callback, nint scope)
+    {
+        try { ((EndpointInstance)GCHandle.FromIntPtr(context).Target!).Queue.SetWake(callback, scope); return 0; }
+        catch (Exception error) { lastError = error.GetBaseException().Message; return -1; }
     }
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static int EndpointTick(nint context)

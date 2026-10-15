@@ -374,6 +374,8 @@ impl GraphReport {
 pub struct Graph {
     context: *mut c_void,
     timer_capability: bool,
+    #[cfg(windows)]
+    wake: Option<super::WakeTarget>,
 }
 impl Graph {
     pub(super) fn context_handle(&self) -> *mut c_void { self.context }
@@ -395,7 +397,17 @@ impl Graph {
         Ok(Self {
             context,
             timer_capability,
+            #[cfg(windows)]
+            wake: None,
         })
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn set_wake(&mut self, target: std::sync::Arc<crate::shared_devices::OutputGate>) -> Result<(), String> {
+        let Some(set) = super::bridge()?.set_graph_wake else { return Ok(()); };
+        if let Some(previous) = self.wake.take() { previous.detach(self.context, set); }
+        self.wake = Some(super::WakeTarget::install(self.context, set, target)?);
+        Ok(())
     }
 
     pub fn attach_output(&mut self, output: &super::endpoints::OutputSession) -> Result<(), String> {
@@ -460,6 +472,8 @@ impl Graph {
 impl Drop for Graph {
     fn drop(&mut self) {
         if let Ok(bridge) = super::bridge() {
+            #[cfg(windows)]
+            if let (Some(wake), Some(set)) = (self.wake.take(), bridge.set_graph_wake) { wake.detach(self.context, set); }
             unsafe { (bridge.destroy_graph)(self.context) };
         }
     }

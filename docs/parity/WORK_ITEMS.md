@@ -38,6 +38,13 @@ Add a separate machine-readable ledger keyed by CAP ID, configuration path/parse
 <a id="f04"></a>
 ### F04 - Build repeatable performance measurements
 
+**Current continuation (2026-10-15):** `perf/managed-overhead`, based on PR #91
+(`274427a`), claims the bounded optimization work described in
+[the implementation record](../PERFORMANCE_IMPROVEMENTS_2026-10-15.md). The root
+integrator owns shared contracts; delegated owners cover debugger reads,
+managed admission, snapshot caching and Windows managed-work wakeups. This
+continues F04/P03/P05/S05 without closing their hardware acceptance gates.
+
 **Depends on:** F02. **Start:** `crates/otd-core/src/test_alloc.rs`, existing replay/benchmark tests, new benchmark harness.
 
 Benchmark parsing, mapping, bindings, filter chains, native ABI calls, managed boundary calls, and OS output separately. Record sample rates, CPU/wall time, p50/p95/p99/max, allocation counts, memory, wakeups and environment. Add idle, one-device, multi-device, UI-open and managed-plugin modes. Reproduce current 0.4.0 and upstream results under the same workload before choosing a regression threshold.

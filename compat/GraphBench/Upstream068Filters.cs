@@ -53,3 +53,44 @@ public sealed class PressureOutput : OutputMode
     protected override IAbsolutePositionReport Transform(IAbsolutePositionReport report) => report;
     protected override void OnOutput(IDeviceReport report) => LastPressure = (report as ITabletReport)?.Pressure ?? 0;
 }
+
+[PluginName("Retained Internal admission fixture")]
+public sealed class RetainedInternalFilter : IPositionedPipelineElement<IDeviceReport>
+{
+    IDeviceReport? retained;
+    public PipelinePosition Position => PipelinePosition.Internal;
+    public event Action<IDeviceReport?>? Emit;
+    public void Consume(IDeviceReport? report)
+    {
+        if (retained != null) Emit?.Invoke(retained);
+        retained = report;
+        Emit?.Invoke(report); Emit?.Invoke(report);
+    }
+}
+
+// Deliberately repeats the entry before Prepare and later replays that same
+// admitted object on a foreign thread. OnOutput only records pressure.
+[PluginName("Replayed output admission fixture")]
+public sealed class ReplayPressureOutput : OutputMode
+{
+    IDeviceReport? retained;
+    public uint LastPressure { get; private set; }
+    public override void Read(IDeviceReport report)
+    {
+        retained = report;
+        base.Read(report); base.Read(report);
+    }
+    public void ReplayBackground()
+    {
+        Exception? failure = null;
+        var worker = new Thread(() => {
+            try { if (retained != null) base.Read(retained); }
+            catch (Exception error) { failure = error; }
+        });
+        worker.Start(); worker.Join();
+        if (failure != null) throw failure;
+    }
+    protected override Matrix3x2 CreateTransformationMatrix() => Matrix3x2.Identity;
+    protected override IAbsolutePositionReport Transform(IAbsolutePositionReport report) => report;
+    protected override void OnOutput(IDeviceReport report) => LastPressure = (report as ITabletReport)?.Pressure ?? 0;
+}

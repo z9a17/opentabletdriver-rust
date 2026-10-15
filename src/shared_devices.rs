@@ -34,6 +34,8 @@ pub fn live_source(value:&Value)->bool{
 /// One output authority for both collections of a physical tablet.
 pub struct OutputGate {
     desired: AtomicBool, acknowledged: AtomicBool, started: AtomicBool,
+    #[cfg(windows)]
+    managed_pending: AtomicBool,
     wake: Event, changed: std::sync::Condvar, gate: Mutex<()>,
 }
 // The event is a kernel synchronization object; state is atomic or locked.
@@ -42,10 +44,21 @@ unsafe impl Sync for OutputGate {}
 impl OutputGate {
     pub fn new() -> std::io::Result<Arc<Self>> { Ok(Arc::new(Self { desired: AtomicBool::new(true),
         acknowledged: AtomicBool::new(true), started: AtomicBool::new(false), wake: Event::create(true)?,
+        #[cfg(windows)]
+        managed_pending: AtomicBool::new(false),
         changed: std::sync::Condvar::new(),gate:Mutex::new(()) })) }
     pub fn native_enabled(&self) -> bool { self.desired.load(Ordering::Acquire) }
     pub fn transition_pending(&self)->bool {self.native_enabled()!=self.acknowledged.load(Ordering::Acquire)}
     pub fn signal(&self)->std::io::Result<()> {self.wake.signal()}
+    #[cfg(windows)]
+    pub(crate) fn signal_managed(&self) {
+        self.managed_pending.store(true, Ordering::Release);
+        let _ = self.wake.signal();
+    }
+    // Consume only after ResetEvent. A concurrent producer either joins this
+    // Idle return or leaves its event signaled for the next wait.
+    #[cfg(windows)]
+    pub(crate) fn take_managed_pending(&self) -> bool { self.managed_pending.swap(false, Ordering::AcqRel) }
     #[cfg(windows)]
     pub fn event(&self) -> windows_sys::Win32::Foundation::HANDLE { self.wake.raw() }
     #[cfg(unix)]
@@ -286,6 +299,36 @@ fn decode(data:&str)->Result<Vec<u8>,String>{
 #[cfg(all(test,windows))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn managed_wake_survives_reset_interleavings_and_distinguishes_reader_signals() {
+        use windows_sys::Win32::{Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT}, System::Threading::{ResetEvent, WaitForSingleObject}};
+        let gate = OutputGate::new().unwrap();
+        let reset = || assert_ne!(unsafe { ResetEvent(gate.event()) }, 0);
+        let signaled = || unsafe { WaitForSingleObject(gate.event(), 0) } == WAIT_OBJECT_0;
+        // Work arriving before the reset is retained in the independent flag.
+        gate.signal_managed(); reset();
+        assert!(gate.take_managed_pending());
+        assert!(!signaled());
+        // Work between reset and flag consumption joins the current Idle.
+        reset(); gate.signal_managed();
+        assert!(gate.take_managed_pending());
+        assert!(signaled());
+        reset(); assert!(!gate.take_managed_pending());
+        // Work after flag consumption leaves a wake for the next wait.
+        reset(); assert!(!gate.take_managed_pending());
+        gate.signal_managed(); assert!(signaled()); reset();
+        assert!(gate.take_managed_pending());
+        // Custom-reader notifications remain distinguishable and consumable.
+        gate.signal().unwrap(); assert!(signaled()); reset();
+        assert!(!gate.take_managed_pending());
+        assert!(!gate.transition_pending());
+        assert_eq!(unsafe { WaitForSingleObject(gate.event(), 0) }, WAIT_TIMEOUT);
+        // Many producers coalesce without keeping an empty queue spinning.
+        for _ in 0..100 { gate.signal_managed(); }
+        reset(); assert!(gate.take_managed_pending());
+        assert!(!gate.take_managed_pending()); assert!(!signaled());
+    }
 
     // An event handle is sufficient: these fixtures exercise only the owned
     // report ring, never device I/O, the global registry, or managed code.

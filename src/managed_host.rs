@@ -15,6 +15,27 @@ struct Published {
     sessions: Vec<(String, u64, Option<u64>)>,
     retained: Option<Arc<Value>>,
     projection_pending: bool,
+    dirty: bool,
+}
+// Only compare newly observed dynamic fields. The static configuration catalog
+// is never walked, cloned or serialized during an unchanged observer refresh.
+fn replace_if_changed<T: PartialEq>(slot: &mut T, value: T) -> bool {
+    if *slot == value { false } else { *slot = value; true }
+}
+impl Published {
+    fn publish_if_changed(&mut self) -> Result<(), String> {
+        if !self.dirty { return Ok(()); }
+        let version = self.snapshot.version.checked_add(1).ok_or("Managed snapshot version exhausted")?;
+        let publisher = self.publisher.as_ref().ok_or("Managed snapshot publisher unavailable")?;
+        let previous = self.snapshot.version;
+        self.snapshot.version = version;
+        if let Err(error) = publisher.publish_ref(&self.snapshot) {
+            self.snapshot.version = previous;
+            return Err(error);
+        }
+        self.dirty = false;
+        Ok(())
+    }
 }
 struct NativeBackend {
     stopped: Arc<AtomicBool>, published: Mutex<Published>, activated: AtomicBool,
@@ -48,6 +69,7 @@ impl Owner {
             publisher: None, snapshot: snapshot.clone(), last_devices: None, sessions: Vec::new(),
             retained: crate::upstream_rpc::cached_original_settings(),
             projection_pending: true,
+            dirty: false,
         }) });
         let host = Host::start(snapshot, backend.clone())?;
         backend.published.lock().map_err(|_| "Managed snapshot lock poisoned")?.publisher = Some(host.publisher());
@@ -116,13 +138,13 @@ fn call(command: Command) -> Result<Reply, String> {
 impl NativeBackend {
     fn prime_metadata(&self) -> Result<(), String> {
         let mut state = self.published.lock().map_err(|_| "Managed snapshot lock poisoned")?;
-        state.snapshot.devices = service_devices().ok().map(|devices| json!(devices));
+        let mut changed = replace_if_changed(&mut state.snapshot.devices, service_devices().ok().map(|devices| json!(devices)));
         state.last_devices = Some(Instant::now());
-        state.snapshot.settings = crate::upstream_rpc::initial_original_settings().ok();
-        state.snapshot.resynchronize = crate::upstream_rpc::original_resynchronize_epoch();
+        changed |= replace_if_changed(&mut state.snapshot.settings, crate::upstream_rpc::initial_original_settings().ok());
+        changed |= replace_if_changed(&mut state.snapshot.resynchronize, crate::upstream_rpc::original_resynchronize_epoch());
         state.projection_pending = true;
-        state.snapshot.version = state.snapshot.version.checked_add(1).ok_or("Managed snapshot version exhausted")?;
-        state.publisher.as_ref().ok_or("Managed snapshot publisher unavailable")?.publish(state.snapshot.clone())
+        state.dirty |= changed;
+        state.publish_if_changed()
     }
     fn refresh(&self, full_settings: bool, force_devices: bool, allow_projection: bool) -> Result<(), String> {
         if self.stopped.load(Ordering::Acquire) { return Err("Managed native owner is stopping".into()); }
@@ -130,10 +152,10 @@ impl NativeBackend {
         let status = match call(Command::Status)? { Reply::Status { status } => status, _ => return Err("Unexpected managed status reply".into()) };
         let sessions = match call(Command::ListDeviceSessions)? { Reply::DeviceSessions { sessions, .. } => sessions, _ => return Err("Unexpected managed device reply".into()) };
         let session_generations: Vec<_> = sessions.iter().map(|session| (session.id.clone(), session.device_generation, session.pending_generation)).collect();
-        state.snapshot.source_sessions = sessions.iter().map(|session| SourceSession {
+        let mut changed = replace_if_changed(&mut state.snapshot.source_sessions, sessions.iter().map(|session| SourceSession {
             id: session.id.clone(), tablet: session.tablet.clone(), device_generation: session.device_generation,
             pending_generation: session.pending_generation, connected: session.connected, state: session.state,
-        }).collect();
+        }).collect());
         let retained = crate::upstream_rpc::cached_original_settings();
         let retained_changed = match (&state.retained, &retained) {
             (Some(old), Some(new)) => !Arc::ptr_eq(old, new), (None, None) => false, _ => true,
@@ -143,27 +165,28 @@ impl NativeBackend {
         let tablets: Vec<_> = sessions.iter().filter(|session| session.connected).filter_map(|session| {
             session.opened_identifiers.as_ref().map(|identifiers| json!({"Properties": session.properties, "Identifiers": identifiers}))
         }).collect();
-        state.snapshot.tablets = Some(json!(tablets));
+        changed |= replace_if_changed(&mut state.snapshot.tablets, Some(json!(tablets)));
         if allow_projection && settings_changed {
-            state.snapshot.settings = crate::upstream_rpc::get_original_settings().ok();
+            changed |= replace_if_changed(&mut state.snapshot.settings, crate::upstream_rpc::get_original_settings().ok());
             state.projection_pending = false;
         }
         if force_devices || state.last_devices.is_none_or(|last| last.elapsed() >= Duration::from_secs(3)) {
-            state.snapshot.devices = service_devices().ok().map(|devices| json!(devices));
+            changed |= replace_if_changed(&mut state.snapshot.devices, service_devices().ok().map(|devices| json!(devices)));
             state.last_devices = Some(Instant::now());
         }
-        state.snapshot.logs = match call(Command::GetUpstreamLog) {
+        let logs = match call(Command::GetUpstreamLog) {
             Ok(Reply::UpstreamLog { messages, sequence, .. }) => {
-                state.snapshot.log_sequence = sequence;
+                changed |= replace_if_changed(&mut state.snapshot.log_sequence, sequence);
                 Some(json!(messages))
             }, _ => None,
         };
-        state.snapshot.resynchronize = crate::upstream_rpc::original_resynchronize_epoch();
-        state.snapshot.daemon_identity = Some(status.identity());
-        state.snapshot.version = state.snapshot.version.checked_add(1).ok_or("Managed snapshot version exhausted")?;
+        changed |= replace_if_changed(&mut state.snapshot.logs, logs);
+        changed |= replace_if_changed(&mut state.snapshot.resynchronize, crate::upstream_rpc::original_resynchronize_epoch());
+        changed |= replace_if_changed(&mut state.snapshot.daemon_identity, Some(status.identity()));
         state.sessions = session_generations;
         state.retained = crate::upstream_rpc::cached_original_settings();
-        state.publisher.as_ref().ok_or("Managed snapshot publisher unavailable")?.publish(state.snapshot.clone())
+        state.dirty |= changed;
+        state.publish_if_changed()
     }
     fn daemon(&self, request: &Request) -> Result<Value, String> {
         let method = request.payload["method"].as_str().ok_or("Managed daemon request needs method")?;
@@ -248,9 +271,9 @@ impl Backend for NativeBackend {
 pub fn publish_owned_devices() {
     if let Some(backend)=CURRENT.get_or_init(||Mutex::new(Weak::new())).lock().ok().and_then(|value|value.upgrade()) {
         if let Ok(devices)=service_devices() { if let Ok(mut state)=backend.published.lock() {
-            state.snapshot.devices=Some(json!(devices));
-            state.snapshot.version=state.snapshot.version.saturating_add(1);
-            if let Some(publisher)=&state.publisher {let _=publisher.publish(state.snapshot.clone());}
+            let changed=replace_if_changed(&mut state.snapshot.devices,Some(json!(devices)));
+            state.dirty |= changed;
+            let _=state.publish_if_changed();
         } }
     }
 }
@@ -277,4 +300,35 @@ fn service_devices()->Result<Vec<Value>,String> {
         }
     }
     Ok(devices)
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn source_state_changes_are_observed_without_generation_changes() {
+        let source = SourceSession { id: "offline-fixture".into(), tablet: "fixture".into(), device_generation: 7,
+            pending_generation: None, connected: true, state: crate::device_sessions::SessionState::Running };
+        let mut sessions = vec![source.clone()];
+        assert!(!replace_if_changed(&mut sessions, vec![source.clone()]));
+        let mut next = source.clone(); next.connected = false;
+        assert!(replace_if_changed(&mut sessions, vec![next]));
+        let mut next = source.clone(); next.state = crate::device_sessions::SessionState::Waiting;
+        assert!(replace_if_changed(&mut sessions, vec![next]));
+        let mut next = source; next.pending_generation = Some(8);
+        assert!(replace_if_changed(&mut sessions, vec![next]));
+    }
+
+    #[test]
+    fn unchanged_state_does_not_require_publication_and_failed_publication_retries() {
+        let mut state = Published { publisher: None, snapshot: Snapshot { version: 1, ..Snapshot::default() },
+            last_devices: None, sessions: Vec::new(), retained: None, projection_pending: false, dirty: false };
+        state.publish_if_changed().unwrap();
+        assert_eq!(state.snapshot.version, 1);
+        state.dirty = true;
+        assert!(state.publish_if_changed().is_err());
+        assert!(state.dirty);
+        assert_eq!(state.snapshot.version, 1);
+    }
 }

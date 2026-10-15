@@ -317,16 +317,30 @@ enum InputSelection {
     Report(InputEndpoint, bool),
     AuxiliaryFailed(io::Error),
     Pending,
+    Idle,
     Stopped,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InputPoll { Pending, Ready, Stopped }
 
+/// Ownership transitions precede input, while queued reports precede a
+/// managed-only Idle. In particular, a zero-time fairness poll must still
+/// consume input when foreign producers keep the managed wake signaled.
+fn select_awakened_input(managed: bool, transition: bool, stopped: bool,
+    select: impl FnOnce() -> io::Result<InputSelection>) -> io::Result<InputSelection> {
+    if stopped { return Ok(InputSelection::Stopped); }
+    if transition { return Ok(InputSelection::Idle); }
+    Ok(match select()? {
+        InputSelection::Pending if managed => InputSelection::Idle,
+        selection => selection,
+    })
+}
+
 /// Start the preferred endpoint first. A pending read may already be
 /// signaled, so check it before delivering an immediate fallback completion.
 /// The ordinary all-pending path performs no additional poll or wakeup.
-fn select_input<R: InputReader>(pen: &mut R, auxiliary: Option<&mut R>, preferred: InputEndpoint,
+fn select_input<R: InputReader>(pen: &mut R, auxiliary: Option<&mut R>, preferred: InputEndpoint, poll_pending: bool,
     mut poll: impl FnMut(&R) -> io::Result<InputPoll>,
     mut stopped: impl FnMut() -> io::Result<bool>) -> io::Result<InputSelection> {
     let (first, second) = match preferred {
@@ -334,6 +348,7 @@ fn select_input<R: InputReader>(pen: &mut R, auxiliary: Option<&mut R>, preferre
         InputEndpoint::Auxiliary => (auxiliary, Some(pen)),
     };
     let mut first = first;
+    let mut second = second;
     let start = |reader: &mut R, endpoint| match reader.start() {
         Ok(ready) => Ok(if ready { Some(InputSelection::Report(endpoint, true)) } else { None }),
         Err(error) if endpoint == InputEndpoint::Auxiliary => Ok(Some(InputSelection::AuxiliaryFailed(error))),
@@ -353,7 +368,7 @@ fn select_input<R: InputReader>(pen: &mut R, auxiliary: Option<&mut R>, preferre
     if let Some(reader) = first.as_deref_mut() && let Some(selection) = attempt(reader, preferred, true)? {
         return Ok(selection);
     }
-    if let Some(reader) = second && let Some(selection) = attempt(reader, preferred.other(), first.is_none())? {
+    if let Some(reader) = second.as_deref_mut() && let Some(selection) = attempt(reader, preferred.other(), first.is_none())? {
         if matches!(selection, InputSelection::Report(..)) && let Some(first) = first.as_deref() {
             match poll(first)? {
                 InputPoll::Stopped => return Ok(InputSelection::Stopped),
@@ -362,6 +377,20 @@ fn select_input<R: InputReader>(pen: &mut R, auxiliary: Option<&mut R>, preferre
             }
         }
         return Ok(selection);
+    }
+    // A managed wake may return Idle instead of reaching the kernel wait.
+    // Probe retained pending completions here so repeated managed signals
+    // cannot hide a ready input event. Ordinary input waits skip these probes.
+    if poll_pending {
+        for (reader, endpoint) in [(first.as_deref(), preferred), (second.as_deref(), preferred.other())] {
+            if let Some(reader) = reader {
+                match poll(reader)? {
+                    InputPoll::Stopped => return Ok(InputSelection::Stopped),
+                    InputPoll::Ready => return Ok(InputSelection::Report(endpoint, false)),
+                    InputPoll::Pending => {}
+                }
+            }
+        }
     }
     Ok(InputSelection::Pending)
 }
@@ -537,9 +566,9 @@ impl<'a> HidSource<'a> {
         }
     }
 
-    fn select_input(&mut self) -> io::Result<InputSelection> {
+    fn select_input(&mut self, poll_pending: bool) -> io::Result<InputSelection> {
         let stop = self.stop.raw();
-        select_input(&mut self.pen, self.auxiliary.as_mut(), self.preferred, |reader| {
+        select_input(&mut self.pen, self.auxiliary.as_mut(), self.preferred, poll_pending, |reader| {
             if reader.custom.is_some() {
                 return match unsafe { WaitForSingleObject(stop, 0) } {
                     WAIT_OBJECT_0 => Ok(InputPoll::Stopped),
@@ -628,14 +657,16 @@ impl ReportSource for HidSource<'_> {
     // Blocking waits and pending-read probes put Stop first; selection also
     // checks it before returning any immediate completion.
     fn next(&mut self, timeout: Duration) -> io::Result<Read<'_>> {
-        if unsafe { WaitForSingleObject(self.output.event(), 0) } == WAIT_OBJECT_0 {
+        let selection = if unsafe { WaitForSingleObject(self.output.event(), 0) } == WAIT_OBJECT_0 {
             if unsafe { ResetEvent(self.output.event()) } == 0 { return Err(io::Error::last_os_error()); }
-            if self.output.transition_pending() { return Ok(if self.stopped()? { Read::Ended } else { Read::Idle }); }
-        }
-        match self.select_input()? {
+            let managed = self.output.take_managed_pending();
+            select_awakened_input(managed, self.output.transition_pending(), self.stopped()?, || self.select_input(true))?
+        } else { self.select_input(false)? };
+        match selection {
             InputSelection::Report(endpoint, queued) => return self.input_report(endpoint, queued),
             InputSelection::AuxiliaryFailed(error) => return Ok(self.lose_auxiliary(error.to_string())),
             InputSelection::Stopped => { self.cancel(); return Ok(Read::Ended); }
+            InputSelection::Idle => return Ok(Read::Idle),
             InputSelection::Pending => {}
         }
         let until = Instant::now() + timeout;
@@ -684,14 +715,12 @@ impl ReportSource for HidSource<'_> {
             match result {
                 Ok(Some(index)) if index == output_change => {
                     if unsafe { ResetEvent(self.output.event()) } == 0 { return Err(io::Error::last_os_error()); }
-                    if self.stopped()? { self.cancel(); return Ok(Read::Ended); }
-                    if !self.output.transition_pending() {
-                        match self.select_input()? {
-                            InputSelection::Report(endpoint, queued) => return self.input_report(endpoint, queued),
-                            InputSelection::AuxiliaryFailed(error) => return Ok(self.lose_auxiliary(error.to_string())),
-                            InputSelection::Stopped => { self.cancel(); return Ok(Read::Ended); }
-                            InputSelection::Pending => {}
-                        }
+                    let managed = self.output.take_managed_pending();
+                    match select_awakened_input(managed, self.output.transition_pending(), self.stopped()?, || self.select_input(true))? {
+                        InputSelection::Report(endpoint, queued) => return self.input_report(endpoint, queued),
+                        InputSelection::AuxiliaryFailed(error) => return Ok(self.lose_auxiliary(error.to_string())),
+                        InputSelection::Stopped => { self.cancel(); return Ok(Read::Ended); }
+                        InputSelection::Pending | InputSelection::Idle => {}
                     }
                     return Ok(Read::Idle);
                 }
@@ -769,8 +798,9 @@ pub fn run(
     } else {
         None
     };
+    if matches!(mode, Mode::Driver) { plugins.set_managed_wake(source.output.clone()).map_err(io::Error::other)?; }
     let pen = pen_device(&profile, mode)?;
-    let actions = action_sink(mode)?.map(|sink| plugins.wrap_action_sink(&profile, &selected.configuration, sink))
+    let actions = action_sink(mode)?.map(|sink| plugins.wrap_action_sink_with_wake(&profile, &selected.configuration, sink, source.output.clone()))
         .transpose().map_err(io::Error::other)?;
     let result = otd_core::session::run_gated_with_endpoints(
         &mut source,
@@ -982,8 +1012,9 @@ impl<'a> PreparedSession<'a> {
         announce_auxiliary(&source, self.selected, status);
         let _priority = ReaderPriority::for_driver(crate::experimental::mmcss_enabled(), status);
         let mut output = SessionOutput::new()?;
+        plugins.set_managed_wake(source.output.clone()).map_err(io::Error::other)?;
         let pen = pen_device(&profile, Mode::Driver)?;
-        let actions = action_sink(Mode::Driver)?.map(|sink| plugins.wrap_action_sink(&profile, &self.selected.configuration, sink))
+        let actions = action_sink(Mode::Driver)?.map(|sink| plugins.wrap_action_sink_with_wake(&profile, &self.selected.configuration, sink, source.output.clone()))
             .transpose().map_err(io::Error::other)?;
         let actions = match (actions, preset) { (Some(sink), Some(request)) => Some(crate::binding_presets::wrap(sink, request, profile.binding_inhibit)), (sink, _) => sink };
         let identifiers = source.identifiers(self.selected);
@@ -1111,7 +1142,7 @@ mod input_fairness_tests {
 
     fn select(pen: &mut FakeReader, auxiliary: Option<&mut FakeReader>, preferred: InputEndpoint,
         stop: bool, polls: &Cell<usize>) -> io::Result<InputSelection> {
-        select_input(pen, auxiliary, preferred, |reader| {
+        select_input(pen, auxiliary, preferred, false, |reader| {
             polls.set(polls.get() + 1);
             Ok(if stop { InputPoll::Stopped } else if reader.signaled { InputPoll::Ready } else { InputPoll::Pending })
         }, || Ok(stop))
@@ -1140,6 +1171,102 @@ mod input_fairness_tests {
         assert_eq!(polls.get(), 0, "immediate preferred completions need no extra readiness probe");
         assert_eq!(pen.starts, 8);
         assert_eq!(auxiliary.starts, 8);
+    }
+
+    #[test]
+    fn repeated_managed_wakes_deliver_queued_input_before_idle() {
+        // Both HidSource wake paths use this selection before returning Idle.
+        // Model a foreign producer that signals on every zero-time input poll.
+        for signaled_pending in [false, true] {
+            let mut pen = FakeReader::new((0..8).map(Completion::Immediate));
+            let mut auxiliary = FakeReader::new((10..18).map(Completion::Immediate));
+            let mut preferred = InputEndpoint::Pen;
+            let polls = Cell::new(0);
+            for index in 0..16 {
+                if signaled_pending {
+                    let first = match preferred { InputEndpoint::Pen => &mut pen, InputEndpoint::Auxiliary => &mut auxiliary };
+                    assert!(first.start().unwrap());
+                    first.state = ReadState::Pending;
+                    first.signaled = true;
+                }
+                let selection = select_awakened_input(true, false, false,
+                    || select_input(&mut pen, Some(&mut auxiliary), preferred, true, |reader| {
+                        polls.set(polls.get() + 1);
+                        Ok(if reader.signaled { InputPoll::Ready } else { InputPoll::Pending })
+                    }, || Ok(false))).unwrap();
+                let (endpoint, value) = deliver(selection, &mut pen, &mut auxiliary, &mut preferred);
+                assert_eq!(endpoint, if index % 2 == 0 { InputEndpoint::Pen } else { InputEndpoint::Auxiliary });
+                assert_eq!(value, if index % 2 == 0 { index / 2 } else { 10 + index / 2 });
+            }
+            assert_eq!(pen.consumed, (0..8).collect::<Vec<_>>());
+            assert_eq!(auxiliary.consumed, (10..18).collect::<Vec<_>>());
+            assert!(matches!(select_awakened_input(true, false, false,
+                || select(&mut pen, Some(&mut auxiliary), preferred, false, &polls)).unwrap(), InputSelection::Idle));
+        }
+    }
+
+    #[test]
+    fn managed_wake_preserves_stop_transition_and_reader_notification_priority() {
+        assert!(matches!(select_awakened_input(true, true, true,
+            || panic!("Stop precedes input selection")).unwrap(), InputSelection::Stopped));
+        assert!(matches!(select_awakened_input(true, false, true,
+            || panic!("Stop precedes managed work")).unwrap(), InputSelection::Stopped));
+        assert!(matches!(select_awakened_input(true, true, false,
+            || panic!("Ownership transition precedes input selection")).unwrap(), InputSelection::Idle));
+        // An ordinary custom-reader signal still probes its reader and retains
+        // Pending for the normal initial wait when no report is ready yet.
+        assert!(matches!(select_awakened_input(false, false, false,
+            || Ok(InputSelection::Pending)).unwrap(), InputSelection::Pending));
+        assert!(matches!(select_awakened_input(true, false, false,
+            || Ok(InputSelection::AuxiliaryFailed(io::Error::other("removed")))).unwrap(), InputSelection::AuxiliaryFailed(_)));
+        let mut pen = FakeReader::new([Completion::Pending(1)]);
+        let mut auxiliary = FakeReader::new([Completion::Pending(10)]);
+        // Stop can arrive after the wake's initial Stop check, while retained
+        // read events are being polled. It still wins without consuming input.
+        assert!(matches!(select_input(&mut pen, Some(&mut auxiliary), InputEndpoint::Pen, true,
+            |_| Ok(InputPoll::Stopped), || Ok(false)).unwrap(), InputSelection::Stopped));
+        assert!(pen.consumed.is_empty() && auxiliary.consumed.is_empty());
+    }
+
+    #[test]
+    fn managed_wake_polls_both_pending_readers_and_consumes_each_completion_once() {
+        for first in [InputEndpoint::Pen, InputEndpoint::Auxiliary] {
+            for signal_both in [false, true] {
+                let mut pen = FakeReader::new([Completion::Pending(1)]);
+                let mut auxiliary = FakeReader::new([Completion::Pending(10)]);
+                assert!(!pen.start().unwrap());
+                assert!(!auxiliary.start().unwrap());
+                // In the single-signal case, readiness beats preference; in
+                // the dual-signal case the preferred endpoint wins first.
+                let mut preferred = if signal_both { first } else { first.other() };
+                match first { InputEndpoint::Pen => pen.signal(), InputEndpoint::Auxiliary => auxiliary.signal() }
+                if signal_both {
+                    match first.other() { InputEndpoint::Pen => pen.signal(), InputEndpoint::Auxiliary => auxiliary.signal() }
+                }
+                let select_wake = |pen: &mut FakeReader, auxiliary: &mut FakeReader, preferred| {
+                    select_awakened_input(true, false, false,
+                        || select_input(pen, Some(auxiliary), preferred, true,
+                            |reader| Ok(if reader.signaled { InputPoll::Ready } else { InputPoll::Pending }),
+                            || Ok(false))).unwrap()
+                };
+                let selected = select_wake(&mut pen, &mut auxiliary, preferred);
+                assert!(matches!(selected, InputSelection::Report(endpoint, false) if endpoint == first));
+                let expected = |endpoint| if endpoint == InputEndpoint::Pen { 1 } else { 10 };
+                assert_eq!(deliver(selected, &mut pen, &mut auxiliary, &mut preferred), (first, expected(first)));
+                assert_eq!(preferred, first.other());
+                if !signal_both {
+                    match preferred { InputEndpoint::Pen => pen.signal(), InputEndpoint::Auxiliary => auxiliary.signal() }
+                }
+                let selected = select_wake(&mut pen, &mut auxiliary, preferred);
+                assert!(matches!(selected, InputSelection::Report(endpoint, false) if endpoint == first.other()));
+                assert_eq!(deliver(selected, &mut pen, &mut auxiliary, &mut preferred), (first.other(), expected(first.other())));
+                assert_eq!(pen.consumed, [1]);
+                assert_eq!(auxiliary.consumed, [10]);
+                assert!(matches!(select_wake(&mut pen, &mut auxiliary, preferred), InputSelection::Idle));
+                assert_eq!(pen.consumed, [1]);
+                assert_eq!(auxiliary.consumed, [10]);
+            }
+        }
     }
 
     #[test]
@@ -1200,7 +1327,7 @@ mod input_fairness_tests {
     fn pending_preferred_poll_replaces_fallback_stop_only_check() {
         let mut pen = FakeReader::new([Completion::Immediate(1)]);
         let mut auxiliary = FakeReader::new([Completion::Pending(10)]);
-        let selection = select_input(&mut pen, Some(&mut auxiliary), InputEndpoint::Auxiliary,
+        let selection = select_input(&mut pen, Some(&mut auxiliary), InputEndpoint::Auxiliary, false,
             |_| Ok(InputPoll::Pending), || panic!("combined preferred/Stop poll already checks Stop")).unwrap();
         assert!(matches!(selection, InputSelection::Report(InputEndpoint::Pen, true)));
     }
@@ -1243,7 +1370,7 @@ mod input_fairness_tests {
         assert_eq!(select(&mut pen, Some(&mut auxiliary), InputEndpoint::Pen, false, &Cell::new(0)).unwrap_err().kind(), io::ErrorKind::BrokenPipe);
         let mut pen = FakeReader::new([Completion::Pending(1)]);
         let mut auxiliary = FakeReader::new([Completion::Immediate(10)]);
-        let error = select_input(&mut pen, Some(&mut auxiliary), InputEndpoint::Pen,
+        let error = select_input(&mut pen, Some(&mut auxiliary), InputEndpoint::Pen, false,
             |_| Err(io::Error::other("fake wait failure")), || Ok(false)).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Other);
         assert_eq!(pen.state, ReadState::Pending);

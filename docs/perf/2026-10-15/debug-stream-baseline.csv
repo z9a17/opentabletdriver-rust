@@ -1,0 +1,6 @@
+corpus_digest,8de207a46c7a85e8
+reports,median_ns_per_empty_read,allocations_per_read,allocated_bytes_per_read
+0,41.8,1.0,3584.0
+64,125.2,1.0,3584.0
+512,744.2,1.0,3584.0
+4096,5683.9,1.0,3584.0

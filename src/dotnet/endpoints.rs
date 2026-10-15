@@ -23,6 +23,7 @@ type Attach = unsafe extern "C" fn(*mut c_void, *mut c_void) -> i32;
 pub(super) struct Api {
     create_binding: Create, create_output: Create, reports: Reports, set: Set,
     release: Release, drain: Drain, next: Next, tick: Tick, destroy: Destroy, attach: Attach,
+    set_wake: Option<super::SetWake>,
 }
 impl Api {
     pub(super) fn load(entry: &impl Fn(&str) -> Result<*mut c_void, String>) -> Result<Self, String> {
@@ -35,10 +36,18 @@ impl Api {
             next: unsafe { std::mem::transmute::<*mut c_void, Next>(entry("EndpointNextTick")?) },
             tick: unsafe { std::mem::transmute::<*mut c_void, Tick>(entry("EndpointTick")?) },
             destroy: unsafe { std::mem::transmute::<*mut c_void, Destroy>(entry("DestroyEndpoint")?) },
-            attach: unsafe { std::mem::transmute::<*mut c_void, Attach>(entry("AttachOutput")?) } })
+            attach: unsafe { std::mem::transmute::<*mut c_void, Attach>(entry("AttachOutput")?) },
+            set_wake: entry("SetEndpointWake").ok().map(|entry| unsafe { std::mem::transmute::<*mut c_void, super::SetWake>(entry) }) })
     }
 }
 fn api() -> Result<&'static Api, String> { super::bridge()?.endpoints.as_ref().ok_or_else(|| "The installed .NET bridge lacks unchanged output/binding support; replace data/compat with this release's files.".into()) }
+fn next_deadline(next: i64, error: impl FnOnce() -> String) -> io::Result<Option<Duration>> {
+    match next {
+        -1 => Ok(None),
+        0.. => Ok(Some(Duration::from_micros(next as u64))),
+        _ => Err(io::Error::other(error())),
+    }
+}
 fn envelope(config: &PluginConfig, profile: &Profile, tablet: &TabletConfiguration, owner: u32, identifiers: Option<&[DeviceIdentifier]>) -> Result<serde_json::Value, String> {
     config.validate()?;
     let keys: serde_json::Map<String, serde_json::Value> = if cfg!(windows) {
@@ -54,7 +63,11 @@ fn envelope(config: &PluginConfig, profile: &Profile, tablet: &TabletConfigurati
         "tablet": tablet, "identifiers": identifiers, "source_session":super::source_session_json(), "pen": profile.output == OutputKind::Pen,
         "rotation_supported": profile.output == OutputKind::Pen || cfg!(target_os = "macos"), "relative": profile.relative.is_some(), "owner": owner, "keys": keys }))
 }
-struct Endpoint { context: *mut c_void }
+struct Endpoint {
+    context: *mut c_void,
+    #[cfg(windows)]
+    wake: Option<super::WakeTarget>,
+}
 impl Endpoint {
     fn create(config: &serde_json::Value, output: bool) -> Result<Self, String> {
         let encoded = config.to_string();
@@ -63,20 +76,37 @@ impl Endpoint {
         let create = if output { api.create_output } else { api.create_binding };
         let context = unsafe { create(encoded.as_ptr(), encoded.len()) };
         if context.is_null() { return Err(super::last_error()); }
-        Ok(Self { context })
+        Ok(Self { context, #[cfg(windows)] wake: None })
+    }
+    #[cfg(windows)]
+    fn set_wake(&mut self, target: std::sync::Arc<crate::shared_devices::OutputGate>) -> Result<(), String> {
+        let Some(set) = api()?.set_wake else { return Ok(()); };
+        if let Some(previous) = self.wake.take() { previous.detach(self.context, set); }
+        self.wake = Some(super::WakeTarget::install(self.context, set, target)?);
+        Ok(())
     }
     fn status(status: i32) -> io::Result<()> { if status == 0 { Ok(()) } else { Err(io::Error::other(super::last_error())) } }
-    fn next(&self) -> io::Result<Duration> { let next = unsafe { (api().map_err(io::Error::other)?.next)(self.context) }; u64::try_from(next).map(Duration::from_micros).map_err(|_| io::Error::other(super::last_error())) }
+    fn next(&self) -> io::Result<Option<Duration>> { let next = unsafe { (api().map_err(io::Error::other)?.next)(self.context) }; next_deadline(next, super::last_error) }
     fn drain(&self, buffer: &mut [ManagedCommand; 256]) -> io::Result<usize> {
         let count = unsafe { (api().map_err(io::Error::other)?.drain)(self.context, buffer.as_mut_ptr(), 256) };
         if !(0..=256).contains(&count) { return Err(io::Error::other(super::last_error())); }
         Ok(count as usize)
     }
 }
-impl Drop for Endpoint { fn drop(&mut self) { if let Ok(api) = api() { unsafe { (api.destroy)(self.context) }; } } }
+impl Drop for Endpoint {
+    fn drop(&mut self) {
+        if let Ok(api) = api() {
+            #[cfg(windows)]
+            if let (Some(wake), Some(set)) = (self.wake.take(), api.set_wake) { wake.detach(self.context, set); }
+            unsafe { (api.destroy)(self.context) };
+        }
+    }
+}
 
 pub struct OutputSession { endpoint: Endpoint }
 impl OutputSession {
+    #[cfg(windows)]
+    pub(crate) fn set_wake(&mut self, target: std::sync::Arc<crate::shared_devices::OutputGate>) -> Result<(), String> { self.endpoint.set_wake(target) }
     pub fn new(config: &PluginConfig, profile: &Profile, tablet: &TabletConfiguration) -> Result<Self, String> {
         Self::new_with_identifiers(config, profile, tablet, None)
     }
@@ -136,6 +166,17 @@ pub(crate) fn wrap_sink_with_identifiers(profile: &Profile, tablet: &TabletConfi
 }
 pub(crate) fn wrap_sink_for_graph(profile: &Profile, tablet: &TabletConfiguration, native: Box<dyn ActionSink>,
     output: Option<&OutputSession>, identifiers: Option<&[DeviceIdentifier]>, graph: Option<&super::Graph>) -> Result<Box<dyn ActionSink>, String> {
+    wrap_sink_for_graph_impl(profile, tablet, native, output, identifiers, graph, #[cfg(windows)] None)
+}
+#[cfg(windows)]
+pub(crate) fn wrap_sink_for_graph_with_wake(profile: &Profile, tablet: &TabletConfiguration, native: Box<dyn ActionSink>,
+    output: Option<&OutputSession>, identifiers: Option<&[DeviceIdentifier]>, graph: Option<&super::Graph>,
+    wake: std::sync::Arc<crate::shared_devices::OutputGate>) -> Result<Box<dyn ActionSink>, String> {
+    wrap_sink_for_graph_impl(profile, tablet, native, output, identifiers, graph, Some(wake))
+}
+fn wrap_sink_for_graph_impl(profile: &Profile, tablet: &TabletConfiguration, native: Box<dyn ActionSink>,
+    output: Option<&OutputSession>, identifiers: Option<&[DeviceIdentifier]>, graph: Option<&super::Graph>,
+    #[cfg(windows)] wake: Option<std::sync::Arc<crate::shared_devices::OutputGate>>) -> Result<Box<dyn ActionSink>, String> {
     let slots = ButtonOutput::managed_slots(profile);
     if slots.is_empty() { return Ok(native); }
     let bindings = slots.into_iter().map(|(owner, config)| {
@@ -143,6 +184,12 @@ pub(crate) fn wrap_sink_for_graph(profile: &Profile, tablet: &TabletConfiguratio
         if let Some(graph) = graph { value["graph_context"] = serde_json::json!(graph.context_handle() as usize); }
         if let Some(output) = output { value["output_context"] = serde_json::json!(output.endpoint.context as usize); }
         let endpoint = Endpoint::create(&value, false)?;
+        #[cfg(windows)]
+        let endpoint = {
+            let mut endpoint = endpoint;
+            if let Some(wake) = &wake { endpoint.set_wake(wake.clone())?; }
+            endpoint
+        };
         Ok(Binding { owner, config, endpoint, failed: false })
     }).collect::<Result<Vec<_>, String>>()?;
     let contexts = bindings.iter().map(|binding| binding.endpoint.context).collect();
@@ -212,7 +259,7 @@ impl ActionSink for BindingSink {
     }
     fn managed_next_tick(&self) -> Option<Duration> {
         if self.failed { return None; }
-        self.bindings.iter().filter(|binding| !binding.failed).filter_map(|binding| binding.endpoint.next().ok()).min()
+        self.bindings.iter().filter(|binding| !binding.failed).filter_map(|binding| binding.endpoint.next().ok().flatten()).min()
     }
     fn managed_tick(&mut self) -> io::Result<()> {
         for index in 0..self.bindings.len() {
@@ -225,3 +272,15 @@ impl ActionSink for BindingSink {
     }
 }
 impl Drop for BindingSink { fn drop(&mut self) { let _ = self.release_all(); } }
+
+#[cfg(test)]
+mod wake_tests {
+    use super::*;
+    #[test]
+    fn endpoint_idle_sentinel_is_distinct_from_failure() {
+        assert_eq!(next_deadline(-1, || panic!("idle must not read stale last_error")).unwrap(), None);
+        assert_eq!(next_deadline(0, String::new).unwrap(), Some(Duration::ZERO));
+        assert_eq!(next_deadline(123, String::new).unwrap(), Some(Duration::from_micros(123)));
+        assert_eq!(next_deadline(-3, || "endpoint failed".into()).unwrap_err().to_string(), "endpoint failed");
+    }
+}

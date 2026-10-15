@@ -1,0 +1,42 @@
+{
+  "baseline_commit": "274427a4e9809f5c698a4eb82a87a871dc439846",
+  "method": "Alternating fresh GraphBench processes; 15 trials of 200000 synthetic reports per process; discard callbacks; no OS output",
+  "runs": [
+    {
+      "variant": "baseline",
+      "trial": 1,
+      "bytes_per_report": 410.2,
+      "median_ns_per_report": 525.4
+    },
+    {
+      "variant": "implemented",
+      "trial": 1,
+      "bytes_per_report": 384.0,
+      "median_ns_per_report": 215.7
+    },
+    {
+      "variant": "baseline",
+      "trial": 2,
+      "bytes_per_report": 410.2,
+      "median_ns_per_report": 545.1
+    },
+    {
+      "variant": "implemented",
+      "trial": 2,
+      "bytes_per_report": 384.0,
+      "median_ns_per_report": 198.8
+    },
+    {
+      "variant": "baseline",
+      "trial": 3,
+      "bytes_per_report": 410.2,
+      "median_ns_per_report": 542.7
+    },
+    {
+      "variant": "implemented",
+      "trial": 3,
+      "bytes_per_report": 384.0,
+      "median_ns_per_report": 215.8
+    }
+  ]
+}

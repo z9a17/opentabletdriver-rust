@@ -29,6 +29,9 @@ unsafe static class EndpointProbe
         var auxiliary = new DeviceIdentifier { VendorID = 1, ProductID = 30, ReportParser = "Fixture.Auxiliary" };
         var properties = new TabletConfiguration { Name = "Matched alternatives", DigitizerIdentifiers = [first, matched], AuxiliaryDeviceIdentifiers = [auxiliary] };
         var config = new JObject { ["tablet"] = JObject.FromObject(properties), ["identifiers"] = JArray.FromObject(new[] { matched, auxiliary }) };
+        // EndpointConfig parses JSON received from Rust. Match that boundary:
+        // the SDK decimal writer leaves JRaw values in FromObject's tree.
+        config = JObject.Parse(config.ToString());
         var reference = Instance.CreateTabletReference(config);
         if (!reference.Identifiers.Select(identifier => identifier.ProductID).SequenceEqual(new[] { 20, 30 })
             || reference.Properties.DigitizerIdentifiers.Count != 2 || reference.Properties.DigitizerIdentifiers[0].ProductID != 10)
