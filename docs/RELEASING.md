@@ -62,7 +62,7 @@ MACOSX_DEPLOYMENT_TARGET=11.0 scripts/package-unix.sh macos-x64
 MACOSX_DEPLOYMENT_TARGET=11.0 scripts/package-unix.sh macos-arm64
 ```
 
-The supported package minimum is macOS 11.0. The CLI and original Eto Mac frontend are unsigned and not notarized. Install the CPU-matching .NET runtime. Publishing disables Eto2.5.10's legacy x64-only Mono launcher and uses RID-correct SDK apphosts. This is architecture evidence, not native Objective-C or UI qualification. Native validation requires a Mac, Input Monitoring and Accessibility permissions, and a connected tablet. See [the macOS guide](../crates/otd-macos/README.md).
+The native Rust driver deployment target is macOS 11.0. The packaged .NET 10 apphosts and nethost library declare macOS 12.0 as their binary minimum; managed features additionally require an OS supported by [.NET 10](https://github.com/dotnet/core/blob/main/release-notes/10.0/supported-os.md). Recheck the final archive's Mach-O deployment metadata when changing host packs. The CLI and original Eto Mac frontend are unsigned and not notarized. Install the CPU-matching .NET runtime. Publishing disables Eto2.5.10's legacy x64-only Mono launcher and uses RID-correct SDK apphosts. This is architecture evidence, not native Objective-C or UI qualification. Native validation requires a Mac, Input Monitoring and Accessibility permissions, and a connected tablet. See [the macOS guide](../crates/otd-macos/README.md).
 
 For local cross-builds on Linux, provide a legally obtained macOS 11+ SDK and Clang. Rust supplies the Mach-O linker. Build each architecture sequentially:
 

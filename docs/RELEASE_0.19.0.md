@@ -52,7 +52,12 @@ No driver, UI, hardware discovery or real input/output was launched during this
 work, and saved settings were not edited. Physical tablet behavior, hotplug,
 sleep/wake, Windows Ink drawing, native Linux/macOS execution, the full unchanged
 plugin corpus and pen-to-display latency remain unverified for this release.
-Linux requires glibc 2.31+ and GTK3/.NET 10 for the original frontend. macOS
-packages require macOS 11+ and the matching .NET 10 runtime for the frontend;
-they are unsigned and not notarized. Generic Wayland display discovery uses
-.NET; native display discovery or explicit `--screen` remains available without it.
+The native Linux binary targets glibc 2.31+; its original frontend also needs
+GTK3 and .NET 10. The native macOS driver uses a macOS 11 deployment target,
+while the packaged .NET 10 launchers and host library declare a macOS 12 binary
+minimum. Managed features need the CPU-matching .NET 10 runtime and an OS
+supported by that runtime. These native binary floors do not extend
+[Microsoft's .NET 10 OS support matrix](https://github.com/dotnet/core/blob/main/release-notes/10.0/supported-os.md).
+The macOS packages are unsigned and not notarized. Generic Wayland display
+discovery uses .NET; native display discovery or explicit `--screen` remains
+available without it.

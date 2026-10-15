@@ -1,9 +1,13 @@
 # OpenTabletDriver Rust for macOS
 
 Use the archive for your Mac's processor, Intel x64 or Apple Silicon arm64.
-macOS 11 or newer is required. Extract it and open a terminal in its directory.
+The native Rust driver targets macOS 11 or newer. Extract the archive and open
+a terminal in its directory.
 
-Install the .NET 10 runtime for this CPU.
+For the original frontend and managed plugins, install the .NET 10 runtime for
+this CPU on an [OS supported by .NET 10](https://github.com/dotnet/core/blob/main/release-notes/10.0/supported-os.md).
+The packaged managed launchers and native host library require macOS 12 at the
+binary level; this does not establish .NET support on every later macOS version.
 Grant Input Monitoring and Accessibility permissions in System Settings, then
 start the original desktop frontend:
 

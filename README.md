@@ -14,12 +14,14 @@ Get the archives and SHA-256 checksums from [the latest release](https://github.
 | --- | --- | --- |
 | Windows x64 | `win-x64.zip` | Windows 11; [Windows guide](docs/GETTING_STARTED_WINDOWS.md) |
 | Linux x64 | `linux-x64.tar.gz` | glibc 2.31+, udev, hidraw/uinput; [Linux guide](crates/otd-linux/README.md) |
-| macOS Intel | `macos-x64.tar.gz` | macOS 11+; [macOS guide](crates/otd-macos/README.md) |
-| macOS Apple Silicon | `macos-arm64.tar.gz` | macOS 11+; [macOS guide](crates/otd-macos/README.md) |
+| macOS Intel | `macos-x64.tar.gz` | Native driver: macOS 11+; managed features: see [macOS guide](crates/otd-macos/README.md) |
+| macOS Apple Silicon | `macos-arm64.tar.gz` | Native driver: macOS 11+; managed features: see [macOS guide](crates/otd-macos/README.md) |
 
 Archive names begin with `opentabletdriver-rust-v<version>-`. Upstream distribution packages and Flatpak install the original driver; use this project's archives for the Rust version.
 
 Native-only input needs no .NET runtime. Original .NET plugins, registered type/default-store requests, original RPC hosting and original frontends/Console need the **architecture-matching .NET 10 runtime or newer**. Linux's frontend also needs GTK3; generic Wayland display discovery needs .NET, while Hyprland/Sway/X11 discovery and explicit `--screen` remain native. Unix network operations need system curl. macOS packages are unsigned and not notarized.
+
+The native driver baselines above do not extend [.NET 10's supported OS versions](https://github.com/dotnet/core/blob/main/release-notes/10.0/supported-os.md). The packaged Mac managed launchers and host library require macOS 12 at the binary level; managed features also need an OS supported by the installed .NET runtime.
 
 ## Get started
 
