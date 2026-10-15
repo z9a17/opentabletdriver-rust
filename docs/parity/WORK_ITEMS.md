@@ -4,6 +4,12 @@ This is the canonical acceptance backlog for the [full parity plan](../FULL_PARI
 
 Dependencies are hard prerequisites for merging the described behavior; investigation and fixture collection may start earlier. `None` denotes a task ready to claim. Source groups refer to [CAPABILITY_MATRIX.md](CAPABILITY_MATRIX.md). Every task also inherits the [definition of done](AGENT_HANDOFF.md) and [validation rules](VALIDATION.md). File names under `Start` exist unless explicitly described as new. F02 moved the portable modules into `crates/otd-core`; `src/` keeps the Windows adapters, plugin loading and UI.
 
+**Active follow-up (2026-10-15):** the root integrator claims bounded
+F03/F04/F05/P05/V02/V03/V06/R02 work on `parity/autonomous-hardening`, based on
+released v0.19.0. [Scope, ownership and validation boundaries](AUTONOMOUS_FOLLOWUP_2026-10-15.md)
+cover offline compatibility, background overhead, failure recovery and current
+evidence reconciliation. Historical hardware acceptance remains open.
+
 ## F: Foundations and existing behavior
 
 Sources: UP-DEVICE, UP-REPORT, UP-PIPELINE, UP-DAEMON. Shared edits: core module extraction and report ownership contracts need one integration owner.
