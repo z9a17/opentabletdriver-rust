@@ -64,7 +64,7 @@ Windows 0.18 original Console names such as `save`, `preset` and `stdio` address
 
 ## Documentation and development
 
-Start with the [documentation index](docs/README.md), [0.6.8 RC adoption report](docs/parity/UPSTREAM_0.6.8_RC1.md), [hardware validation checklist](docs/HARDWARE_VALIDATION.md), or [release notes](docs/RELEASE_0.19.0.md). Historical audits and release snapshots remain in [porting status](docs/PORTING_STATUS.md).
+Start with the [documentation index](docs/README.md), [current source and evidence map](docs/parity/CURRENT_STATUS.md), [hardware validation checklist](docs/HARDWARE_VALIDATION.md), or [release notes](docs/RELEASE_0.19.1.md). Historical audits and release snapshots remain in [porting status](docs/PORTING_STATUS.md).
 
 Build from a real **Git checkout**, using stable Rust. Windows needs MSVC and the Windows SDK; macOS needs an Apple SDK/linker. Source archives without Git metadata cannot be built as-is. Run the matching command on its target platform:
 

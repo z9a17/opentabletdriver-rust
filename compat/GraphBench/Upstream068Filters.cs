@@ -29,7 +29,7 @@ public sealed class RetainedPressureFilter : IPositionedPipelineElement<IDeviceR
     public void EmitRetained() { if (retained != null) Emit?.Invoke(retained); }
 }
 
-[PluginName("Unsupported async Internal fixture")]
+[PluginName("Async Internal fixture")]
 public sealed class AsyncInternalFilter : AsyncPositionedPipelineElement<IDeviceReport>
 {
     public override PipelinePosition Position => PipelinePosition.Internal;

@@ -39,7 +39,7 @@ pub enum SessionState { Detected, Preparing, Starting, Running, Waiting, Stoppin
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IdentityStability { PhysicalParent, PathFallback }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SessionSnapshot {
     pub id: SessionId,
     pub device_generation: u64,
@@ -72,7 +72,7 @@ pub struct SessionSnapshot {
     pub use_settings_collection: bool,
     pub last_error: Option<String>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SessionList { pub sessions: Vec<SessionSnapshot>, pub selected_id: Option<SessionId> }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionReceipt {
@@ -133,6 +133,11 @@ pub struct Handle {
     wake: Arc<Mutex<Event>>,
 }
 impl Handle {
+    /// Lifecycle notices and worker completion are cold control work. Wake the
+    /// owning supervisor without adding any work to successful report reads.
+    pub(crate) fn wake_supervisor(&self) {
+        if let Ok(wake) = self.wake.lock() { let _ = wake.signal(); }
+    }
     pub(crate) fn channel(wake: Event) -> (Self, mpsc::Receiver<Request>) {
         let (requests, receiver) = mpsc::sync_channel(16);
         (Self { registry: Arc::default(), requests, wake: Arc::new(Mutex::new(wake)) }, receiver)
@@ -141,6 +146,18 @@ impl Handle {
         let registry = self.registry.lock().map_err(|_| "device registry poisoned")?;
         Ok(SessionList { sessions: registry.entries.values().map(|entry| entry.snapshot.clone()).collect(),
             selected_id: registry.selected.clone() })
+    }
+    /// Background services can reuse a previous tree without cloning device
+    /// configurations on every observation. Compare the actual state rather
+    /// than generations: connect/state/reader metadata can change within one.
+    pub(crate) fn snapshot_cached(&self, previous: &Arc<SessionList>) -> Result<Arc<SessionList>, String> {
+        let registry = self.registry.lock().map_err(|_| "device registry poisoned")?;
+        if registry.selected == previous.selected_id && registry.entries.len() == previous.sessions.len()
+            && registry.entries.values().zip(&previous.sessions).all(|(entry, old)| entry.snapshot == *old) {
+            return Ok(Arc::clone(previous));
+        }
+        Ok(Arc::new(SessionList { sessions: registry.entries.values().map(|entry| entry.snapshot.clone()).collect(),
+            selected_id: registry.selected.clone() }))
     }
     /// Explicit discovery completes on the supervisor, independently of live
     /// readers. New devices can still be preparing when metadata is returned.
@@ -516,6 +533,45 @@ pub(crate) mod tests {
     pub(crate) fn selected(candidate: &Candidate) -> SelectedDevice<'_> {
         SelectedDevice { pen: candidate, configuration: TabletConfiguration { name: "same model".into(), ..Default::default() },
             identifier: DeviceIdentifier::default(), auxiliary: None, spec: Profile::default().tablet }
+    }
+    #[test]
+    fn cached_snapshot_reuses_unchanged_tree_and_observes_same_generation_metadata() {
+        let (handle, _requests) = Handle::channel(Event::create(true).unwrap());
+        let empty = Arc::new(SessionList::default());
+        assert!(Arc::ptr_eq(&empty, &handle.snapshot_cached(&empty).unwrap()));
+        let endpoint = candidate("cached-snapshot-fixture", "cached-snapshot-parent");
+        let id = handle.discover(&selected(&endpoint)).unwrap();
+        let mut cached = handle.snapshot_cached(&empty).unwrap();
+        assert!(!Arc::ptr_eq(&empty, &cached));
+        assert!(Arc::ptr_eq(&cached, &handle.snapshot_cached(&cached).unwrap()));
+        let generation = cached.sessions[0].device_generation;
+        for change in 0..6 {
+            {
+                let mut registry = handle.registry.lock().unwrap();
+                let entry = registry.entries.get_mut(&id).unwrap();
+                match change {
+                    0 => entry.snapshot.state = SessionState::Waiting,
+                    1 => entry.snapshot.connected = false,
+                    2 => entry.snapshot.pending_generation = Some(generation + 1),
+                    3 => entry.snapshot.opened_identifiers = Some(vec![DeviceIdentifier::default()]),
+                    4 => { entry.snapshot.properties.unknown.insert("MetadataFixture".into(), serde_json::json!(true)); }
+                    _ => entry.snapshot.opened_identifiers = None,
+                }
+            }
+            let next = handle.snapshot_cached(&cached).unwrap();
+            assert!(!Arc::ptr_eq(&cached, &next), "metadata change {change} hidden behind unchanged generation");
+            assert_eq!(next.sessions[0].device_generation, generation);
+            assert!(Arc::ptr_eq(&next, &handle.snapshot_cached(&next).unwrap()));
+            cached = next;
+        }
+        handle.discover(&selected(&endpoint)).unwrap();
+        let reattached = handle.snapshot_cached(&cached).unwrap();
+        assert!(!Arc::ptr_eq(&cached, &reattached));
+        assert!(reattached.sessions[0].connected);
+        handle.registry.lock().unwrap().entries.remove(&id);
+        let removed = handle.snapshot_cached(&reattached).unwrap();
+        assert!(removed.sessions.is_empty());
+        assert!(reattached.sessions[0].connected, "previous immutable tree must survive removal");
     }
     #[test]
     fn same_model_devices_collections_and_reconnects_keep_independent_profiles() {

@@ -49,6 +49,12 @@ pub enum Notice {
     Waiting,
     ActivationFailed(String),
 }
+fn send_notice(notices: &SyncSender<Notice>, devices: &crate::device_sessions::Handle, notice: Notice) -> Result<(), String> {
+    let sent = notices.send(notice).map_err(|_| "daemon control owner disconnected".to_owned());
+    devices.wake_supervisor();
+    crate::control::wake();
+    sent
+}
 
 pub struct Worker {
     interrupt: Event,
@@ -63,10 +69,11 @@ pub struct Worker {
 /// Marks the worker finished and wakes the control thread, last thing on the
 /// worker thread, even if it unwinds. `JoinHandle::is_finished` turns true
 /// only later, so a poll woken by this must not rely on it.
-struct Done(Arc<AtomicBool>);
+struct Done(Arc<AtomicBool>, Option<crate::device_sessions::Handle>);
 impl Drop for Done {
     fn drop(&mut self) {
         self.0.store(true, Ordering::Release);
+        if let Some(devices) = &self.1 { devices.wake_supervisor(); }
         crate::control::wake();
     }
 }
@@ -80,7 +87,7 @@ impl Worker {
         let (notifier, notices) = mpsc::sync_channel(8);
         let (_logger, logs) = mpsc::sync_channel(1);
         let done = Arc::new(AtomicBool::new(false));
-        let thread_done = Done(Arc::clone(&done));
+        let thread_done = Done(Arc::clone(&done), None);
         let thread = std::thread::spawn(move || { let _done = thread_done; script(receiver, notifier, thread_cancelled) });
         Self { interrupt, cancelled, commands, notices, logs, thread, done }
     }
@@ -99,7 +106,7 @@ impl Worker {
         let (notifier, notices) = mpsc::sync_channel(8);
         let (logger, logs) = mpsc::sync_channel(crate::control::MAX_LOG_LINES);
         let done = Arc::new(AtomicBool::new(false));
-        let thread_done = Done(Arc::clone(&done));
+        let thread_done = Done(Arc::clone(&done), Some(devices.clone()));
         let thread = std::thread::Builder::new()
             .name("tablet-driver".into())
             .spawn(move || {
@@ -161,6 +168,40 @@ impl Worker {
 mod worker_cleanup_tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn lifecycle_notice_wakes_supervisor_without_reports() {
+        use windows_sys::Win32::{Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT}, System::Threading::WaitForSingleObject};
+        let wake = Event::create(true).unwrap();
+        let (devices, _) = crate::device_sessions::Handle::channel(wake.duplicate().unwrap());
+        let (notices, received) = mpsc::sync_channel(8);
+        assert_eq!(unsafe { WaitForSingleObject(wake.raw(), 0) }, WAIT_TIMEOUT);
+        send_notice(&notices, &devices, Notice::Waiting).unwrap();
+        assert_eq!(unsafe { WaitForSingleObject(wake.raw(), 0) }, WAIT_OBJECT_0);
+        assert!(matches!(received.try_recv().unwrap(), Notice::Waiting));
+        unsafe { ResetEvent(wake.raw()) };
+        drop(received);
+        assert!(send_notice(&notices, &devices, Notice::Running).is_err());
+        // A disconnected owner must also be woken so retirement can finish.
+        assert_eq!(unsafe { WaitForSingleObject(wake.raw(), 0) }, WAIT_OBJECT_0);
+    }
+
+    #[test]
+    fn completion_wakes_supervisor_after_finished_flag_without_reports() {
+        use windows_sys::Win32::{Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT}, System::Threading::WaitForSingleObject};
+        let wake = Event::create(true).unwrap();
+        let (devices, _) = crate::device_sessions::Handle::channel(wake.duplicate().unwrap());
+        assert_eq!(unsafe { WaitForSingleObject(wake.raw(), 0) }, WAIT_TIMEOUT);
+        let finished = Arc::new(AtomicBool::new(false));
+        let (release, wait) = mpsc::sync_channel(1);
+        let done = Done(Arc::clone(&finished), Some(devices));
+        let thread = std::thread::spawn(move || { wait.recv().unwrap(); drop(done); });
+        release.send(()).unwrap();
+        let signalled = unsafe { WaitForSingleObject(wake.raw(), 2_000) };
+        thread.join().unwrap();
+        assert_eq!(signalled, WAIT_OBJECT_0);
+        assert!(finished.load(Ordering::Acquire));
+    }
 
     #[test]
     fn join_releases_worker_blocked_by_full_notice_queue() {
@@ -233,15 +274,10 @@ fn run(
 ) -> Result<(), String> {
     let log = |line: &str| {
         let _ = logs.try_send(line.to_owned());
+        device_sessions.wake_supervisor();
         crate::control::wake();
     };
-    let notify = |notice| {
-        let sent = notices
-            .send(notice)
-            .map_err(|_| "daemon control owner disconnected".to_owned());
-        crate::control::wake();
-        sent
-    };
+    let notify = |notice| send_notice(&notices, &device_sessions, notice);
     let configured_tablets = crate::check_tablet_configurations()?;
     let database = configured_tablets.as_ref();
     crate::plugins::prepare_parser_registry(&profile, database)?;
@@ -434,6 +470,7 @@ fn run(
             let quiesced = Cell::new(false);
             let opened_epoch = Cell::new(None);
             let preset_notices = notices.clone();
+            let preset_devices = device_sessions.clone();
             let mut last_preset_press = std::time::Instant::now();
             let preset: crate::binding_presets::Callback = Box::new(move |owner, name| {
                 let now = std::time::Instant::now();
@@ -442,6 +479,7 @@ fn run(
                 if elapsed <= std::time::Duration::from_millis(50) { return Ok(()); }
                 preset_notices.try_send(Notice::PresetRequested(crate::binding_presets::Request::new(owner, name)))
                     .map_err(|_| io::Error::from(io::ErrorKind::WouldBlock))?;
+                preset_devices.wake_supervisor();
                 crate::control::wake();
                 Ok(())
             });

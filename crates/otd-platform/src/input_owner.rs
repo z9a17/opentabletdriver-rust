@@ -17,6 +17,13 @@ pub struct PointerContext {pub position:Option<(f64,f64)>,pub click_position:Opt
 type Writer=Box<dyn FnMut(Code,bool,Option<PointerContext>)->io::Result<()>+Send>;
 struct State {holds:[Option<Hold>;4096],desired:[usize;773],emitted:[bool;773],positions:[Option<PointerContext>;773],writer:Option<Writer>,leases:BTreeMap<u64,Instant>}
 impl State {
+    fn maintenance_deadline(&self,now:Instant)->Instant {
+        // Native readers share this domain and can leave a failed release
+        // after their last report, independently of managed queue admission.
+        // Keep their existing bounded retry until they explicitly wake lane4.
+        let retry=now+Duration::from_millis(250);
+        self.leases.values().copied().min().map_or(retry,|lease|lease.min(retry))
+    }
     fn hold(&mut self,owner:Owner,code:Code,held:bool,position:Option<PointerContext>)->io::Result<()>{
         let index=code.index()?;let existing=self.holds.iter().position(|hold|hold.is_some_and(|hold|hold.owner==owner&&hold.index==index));
         if held&&existing.is_none(){let slot=self.holds.iter_mut().find(|slot|slot.is_none()).ok_or_else(||io::Error::other("Shared input owner capacity reached"))?;*slot=Some(Hold{owner,index,context:position});self.desired[index]+=1;}
@@ -96,6 +103,7 @@ pub fn maintain(){if let Ok(mut state)=state().lock(){let now=Instant::now();let
     // The independent lane remains the cleanup owner even with no scopes.
     let _=state.flush();
 }}
+pub fn maintenance_deadline()->Option<Instant>{Some(state().lock().ok()?.maintenance_deadline(Instant::now()))}
 pub fn shutdown(){if let Ok(mut state)=state().lock(){let scopes=state.leases.keys().copied().collect::<Vec<_>>();for scope in scopes{match state.release(Owner::Managed(scope)){Ok(())=>{state.leases.remove(&scope);},Err(error)=>eprintln!("Original input shutdown cleanup failed: {error}")}}
     for _ in 0..3{if state.flush().is_ok(){return;}std::thread::sleep(Duration::from_millis(50));}
     eprintln!("Shared input shutdown retains unacknowledged cleanup; actual output owner cannot be claimed clean");
@@ -104,6 +112,22 @@ pub fn shutdown(){if let Ok(mut state)=state().lock(){let scopes=state.leases.ke
 mod fixtures {
     use super::*;
     fn owner(writer:Writer)->State{State{holds:[None;4096],desired:[0;773],emitted:[false;773],positions:[None;773],writer:Some(writer),leases:BTreeMap::new()}}
+    #[test]
+    fn maintenance_deadline_preserves_native_retry_and_tracks_earlier_managed_expiry(){
+        let now=Instant::now();
+        let mut state=owner(Box::new(|_,_,_|Ok(())));
+        let native_retry=now+Duration::from_millis(250);
+        assert_eq!(state.maintenance_deadline(now),native_retry);
+        state.leases.insert(1,now+Duration::from_millis(80));
+        state.leases.insert(2,now+Duration::from_secs(30));
+        assert_eq!(state.maintenance_deadline(now),now+Duration::from_millis(80));
+        state.leases.insert(1,now+Duration::from_secs(1));
+        assert_eq!(state.maintenance_deadline(now),native_retry);
+        state.leases.insert(2,now-Duration::from_millis(1));
+        assert!(state.maintenance_deadline(now)<now,"overdue leases must run immediately");
+        state.leases.clear();
+        assert_eq!(state.maintenance_deadline(now),native_retry,"retired native cleanup has no managed lease");
+    }
     #[test]
     fn distinct_portable_aliases_and_managed_scope_require_the_last_release(){
         let events=std::sync::Arc::new(Mutex::new(Vec::new()));let captured=events.clone();

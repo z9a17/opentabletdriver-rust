@@ -1,0 +1,302 @@
+{
+  "schema_version": 1,
+  "scope": "Source-reviewed unchanged release DLLs, offline graph and direct upstream-interface reference. Per-class cases; no whole-package, ecosystem, physical-input or timing-jitter acceptance.",
+  "catalog_revision": "2dfdff1cd77d274eb19c4d359b240167537c4db2",
+  "plugins": [
+    {
+      "identity": {
+        "name": "AbstractQbit's Radial Follow Smoothing",
+        "owner": "AbstractQbit",
+        "repository_url": "https://github.com/AbstractQbit/AbstractOTDPlugins"
+      },
+      "plugin_version": "0.3.0.0",
+      "catalog_path": "Repository/0.6.0.0/AbstractQbit/AbstractOTDPlugins/RadialFollow.json",
+      "download_url": "https://github.com/AbstractQbit/AbstractOTDPlugins/releases/download/0.3.0/RadialFollow.zip",
+      "archive": "RadialFollow.zip",
+      "archive_sha256": "d3f5b0200015e6e90948ee5d7870742ac28d82922cc745e9f1f78527e59f8160",
+      "dll": "RadialFollow.dll",
+      "dll_sha256": "830d61f29c07b109398f1e001df3c7fbd359b1ad2491a6d12ccc243dacf16383",
+      "source_repository": "https://github.com/AbstractQbit/AbstractOTDPlugins",
+      "source_revision": "58846450e9a5f6f3cfada9dd1b4d4909a5ca25bb",
+      "classes": [
+        {
+          "type_name": "RadialFollow.RadialFollowSmoothingTabletSpace",
+          "async": false,
+          "cases": [
+            {
+              "name": "constructor-defaults",
+              "settings": {}
+            },
+            {
+              "name": "explicit-attribute-defaults",
+              "settings": {
+                "OuterRadius": null,
+                "InnerRadius": null,
+                "SmoothingCoefficient": null,
+                "SoftKneeScale": null,
+                "SmoothingLeakCoefficient": null
+              }
+            },
+            {
+              "name": "configured",
+              "settings": {
+                "OuterRadius": 8,
+                "InnerRadius": 1,
+                "SmoothingCoefficient": 0.8,
+                "SoftKneeScale": 2,
+                "SmoothingLeakCoefficient": 0.05
+              }
+            },
+            {
+              "name": "clamped-and-unknown",
+              "settings": {
+                "OuterRadius": -3,
+                "InnerRadius": -2,
+                "SmoothingCoefficient": 2,
+                "SoftKneeScale": -4,
+                "SmoothingLeakCoefficient": 2,
+                "RetiredProperty": "preserved"
+              }
+            }
+          ]
+        },
+        {
+          "type_name": "RadialFollow.RadialFollowSmoothingScreenSpace",
+          "async": false,
+          "cases": [
+            {
+              "name": "constructor-defaults",
+              "settings": {}
+            },
+            {
+              "name": "explicit-attribute-defaults",
+              "settings": {
+                "OuterRadius": null,
+                "InnerRadius": null,
+                "SmoothingCoefficient": null,
+                "SoftKneeScale": null,
+                "SmoothingLeakCoefficient": null
+              }
+            },
+            {
+              "name": "configured",
+              "settings": {
+                "OuterRadius": 8,
+                "InnerRadius": 1,
+                "SmoothingCoefficient": 0.8,
+                "SoftKneeScale": 2,
+                "SmoothingLeakCoefficient": 0.05
+              }
+            },
+            {
+              "name": "clamped-and-unknown",
+              "settings": {
+                "OuterRadius": -3,
+                "InnerRadius": -2,
+                "SmoothingCoefficient": 2,
+                "SoftKneeScale": -4,
+                "SmoothingLeakCoefficient": 2,
+                "RetiredProperty": "preserved"
+              }
+            }
+          ]
+        }
+      ],
+      "reviewed_source_files": [
+        {
+          "path": "RadialFollow/RadialFollowCore.cs",
+          "sha256": "49226e9cd15ca813aaaf279efc8365985054bb7a2f484dba0738697b26a77415"
+        },
+        {
+          "path": "RadialFollow/RadialFollowSmoothingTabletSpace.cs",
+          "sha256": "e02b6e829a3661e56c7dfc301a22abac53dd767c72d53ae7c0ec544735922304"
+        },
+        {
+          "path": "RadialFollow/RadialFollowSmoothingScreenSpace.cs",
+          "sha256": "c6ae2e033a9f6575fd51a57c939c21e5cf913e3a05fbe8908da44506744355da"
+        }
+      ]
+    },
+    {
+      "identity": {
+        "name": "BezierInterpolator",
+        "owner": "AbstractQbit",
+        "repository_url": "https://github.com/AbstractQbit/AbstractOTDPlugins"
+      },
+      "plugin_version": "0.3.1.0",
+      "catalog_path": "Repository/0.6.0.0/AbstractQbit/AbstractOTDPlugins/BezierInterpolator.json",
+      "download_url": "https://github.com/AbstractQbit/AbstractOTDPlugins/releases/download/v0.3.1/BezierInterpolator.zip",
+      "archive": "BezierInterpolator.zip",
+      "archive_sha256": "9e0e57bb1aad3ba4c17318e6f3bb7095bf20b17c5c711821a2e105d61bee4c44",
+      "dll": "BezierInterpolator.dll",
+      "dll_sha256": "73859303b607dd41168379b53c1ada37a959b0c96b6541a08f61a332e131da83",
+      "source_repository": "https://github.com/AbstractQbit/AbstractOTDPlugins",
+      "source_revision": "da220ed3c7d962f8fa2fd1fd34f7a9ddee8a5b7d",
+      "classes": [
+        {
+          "type_name": "BezierInterpolator.BezierInterp",
+          "async": true,
+          "cases": [
+            {
+              "name": "constructor-defaults",
+              "settings": {}
+            },
+            {
+              "name": "explicit-attribute-defaults",
+              "settings": {
+                "SmoothingFactor": null,
+                "TiltSmoothingFactor": null,
+                "Frequency": null
+              }
+            },
+            {
+              "name": "configured",
+              "settings": {
+                "SmoothingFactor": 0.75,
+                "TiltSmoothingFactor": 0.5,
+                "Frequency": 500
+              }
+            },
+            {
+              "name": "clamped-and-unknown",
+              "settings": {
+                "SmoothingFactor": -2,
+                "TiltSmoothingFactor": 2,
+                "Frequency": 125,
+                "RetiredProperty": "preserved"
+              }
+            }
+          ]
+        }
+      ],
+      "reviewed_source_files": [
+        {
+          "path": "BezierInterpolator/BezierInterp.cs",
+          "sha256": "6a646c6956721430b91938a5d3fa282f88d3be7bd98922ebd2947f7ab5261c75"
+        },
+        {
+          "path": "BezierInterpolator/BezierInterpolator.csproj",
+          "sha256": "dcc12fc5fce46fd49dd0d937ecf806828d6919397463ffcb369e6ee965401f36"
+        }
+      ],
+      "source_ref": "v0.3.1"
+    },
+    {
+      "identity": {
+        "name": "Flip Axes",
+        "owner": "Kuuuube",
+        "repository_url": "https://github.com/Kuuuube/Flip_Axes"
+      },
+      "plugin_version": "0.0.4.0",
+      "catalog_path": "Repository/0.6.1.0/Kuuuube/Flip_Axes/Flip_Axes.json",
+      "download_url": "https://github.com/Kuuuube/Flip_Axes/releases/download/0.0.4/0.0.4_release_Flip_Axes.zip",
+      "archive": "Flip_Axes.zip",
+      "archive_sha256": "de6232bb592a59f1120d3d83ea64184bcf080b5fe0ad7d3b8d7900ca810f4ef8",
+      "dll": "Flip_Axes.dll",
+      "dll_sha256": "2181f718b54639aacdc8f89ef57c0f916055400eaf45263f3dcc5b9bbb5b29db",
+      "source_repository": "https://github.com/Kuuuube/Flip_Axes",
+      "source_ref": "0.0.4",
+      "source_tree_revision": "a20ea67db2922c0930b221256f46622a8fe8b781",
+      "service_fixture": "Private output-model cache receives pure fake AbsoluteOutputMode with null pointer. Concrete Driver/discovery resolution remains unverified.",
+      "classes": [
+        {
+          "type_name": "Flip_Axes.Flip_Tablet_Axes",
+          "async": false,
+          "cases": [
+            {
+              "name": "constructor-defaults",
+              "settings": {}
+            },
+            {
+              "name": "explicit-null",
+              "settings": {
+                "Flip_X": null,
+                "Flip_Y": null
+              }
+            },
+            {
+              "name": "flip-x",
+              "settings": {
+                "Flip_X": true,
+                "Flip_Y": false
+              }
+            },
+            {
+              "name": "flip-y",
+              "settings": {
+                "Flip_X": false,
+                "Flip_Y": true
+              }
+            },
+            {
+              "name": "flip-both-and-unknown",
+              "settings": {
+                "Flip_X": true,
+                "Flip_Y": true,
+                "RetiredProperty": 123
+              }
+            }
+          ]
+        },
+        {
+          "type_name": "Flip_Axes.Flip_Area_Axes",
+          "async": false,
+          "cases": [
+            {
+              "name": "constructor-defaults",
+              "settings": {}
+            },
+            {
+              "name": "explicit-null",
+              "settings": {
+                "Flip_X": null,
+                "Flip_Y": null
+              }
+            },
+            {
+              "name": "flip-x",
+              "settings": {
+                "Flip_X": true,
+                "Flip_Y": false
+              }
+            },
+            {
+              "name": "flip-y",
+              "settings": {
+                "Flip_X": false,
+                "Flip_Y": true
+              }
+            },
+            {
+              "name": "flip-both-and-unknown",
+              "settings": {
+                "Flip_X": true,
+                "Flip_Y": true,
+                "RetiredProperty": 123
+              }
+            }
+          ]
+        }
+      ],
+      "reviewed_source_files": [
+        {
+          "path": "Flip_Axes/Flip_Axes_Base.cs",
+          "sha256": "3d5831a6bf2943b10bf728a24e5fe3218976291b755b22d345ab7d3a0a1b5819"
+        },
+        {
+          "path": "Flip_Axes/Flip_Tablet_Axes.cs",
+          "sha256": "04b775ffb46d37078276be6ad3d174408f6ac207f2dac335a88e21528f0dd19c"
+        },
+        {
+          "path": "Flip_Axes/Flip_Area_Axes.cs",
+          "sha256": "105e75223b1b49cdfb269cd9a7d5a23cba35d1151f0f5b5a7ca68a4a2c7a33f0"
+        },
+        {
+          "path": "Flip_Axes/Flip_Axes.csproj",
+          "sha256": "a0ffea4f10e8363ad38d259a72e4a4c78388a12ea107ffac3adf08e67b7df515"
+        }
+      ],
+      "source_revision": "11d49af1af13f59e232a98126cae719558bc97f5"
+    }
+  ]
+}

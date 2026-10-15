@@ -97,7 +97,7 @@ export NETHOST_DLL=/absolute/path/to/nethost.dll
 scripts/package-windows-cross.sh
 ```
 
-This produces GNU-target Windows binaries rather than MSVC binaries. Document that in the release notes. The managed bridge stays on the pinned OpenTabletDriver 0.6.7 contracts.
+This produces GNU-target Windows binaries rather than MSVC binaries. Document that in the release notes. The managed bridge uses the [selected 0.6.8 RC components and documented legacy compatibility adaptations](parity/UPSTREAM_0.6.8_RC1.md).
 
 ## Publish
 

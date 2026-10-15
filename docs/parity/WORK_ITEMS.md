@@ -1,14 +1,15 @@
 # Parity work items
 
-This is the canonical acceptance backlog for the [full parity plan](../FULL_PARITY_PLAN.md). Current pinned source completion is recorded in the [0.18 implementation report](IMPLEMENTATION_0.18.md); full verified parity and deferred acceptance remain open. The original 65 tasks and the [0.17.1 audit](PARITY_AUDIT_2026-10-07.md) preserve historical criteria and gaps, rather than a current missing-feature inventory. Consult the implementation report and [evidence ledger](EVIDENCE_LEDGER.md) alongside the [GitHub workstream history](GITHUB_TRACKING.md); source additions and tracker closure do not satisfy acceptance criteria.
+This is the canonical acceptance backlog for the [full parity plan](../FULL_PARITY_PLAN.md). Use the [current source and evidence map](CURRENT_STATUS.md) for the selected 0.6.8 RC adoption and bounded offline results; the [0.18 report](IMPLEMENTATION_0.18.md) records the earlier source-completion milestone. Full verified parity and hardware/platform acceptance remain open. The original 65 tasks and the [0.17.1 audit](PARITY_AUDIT_2026-10-07.md) preserve historical criteria and gaps, rather than a current missing-feature inventory. Source additions, passing scoped fixtures and tracker closure do not satisfy all acceptance criteria.
 
 Dependencies are hard prerequisites for merging the described behavior; investigation and fixture collection may start earlier. `None` denotes a task ready to claim. Source groups refer to [CAPABILITY_MATRIX.md](CAPABILITY_MATRIX.md). Every task also inherits the [definition of done](AGENT_HANDOFF.md) and [validation rules](VALIDATION.md). File names under `Start` exist unless explicitly described as new. F02 moved the portable modules into `crates/otd-core`; `src/` keeps the Windows adapters, plugin loading and UI.
 
-**Active follow-up (2026-10-15):** the root integrator claims bounded
+**Implemented follow-up (2026-10-15), v0.19.1:** the root integrator owns bounded
 F03/F04/F05/P05/V02/V03/V06/R02 work on `parity/autonomous-hardening`, based on
 released v0.19.0. [Scope, ownership and validation boundaries](AUTONOMOUS_FOLLOWUP_2026-10-15.md)
 cover offline compatibility, background overhead, failure recovery and current
-evidence reconciliation. Historical hardware acceptance remains open.
+evidence reconciliation, with 25 focused Rust cases, seven managed modes and a
+44-cycle unchanged-filter corpus passing. Historical hardware acceptance remains open.
 
 ## F: Foundations and existing behavior
 

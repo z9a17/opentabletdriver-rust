@@ -97,7 +97,7 @@ unsafe sealed class SynchronousGraph : IDisposable
             asyncFailure = null; asyncError = null;
         }
         foreach (Node node in AllNodes()) node.Filter?.AttachAsyncSink(null);
-        admitted.Clear();
+        lock (admissionGate) admitted.Clear();
         if (sourceGeneration is { } generation)
         {
             sourceGeneration = null;
@@ -107,8 +107,15 @@ unsafe sealed class SynchronousGraph : IDisposable
     }
     readonly Node[] internalNodes, pre, post, timed;
     IEnumerable<Node> AllNodes() => internalNodes.Concat(pre).Concat(post);
-    readonly ConditionalWeakTable<IDeviceReport, object> admitted = new();
-    static readonly object admissionMarker = new();
+    sealed class Admission(long epoch, bool prepared)
+    {
+        internal readonly long Epoch = epoch;
+        internal readonly bool Prepared = prepared;
+    }
+    readonly ConditionalWeakTable<IDeviceReport, Admission> admitted = new();
+    readonly object admissionGate = new();
+    long emissionEpoch = 1;
+    Admission unpreparedAdmission = new(1, false), preparedAdmission = new(1, true);
     // Ordinary continuations resume downstream of Prepare, including queued
     // emissions. Only Internal elements and output modes can enter it again.
     // Output attachment happens after construction, so evaluate this live.
@@ -167,7 +174,20 @@ unsafe sealed class SynchronousGraph : IDisposable
         }
         pendingBytes = 0;
     }
-    void ResetPending() { lock (asyncGate) ClearPending(); }
+    void ResetPending()
+    {
+        if (!TracksAdmission) { lock (asyncGate) ClearPending(); return; }
+        // Lock order is admission -> queue. Capture never holds the queue gate;
+        // neither gate spans plugin Consume or a native continuation.
+        lock (admissionGate)
+            lock (asyncGate)
+            {
+                emissionEpoch = checked(emissionEpoch + 1);
+                unpreparedAdmission = new(emissionEpoch, false);
+                preparedAdmission = new(emissionEpoch, true);
+                ClearPending();
+            }
+    }
 
     void AsyncError(Node node, string message)
     {
@@ -175,20 +195,11 @@ unsafe sealed class SynchronousGraph : IDisposable
     }
     void Enqueue(Node node, IDeviceReport? report, Action<IDeviceReport>? resume = null)
     {
-        // An output mode may replay an already admitted report through its
-        // first ordinary element. Carry admission across the owned snapshot so
-        // that replay does not remap the same pressure a second time.
-        bool wasAdmitted = TracksAdmission && report != null && admitted.TryGetValue(report, out _);
         PendingEmission item;
         ulong ticket;
         lock (asyncGate)
         {
             if (disposed || outputFailure != null || node.Disabled || asyncFailure != null) return;
-            if (node.Filter?.Position == PipelinePosition.Internal)
-            {
-                AsyncError(node, "Asynchronous Internal emissions are unsupported: retained reports cannot re-enter pressure rewriting.");
-                return;
-            }
             // Reserve worst-case bytes before copying. Concurrent snapshots are
             // included in the same budget, and FIFO order is admission order.
             if (pendingCount == MaxPending || node.Pending == MaxNodePending
@@ -208,7 +219,25 @@ unsafe sealed class SynchronousGraph : IDisposable
         IDeviceReport? copy = null;
         int bytes = 0;
         string? error = null;
-        try { copy = OwnedReportSnapshot.Capture(report, out bytes); }
+        long capturedEpoch = 0;
+        try
+        {
+            if (!TracksAdmission) copy = OwnedReportSnapshot.Capture(report, out bytes);
+            else lock (admissionGate)
+            {
+                ArgumentNullException.ThrowIfNull(report);
+                Admission identity = admitted.TryGetValue(report, out var known) ? known : unpreparedAdmission;
+                capturedEpoch = identity.Epoch;
+                if (capturedEpoch == emissionEpoch)
+                {
+                    // Pressure mutation and its identity update use this same
+                    // gate. A snapshot can never contain rewritten pressure
+                    // paired with an unprepared admission identity.
+                    copy = OwnedReportSnapshot.Capture(report, out bytes);
+                    admitted.Add(copy, identity);
+                }
+            }
+        }
         catch (Exception failure) { error = "Cannot own asynchronous pipeline report: " + failure.GetBaseException().Message; }
         TaskCompletionSource? completed = null;
         try
@@ -221,7 +250,9 @@ unsafe sealed class SynchronousGraph : IDisposable
                 if (inFlightBytes == 0) completed = inFlightCompletion;
                 if (disposed || item.Reservation != ticket) return;
                 if (error != null) { AsyncError(node, error); return; }
-                if (wasAdmitted && copy != null) admitted.Add(copy, admissionMarker);
+                // A reset can retire a capture between copying and publishing.
+                // Keep an empty ready slot so later reservations stay FIFO.
+                if (capturedEpoch != 0 && capturedEpoch != emissionEpoch) { copy = null; bytes = 0; }
                 pendingBytes += bytes;
                 item.Bytes = bytes; item.Report = copy; item.Ready = true;
                 WakePending();
@@ -259,7 +290,7 @@ unsafe sealed class SynchronousGraph : IDisposable
                 item.Node = null; item.Report = null; item.Resume = null; item.Reservation = 0; item.Bytes = 0; item.Ready = false;
                 pendingHead = (pendingHead + 1) % MaxPending;
             }
-            if (node.Disabled) continue;
+            if (node.Disabled || report == null) continue;
             int previous = currentEmitter; currentEmitter = ReferenceEquals(node, modeSource) ? -1 : checked((int)node.Index);
             try { (resume ?? node.ModeEmit ?? node.Emit)(report!); if (failed) throw new GraphAbort(); }
             catch (GraphAbort) { throw; }
@@ -343,7 +374,13 @@ unsafe sealed class SynchronousGraph : IDisposable
         {
             if (hasManagedFilters || managedOutput != null) DrainPending();
             IDeviceReport report = originalReport ?? Import(input);
-            if (TracksAdmission) admitted.Remove(report); // A source parser may reuse its input object.
+            if (TracksAdmission)
+                lock (admissionGate)
+                {
+                    // A source parser may reuse its input object. Only this
+                    // newly received source gains the current epoch/identity.
+                    admitted.Remove(report); admitted.Add(report, unpreparedAdmission);
+                }
             // Host built-ins can modify position before the graph dispatch. The
             // concrete original report object remains the downstream identity.
             if (originalReport is IAbsolutePositionReport position && (input->Flags & Position) != 0)
@@ -398,6 +435,7 @@ unsafe sealed class SynchronousGraph : IDisposable
         {
             if (hasManagedFilters || managedOutput != null) DrainPending();
             long now = Stopwatch.GetTimestamp();
+            TickStage(internalNodes, now);
             TickStage(pre, now);
             TickStage(post, now);
             if (managedOutput is { } endpoint) { endpoint.Tick(); DrainOutput(); }
@@ -453,12 +491,6 @@ unsafe sealed class SynchronousGraph : IDisposable
             if (report == null) return;
             if (!graph.running || Environment.CurrentManagedThreadId != graph.ownerThread)
             {
-                if (Position == PipelinePosition.Internal)
-                {
-                    lock (graph.asyncGate) graph.AsyncError(graph.modeSource,
-                        "Asynchronous output-mode entry through Internal filters is unsupported; resume after Internal elements.");
-                    return;
-                }
                 // This is an output mode's own pipeline handoff, before this
                 // element (distinct from filter Emit continuing after a node).
                 graph.Enqueue(graph.modeSource, report, queuedConsume);
@@ -521,13 +553,17 @@ unsafe sealed class SynchronousGraph : IDisposable
 
     bool Prepare(IDeviceReport report)
     {
-        bool track = TracksAdmission;
-        bool first = !track || !admitted.TryGetValue(report, out _);
+        bool first = true;
+        if (TracksAdmission)
+            lock (admissionGate)
+                if (admitted.TryGetValue(report, out var identity))
+                {
+                    if (identity.Epoch != emissionEpoch) return false;
+                    first = !identity.Prepared;
+                }
         // Built-in ordinary filters still consume every Internal emission;
         // only the pressure rewrite is skipped for a previously admitted object.
-        if (!Call(7, first ? 1u : 0u, report)) return false;
-        if (track && first) admitted.Add(report, admissionMarker);
-        return true;
+        return Call(7, first ? 1u : 0u, report);
     }
     void Admit(IDeviceReport report) { if (Prepare(report)) Visit(pre, 0, report, transform); }
 
@@ -584,7 +620,17 @@ unsafe sealed class SynchronousGraph : IDisposable
                 try { result = callback(scope, operation, index, &frame); }
                 finally { CurrentReport = previous; }
                 if (result < 0) { failed = true; throw new GraphAbort(); }
-                if ((operation is 5 or 7) && (capabilities & Tablet) != 0)
+                if (operation == 7 && TracksAdmission)
+                {
+                    lock (admissionGate)
+                    {
+                        if ((capabilities & Tablet) != 0) Unsafe.As<ITabletReport>(report).Pressure = frame.Pressure;
+                        // A suppressed ordinary-filter result still rewrote
+                        // pressure. Retained replay must not rewrite it again.
+                        if (index != 0) { admitted.Remove(report); admitted.Add(report, preparedAdmission); }
+                    }
+                }
+                else if ((operation is 5 or 7) && (capabilities & Tablet) != 0)
                     Unsafe.As<ITabletReport>(report).Pressure = frame.Pressure;
                 var updatedPosition = new Vector2(frame.X, frame.Y);
                 // Transform (2, or 4 fused with output) moves the report itself,

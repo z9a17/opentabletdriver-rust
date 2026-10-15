@@ -78,6 +78,8 @@ unsafe class GraphProbe
         if (args.Length > 2 && args[2] == "background") { BackgroundProbe.Run(args); return; }
         if (args.Length > 2 && args[2] == "wake") { WakeChecks.Run(args); return; }
         if (args.Length > 2 && args[2] == "upstream068") { Upstream068Probe.Run(args); return; }
+        if (args.Length > 2 && args[2] == "async-internal") { AsyncInternalProbe.Run(args); return; }
+        if (args.Length > 2 && args[2] == "corpus") { CorpusProbe.Run(args); return; }
         if (args.Length > 2 && args[2] == "contracts") { Contracts(args); return; }
         if (args.Length > 2 && args[2] == "registry") { RegistryProbe.Run(args); return; }
         if (args.Length > 2 && args[2] == "endpoints") { EndpointProbe.Run(args); return; }
