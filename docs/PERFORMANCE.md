@@ -4,6 +4,11 @@ This page describes the repeatable performance measurements (F04): what they tim
 
 These are software measurements. They time the work between a report arriving and the cursor call returning. They do not include USB transfer, the HID read call, the display, or anything a camera would see.
 
+The [15 October optimization follow-up](PERFORMANCE_IMPROVEMENTS_2026-10-15.md)
+records bounded managed-bridge, snapshot, wakeup and debugger changes on the
+0.6.8 RC adoption branch. Its offline results do not refresh the historical
+idle-process measurements below; the current service-worker topology differs.
+
 The results below were measured with 0.7.5. The [0.15.3 performance audit](AUDIT_FIXES_0.15.3.md) measured every release since then and OpenTabletDriver again on 1 October 2026. From 0.8.0 until 0.15.3 the idle daemon woke about 20 times a second instead of the 1.6 shown below, and from 0.9.0 the unchanged RadialFollow DLL cost about 530 ns per report through the .NET bridge (381 ns since 0.15.3) instead of 180 ns.
 
 The [4 October offline input audit](INPUT_AUDIT_2026-10-04.md) compares 0.16.7 with the pinned upstream at 500 Hz, includes the managed filter in paced replay, and measures synthetic CPU contention. Its small session optimization ships in 0.16.8. The reported streaming slowdown has not been reproduced with osu!lazer and OBS running.

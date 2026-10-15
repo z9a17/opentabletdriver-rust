@@ -142,12 +142,17 @@ sealed partial class ManagedProviders : IDriver, IDeviceConfigurationProvider, I
         try { baseline = ServiceClient.Snapshot(); } catch (Exception) { }
         monitor = Task.Run(() => Monitor(baseline));
     }
+    internal static bool SnapshotChanged(JObject previous, JObject current) =>
+        current.Value<ulong>("version") != previous.Value<ulong>("version")
+        // Cache tokens also identify replacement owners at the same logical
+        // version. Missing tokens retain compatibility with older native hosts.
+        || current.Value<ulong?>("cache_version") != previous.Value<ulong?>("cache_version");
     async Task Monitor(JObject? previous)
     {
         while (!lifetime.IsCancellationRequested) {
             try {
                 var current = ServiceClient.Snapshot();
-                if (previous != null && current.Value<ulong>("version") != previous.Value<ulong>("version")) {
+                if (previous != null && SnapshotChanged(previous, current)) {
                     EventHandler<IEnumerable<TabletReference>>? tablets;
                     EventHandler<DevicesChangedEventArgs>? devices;
                     EventHandler<LogMessage>? logs; EventHandler? sync;

@@ -678,6 +678,19 @@ impl PluginChain {
         crate::dotnet::endpoints::wrap_sink_for_graph(profile, tablet, native, self.managed_output.as_ref(), self.identifiers.as_deref(), self.graph.as_ref())
     }
 
+    #[cfg(windows)]
+    pub(crate) fn set_managed_wake(&mut self, target: std::sync::Arc<crate::shared_devices::OutputGate>) -> Result<(), String> {
+        if let Some(graph) = &mut self.graph { graph.set_wake(target.clone())?; }
+        if let Some(output) = &mut self.managed_output { output.set_wake(target)?; }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn wrap_action_sink_with_wake(&self, profile: &crate::config::Profile, tablet: &TabletConfiguration,
+        native: Box<dyn otd_core::output::buttons::ActionSink>, target: std::sync::Arc<crate::shared_devices::OutputGate>) -> Result<Box<dyn otd_core::output::buttons::ActionSink>, String> {
+        crate::dotnet::endpoints::wrap_sink_for_graph_with_wake(profile, tablet, native, self.managed_output.as_ref(), self.identifiers.as_deref(), self.graph.as_ref(), target)
+    }
+
     /// The filters in the order they run and the settings they run with, for
     /// the session log, as upstream logs each filter's settings at startup.
     pub fn describe(&self, profile: &crate::config::Profile) -> String {

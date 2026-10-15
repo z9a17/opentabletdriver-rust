@@ -91,6 +91,7 @@ unsafe sealed class SynchronousGraph : IDisposable
         lock (asyncGate)
         {
             disposed = true;
+            wake = null; wakeScope = 0;
             snapshots = inFlightCompletion?.Task ?? Task.CompletedTask;
             ClearPending();
             asyncFailure = null; asyncError = null;
@@ -108,6 +109,10 @@ unsafe sealed class SynchronousGraph : IDisposable
     IEnumerable<Node> AllNodes() => internalNodes.Concat(pre).Concat(post);
     readonly ConditionalWeakTable<IDeviceReport, object> admitted = new();
     static readonly object admissionMarker = new();
+    // Ordinary continuations resume downstream of Prepare, including queued
+    // emissions. Only Internal elements and output modes can enter it again.
+    // Output attachment happens after construction, so evaluate this live.
+    bool TracksAdmission => internalNodes.Length != 0 || managedOutput != null;
     readonly Action<IDeviceReport> transform, output;
     readonly int ownerThread = Environment.CurrentManagedThreadId;
     delegate* unmanaged[Cdecl]<nint, uint, uint, GraphReport*, int> callback;
@@ -126,6 +131,20 @@ unsafe sealed class SynchronousGraph : IDisposable
         internal bool Ready;
     }
     readonly object asyncGate = new();
+    delegate* unmanaged[Cdecl]<nint, void> wake;
+    nint wakeScope;
+    // The callback only signals a native event. Invoke and detach under the
+    // same gate so native may release its owned scope after detach returns.
+    void WakePending() { if (wake != null) wake(wakeScope); }
+    internal void SetWake(delegate* unmanaged[Cdecl]<nint, void> callback, nint scope)
+    {
+        lock (asyncGate)
+        {
+            if (callback != null) ObjectDisposedException.ThrowIf(disposed, this);
+            wake = callback; wakeScope = scope;
+            if (asyncFailure != null || pendingCount != 0 && pending[pendingHead].Ready) WakePending();
+        }
+    }
     // Slots themselves are allocated at setup only. The async path owns copied
     // report values; the native-only graph and synchronous Emit do no queue work.
     readonly PendingEmission[] pending = Enumerable.Range(0, MaxPending).Select(_ => new PendingEmission()).ToArray();
@@ -152,14 +171,14 @@ unsafe sealed class SynchronousGraph : IDisposable
 
     void AsyncError(Node node, string message)
     {
-        if (asyncFailure == null) { asyncFailure = node; asyncError = message; }
+        if (asyncFailure == null) { asyncFailure = node; asyncError = message; WakePending(); }
     }
     void Enqueue(Node node, IDeviceReport? report, Action<IDeviceReport>? resume = null)
     {
         // An output mode may replay an already admitted report through its
         // first ordinary element. Carry admission across the owned snapshot so
         // that replay does not remap the same pressure a second time.
-        bool wasAdmitted = report != null && admitted.TryGetValue(report, out _);
+        bool wasAdmitted = TracksAdmission && report != null && admitted.TryGetValue(report, out _);
         PendingEmission item;
         ulong ticket;
         lock (asyncGate)
@@ -205,6 +224,7 @@ unsafe sealed class SynchronousGraph : IDisposable
                 if (wasAdmitted && copy != null) admitted.Add(copy, admissionMarker);
                 pendingBytes += bytes;
                 item.Bytes = bytes; item.Report = copy; item.Ready = true;
+                WakePending();
             }
         }
         finally { completed?.TrySetResult(); }
@@ -323,7 +343,7 @@ unsafe sealed class SynchronousGraph : IDisposable
         {
             if (hasManagedFilters || managedOutput != null) DrainPending();
             IDeviceReport report = originalReport ?? Import(input);
-            admitted.Remove(report); // A source parser may reuse its input object.
+            if (TracksAdmission) admitted.Remove(report); // A source parser may reuse its input object.
             // Host built-ins can modify position before the graph dispatch. The
             // concrete original report object remains the downstream identity.
             if (originalReport is IAbsolutePositionReport position && (input->Flags & Position) != 0)
@@ -348,9 +368,10 @@ unsafe sealed class SynchronousGraph : IDisposable
                 if (asyncFailure != null || pendingCount != 0 && pending[pendingHead].Ready) return 0;
             }
         if (!hasManagedFilters && timed.Length == 0 && managedOutput == null) return -2;
-        // Async callbacks have no native wake handle. A bounded idle poll keeps
-        // newly admitted work live; native may cache only the -2 capability.
-        long now = Stopwatch.GetTimestamp(), best = hasManagedFilters || managedOutput != null ? 10_000 : -1;
+        // Timer state may change on a foreign thread without notification.
+        // Retain its bounded fallback, and the legacy fallback without a wake.
+        bool poll = (hasManagedFilters || managedOutput != null) && (wake == null || timed.Length != 0);
+        long now = Stopwatch.GetTimestamp(), best = poll ? 10_000 : -1;
         foreach (Node node in timed)
             if (!node.Disabled && node.Filter is { HasTimers: true } filter)
             {
@@ -500,11 +521,12 @@ unsafe sealed class SynchronousGraph : IDisposable
 
     bool Prepare(IDeviceReport report)
     {
-        bool first = !admitted.TryGetValue(report, out _);
+        bool track = TracksAdmission;
+        bool first = !track || !admitted.TryGetValue(report, out _);
         // Built-in ordinary filters still consume every Internal emission;
         // only the pressure rewrite is skipped for a previously admitted object.
         if (!Call(7, first ? 1u : 0u, report)) return false;
-        if (first) admitted.Add(report, admissionMarker);
+        if (track && first) admitted.Add(report, admissionMarker);
         return true;
     }
     void Admit(IDeviceReport report) { if (Prepare(report)) Visit(pre, 0, report, transform); }
@@ -941,6 +963,13 @@ public static unsafe partial class EntryPoints
     public static long GraphNextTick(nint context)
     {
         try { return ((SynchronousGraph)GCHandle.FromIntPtr(context).Target!).NextTickMicros(); }
+        catch (Exception error) { lastError = error.GetBaseException().Message; return -1; }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static int SetGraphWake(nint context, delegate* unmanaged[Cdecl]<nint, void> callback, nint scope)
+    {
+        try { ((SynchronousGraph)GCHandle.FromIntPtr(context).Target!).SetWake(callback, scope); return 0; }
         catch (Exception error) { lastError = error.GetBaseException().Message; return -1; }
     }
 

@@ -82,6 +82,28 @@ impl Ring {
         bytes.extend_from_slice(&self.bytes[..slot.length - first]);
         Packet { sequence: slot.sequence, gap_generation: slot.gap_generation, session: slot.session, auxiliary: slot.auxiliary, bytes }
     }
+    fn read(&self, cursor: &mut u64, previous_lost: &mut u64, losses: u64, limit: usize, max_bytes: usize) -> Batch {
+        let mut lost = losses.saturating_sub(*previous_lost);
+        if self.count != 0 { lost = lost.saturating_add(self.slots[self.head].sequence.saturating_sub(cursor.saturating_add(1))); }
+        // Eviction only removes a prefix, so retained sequences form a contiguous
+        // tail until saturation. Caught-up readers can skip even saturated slots.
+        let start = if *cursor >= self.sequence { self.count } else if self.count == 0 { 0 } else {
+            cursor.saturating_add(1).saturating_sub(self.slots[self.head].sequence)
+                .min(self.count as u64) as usize
+        };
+        let mut packets = Vec::with_capacity(limit.min(self.count - start));
+        let mut bytes = 0;
+        for offset in start..self.count {
+            let slot = self.slots[(self.head + offset) % self.slots.len()];
+            if slot.sequence <= *cursor { continue; }
+            if packets.len() == limit || bytes + slot.length > max_bytes { break; }
+            bytes += slot.length;
+            packets.push(self.packet(slot));
+            *cursor = slot.sequence;
+        }
+        *previous_lost = losses;
+        Batch { packets, lost }
+    }
 }
 
 #[derive(Debug)]
@@ -116,20 +138,7 @@ impl Subscription {
         let ring = RING.lock().map_err(|_| "debug stream lock poisoned")?;
         let ring = ring.as_ref().filter(|ring| ring.subscribers.contains(&self.id)).ok_or("debug stream subscription expired")?;
         let losses = LOST.load(Ordering::Acquire);
-        let mut lost = losses.saturating_sub(self.lost);
-        if ring.count != 0 { lost = lost.saturating_add(ring.slots[ring.head].sequence.saturating_sub(self.cursor.saturating_add(1))); }
-        let mut packets = Vec::with_capacity(limit);
-        let mut bytes = 0;
-        for offset in 0..ring.count {
-            let slot = ring.slots[(ring.head + offset) % ring.slots.len()];
-            if slot.sequence <= self.cursor { continue; }
-            if packets.len() == limit || bytes + slot.length > max_bytes { break; }
-            bytes += slot.length;
-            packets.push(ring.packet(slot));
-            self.cursor = slot.sequence;
-        }
-        self.lost = losses;
-        Ok(Batch { packets, lost })
+        Ok(ring.read(&mut self.cursor, &mut self.lost, losses, limit, max_bytes))
     }
 }
 impl Drop for Subscription {
@@ -158,6 +167,130 @@ pub(super) fn record(session: u64, bytes: &[u8], auxiliary: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn local_ring(reports: usize, bytes: usize) -> Ring {
+        Ring { subscribers: BTreeSet::new(), slots: vec![Slot::default(); reports].into_boxed_slice(),
+            bytes: vec![0; bytes].into_boxed_slice(), head: 0, count: 0, write: 0, used: 0, sequence: 0 }
+    }
+
+    #[test]
+    fn empty_and_caught_up_reads_do_not_allocate_and_account_for_tap_losses() {
+        let mut ring = local_ring(3, 16);
+        let (mut cursor, mut lost) = (0, 2);
+        crate::test_alloc::assert_no_allocations(|| {
+            let batch = ring.read(&mut cursor, &mut lost, 5, 64, 16);
+            assert!(batch.packets.is_empty());
+            assert_eq!(batch.lost, 3);
+        });
+        ring.push(1, &[42; 4], false, 5);
+        assert_eq!(ring.read(&mut cursor, &mut lost, 5, 64, 16).packets.len(), 1);
+        crate::test_alloc::assert_no_allocations(|| {
+            let batch = ring.read(&mut cursor, &mut lost, 7, 64, 16);
+            assert!(batch.packets.is_empty());
+            assert_eq!(batch.lost, 2);
+        });
+        assert_eq!((cursor, lost), (1, 7));
+        assert_eq!(ring.read(&mut cursor, &mut lost, 7, 64, 16).lost, 0);
+    }
+
+    #[test]
+    fn lagging_reader_preserves_wrapped_packets_and_combines_eviction_and_tap_losses() {
+        let mut ring = local_ring(3, 11);
+        for sequence in 1..=4 {
+            ring.push(sequence, &[sequence as u8; 5], sequence % 2 == 0, sequence + 10);
+        }
+        let (mut cursor, mut lost) = (0, 2);
+        let batch = ring.read(&mut cursor, &mut lost, 5, 64, 11);
+        assert_eq!(batch.lost, 5);
+        assert_eq!(batch.packets.len(), 2);
+        for (packet, sequence) in batch.packets.iter().zip(3..=4) {
+            assert_eq!(packet.sequence, sequence);
+            assert_eq!(packet.session, sequence);
+            assert_eq!(packet.gap_generation, sequence + 10);
+            assert_eq!(packet.auxiliary, sequence % 2 == 0);
+            assert_eq!(packet.bytes, [sequence as u8; 5]);
+        }
+        assert_eq!((cursor, lost), (4, 5));
+        assert_eq!(ring.read(&mut cursor, &mut lost, 5, 64, 11).lost, 0);
+    }
+
+    #[test]
+    fn slot_eviction_seeks_past_an_already_consumed_retained_prefix() {
+        let mut ring = local_ring(3, 16);
+        for sequence in 1..=5 { ring.push(1, &[sequence], false, 0); }
+        let (mut cursor, mut lost) = (3, 0);
+        let batch = ring.read(&mut cursor, &mut lost, 0, 64, 16);
+        assert_eq!(batch.lost, 0);
+        assert_eq!(batch.packets.iter().map(|packet| packet.sequence).collect::<Vec<_>>(), [4, 5]);
+        assert_eq!(batch.packets[0].bytes, [4]);
+        assert_eq!(batch.packets[1].bytes, [5]);
+    }
+
+    #[test]
+    fn readers_keep_independent_cursors_across_packet_and_byte_limits() {
+        let mut ring = local_ring(4, 16);
+        for (sequence, length) in [(1, 3), (2, 4), (3, 2)] {
+            ring.push(sequence, &vec![sequence as u8; length], false, 0);
+        }
+        let (mut a, mut a_lost, mut b, mut b_lost) = (0, 0, 0, 0);
+        let first = ring.read(&mut a, &mut a_lost, 0, 1, 9);
+        assert_eq!(first.packets.iter().map(|packet| packet.sequence).collect::<Vec<_>>(), [1]);
+        let second = ring.read(&mut a, &mut a_lost, 0, 64, 5);
+        assert_eq!(second.packets.iter().map(|packet| packet.sequence).collect::<Vec<_>>(), [2]);
+        assert_eq!(b, 0);
+        assert_eq!(ring.read(&mut b, &mut b_lost, 0, 64, 5).packets[0].sequence, 1);
+        let rest = ring.read(&mut b, &mut b_lost, 0, 64, 6);
+        assert_eq!(rest.packets.iter().map(|packet| packet.sequence).collect::<Vec<_>>(), [2, 3]);
+        assert_eq!(ring.read(&mut a, &mut a_lost, 0, 64, 9).packets[0].sequence, 3);
+        assert_eq!((a, b), (3, 3));
+    }
+
+    #[test]
+    fn insufficient_byte_budget_leaves_the_next_packet_pending() {
+        let mut ring = local_ring(2, 16);
+        ring.push(1, &[9; 8], false, 3);
+        let (mut cursor, mut lost) = (0, 0);
+        let batch = ring.read(&mut cursor, &mut lost, 3, 64, 7);
+        assert!(batch.packets.is_empty());
+        assert_eq!(batch.lost, 3);
+        assert_eq!(cursor, 0);
+        let batch = ring.read(&mut cursor, &mut lost, 3, 64, 8);
+        assert_eq!(batch.lost, 0);
+        assert_eq!(batch.packets[0].bytes, [9; 8]);
+        assert_eq!(cursor, 1);
+    }
+
+    #[test]
+    fn saturated_sequences_are_delivered_once_even_after_eviction() {
+        let mut ring = local_ring(3, 16);
+        ring.sequence = u64::MAX - 2;
+        for value in 1..=3 { ring.push(1, &[value], false, 0); }
+        let (mut cursor, mut lost) = (u64::MAX - 2, 0);
+        let batch = ring.read(&mut cursor, &mut lost, 0, 64, 16);
+        assert_eq!(batch.packets.iter().map(|packet| packet.sequence).collect::<Vec<_>>(), [u64::MAX - 1, u64::MAX]);
+        assert_eq!(batch.packets[1].bytes, [2]);
+        ring.push(1, &[4], false, 0);
+        crate::test_alloc::assert_no_allocations(|| {
+            let batch = ring.read(&mut cursor, &mut lost, 0, 64, 16);
+            assert!(batch.packets.is_empty());
+            assert_eq!(batch.lost, 0);
+        });
+        // A different reader still receives the first retained saturated slot.
+        let (mut other, mut other_lost) = (u64::MAX - 1, 0);
+        let batch = ring.read(&mut other, &mut other_lost, 0, 64, 16);
+        assert_eq!(batch.packets.len(), 1);
+        assert_eq!(batch.packets[0].bytes, [2]);
+    }
+
+    #[test]
+    fn combined_loss_count_saturates() {
+        let mut ring = local_ring(2, 16);
+        ring.sequence = u64::MAX - 4;
+        ring.push(1, &[1], false, 5);
+        let (mut cursor, mut lost) = (0, 0);
+        assert_eq!(ring.read(&mut cursor, &mut lost, 5, 64, 16).lost, u64::MAX);
+        assert_eq!(lost, 5);
+    }
+
     #[test]
     fn variable_size_ring_preserves_wrap_and_eviction_without_allocating_on_push() {
         let mut ring = Ring { subscribers: BTreeSet::new(), slots: vec![Slot::default(); 3].into_boxed_slice(),

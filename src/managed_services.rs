@@ -15,7 +15,7 @@ const TTL: Duration = Duration::from_secs(60);
 /// Actual physical session state published by the native owner. Admission
 /// resolves a binding's name here once; backend execution must not resolve it
 /// again against whichever same-named tablet happens to be running later.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SourceSession {
     pub id: String,
     pub tablet: String,
@@ -27,7 +27,7 @@ pub struct SourceSession {
 
 /// Native JSON uses upstream Newtonsoft property names inside these fields.
 /// None means unavailable, not a successful fabricated empty value.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub diagnostic_app_version: Option<String>,
     pub diagnostic_build_date: Option<String>,
@@ -74,25 +74,60 @@ pub trait Backend: Send + Sync + 'static {
     fn maintain(&self,_lane:usize) {}
     fn shutdown(&self,_lane:usize) {}
 }
-struct Ticket { deadline: Instant, reply: Option<Vec<u8>> }
+struct Ticket { deadline: Instant, reply: Option<Arc<[u8]>> }
 struct State {
-    stopped: bool, snapshot: Vec<u8>, version: u64, daemon_identity: Option<crate::control::WorkerIdentity>,
+    stopped: bool, snapshot: Arc<[u8]>, version: u64, cache_version: u64, daemon_identity: Option<crate::control::WorkerIdentity>,
     source_sessions: Vec<SourceSession>,
     tickets: HashMap<u64, Ticket>, queue: VecDeque<(u64, usize, Request)>, queued_bytes: usize,
 }
 struct Engine { state: Mutex<State>, ready: Condvar }
+impl State {
+    fn snapshot_ticket(&mut self, known_version: u64, size: usize, now: Instant) -> Result<u64, i32> {
+        if self.stopped { return Err(-5); }
+        self.tickets.retain(|_, ticket| now < ticket.deadline);
+        if known_version != 0 && known_version == self.cache_version { return Ok(0); }
+        if self.tickets.len() >= MAX_TICKETS || self.queue.len() >= MAX_TICKETS
+            || self.queued_bytes + size > MAX_QUEUED_BYTES { return Err(-2); }
+        let id = NEXT_TICKET.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| value.checked_add(1)).map_err(|_| -5)?;
+        self.tickets.insert(id, Ticket { deadline: now + TTL, reply: Some(Arc::clone(&self.snapshot)) });
+        Ok(id)
+    }
+    fn completion(&mut self, id: u64, now: Instant) -> Result<Option<&[u8]>, i32> {
+        let ticket = self.tickets.get(&id).ok_or(-3)?;
+        if now >= ticket.deadline { self.tickets.remove(&id); return Err(-3); }
+        Ok(self.tickets.get(&id).and_then(|ticket| ticket.reply.as_deref()))
+    }
+}
 static HOST: OnceLock<Mutex<Option<Arc<Engine>>>> = OnceLock::new();
 static NEXT_TICKET: AtomicU64 = AtomicU64::new(1);
+// Independent of daemon/source generations: a replacement owner in this CLR
+// process must never appear unchanged merely because its logical version is 1.
+static NEXT_CACHE_VERSION: AtomicU64 = AtomicU64::new(1);
 static SNAPSHOTS_REQUESTED: AtomicBool = AtomicBool::new(false);
 pub fn snapshots_requested() -> bool { SNAPSHOTS_REQUESTED.load(Ordering::Acquire) }
 fn host() -> Option<Arc<Engine>> { HOST.get_or_init(|| Mutex::new(None)).lock().ok()?.clone() }
-fn reply(result: Result<Value, String>) -> Vec<u8> {
+fn reply(result: Result<Value, String>) -> Arc<[u8]> {
     let value = match result { Ok(result) => serde_json::json!({"ok":true,"result":result}),
         Err(error) => serde_json::json!({"ok":false,"error":error}) };
     let bytes = serde_json::to_vec(&value).unwrap_or_default();
-    if bytes.len() <= MAX_BYTES { bytes } else {
-        br#"{"ok":false,"error":"Managed service reply exceeds 4 MiB."}"#.to_vec()
+    if bytes.len() <= MAX_BYTES { bytes.into() } else {
+        Arc::from(&br#"{"ok":false,"error":"Managed service reply exceeds 4 MiB."}"#[..])
     }
+}
+fn next_cache_version() -> Result<u64, String> {
+    NEXT_CACHE_VERSION.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| value.checked_add(1))
+        .map_err(|_| "Managed snapshot cache version exhausted.".into())
+}
+fn snapshot_reply(snapshot: &Snapshot, cache_version: u64) -> Result<Arc<[u8]>, String> {
+    // Serialize the borrowed typed snapshot directly into its reply envelope.
+    // Avoid the intermediate Value tree and second full serialization.
+    #[derive(Serialize)]
+    struct SnapshotResult<'a> { #[serde(flatten)] snapshot: &'a Snapshot, cache_version: u64 }
+    #[derive(Serialize)]
+    struct Reply<'a> { ok: bool, result: SnapshotResult<'a> }
+    let bytes = serde_json::to_vec(&Reply { ok: true, result: SnapshotResult { snapshot, cache_version } }).map_err(|error| error.to_string())?;
+    if bytes.len() > MAX_BYTES { return Err("Managed snapshot exceeds 4 MiB.".into()); }
+    Ok(bytes.into())
 }
 /// Own this on the daemon/control lifetime. Starting it does not initialize CLR.
 /// Drop stops admission and fails pending tickets. An executing backend cannot
@@ -102,16 +137,13 @@ pub struct Host { engine: Arc<Engine>, workers: Vec<std::thread::JoinHandle<()>>
 pub struct Publisher { engine: Arc<Engine> }
 impl Host {
     pub fn start(snapshot: Snapshot, backend: Arc<dyn Backend>) -> Result<Self, String> {
-        let value = serde_json::to_value(&snapshot).map_err(|e| e.to_string())?;
-        if serde_json::to_vec(&value).map_err(|e| e.to_string())?.len() > MAX_BYTES - 64 {
-            return Err("Managed snapshot exceeds 4 MiB.".into());
-        }
-        let bytes = reply(Ok(value));
+        let cache_version = next_cache_version()?;
+        let bytes = snapshot_reply(&snapshot, cache_version)?;
         let mut slot = HOST.get_or_init(|| Mutex::new(None)).lock().map_err(|_| "Managed owner lock poisoned.")?;
         if slot.is_some() { return Err("Managed service owner already installed.".into()); }
         SNAPSHOTS_REQUESTED.store(false, Ordering::Release);
         let engine = Arc::new(Engine { state: Mutex::new(State { stopped: false,
-            snapshot: bytes, version: snapshot.version, daemon_identity: snapshot.daemon_identity, tickets: HashMap::new(),
+            snapshot: bytes, version: snapshot.version, cache_version, daemon_identity: snapshot.daemon_identity, tickets: HashMap::new(),
             source_sessions: snapshot.source_sessions,
             queue: VecDeque::new(), queued_bytes: 0 }), ready: Condvar::new() });
         let mut workers = Vec::new();
@@ -171,16 +203,16 @@ impl Host {
 }
 impl Publisher {
     pub fn publish(&self, snapshot: Snapshot) -> Result<(), String> {
-        let value = serde_json::to_value(&snapshot).map_err(|e| e.to_string())?;
-        if serde_json::to_vec(&value).map_err(|e| e.to_string())?.len() > MAX_BYTES - 64 {
-            return Err("Managed snapshot exceeds 4 MiB.".into());
-        }
-        let bytes = reply(Ok(value));
+        self.publish_ref(&snapshot)
+    }
+    pub fn publish_ref(&self, snapshot: &Snapshot) -> Result<(), String> {
+        let cache_version = next_cache_version()?;
+        let bytes = snapshot_reply(snapshot, cache_version)?;
         let mut state = self.engine.state.lock().map_err(|_| "Managed owner lock poisoned.")?;
         if state.stopped { return Err("Managed service owner stopped.".into()); }
         if snapshot.version <= state.version { return Err("Managed snapshot version must increase.".into()); }
-        state.version = snapshot.version; state.daemon_identity = snapshot.daemon_identity;
-        state.source_sessions = snapshot.source_sessions; state.snapshot = bytes; Ok(())
+        state.version = snapshot.version; state.cache_version = cache_version; state.daemon_identity = snapshot.daemon_identity.clone();
+        state.source_sessions = snapshot.source_sessions.clone(); state.snapshot = bytes; Ok(())
     }
 }
 impl Drop for Host {
@@ -203,6 +235,8 @@ impl Drop for Host {
 
 /// ABI v1. Codes: -1 owner absent, -2 busy, -3 malformed, -4 size, -5 stopped,
 /// -6 source absent/ambiguous/not running or currently being replaced.
+/// Snapshot scope is the caller's result.cache_version (0 forces a full read).
+/// A matching nonzero version succeeds with ticket 0: unchanged, no ticket to poll/release.
 #[repr(C)]
 pub struct Callbacks { pub version: u32, pub size: u32,
     pub request: unsafe extern "C" fn(u32, u64, *const u8, u32, *mut u64) -> i32,
@@ -243,14 +277,18 @@ unsafe extern "C" fn request(op: u32, scope: u64, input: *const u8, len: u32, ou
         if source.id.is_empty() || source.device_generation == 0 || matches.next().is_some() { return -6; }
         Some((source.id.clone(), source.device_generation))
     } else { None };
+    if operation == Operation::Snapshot {
+        SNAPSHOTS_REQUESTED.store(true, Ordering::Release);
+        return match state.snapshot_ticket(scope, len as usize, Instant::now()) {
+            Ok(ticket) => { unsafe { *output = ticket; } 0 }, Err(code) => code,
+        };
+    }
     let now = Instant::now(); state.tickets.retain(|_, ticket| now < ticket.deadline);
     if state.tickets.len() >= MAX_TICKETS || state.queue.len() >= MAX_TICKETS
         || state.queued_bytes + len as usize > MAX_QUEUED_BYTES { return -2; }
     let Ok(id) = NEXT_TICKET.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| value.checked_add(1)) else { return -5 };
-    let completed = (operation == Operation::Snapshot).then(|| state.snapshot.clone());
-    if operation == Operation::Snapshot { SNAPSHOTS_REQUESTED.store(true, Ordering::Release); }
-    state.tickets.insert(id, Ticket { deadline: now + TTL, reply: completed });
-    if operation != Operation::Snapshot {
+    state.tickets.insert(id, Ticket { deadline: now + TTL, reply: None });
+    {
         let expected_daemon = state.daemon_identity.clone();
         state.queue.push_back((id, len as usize, Request { operation, scope, payload, expected_daemon, expected_source }));
         state.queued_bytes += len as usize; engine.ready.notify_all();
@@ -260,9 +298,7 @@ unsafe extern "C" fn request(op: u32, scope: u64, input: *const u8, len: u32, ou
 unsafe extern "C" fn poll(id: u64, output: *mut u8, capacity: u32) -> i32 {
     let Some(engine) = host() else { return -1 };
     let Ok(mut state) = engine.state.lock() else { return -5 };
-    let Some(ticket) = state.tickets.get_mut(&id) else { return -3 };
-    if Instant::now() >= ticket.deadline { state.tickets.remove(&id); return -3; }
-    let Some(bytes) = ticket.reply.as_ref() else { return 0 };
+    let bytes = match state.completion(id, Instant::now()) { Ok(Some(bytes)) => bytes, Ok(None) => return 0, Err(code) => return code };
     if !output.is_null() && capacity as usize >= bytes.len() {
         unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), output, bytes.len()); }
     }
@@ -270,4 +306,99 @@ unsafe extern "C" fn poll(id: u64, output: *mut u8, capacity: u32) -> i32 {
 }
 unsafe extern "C" fn release(id: u64) {
     if let Some(engine) = host() { if let Ok(mut state) = engine.state.lock() { state.tickets.remove(&id); } }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+
+    fn publisher() -> Publisher {
+        let snapshot = Snapshot { version: 1, settings: Some(serde_json::json!({"Profiles":[]})), ..Snapshot::default() };
+        let cache_version = next_cache_version().unwrap();
+        Publisher { engine: Arc::new(Engine { state: Mutex::new(State {
+            stopped: false, snapshot: snapshot_reply(&snapshot, cache_version).unwrap(), version: snapshot.version, cache_version,
+            daemon_identity: None, source_sessions: Vec::new(), tickets: HashMap::new(),
+            queue: VecDeque::new(), queued_bytes: 0,
+        }), ready: Condvar::new() }) }
+    }
+
+    #[test]
+    fn first_and_unchanged_reads_share_bytes_without_allocating_tickets() {
+        let publisher = publisher();
+        let mut state = publisher.engine.state.lock().unwrap();
+        let first = state.snapshot_ticket(0, 0, Instant::now()).unwrap();
+        assert_ne!(first, 0);
+        assert!(Arc::ptr_eq(state.tickets[&first].reply.as_ref().unwrap(), &state.snapshot));
+        let references = Arc::strong_count(&state.snapshot);
+        let cache_version = state.cache_version;
+        let unchanged = state.snapshot_ticket(cache_version, 0, Instant::now()).unwrap();
+        assert_eq!(unchanged, 0);
+        assert_eq!(state.tickets.len(), 1);
+        assert_eq!(Arc::strong_count(&state.snapshot), references);
+        // Explicit refresh always returns a full ticket even at the same version.
+        assert_ne!(state.snapshot_ticket(0, 0, Instant::now()).unwrap(), 0);
+    }
+
+    #[test]
+    fn changed_publication_preserves_retained_reply_and_expiration() {
+        let publisher = publisher();
+        let now = Instant::now();
+        let (old, old_version) = { let mut state = publisher.engine.state.lock().unwrap();
+            (state.snapshot_ticket(0, 0, now).unwrap(), state.cache_version) };
+        publisher.publish(Snapshot { version: 2, resynchronize: 3, ..Snapshot::default() }).unwrap();
+        let mut state = publisher.engine.state.lock().unwrap();
+        let changed = state.snapshot_ticket(old_version, 0, now).unwrap();
+        let old_reply: Value = serde_json::from_slice(state.completion(old, now).unwrap().unwrap()).unwrap();
+        let changed_reply: Value = serde_json::from_slice(state.completion(changed, now).unwrap().unwrap()).unwrap();
+        assert_eq!(old_reply["result"]["version"], 1);
+        assert_eq!(changed_reply["result"]["version"], 2);
+        assert_eq!(changed_reply["result"]["resynchronize"], 3);
+        assert_eq!(state.completion(changed, now + TTL), Err(-3));
+        assert!(!state.tickets.contains_key(&changed));
+        state.stopped = true;
+        assert_eq!(state.snapshot_ticket(2, 0, now), Err(-5));
+    }
+
+    #[test]
+    fn oversized_publication_keeps_previous_snapshot_and_version() {
+        let publisher = publisher();
+        assert!(publisher.publish(Snapshot { version: 2, settings: Some(Value::String("x".repeat(MAX_BYTES))), ..Snapshot::default() }).is_err());
+        let state = publisher.engine.state.lock().unwrap();
+        assert_eq!(state.version, 1);
+        let value: Value = serde_json::from_slice(&state.snapshot).unwrap();
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["result"]["version"], 1);
+    }
+
+    #[test]
+    fn replacement_owner_cannot_reuse_a_cached_version() {
+        let first = publisher();
+        let previous = first.engine.state.lock().unwrap().cache_version;
+        let replacement = publisher();
+        let mut state = replacement.engine.state.lock().unwrap();
+        assert_eq!(state.version, 1);
+        assert_ne!(state.cache_version, previous);
+        assert_ne!(state.snapshot_ticket(previous, 0, Instant::now()).unwrap(), 0);
+        let current = state.cache_version;
+        assert_eq!(state.snapshot_ticket(current, 0, Instant::now()).unwrap(), 0);
+    }
+
+    #[test]
+    fn unchanged_reads_release_expired_retained_snapshots() {
+        let publisher = publisher();
+        let now = Instant::now();
+        let retained = {
+            let mut state = publisher.engine.state.lock().unwrap();
+            let ticket = state.snapshot_ticket(0, 0, now).unwrap();
+            assert_ne!(ticket, 0);
+            Arc::downgrade(&state.snapshot)
+        };
+        publisher.publish(Snapshot { version: 2, ..Snapshot::default() }).unwrap();
+        assert!(retained.upgrade().is_some());
+        let mut state = publisher.engine.state.lock().unwrap();
+        let current = state.cache_version;
+        assert_eq!(state.snapshot_ticket(current, 0, now + TTL).unwrap(), 0);
+        assert!(state.tickets.is_empty());
+        assert!(retained.upgrade().is_none());
+    }
 }

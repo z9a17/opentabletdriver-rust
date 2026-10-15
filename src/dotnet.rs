@@ -36,6 +36,31 @@ type Inspect = unsafe extern "C" fn(*const u8, i32, *mut u8, i32) -> i32;
 type GetError = unsafe extern "C" fn(*mut u8, i32) -> i32;
 type ProcessReport = unsafe extern "C" fn(*mut c_void, *mut Sample, *const NativePenReport) -> i32;
 type ResetReport = unsafe extern "C" fn(*mut c_void, *const u8, u32) -> i32;
+type WakeCallback = unsafe extern "C" fn(*mut c_void);
+type SetWake = unsafe extern "C" fn(*mut c_void, Option<WakeCallback>, *mut c_void) -> i32;
+
+/// Stable native scope, owned until managed detachment has synchronized with
+/// every callback. It contains no graph/report pointer and never reenters CLR.
+#[cfg(windows)]
+struct WakeTarget(Box<std::sync::Arc<crate::shared_devices::OutputGate>>);
+#[cfg(windows)]
+impl WakeTarget {
+    fn install(context: *mut c_void, set: SetWake, target: std::sync::Arc<crate::shared_devices::OutputGate>) -> Result<Self, String> {
+        let mut scope = Self(Box::new(target));
+        let pointer = (&mut *scope.0 as *mut std::sync::Arc<crate::shared_devices::OutputGate>).cast();
+        if unsafe { set(context, Some(signal_managed), pointer) } != 0 { return Err(last_error()); }
+        Ok(scope)
+    }
+    fn detach(self, context: *mut c_void, set: SetWake) {
+        // Unexpected bridge failure must not free a potentially retained scope.
+        if unsafe { set(context, None, std::ptr::null_mut()) } != 0 { std::mem::forget(self); }
+    }
+}
+#[cfg(windows)]
+unsafe extern "C" fn signal_managed(scope: *mut c_void) {
+    let target = unsafe { &*scope.cast::<std::sync::Arc<crate::shared_devices::OutputGate>>() };
+    target.signal_managed();
+}
 
 /// Managed bridge extension only. Native filter ABI v1 remains unchanged.
 /// Layout matches NativePenReport in compat/OtdCompat/EntryPoints.cs.
@@ -70,6 +95,7 @@ struct Bridge {
     graph_failure: graph::GraphFailure,
     destroy_graph: graph::DestroyGraph,
     graph_next_tick: Option<graph::GraphNextTick>,
+    set_graph_wake: Option<SetWake>,
     tick_graph: Option<graph::TickGraph>,
     /// Fused continuations (0.15.3): the host runs its built-in filters
     /// before dispatch, and transform plus output cross into Rust once.
@@ -231,6 +257,9 @@ fn load_bridge() -> Result<Bridge, String> {
         // Bridges older than 0.14 lack timers; synchronous filters still run.
         graph_next_tick: entry("GraphNextTick").ok().map(|entry| unsafe {
             std::mem::transmute::<*mut c_void, graph::GraphNextTick>(entry)
+        }),
+        set_graph_wake: entry("SetGraphWake").ok().map(|entry| unsafe {
+            std::mem::transmute::<*mut c_void, SetWake>(entry)
         }),
         tick_graph: entry("TickGraph")
             .ok()

@@ -64,9 +64,17 @@ static class ServiceClient
         if (reply.Value<bool?>("ok") != true) throw new InvalidOperationException(reply.Value<string>("error") ?? "Managed host service failed.");
         return reply["result"] ?? JValue.CreateNull();
     }
-    static JObject FetchSnapshot()
+    static unsafe JObject FetchSnapshot(JObject? cached = null)
     {
-        ulong ticket = Admit(0, 0, null);
+        ServiceCallbacks api;
+        lock (Gate) { if (!installed) throw new NotSupportedException("Native managed service owner is unavailable."); api = callbacks; }
+        // The optional known version uses the existing snapshot scope. An
+        // unchanged read returns ticket 0 without allocating/copying/parsing JSON.
+        ulong version = cached?.Value<ulong?>("cache_version") ?? 0;
+        ulong ticket = 0;
+        int code = api.Request(0, version, null, 0, &ticket);
+        if (code != 0) throw new InvalidOperationException($"Managed service admission failed ({code}); no operation was accepted.");
+        if (ticket == 0) return cached ?? throw new InvalidOperationException("Managed host snapshot is unavailable.");
         try { return Completed(ticket) as JObject ?? throw new InvalidOperationException("Managed host snapshot is unavailable."); }
         finally { Release(ticket); }
     }
@@ -85,11 +93,12 @@ static class ServiceClient
             return snapshot;
         }
     }
-    internal static void RefreshSnapshot()
+    internal static void RefreshSnapshot() => RefreshSnapshot(force: true);
+    static void RefreshSnapshot(bool force)
     {
         // Serialize fresh reads to prevent an older periodic snapshot replacing
         // the post-commit view. Backend mutation completion never holds this gate.
-        lock (SnapshotGate) Volatile.Write(ref snapshot, FetchSnapshot());
+        lock (SnapshotGate) Volatile.Write(ref snapshot, FetchSnapshot(force ? null : snapshot));
     }
     internal static void RefreshAfterCommit() {
         try { RefreshSnapshot(); }
@@ -99,7 +108,7 @@ static class ServiceClient
     {
         for (;;) {
             await Task.Delay(250).ConfigureAwait(false);
-            try { RefreshSnapshot(); }
+            try { RefreshSnapshot(force: false); }
             catch (Exception) { lock (SnapshotGate) Volatile.Write(ref snapshot, null); }
         }
     }

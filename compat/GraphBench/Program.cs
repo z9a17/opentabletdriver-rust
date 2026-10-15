@@ -73,12 +73,15 @@ unsafe class GraphProbe
     static void Main(string[] args)
     {
         System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
+        if ((args.Length == 1 && args[0] == "snapshots") || (args.Length > 2 && args[2] == "snapshots")) { ServiceSnapshotProbe.Run(); return; }
         if (args.Length > 2 && args[2] == "cleanup") { CleanupProbe.Run(args); return; }
         if (args.Length > 2 && args[2] == "background") { BackgroundProbe.Run(args); return; }
+        if (args.Length > 2 && args[2] == "wake") { WakeChecks.Run(args); return; }
         if (args.Length > 2 && args[2] == "upstream068") { Upstream068Probe.Run(args); return; }
         if (args.Length > 2 && args[2] == "contracts") { Contracts(args); return; }
         if (args.Length > 2 && args[2] == "registry") { RegistryProbe.Run(args); return; }
         if (args.Length > 2 && args[2] == "endpoints") { EndpointProbe.Run(args); return; }
+        if (args.Length > 2 && args[2] == "admission") { AdmissionProbe.Run(args); return; }
         if (args.Length > 2 && args[2] == "cold") { Cold(args); return; }
         using var instance = new Instance(new JObject {
             ["assembly_path"] = args[0], ["type_name"] = "SettingsFixture.DefaultsFilter",

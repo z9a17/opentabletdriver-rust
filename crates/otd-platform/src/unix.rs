@@ -43,18 +43,30 @@ pub mod action_output {
 pub mod managed_host {
     use std::sync::{Mutex,OnceLock};
     use super::managed_services::{Publisher,Snapshot};
-    struct Cached {publisher:Publisher,snapshot:Snapshot,inventory:Option<serde_json::Value>}
+    struct Cached {publisher:Publisher,snapshot:Snapshot,inventory:Option<serde_json::Value>,dirty:bool}
     static CURRENT:OnceLock<Mutex<Option<Cached>>>=OnceLock::new();
     pub fn install(publisher:Publisher,snapshot:Snapshot)->Result<(),String>{
         let mut current=CURRENT.get_or_init(||Mutex::new(None)).lock().map_err(|_|"Managed publication poisoned")?;
-        if current.is_some(){return Err("Managed publication owner already installed".into());}let inventory=snapshot.devices.clone();*current=Some(Cached{publisher,snapshot,inventory});Ok(())
+        if current.is_some(){return Err("Managed publication owner already installed".into());}let inventory=snapshot.devices.clone();*current=Some(Cached{publisher,snapshot,inventory,dirty:false});Ok(())
     }
     pub fn publish(mut snapshot:Snapshot)->Result<(),String>{
         let mut current=CURRENT.get_or_init(||Mutex::new(None)).lock().map_err(|_|"Managed publication poisoned")?;
         let current=current.as_mut().ok_or("Managed native publication owner unavailable")?;
-        snapshot.version=current.snapshot.version.checked_add(1).ok_or("Managed snapshot generation exhausted")?;
-        current.inventory=snapshot.devices.clone();snapshot.devices=merge_owned(current.inventory.as_ref());
-        current.publisher.publish(snapshot.clone())?;current.snapshot=snapshot;Ok(())
+        snapshot.version=current.snapshot.version;
+        current.inventory=snapshot.devices.take();snapshot.devices=merge_owned(current.inventory.as_ref());
+        // The Unix owner still constructs candidate snapshots. Comparing their
+        // typed contents (including catalog metadata) here avoids another full
+        // document clone and serialization for unchanged scans/control reads.
+        // Discovery and candidate construction can be made event driven separately.
+        if snapshot!=current.snapshot{current.snapshot=snapshot;current.dirty=true;}
+        publish_cached(current)
+    }
+    fn publish_cached(current:&mut Cached)->Result<(),String>{
+        if !current.dirty{return Ok(());}
+        let previous=current.snapshot.version;
+        current.snapshot.version=previous.checked_add(1).ok_or("Managed snapshot generation exhausted")?;
+        if let Err(error)=current.publisher.publish_ref(&current.snapshot){current.snapshot.version=previous;return Err(error);}
+        current.dirty=false;Ok(())
     }
     pub fn clear(){if let Ok(mut current)=CURRENT.get_or_init(||Mutex::new(None)).lock(){*current=None;}}
     fn merge_owned(inventory:Option<&serde_json::Value>)->Option<serde_json::Value>{
@@ -68,8 +80,9 @@ pub mod managed_host {
         if let Ok(mut current)=CURRENT.get_or_init(||Mutex::new(None)).lock(){if let Some(current)=current.as_mut(){
             // Do not collapse current and prepared readers sharing one path.
             // Scoped constructors select their concrete reader_generation.
-            current.snapshot.devices=merge_owned(current.inventory.as_ref());
-            if let Some(version)=current.snapshot.version.checked_add(1){current.snapshot.version=version;let _=current.publisher.publish(current.snapshot.clone());}
+            let devices=merge_owned(current.inventory.as_ref());
+            if devices!=current.snapshot.devices{current.snapshot.devices=devices;current.dirty=true;}
+            let _=publish_cached(current);
         }}
     }
     // Cold setup publishes exact prepared reader metadata without sending a
