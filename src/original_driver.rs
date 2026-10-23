@@ -27,11 +27,15 @@ fn original_running() -> io::Result<bool> {
         };
     }
     loop {
-        let length = entry.szExeFile.iter().position(|&unit| unit == 0)
+        let length = entry
+            .szExeFile
+            .iter()
+            .position(|&unit| unit == 0)
             .unwrap_or(entry.szExeFile.len());
         let name = String::from_utf16_lossy(&entry.szExeFile[..length]);
         if name.eq_ignore_ascii_case("OpenTabletDriver.Daemon.exe")
-            || name.eq_ignore_ascii_case("OpenTabletDriver.UX.Wpf.exe") {
+            || name.eq_ignore_ascii_case("OpenTabletDriver.UX.Wpf.exe")
+        {
             return Ok(true);
         }
         if unsafe { Process32NextW(snapshot.raw(), &mut entry) } == 0 {

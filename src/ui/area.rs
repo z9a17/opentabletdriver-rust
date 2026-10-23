@@ -166,7 +166,11 @@ pub fn paint(canvas: &mut Canvas, scene: &AreaScene, fonts: &AreaFonts, palette:
     let valid = area.width > 0.0 && area.height > 0.0 && area.x.is_finite() && area.y.is_finite();
     // Missing hardware and an invalid saved mapping are different states.
     // An empty unavailable message leaves the themed canvas untouched.
-    let message = if view.is_none() { unavailable_text } else { invalid_text };
+    let message = if view.is_none() {
+        unavailable_text
+    } else {
+        invalid_text
+    };
     let Some(view) = view.filter(|_| valid) else {
         canvas.text(
             rect,

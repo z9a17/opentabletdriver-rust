@@ -10,20 +10,20 @@
 //! the logged-in GitHub CLI's (`gh auth token`). It is sent only to GitHub's
 //! API, never to the storage host a download redirects to.
 
+#[cfg(unix)]
+use crate::process::CommandExt;
 use std::fs;
 use std::io;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
-#[cfg(unix)]
-use crate::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 #[cfg(unix)]
-const CREATE_NO_WINDOW:u32=0;
-#[path="update/transaction.rs"]
+const CREATE_NO_WINDOW: u32 = 0;
+#[path = "update/transaction.rs"]
 pub(crate) mod transaction;
 
 pub const REPOSITORY: &str = "z9a17/opentabletdriver-rust";
@@ -51,10 +51,13 @@ fn token(cancel: Option<&AtomicBool>) -> Option<String> {
                 .filter(|token| !token.trim().is_empty())
         })
         .or_else(|| {
-            let output = crate::download::run(Command::new("gh")
-                .creation_flags(CREATE_NO_WINDOW)
-                .args(["auth", "token"]), cancel)
-                .ok()?;
+            let output = crate::download::run(
+                Command::new("gh")
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .args(["auth", "token"]),
+                cancel,
+            )
+            .ok()?;
             let token = String::from_utf8(output.stdout).ok()?.trim().to_owned();
             (output.status.success() && !token.is_empty()).then_some(token)
         })
@@ -72,8 +75,10 @@ pub fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
 }
 
 pub fn current_version() -> (u64, u64, u64) {
-    #[cfg(windows)]let text=env!("CARGO_PKG_VERSION");
-    #[cfg(unix)]let text=env!("OTD_RELEASE_VERSION");
+    #[cfg(windows)]
+    let text = env!("CARGO_PKG_VERSION");
+    #[cfg(unix)]
+    let text = env!("OTD_RELEASE_VERSION");
     parse_version(text).expect("the package version is numeric")
 }
 
@@ -84,12 +89,26 @@ pub(crate) fn system_tool(name: &str) -> PathBuf {
 }
 
 #[cfg(unix)]
-pub(crate) fn system_tool(name:&str)->PathBuf{crate::update::system_tool(name)}
-fn package_suffix()->&'static str{
-    #[cfg(windows)]{ "-win-x64.zip" }
-    #[cfg(target_os="linux")]{ "-linux-x64.tar.gz" }
-    #[cfg(all(target_os="macos",target_arch="x86_64"))]{ "-macos-x64.tar.gz" }
-    #[cfg(all(target_os="macos",target_arch="aarch64"))]{ "-macos-arm64.tar.gz" }
+pub(crate) fn system_tool(name: &str) -> PathBuf {
+    crate::update::system_tool(name)
+}
+fn package_suffix() -> &'static str {
+    #[cfg(windows)]
+    {
+        "-win-x64.zip"
+    }
+    #[cfg(target_os = "linux")]
+    {
+        "-linux-x64.tar.gz"
+    }
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    {
+        "-macos-x64.tar.gz"
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        "-macos-arm64.tar.gz"
+    }
 }
 
 /// The latest published release, from the GitHub API.
@@ -116,7 +135,12 @@ pub(crate) fn latest_with_cancel(cancel: Option<&AtomicBool>) -> Result<Release,
 }
 
 /// Downloads a release file, through the API when a token is available.
-fn download(public: &str, api: &str, output: Option<&Path>, cancel: Option<&AtomicBool>) -> Result<Vec<u8>, String> {
+fn download(
+    public: &str,
+    api: &str,
+    output: Option<&Path>,
+    cancel: Option<&AtomicBool>,
+) -> Result<Vec<u8>, String> {
     crate::download::cancelled(cancel)?;
     let token = token(cancel);
     let (url, accept) = match &token {
@@ -125,7 +149,8 @@ fn download(public: &str, api: &str, output: Option<&Path>, cancel: Option<&Atom
     };
     match output {
         Some(path) => {
-            crate::download::to_file_with_cancel(url, accept, token.as_deref(), path, cancel).map(|()| Vec::new())
+            crate::download::to_file_with_cancel(url, accept, token.as_deref(), path, cancel)
+                .map(|()| Vec::new())
         }
         None => crate::download::to_memory_with_cancel(url, accept, token.as_deref(), cancel),
     }
@@ -154,10 +179,10 @@ fn parse_release(body: &[u8]) -> Result<Release, String> {
             })
         })
     };
-    let (package_name, package_url, package_api_url) =
-        asset(package_suffix()).ok_or_else(|| format!("{tag} has no {} package",package_suffix()))?;
-    let (_, checksum_url, checksum_api_url) =
-        asset(&format!("{}.sha256",package_suffix())).ok_or_else(|| format!("{tag} has no package checksum"))?;
+    let (package_name, package_url, package_api_url) = asset(package_suffix())
+        .ok_or_else(|| format!("{tag} has no {} package", package_suffix()))?;
+    let (_, checksum_url, checksum_api_url) = asset(&format!("{}.sha256", package_suffix()))
+        .ok_or_else(|| format!("{tag} has no package checksum"))?;
     let within = |url: Option<String>, prefix: &str| {
         url.filter(|url| url.starts_with(prefix))
             .ok_or_else(|| format!("{tag} has an unexpected download location"))
@@ -181,20 +206,27 @@ fn parse_release(body: &[u8]) -> Result<Release, String> {
 pub fn sha256(path: &Path) -> Result<String, String> {
     use std::io::Read;
     use windows_sys::Win32::Security::Cryptography::{
-        BCRYPT_HASH_HANDLE, BCRYPT_SHA256_ALG_HANDLE, BCryptCreateHash,
-        BCryptDestroyHash, BCryptFinishHash, BCryptHashData,
+        BCRYPT_HASH_HANDLE, BCRYPT_SHA256_ALG_HANDLE, BCryptCreateHash, BCryptDestroyHash,
+        BCryptFinishHash, BCryptHashData,
     };
     struct Hash(BCRYPT_HASH_HANDLE);
     impl Drop for Hash {
-        fn drop(&mut self) { unsafe { BCryptDestroyHash(self.0) }; }
+        fn drop(&mut self) {
+            unsafe { BCryptDestroyHash(self.0) };
+        }
     }
     let mut file = fs::File::open(path).map_err(|error| format!("{}: {error}", path.display()))?;
     let mut handle = std::ptr::null_mut();
     // CNG owns the hash object buffer and releases it with BCryptDestroyHash.
     let status = unsafe {
         BCryptCreateHash(
-            BCRYPT_SHA256_ALG_HANDLE, &mut handle, std::ptr::null_mut(), 0,
-            std::ptr::null(), 0, 0,
+            BCRYPT_SHA256_ALG_HANDLE,
+            &mut handle,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null(),
+            0,
+            0,
         )
     };
     if status != 0 {
@@ -208,13 +240,19 @@ pub fn sha256(path: &Path) -> Result<String, String> {
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error) => return Err(format!("{}: {error}", path.display())),
         };
-        if length == 0 { break; }
+        if length == 0 {
+            break;
+        }
         let status = unsafe { BCryptHashData(hash.0, buffer.as_ptr(), length as u32, 0) };
-        if status != 0 { return Err(format!("SHA-256 failed with status {status:#x}")); }
+        if status != 0 {
+            return Err(format!("SHA-256 failed with status {status:#x}"));
+        }
     }
     let mut digest = [0u8; 32];
     let status = unsafe { BCryptFinishHash(hash.0, digest.as_mut_ptr(), digest.len() as u32, 0) };
-    if status != 0 { return Err(format!("SHA-256 failed with status {status:#x}")); }
+    if status != 0 {
+        return Err(format!("SHA-256 failed with status {status:#x}"));
+    }
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut text = String::with_capacity(64);
     for byte in digest {
@@ -225,7 +263,9 @@ pub fn sha256(path: &Path) -> Result<String, String> {
 }
 
 #[cfg(unix)]
-pub fn sha256(path:&Path)->Result<String,String>{crate::update::sha256(path)}
+pub fn sha256(path: &Path) -> Result<String, String> {
+    crate::update::sha256(path)
+}
 /// Every file under `root`, relative to it.
 fn files(root: &Path, directory: &Path, found: &mut Vec<PathBuf>) -> io::Result<()> {
     for entry in fs::read_dir(directory)? {
@@ -257,8 +297,9 @@ pub fn install(release: &Release, install: &Path, progress: &dyn Fn(&str)) -> Re
     let process = control::pipe::CompatPipe::server_process_id(&endpoint)
         .map_err(|error| format!("Update installation requires the existing native daemon: {error}. Check for updates remains available offline."))?;
     let call = |command| -> Result<Reply, String> {
-        let response = control::request_owned(&Request::new(1, command), Duration::from_secs(5), process)
-            .map_err(|error| error.to_string())?;
+        let response =
+            control::request_owned(&Request::new(1, command), Duration::from_secs(5), process)
+                .map_err(|error| error.to_string())?;
         match response.reply {
             Reply::Error { error } => Err(error.message),
             reply => Ok(reply),
@@ -277,29 +318,48 @@ pub fn install(release: &Release, install: &Path, progress: &dyn Fn(&str)) -> Re
         progress("Waiting for tablet sessions and global tools to release their resources...");
         let deadline = Instant::now() + Duration::from_secs(45);
         loop {
-            match call(ControlCommand::UpdateStatus { token: token.clone() })? {
-                Reply::UpdateState { token: actual, ready, error } if actual == token => {
-                    if let Some(error) = error { return Err(error); }
-                    if ready { break; }
+            match call(ControlCommand::UpdateStatus {
+                token: token.clone(),
+            })? {
+                Reply::UpdateState {
+                    token: actual,
+                    ready,
+                    error,
+                } if actual == token => {
+                    if let Some(error) = error {
+                        return Err(error);
+                    }
+                    if ready {
+                        break;
+                    }
                 }
                 _ => return Err("unexpected update reservation state".into()),
             }
-            if Instant::now() >= deadline { return Err("update resource drain timed out".into()); }
+            if Instant::now() >= deadline {
+                return Err("update resource drain timed out".into());
+            }
             std::thread::sleep(Duration::from_millis(25));
         }
         match install_with_cancel(release, install, progress, None) {
-            Ok(()) => { exit = true; Ok(()) }
+            Ok(()) => {
+                exit = true;
+                Ok(())
+            }
             Err(error) => match recover_for_daemon(install) {
                 // A download/preflight failure never replaced installed files.
                 // Cancellation releases the reservation and restores tools.
                 Ok(false) => Err(error),
                 Ok(true) => {
                     exit = true;
-                    Err(format!("{error}; interrupted update recovered; daemon will exit before restored files are used"))
+                    Err(format!(
+                        "{error}; interrupted update recovered; daemon will exit before restored files are used"
+                    ))
                 }
                 Err(recovery) => {
                     exit = true;
-                    Err(format!("{error}; update recovery failed: {recovery}; daemon will exit and preserve recovery files"))
+                    Err(format!(
+                        "{error}; update recovery failed: {recovery}; daemon will exit and preserve recovery files"
+                    ))
                 }
             },
         }
@@ -336,7 +396,12 @@ pub fn install(release: &Release, install: &Path, progress: &dyn Fn(&str)) -> Re
 pub fn install(release: &Release, install: &Path, progress: &dyn Fn(&str)) -> Result<(), String> {
     install_with_cancel(release, install, progress, None)
 }
-pub(crate) fn install_with_cancel(release: &Release, install: &Path, progress: &dyn Fn(&str), cancel: Option<&AtomicBool>) -> Result<(), String> {
+pub(crate) fn install_with_cancel(
+    release: &Release,
+    install: &Path,
+    progress: &dyn Fn(&str),
+    cancel: Option<&AtomicBool>,
+) -> Result<(), String> {
     crate::download::cancelled(cancel)?;
     let work = temporary_work("otd-update")?;
     let result = (|| {
@@ -369,22 +434,35 @@ pub(crate) fn install_with_cancel(release: &Release, install: &Path, progress: &
         progress("Checksum verified. Extracting...");
         let extracted = work.join("extracted");
         fs::create_dir_all(&extracted).map_err(|error| error.to_string())?;
-        let status = crate::download::run(Command::new(system_tool("tar.exe"))
-            .creation_flags(CREATE_NO_WINDOW)
-            .arg("-xf")
-            .arg(&package)
-            .arg("-C")
-            .arg(&extracted), cancel)?.status;
+        let status = crate::download::run(
+            Command::new(system_tool("tar.exe"))
+                .creation_flags(CREATE_NO_WINDOW)
+                .arg("-xf")
+                .arg(&package)
+                .arg("-C")
+                .arg(&extracted),
+            cancel,
+        )?
+        .status;
         if !status.success() {
             return Err("the package could not be extracted".into());
         }
-        let stem=release.package_name.strip_suffix(".zip").or_else(||release.package_name.strip_suffix(".tar.gz")).ok_or("Unsupported package archive")?;
+        let stem = release
+            .package_name
+            .strip_suffix(".zip")
+            .or_else(|| release.package_name.strip_suffix(".tar.gz"))
+            .ok_or("Unsupported package archive")?;
         let root = extracted.join(stem);
         let root = if root.is_dir() { root } else { extracted };
-        #[cfg(windows)]let executable="opentabletdriver-rust.exe";
-        #[cfg(target_os="linux")]let executable="opentabletdriver-rust-linux";
-        #[cfg(target_os="macos")]let executable="opentabletdriver-rust-macos";
-        if !root.join(executable).is_file(){return Err(format!("The package does not contain {executable}"));}
+        #[cfg(windows)]
+        let executable = "opentabletdriver-rust.exe";
+        #[cfg(target_os = "linux")]
+        let executable = "opentabletdriver-rust-linux";
+        #[cfg(target_os = "macos")]
+        let executable = "opentabletdriver-rust-macos";
+        if !root.join(executable).is_file() {
+            return Err(format!("The package does not contain {executable}"));
+        }
         let mut new_files = Vec::new();
         files(&root, &root, &mut new_files).map_err(|error| error.to_string())?;
         progress(&format!("Installing {} files...", new_files.len()));
@@ -441,9 +519,13 @@ pub(crate) fn unique_directory(root: &Path, prefix: &str) -> Result<PathBuf, Str
     Ok(path)
 }
 #[cfg(unix)]
-pub(crate) fn temporary_work(prefix:&str)->Result<PathBuf,String>{crate::update::temporary_work(prefix)}
+pub(crate) fn temporary_work(prefix: &str) -> Result<PathBuf, String> {
+    crate::update::temporary_work(prefix)
+}
 #[cfg(unix)]
-pub(crate) fn unique_directory(root:&Path,prefix:&str)->Result<PathBuf,String>{crate::update::unique_directory(root,prefix)}
+pub(crate) fn unique_directory(root: &Path, prefix: &str) -> Result<PathBuf, String> {
+    crate::update::unique_directory(root, prefix)
+}
 /// `update [--check]`: prints whether a newer release exists and installs it.
 pub fn run(check_only: bool) -> Result<(), String> {
     let release = latest()?;
@@ -468,7 +550,7 @@ pub fn run(check_only: bool) -> Result<(), String> {
     install(&release, &folder, &|line| println!("{line}"))
 }
 
-#[cfg(all(test,windows))]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
 
@@ -544,7 +626,7 @@ mod tests {
     }
 }
 
-#[cfg(all(test,windows))]
+#[cfg(all(test, windows))]
 mod live {
     use super::*;
 

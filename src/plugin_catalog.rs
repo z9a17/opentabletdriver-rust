@@ -7,17 +7,17 @@
 //! Upstream: OpenTabletDriver.Desktop/Reflection/Metadata/{PluginMetadata,
 //! PluginMetadataCollection}.cs and DesktopPluginManager.cs at 736003e.
 
+#[cfg(unix)]
+use crate::process::CommandExt;
 use std::fs;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
-#[cfg(unix)]
-use crate::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 #[cfg(unix)]
-const CREATE_NO_WINDOW:u32=0;
+const CREATE_NO_WINDOW: u32 = 0;
 
 use serde::{Deserialize, Serialize};
 
@@ -58,7 +58,9 @@ pub fn version(text: &str) -> Option<[u64; 4]> {
     let mut count = 0;
     for (slot, part) in parts.iter_mut().zip(text.trim().split('.')) {
         *slot = part.parse().ok()?;
-        if *slot > i32::MAX as u64 { return None; }
+        if *slot > i32::MAX as u64 {
+            return None;
+        }
         count += 1;
     }
     (count >= 2 && text.trim().split('.').count() <= 4).then_some(parts)
@@ -88,13 +90,19 @@ impl PluginMetadata {
 
     /// Whether the plugin declares support for OpenTabletDriver 0.6.8.
     pub fn supports_driver(&self) -> bool {
-        let Some(minimum) = self.supported_driver_version.as_deref().and_then(clr_version) else {
+        let Some(minimum) = self
+            .supported_driver_version
+            .as_deref()
+            .and_then(clr_version)
+        else {
             return false;
         };
         let baseline = DRIVER_VERSION.map(|part| part as i64);
         // IsSupportedBy requires the same major/minor and a supported build,
         // while intentionally ignoring the minimum version's revision.
-        if minimum[..2] != baseline[..2] || minimum[2] > baseline[2] { return false; }
+        if minimum[..2] != baseline[..2] || minimum[2] > baseline[2] {
+            return false;
+        }
         match self.max_supported_driver_version.as_deref() {
             None => true,
             Some(maximum) => clr_version(maximum).is_some_and(|maximum| maximum >= baseline),
@@ -125,7 +133,9 @@ fn system_tool(name: &str) -> PathBuf {
 }
 
 #[cfg(unix)]
-fn system_tool(name:&str)->PathBuf{crate::update::system_tool(name)}
+fn system_tool(name: &str) -> PathBuf {
+    crate::update::system_tool(name)
+}
 
 fn extract(archive: &Path, into: &Path) -> Result<(), String> {
     fs::create_dir_all(into).map_err(|error| error.to_string())?;
@@ -151,29 +161,65 @@ fn extract_plugin(archive: &Path, into: &Path) -> Result<(), String> {
     extract_plugin_with_cancel(archive, into, None)
 }
 #[cfg(windows)]
-fn extract_plugin_with_cancel(archive: &Path, into: &Path, cancel: Option<&std::sync::atomic::AtomicBool>) -> Result<(), String> {
-    let output = crate::download::run(Command::new(system_tool("WindowsPowerShell/v1.0/powershell.exe"))
-        .creation_flags(CREATE_NO_WINDOW)
-        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
-        .arg(include_str!("../compat/ExtractPluginArchive.ps1"))
-        .env("OTD_PLUGIN_ARCHIVE", archive)
-        .env("OTD_PLUGIN_STAGE", into), cancel)
-        .map_err(|error| format!("cannot validate plugin ZIP: {error}"))?;
+fn extract_plugin_with_cancel(
+    archive: &Path,
+    into: &Path,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<(), String> {
+    let output = crate::download::run(
+        Command::new(system_tool("WindowsPowerShell/v1.0/powershell.exe"))
+            .creation_flags(CREATE_NO_WINDOW)
+            .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
+            .arg(include_str!("../compat/ExtractPluginArchive.ps1"))
+            .env("OTD_PLUGIN_ARCHIVE", archive)
+            .env("OTD_PLUGIN_STAGE", into),
+        cancel,
+    )
+    .map_err(|error| format!("cannot validate plugin ZIP: {error}"))?;
     if output.status.success() {
         Ok(())
     } else {
-        Err(format!("cannot extract plugin ZIP {}: {}", archive.display(),
-            String::from_utf8_lossy(&output.stderr).trim()))
+        Err(format!(
+            "cannot extract plugin ZIP {}: {}",
+            archive.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
     }
 }
 
 #[cfg(unix)]
-fn extract_plugin_with_cancel(archive:&Path,into:&Path,cancel:Option<&std::sync::atomic::AtomicBool>)->Result<(),String>{
-    let executable=std::env::current_exe().map_err(|error|error.to_string())?;
-    let helper=executable.parent().ok_or("Executable directory unavailable")?.join("OtdArchiveTools.dll");
-    if !helper.is_file(){return Err("Validated portable ZIP extractor is absent; install the complete distribution".into());}
-    let output=crate::download::run(Command::new("dotnet").arg(helper).arg("extract-plugin").arg(archive).arg(into),cancel)?;
-    if output.status.success(){Ok(())}else{Err(format!("cannot extract plugin ZIP {}: {}",archive.display(),String::from_utf8_lossy(&output.stderr)))}
+fn extract_plugin_with_cancel(
+    archive: &Path,
+    into: &Path,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<(), String> {
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let helper = executable
+        .parent()
+        .ok_or("Executable directory unavailable")?
+        .join("OtdArchiveTools.dll");
+    if !helper.is_file() {
+        return Err(
+            "Validated portable ZIP extractor is absent; install the complete distribution".into(),
+        );
+    }
+    let output = crate::download::run(
+        Command::new("dotnet")
+            .arg(helper)
+            .arg("extract-plugin")
+            .arg(archive)
+            .arg(into),
+        cancel,
+    )?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "cannot extract plugin ZIP {}: {}",
+            archive.display(),
+            String::from_utf8_lossy(&output.stderr)
+        ))
+    }
 }
 
 fn json_files(directory: &Path, found: &mut Vec<PathBuf>) {
@@ -212,14 +258,22 @@ fn read_catalog(directory: &Path) -> Vec<PluginMetadata> {
         .filter(|entry| entry.supports_driver() && version(&entry.plugin_version).is_some())
         .collect();
     entries.sort_by(|a, b| {
-        (a.name.to_lowercase(), &a.name, &a.owner, &a.repository_url, b.version(), clr_version(&b.plugin_version)).cmp(&(
-            b.name.to_lowercase(),
-            &b.name,
-            &b.owner,
-            &b.repository_url,
-            a.version(),
-            clr_version(&a.plugin_version),
-        ))
+        (
+            a.name.to_lowercase(),
+            &a.name,
+            &a.owner,
+            &a.repository_url,
+            b.version(),
+            clr_version(&b.plugin_version),
+        )
+            .cmp(&(
+                b.name.to_lowercase(),
+                &b.name,
+                &b.owner,
+                &b.repository_url,
+                a.version(),
+                clr_version(&a.plugin_version),
+            ))
     });
     entries.dedup_by(|later, first| later.same_identity(first));
     entries
@@ -257,8 +311,12 @@ fn internal_folder(name: &str) -> bool {
 /// Callers loading DLLs must defer on false. Inventory itself stays read-only.
 pub fn recover_installations() -> Result<bool, String> {
     let root = plugins_directory()?;
-    if !root.try_exists().map_err(|error| error.to_string())? { return Ok(true); }
-    let Some(_lock) = crate::update::transaction::InstallLock::try_acquire(&root, ".otd-plugins.lock")? else {
+    if !root.try_exists().map_err(|error| error.to_string())? {
+        return Ok(true);
+    }
+    let Some(_lock) =
+        crate::update::transaction::InstallLock::try_acquire(&root, ".otd-plugins.lock")?
+    else {
         eprintln!("Plugin recovery deferred while another installer owns the directory.");
         return Ok(false);
     };
@@ -268,7 +326,13 @@ pub fn recover_installations() -> Result<bool, String> {
 fn recover_locked(root: &Path) -> Result<(), String> {
     for entry in fs::read_dir(root).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
-        if !entry.file_type().map_err(|error| error.to_string())?.is_dir() { continue; }
+        if !entry
+            .file_type()
+            .map_err(|error| error.to_string())?
+            .is_dir()
+        {
+            continue;
+        }
         let name = entry.file_name().to_string_lossy().into_owned();
         // place() creates and consumes root staging only while holding this
         // same install lock. Network download/extraction work lives elsewhere,
@@ -277,13 +341,19 @@ fn recover_locked(root: &Path) -> Result<(), String> {
             let _ = fs::remove_dir_all(entry.path());
             continue;
         }
-        let Some(target_name) = name.strip_suffix(".old-update") else { continue; };
-        if target_name.is_empty() || internal_folder(target_name) { continue; }
+        let Some(target_name) = name.strip_suffix(".old-update") else {
+            continue;
+        };
+        if target_name.is_empty() || internal_folder(target_name) {
+            continue;
+        }
         let target = root.join(target_name);
         let validated = (|| {
             // Only metadata proves that this is our interrupted promotion.
-            let bytes = fs::read(entry.path().join("metadata.json")).map_err(|error| error.to_string())?;
-            let metadata: PluginMetadata = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+            let bytes =
+                fs::read(entry.path().join("metadata.json")).map_err(|error| error.to_string())?;
+            let metadata: PluginMetadata =
+                serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
             if !metadata.folder().eq_ignore_ascii_case(target_name) {
                 return Err("recovery folder does not match metadata".to_owned());
             }
@@ -292,11 +362,15 @@ fn recover_locked(root: &Path) -> Result<(), String> {
         if let Err(error) = validated {
             // Retain hidden backups for manual repair without preventing
             // unrelated plugins from recovering or being inventoried.
-            eprintln!("Plugin {target_name} recovery failed; backup kept at {}: {error}", entry.path().display());
+            eprintln!(
+                "Plugin {target_name} recovery failed; backup kept at {}: {error}",
+                entry.path().display()
+            );
             continue;
         }
         if !target.try_exists().map_err(|error| error.to_string())? {
-            fs::rename(entry.path(), &target).map_err(|error| format!("cannot restore plugin {target_name}: {error}"))?;
+            fs::rename(entry.path(), &target)
+                .map_err(|error| format!("cannot restore plugin {target_name}: {error}"))?;
         } else {
             // A loaded old DLL may keep the backup alive. It stays hidden and
             // another startup retries its cleanup after handles are released.
@@ -309,36 +383,62 @@ fn recover_locked(root: &Path) -> Result<(), String> {
 /// Installed plugins, from each folder's `metadata.json`.
 pub fn installed() -> Result<Vec<(PathBuf, PluginMetadata)>, String> {
     let directory = plugins_directory()?;
-    if !directory.try_exists().map_err(|error| error.to_string())? { return Ok(Vec::new()); }
+    if !directory.try_exists().map_err(|error| error.to_string())? {
+        return Ok(Vec::new());
+    }
     // Serialize the read with directory promotion, without creating files or
     // doing recovery. A transient rename gap is not an empty installation.
-    let _lock = crate::update::transaction::InstallLock::try_acquire(&directory, ".otd-plugins.lock")?
-        .ok_or("Plugin inventory is busy while an installation is being changed.")?;
+    let _lock =
+        crate::update::transaction::InstallLock::try_acquire(&directory, ".otd-plugins.lock")?
+            .ok_or("Plugin inventory is busy while an installation is being changed.")?;
     let entries = match fs::read_dir(&directory) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(format!("cannot list plugins in {}: {error}", directory.display())),
+        Err(error) => {
+            return Err(format!(
+                "cannot list plugins in {}: {error}",
+                directory.display()
+            ));
+        }
     };
     let mut found = Vec::new();
     for entry in entries {
-        let entry = entry.map_err(|error| format!("cannot read plugin directory entry: {error}"))?;
+        let entry =
+            entry.map_err(|error| format!("cannot read plugin directory entry: {error}"))?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if internal_folder(&name) || !entry.file_type().map_err(|error| error.to_string())?.is_dir() { continue; }
+        if internal_folder(&name)
+            || !entry
+                .file_type()
+                .map_err(|error| error.to_string())?
+                .is_dir()
+        {
+            continue;
+        }
         let folder = entry.path();
         let bytes = match fs::read(folder.join("metadata.json")) {
             Ok(bytes) => bytes,
             // Manually copied plugin folders need not be catalog installs.
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(format!("cannot read plugin metadata in {}: {error}", folder.display())),
+            Err(error) => {
+                return Err(format!(
+                    "cannot read plugin metadata in {}: {error}",
+                    folder.display()
+                ));
+            }
         };
         let metadata: PluginMetadata = match serde_json::from_slice(&bytes) {
             Ok(metadata) => metadata,
             Err(error) => {
-                eprintln!("Skipping invalid plugin metadata in {}: {error}", folder.display());
+                eprintln!(
+                    "Skipping invalid plugin metadata in {}: {error}",
+                    folder.display()
+                );
                 continue;
             }
         };
-        if metadata.folder().eq_ignore_ascii_case(&name) { found.push((folder, metadata)); }
+        if metadata.folder().eq_ignore_ascii_case(&name) {
+            found.push((folder, metadata));
+        }
     }
     found.sort_by_key(|(_, plugin)| plugin.name.to_lowercase());
     Ok(found)
@@ -349,7 +449,10 @@ pub fn installed() -> Result<Vec<(PathBuf, PluginMetadata)>, String> {
 pub fn install(entry: &PluginMetadata) -> Result<PathBuf, String> {
     install_with_cancel(entry, None)
 }
-pub(crate) fn install_with_cancel(entry: &PluginMetadata, cancel: Option<&std::sync::atomic::AtomicBool>) -> Result<PathBuf, String> {
+pub(crate) fn install_with_cancel(
+    entry: &PluginMetadata,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<PathBuf, String> {
     crate::download::cancelled(cancel)?;
     let url = entry
         .download_url
@@ -359,8 +462,8 @@ pub(crate) fn install_with_cancel(entry: &PluginMetadata, cancel: Option<&std::s
     let work = crate::update::temporary_work("otd-plugin")?;
     fs::create_dir_all(&work).map_err(|error| error.to_string())?;
     let archive = work.join("download");
-    let result = crate::download::to_file_with_cancel(url, None, None, &archive, cancel)
-        .and_then(|()| {
+    let result =
+        crate::download::to_file_with_cancel(url, None, None, &archive, cancel).and_then(|()| {
             crate::download::cancelled(cancel)?;
             install_archive_with_cancel(entry, &archive, &plugins_directory()?, &work, cancel)
         });
@@ -380,12 +483,18 @@ fn install_archive(
     install_archive_with_cancel(entry, archive, root, work, None)
 }
 fn install_archive_with_cancel(
-    entry: &PluginMetadata, archive: &Path, root: &Path, work: &Path,
+    entry: &PluginMetadata,
+    archive: &Path,
+    root: &Path,
+    work: &Path,
     cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<PathBuf, String> {
     crate::download::cancelled(cancel)?;
     if !entry.supports_driver() {
-        return Err(format!("{} does not support OpenTabletDriver 0.6.8", entry.name));
+        return Err(format!(
+            "{} does not support OpenTabletDriver 0.6.8",
+            entry.name
+        ));
     }
     let expected = entry
         .sha256
@@ -431,7 +540,10 @@ fn install_archive_with_cancel(
 pub fn install_file(file: &Path) -> Result<PathBuf, String> {
     install_file_with_cancel(file, None)
 }
-pub(crate) fn install_file_with_cancel(file: &Path, cancel: Option<&std::sync::atomic::AtomicBool>) -> Result<PathBuf, String> {
+pub(crate) fn install_file_with_cancel(
+    file: &Path,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<PathBuf, String> {
     crate::download::cancelled(cancel)?;
     let work = crate::update::temporary_work("otd-plugin")?;
     let result = install_file_into_with_cancel(file, &plugins_directory()?, &work, cancel);
@@ -442,7 +554,12 @@ pub(crate) fn install_file_with_cancel(file: &Path, cancel: Option<&std::sync::a
 fn install_file_into(file: &Path, root: &Path, work: &Path) -> Result<PathBuf, String> {
     install_file_into_with_cancel(file, root, work, None)
 }
-fn install_file_into_with_cancel(file: &Path, root: &Path, work: &Path, cancel: Option<&std::sync::atomic::AtomicBool>) -> Result<PathBuf, String> {
+fn install_file_into_with_cancel(
+    file: &Path,
+    root: &Path,
+    work: &Path,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<PathBuf, String> {
     crate::download::cancelled(cancel)?;
     let name = file
         .file_stem()
@@ -472,7 +589,12 @@ fn install_file_into_with_cancel(file: &Path, root: &Path, work: &Path, cancel: 
         .map(|extension| extension.to_string_lossy().to_ascii_lowercase());
     match extension.as_deref() {
         Some("zip") => extract_plugin_with_cancel(file, &staged, cancel)?,
-        Some("dll" | "so" | "dylib") if cfg!(unix) || file.extension().is_some_and(|ext|ext.eq_ignore_ascii_case("dll")) => {
+        Some("dll" | "so" | "dylib")
+            if cfg!(unix)
+                || file
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("dll")) =>
+        {
             fs::create_dir_all(&staged).map_err(|error| error.to_string())?;
             let copied = staged.join(file.file_name().unwrap_or_default());
             fs::copy(file, copied)
@@ -489,19 +611,32 @@ fn install_file_into_with_cancel(file: &Path, root: &Path, work: &Path, cancel: 
 
 /// Moves a staged plugin folder to `root/<plugin name>` with its metadata.
 fn place(entry: &PluginMetadata, staged: &Path, root: &Path) -> Result<PathBuf, String> {
-    place_guarded(entry,staged,root,None)
+    place_guarded(entry, staged, root, None)
 }
-fn place_guarded(entry: &PluginMetadata, staged: &Path, root: &Path,
-    expected: Option<&Option<Vec<(PathBuf,String)>>>) -> Result<PathBuf,String> {
+fn place_guarded(
+    entry: &PluginMetadata,
+    staged: &Path,
+    root: &Path,
+    expected: Option<&Option<Vec<(PathBuf, String)>>>,
+) -> Result<PathBuf, String> {
     if entry.folder().is_empty() || internal_folder(&entry.folder()) {
         return Err("plugin name conflicts with a reserved installation folder".into());
     }
     let _lock = crate::update::transaction::InstallLock::acquire(root, ".otd-plugins.lock")?;
     recover_locked(root)?;
-    if let Some(expected)=expected {
-        let target=root.join(entry.folder());
-        let actual=if target.exists(){Some(plugin_directory_stamp(&target)?)}else{None};
-        if &actual!=expected {return Err("Plugin target changed during staging; refresh before updating or installing".into());}
+    if let Some(expected) = expected {
+        let target = root.join(entry.folder());
+        let actual = if target.exists() {
+            Some(plugin_directory_stamp(&target)?)
+        } else {
+            None
+        };
+        if &actual != expected {
+            return Err(
+                "Plugin target changed during staging; refresh before updating or installing"
+                    .into(),
+            );
+        }
     }
     let local = crate::update::unique_directory(root, ".otd-plugin-stage")?;
     let result = (|| {
@@ -515,16 +650,28 @@ fn place_guarded(entry: &PluginMetadata, staged: &Path, root: &Path,
         let previous = root.join(format!("{}.old-update", entry.folder()));
         if target.exists() {
             let installed: PluginMetadata = serde_json::from_slice(
-                &fs::read(target.join("metadata.json")).map_err(|error|
-                    format!("cannot establish plugin identity at {}: {error}", target.display()))?
-            ).map_err(|error| format!("invalid installed plugin identity: {error}"))?;
+                &fs::read(target.join("metadata.json")).map_err(|error| {
+                    format!(
+                        "cannot establish plugin identity at {}: {error}",
+                        target.display()
+                    )
+                })?,
+            )
+            .map_err(|error| format!("invalid installed plugin identity: {error}"))?;
             if !entry.same_identity(&installed) {
-                return Err(format!("{} is owned by a different plugin identity ({} / {}); nothing was replaced",
-                    target.display(), installed.name, installed.owner));
+                return Err(format!(
+                    "{} is owned by a different plugin identity ({} / {}); nothing was replaced",
+                    target.display(),
+                    installed.name,
+                    installed.owner
+                ));
             }
         }
         if previous.exists() {
-            return Err(format!("plugin backup remains at {}; close users of the old DLL or repair the backup before reinstalling", previous.display()));
+            return Err(format!(
+                "plugin backup remains at {}; close users of the old DLL or repair the backup before reinstalling",
+                previous.display()
+            ));
         }
         if target.exists() {
             fs::rename(&target, &previous)
@@ -566,25 +713,53 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
 }
 /// Original Desktop's directory overload, using the same guarded installation
 /// transaction as archives. Sources may not contain links or unbounded trees.
-pub(crate) fn install_directory(target: &Path, source: &Path, update: bool,
-    cancel: Option<&std::sync::atomic::AtomicBool>) -> Result<PathBuf, String> {
+pub(crate) fn install_directory(
+    target: &Path,
+    source: &Path,
+    update: bool,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<PathBuf, String> {
     crate::download::cancelled(cancel)?;
     let root = plugins_directory()?;
     fs::create_dir_all(&root).map_err(|error| error.to_string())?;
     let root = root.canonicalize().map_err(|error| error.to_string())?;
-    let name = target.file_name().and_then(|name| name.to_str()).ok_or("Plugin target needs a Unicode directory name")?;
+    let name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("Plugin target needs a Unicode directory name")?;
     if name.is_empty() || internal_folder(name) || Path::new(name).components().count() != 1 {
         return Err("Plugin target is a reserved or invalid directory".into());
     }
-    let parent = target.parent().ok_or("Plugin target has no parent")?.canonicalize().map_err(|error| error.to_string())?;
-    if parent != root { return Err("Plugin target must be directly inside the native plugin directory".into()); }
+    let parent = target
+        .parent()
+        .ok_or("Plugin target has no parent")?
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    if parent != root {
+        return Err("Plugin target must be directly inside the native plugin directory".into());
+    }
     let target = root.join(name);
     if fs::symlink_metadata(&target).is_ok_and(|entry| entry.file_type().is_symlink()) {
         return Err("Plugin target cannot be a filesystem link".into());
     }
-    if update != target.exists() { return Err(if update { "Updated plugin is no longer installed" } else { "Plugin target already exists; use UpdatePlugin" }.into()); }
-    let expected=if update {Some(plugin_directory_stamp(&target)?)}else{None};
-    if fs::symlink_metadata(source).map_err(|error| error.to_string())?.file_type().is_symlink() {
+    if update != target.exists() {
+        return Err(if update {
+            "Updated plugin is no longer installed"
+        } else {
+            "Plugin target already exists; use UpdatePlugin"
+        }
+        .into());
+    }
+    let expected = if update {
+        Some(plugin_directory_stamp(&target)?)
+    } else {
+        None
+    };
+    if fs::symlink_metadata(source)
+        .map_err(|error| error.to_string())?
+        .file_type()
+        .is_symlink()
+    {
         return Err("Plugin source cannot be a filesystem link".into());
     }
     let source = source.canonicalize().map_err(|error| error.to_string())?;
@@ -594,73 +769,142 @@ pub(crate) fn install_directory(target: &Path, source: &Path, update: bool,
     let metadata_file = source.join("metadata.json");
     let mut entry = if metadata_file.exists() {
         let bytes = fs::read(&metadata_file).map_err(|error| error.to_string())?;
-        if bytes.len() > 1048576 { return Err("Plugin metadata exceeds 1 MiB".into()); }
-        serde_json::from_slice::<PluginMetadata>(&bytes).map_err(|error| format!("Invalid source plugin metadata: {error}"))?
+        if bytes.len() > 1048576 {
+            return Err("Plugin metadata exceeds 1 MiB".into());
+        }
+        serde_json::from_slice::<PluginMetadata>(&bytes)
+            .map_err(|error| format!("Invalid source plugin metadata: {error}"))?
     } else if update {
-        serde_json::from_slice::<PluginMetadata>(&fs::read(target.join("metadata.json")).map_err(|error| error.to_string())?)
-            .map_err(|error| format!("Cannot establish installed plugin identity: {error}"))?
+        serde_json::from_slice::<PluginMetadata>(
+            &fs::read(target.join("metadata.json")).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| format!("Cannot establish installed plugin identity: {error}"))?
     } else {
-        PluginMetadata { name:name.into(), owner:"Local file".into(), description:format!("Installed from {}",source.display()),
-            plugin_version:"0.0.0.0".into(), supported_driver_version:None,max_supported_driver_version:None,
-            repository_url:None,download_url:None,compression_format:None,sha256:None,wiki_url:None,license_identifier:None }
+        PluginMetadata {
+            name: name.into(),
+            owner: "Local file".into(),
+            description: format!("Installed from {}", source.display()),
+            plugin_version: "0.0.0.0".into(),
+            supported_driver_version: None,
+            max_supported_driver_version: None,
+            repository_url: None,
+            download_url: None,
+            compression_format: None,
+            sha256: None,
+            wiki_url: None,
+            license_identifier: None,
+        }
     };
-    if entry.folder() != name { return Err("Source plugin identity does not match its requested target directory".into()); }
+    if entry.folder() != name {
+        return Err("Source plugin identity does not match its requested target directory".into());
+    }
     // Preserve actual source identity rather than renaming catalog-owned plugins.
     entry.name = entry.name.trim().to_owned();
     let work = crate::update::temporary_work("otd-plugin-directory")?;
     let staged = work.join("plugin");
     let result = (|| {
-        let mut files = 0usize; let mut bytes = 0u64;
+        let mut files = 0usize;
+        let mut bytes = 0u64;
         copy_bounded_plugin(&source, &staged, 0, &mut files, &mut bytes, cancel)?;
-        if dlls(&staged).is_empty() { return Err("Plugin source contains no DLL".into()); }
+        if dlls(&staged).is_empty() {
+            return Err("Plugin source contains no DLL".into());
+        }
         crate::download::cancelled(cancel)?;
-        place_guarded(&entry, &staged, &root,Some(&expected))
+        place_guarded(&entry, &staged, &root, Some(&expected))
     })();
     let _ = fs::remove_dir_all(&work);
     result
 }
-fn plugin_directory_stamp(directory:&Path)->Result<Vec<(PathBuf,String)>,String> {
-    fn walk(root:&Path,path:&Path,depth:usize,bytes:&mut u64,stamp:&mut Vec<(PathBuf,String)>)->Result<(),String> {
-        if depth>32 || stamp.len()>4096 {return Err("Installed plugin tree exceeds snapshot bounds".into());}
-        let metadata=fs::symlink_metadata(path).map_err(|error|error.to_string())?;
-        if metadata.file_type().is_symlink(){return Err("Installed plugin cannot contain filesystem links".into());}
-        let relative=path.strip_prefix(root).map_err(|error|error.to_string())?.to_owned();
-        if metadata.is_dir(){
-            stamp.push((relative,String::new()));
-            let mut entries:Vec<_>=fs::read_dir(path).map_err(|error|error.to_string())?
-                .collect::<Result<Vec<_>,_>>().map_err(|error|error.to_string())?;
-            if entries.len()+stamp.len()>4096{return Err("Installed plugin has too many entries".into());}
-            entries.sort_by_key(|entry|entry.file_name());
-            for entry in entries {walk(root,&entry.path(),depth+1,bytes,stamp)?;}
-        }else if metadata.is_file(){
-            *bytes=bytes.checked_add(metadata.len()).ok_or("Installed plugin size exhausted")?;
-            if *bytes>268435456{return Err("Installed plugin exceeds 256 MiB".into());}
-            stamp.push((relative,crate::update::sha256(path)?));
-        }else{return Err("Installed plugin contains unsupported special files".into());}
+fn plugin_directory_stamp(directory: &Path) -> Result<Vec<(PathBuf, String)>, String> {
+    fn walk(
+        root: &Path,
+        path: &Path,
+        depth: usize,
+        bytes: &mut u64,
+        stamp: &mut Vec<(PathBuf, String)>,
+    ) -> Result<(), String> {
+        if depth > 32 || stamp.len() > 4096 {
+            return Err("Installed plugin tree exceeds snapshot bounds".into());
+        }
+        let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+        if metadata.file_type().is_symlink() {
+            return Err("Installed plugin cannot contain filesystem links".into());
+        }
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|error| error.to_string())?
+            .to_owned();
+        if metadata.is_dir() {
+            stamp.push((relative, String::new()));
+            let mut entries: Vec<_> = fs::read_dir(path)
+                .map_err(|error| error.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?;
+            if entries.len() + stamp.len() > 4096 {
+                return Err("Installed plugin has too many entries".into());
+            }
+            entries.sort_by_key(|entry| entry.file_name());
+            for entry in entries {
+                walk(root, &entry.path(), depth + 1, bytes, stamp)?;
+            }
+        } else if metadata.is_file() {
+            *bytes = bytes
+                .checked_add(metadata.len())
+                .ok_or("Installed plugin size exhausted")?;
+            if *bytes > 268435456 {
+                return Err("Installed plugin exceeds 256 MiB".into());
+            }
+            stamp.push((relative, crate::update::sha256(path)?));
+        } else {
+            return Err("Installed plugin contains unsupported special files".into());
+        }
         Ok(())
     }
-    let mut stamp=Vec::new();let mut bytes=0;
-    walk(directory,directory,0,&mut bytes,&mut stamp)?;Ok(stamp)
+    let mut stamp = Vec::new();
+    let mut bytes = 0;
+    walk(directory, directory, 0, &mut bytes, &mut stamp)?;
+    Ok(stamp)
 }
-fn copy_bounded_plugin(source: &Path, destination: &Path, depth: usize, files: &mut usize,
-    bytes: &mut u64, cancel: Option<&std::sync::atomic::AtomicBool>) -> Result<(), String> {
-    if depth > 32 { return Err("Plugin directory nesting exceeds 32".into()); }
+fn copy_bounded_plugin(
+    source: &Path,
+    destination: &Path,
+    depth: usize,
+    files: &mut usize,
+    bytes: &mut u64,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<(), String> {
+    if depth > 32 {
+        return Err("Plugin directory nesting exceeds 32".into());
+    }
     fs::create_dir_all(destination).map_err(|error| error.to_string())?;
     for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
         crate::download::cancelled(cancel)?;
         let entry = entry.map_err(|error| error.to_string())?;
         let kind = entry.file_type().map_err(|error| error.to_string())?;
-        *files = files.checked_add(1).ok_or("Plugin file counter exhausted")?;
-        if *files > 4096 { return Err("Plugin source exceeds 4096 entries".into()); }
+        *files = files
+            .checked_add(1)
+            .ok_or("Plugin file counter exhausted")?;
+        if *files > 4096 {
+            return Err("Plugin source exceeds 4096 entries".into());
+        }
         let target = destination.join(entry.file_name());
-        if kind.is_dir() { copy_bounded_plugin(&entry.path(), &target, depth + 1, files, bytes, cancel)?; }
-        else if kind.is_file() {
+        if kind.is_dir() {
+            copy_bounded_plugin(&entry.path(), &target, depth + 1, files, bytes, cancel)?;
+        } else if kind.is_file() {
             let length = entry.metadata().map_err(|error| error.to_string())?.len();
-            *bytes = bytes.checked_add(length).ok_or("Plugin size counter exhausted")?;
-            if *bytes > 268435456 { return Err("Plugin source exceeds 256 MiB".into()); }
+            *bytes = bytes
+                .checked_add(length)
+                .ok_or("Plugin size counter exhausted")?;
+            if *bytes > 268435456 {
+                return Err("Plugin source exceeds 256 MiB".into());
+            }
             let copied = fs::copy(entry.path(), &target).map_err(|error| error.to_string())?;
-            if copied != length { return Err("Plugin source changed during staging".into()); }
-        } else { return Err("Plugin source cannot contain filesystem links or special files".into()); }
+            if copied != length {
+                return Err("Plugin source changed during staging".into());
+            }
+        } else {
+            return Err("Plugin source cannot contain filesystem links or special files".into());
+        }
     }
     Ok(())
 }
@@ -670,14 +914,23 @@ pub fn uninstall(folder: &Path) -> Result<(), String> {
     let root = plugins_directory()?;
     let _lock = crate::update::transaction::InstallLock::acquire(&root, ".otd-plugins.lock")?;
     if folder.parent() != Some(root.as_path())
-        || folder.file_name().is_none_or(|name| internal_folder(&name.to_string_lossy())) {
+        || folder
+            .file_name()
+            .is_none_or(|name| internal_folder(&name.to_string_lossy()))
+    {
         return Err("only plugins in the plugin folder can be removed".into());
     }
     recover_locked(&root)?;
-    let name = folder.file_name().ok_or("plugin folder has no name")?.to_string_lossy();
+    let name = folder
+        .file_name()
+        .ok_or("plugin folder has no name")?
+        .to_string_lossy();
     let backup = root.join(format!("{name}.old-update"));
     if backup.exists() {
-        return Err(format!("plugin backup remains at {}; close users of the old DLL or repair the backup before removal", backup.display()));
+        return Err(format!(
+            "plugin backup remains at {}; close users of the old DLL or repair the backup before removal",
+            backup.display()
+        ));
     }
     let retired = crate::update::unique_directory(&root, ".otd-plugin-removed")?;
     if let Err(error) = fs::rename(folder, retired.join("payload")) {
@@ -696,10 +949,11 @@ pub fn dlls(folder: &Path) -> Vec<PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 walk(&path, found);
-            } else if path
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("dll") || cfg!(unix) && (e.eq_ignore_ascii_case("so") || e.eq_ignore_ascii_case("dylib")))
-            {
+            } else if path.extension().is_some_and(|e| {
+                e.eq_ignore_ascii_case("dll")
+                    || cfg!(unix)
+                        && (e.eq_ignore_ascii_case("so") || e.eq_ignore_ascii_case("dylib"))
+            }) {
                 found.push(path);
             }
         }
@@ -718,9 +972,11 @@ pub fn run(arguments: Vec<String>) -> Result<(), String> {
     if arguments.next().is_some() {
         return Err(usage.into());
     }
-    let matches = |plugin: &PluginMetadata, name: &str| plugin.name.eq_ignore_ascii_case(name)
-        || format!("{}/{}", plugin.owner, plugin.name).eq_ignore_ascii_case(name)
-        || plugin.repository_url.as_deref() == Some(name);
+    let matches = |plugin: &PluginMetadata, name: &str| {
+        plugin.name.eq_ignore_ascii_case(name)
+            || format!("{}/{}", plugin.owner, plugin.name).eq_ignore_ascii_case(name)
+            || plugin.repository_url.as_deref() == Some(name)
+    };
     match (command.as_str(), name) {
         ("catalog", None) => {
             let installed = installed()?;
@@ -753,9 +1009,14 @@ pub fn run(arguments: Vec<String>) -> Result<(), String> {
             Ok(())
         }
         ("install", Some(name)) => {
-            let candidates: Vec<_> = fetch()?.into_iter().filter(|plugin| matches(plugin, &name)).collect();
+            let candidates: Vec<_> = fetch()?
+                .into_iter()
+                .filter(|plugin| matches(plugin, &name))
+                .collect();
             if candidates.len() > 1 {
-                return Err(format!("{name} matches multiple catalog identities; select a unique owner/name or repository URL"));
+                return Err(format!(
+                    "{name} matches multiple catalog identities; select a unique owner/name or repository URL"
+                ));
             }
             let plugin = candidates.into_iter().next().ok_or_else(|| {
                 format!("no catalog plugin named {name} supports OpenTabletDriver 0.6.8")
@@ -781,12 +1042,18 @@ pub fn run(arguments: Vec<String>) -> Result<(), String> {
             Ok(())
         }
         ("remove", Some(name)) => {
-            let candidates: Vec<_> = installed()?.into_iter()
-                .filter(|(_, plugin)| matches(plugin, &name)).collect();
+            let candidates: Vec<_> = installed()?
+                .into_iter()
+                .filter(|(_, plugin)| matches(plugin, &name))
+                .collect();
             if candidates.len() > 1 {
-                return Err(format!("{name} matches multiple installed identities; select a unique owner/name or repository URL"));
+                return Err(format!(
+                    "{name} matches multiple installed identities; select a unique owner/name or repository URL"
+                ));
             }
-            let (folder, plugin) = candidates.into_iter().next()
+            let (folder, plugin) = candidates
+                .into_iter()
+                .next()
                 .ok_or_else(|| format!("no installed plugin is named {name}"))?;
             uninstall(&folder)?;
             println!("Removed {}", plugin.name);
@@ -977,16 +1244,31 @@ try {
 "#;
         let output = Command::new(system_tool("WindowsPowerShell/v1.0/powershell.exe"))
             .creation_flags(CREATE_NO_WINDOW)
-            .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script])
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+            ])
             .env("OTD_TEST_ZIP", path)
             .env("OTD_TEST_NAMES", serde_json::to_string(names).unwrap())
-            .output().unwrap();
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
     fn plugin_zip_validation_precedes_all_extraction() {
-        let root = crate::update::unique_directory(Path::new("E:/AgentWork/tmp"), "otd-plugin-zip-contract").unwrap();
+        let root = crate::update::unique_directory(
+            Path::new("E:/AgentWork/tmp"),
+            "otd-plugin-zip-contract",
+        )
+        .unwrap();
         let cases: &[&[&str]] = &[
             &["Filter.dll", "../outside.dll"],
             &["Filter.dll", "/absolute.dll"],
@@ -1001,18 +1283,27 @@ try {
             let archive = root.join(format!("invalid-{index}.zip"));
             let stage = root.join(format!("stage-{index}"));
             zip_entries(&archive, names);
-            assert!(extract_plugin(&archive, &stage).is_err(), "accepted {names:?}");
+            assert!(
+                extract_plugin(&archive, &stage).is_err(),
+                "accepted {names:?}"
+            );
             assert!(!stage.exists(), "wrote an entry before complete validation");
         }
         let archive = root.join("valid.zip");
         zip_entries(&archive, &["nested/", "nested/Filter.dll"]);
         let stage = root.join("valid");
         extract_plugin(&archive, &stage).unwrap();
-        assert_eq!(fs::read(stage.join("nested/Filter.dll")).unwrap(), b"fixture");
+        assert_eq!(
+            fs::read(stage.join("nested/Filter.dll")).unwrap(),
+            b"fixture"
+        );
         let oversized = root.join("oversized.zip");
         zip_entries(&oversized, &["Filter.dll"]);
         let mut bytes = fs::read(&oversized).unwrap();
-        let central = bytes.windows(4).position(|bytes| bytes == [0x50, 0x4b, 0x01, 0x02]).unwrap();
+        let central = bytes
+            .windows(4)
+            .position(|bytes| bytes == [0x50, 0x4b, 0x01, 0x02])
+            .unwrap();
         bytes[central + 24..central + 28].copy_from_slice(&67_108_865u32.to_le_bytes());
         fs::write(&oversized, bytes).unwrap();
         let rejected = root.join("oversized-stage");
@@ -1023,7 +1314,11 @@ try {
 
     #[test]
     fn distinct_plugin_identities_cannot_replace_each_other() {
-        let root = crate::update::unique_directory(Path::new("E:/AgentWork/tmp"), "otd-plugin-identity-contract").unwrap();
+        let root = crate::update::unique_directory(
+            Path::new("E:/AgentWork/tmp"),
+            "otd-plugin-identity-contract",
+        )
+        .unwrap();
         let staged = root.join("source");
         let plugins = root.join("plugins");
         fs::create_dir_all(&staged).unwrap();

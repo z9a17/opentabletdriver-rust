@@ -133,7 +133,11 @@ pub fn frame(packet: PenPacket, screen: Rect) -> Frame {
         }
         if let Some(rotation) = packet.rotation.filter(|value| value.is_finite()) {
             // Match RC EvdevVirtualTablet.SetRotation's normalized ABS_Z axis.
-            frame.push(EV_ABS, ABS_Z, (rotation.clamp(0.0, 1.0) * MAX_ROTATION as f32) as i32);
+            frame.push(
+                EV_ABS,
+                ABS_Z,
+                (rotation.clamp(0.0, 1.0) * MAX_ROTATION as f32) as i32,
+            );
         }
         // The kernel drops a key event that repeats a key's state.
         for (index, key) in BARREL_KEYS.into_iter().enumerate() {
@@ -172,11 +176,14 @@ mod tests {
     fn rotation_output_linux_axis_fits_the_fixed_frame() {
         assert!(axes(SCREEN).contains(&(ABS_Z, 0, MAX_ROTATION, 0)));
         for (rotation, expected) in [(0.0, 0), (0.5, 32767), (1.0, 65535)] {
-            let frame = frame(PenPacket {
-                rotation: Some(rotation),
-                barrel: 0b111,
-                ..packet(PenPhase::Contact, false)
-            }, SCREEN);
+            let frame = frame(
+                PenPacket {
+                    rotation: Some(rotation),
+                    barrel: 0b111,
+                    ..packet(PenPhase::Contact, false)
+                },
+                SCREEN,
+            );
             assert_eq!(frame.count, FRAME_EVENTS);
             assert!(frame.as_slice().contains(&(EV_ABS, ABS_Z, expected)));
             assert_eq!(frame.as_slice().last(), Some(&(EV_SYN, SYN_REPORT, 0)));
@@ -185,7 +192,12 @@ mod tests {
             }
         }
         let absent = frame(packet(PenPhase::Hover, false), SCREEN);
-        assert!(!absent.as_slice().iter().any(|&(kind, code, _)| kind == EV_ABS && code == ABS_Z));
+        assert!(
+            !absent
+                .as_slice()
+                .iter()
+                .any(|&(kind, code, _)| kind == EV_ABS && code == ABS_Z)
+        );
     }
 
     #[test]

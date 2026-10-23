@@ -10,21 +10,22 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{
-    ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_OPERATION_ABORTED, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_OPERATION_ABORTED, HANDLE, WAIT_OBJECT_0,
+    WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Storage::FileSystem::ReadFile;
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Threading::{
-    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, INFINITE, SetWaitableTimer,
-    TIMER_ALL_ACCESS, WaitForMultipleObjects, WaitForSingleObject, ResetEvent,
+    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, INFINITE, ResetEvent,
+    SetWaitableTimer, TIMER_ALL_ACCESS, WaitForMultipleObjects, WaitForSingleObject,
 };
 
 /// Waits shorter than this use a high-resolution waitable timer: filter timer
 /// ticks need sub-millisecond deadlines, which millisecond waits truncate.
 const PRECISE_WAIT: Duration = Duration::from_millis(50);
 
-use otd_core::decoders::PenDecoder;
 use crate::dotnet::RuntimeDecoder;
+use otd_core::decoders::PenDecoder;
 pub use otd_core::session::Mode;
 use otd_core::session::{Read, ReportSource};
 use otd_core::tablets::DeviceIdentifier;
@@ -70,9 +71,9 @@ fn initialization_writes(identifier: &DeviceIdentifier) -> bool {
 /// while the read can still write to it.
 struct Reader {
     shared: crate::shared_devices::Registration,
-    custom:Option<crate::custom_devices::Reader>,
-    custom_length:Option<usize>,
-    custom_ready:Option<Instant>,
+    custom: Option<crate::custom_devices::Reader>,
+    custom_length: Option<usize>,
+    custom_ready: Option<Instant>,
     event: Event,
     buffer: Box<[u8]>,
     // Windows retains this address until completion, including across moves
@@ -91,7 +92,8 @@ enum ReadState {
 
 impl ReadState {
     fn completed(&mut self, result: &io::Result<()>) {
-        if !matches!(result, Err(error) if error.raw_os_error() == Some(ERROR_IO_INCOMPLETE as i32)) {
+        if !matches!(result, Err(error) if error.raw_os_error() == Some(ERROR_IO_INCOMPLETE as i32))
+        {
             *self = Self::Idle;
         }
     }
@@ -108,45 +110,78 @@ impl Reader {
         epoch: Option<u64>,
     ) -> io::Result<Self> {
         let event = Event::create(true)?;
-        let custom=if let Some(endpoint)=candidate.managed_endpoint {
-            let wake=Arc::clone(&output);
-            Some(crate::custom_devices::Reader::open(endpoint,usize::from(candidate.input_length),Arc::new(move||{let _=wake.signal();}))?)
-        }else{None};
-        let io=if let Some(reader)=&custom {
-            crate::shared_devices::SharedIo::new_custom(reader.handle(),candidate.endpoint.output_length,candidate.endpoint.feature_length)?
-        }else{
-        let handle = if driver_access {
-            match candidate.open(true) {
-                Ok(handle) => handle,
-                Err(error) if initialization_writes(identifier) => return Err(error),
-                Err(_) => candidate.open_read()?,
-            }
+        let custom = if let Some(endpoint) = candidate.managed_endpoint {
+            let wake = Arc::clone(&output);
+            Some(crate::custom_devices::Reader::open(
+                endpoint,
+                usize::from(candidate.input_length),
+                Arc::new(move || {
+                    let _ = wake.signal();
+                }),
+            )?)
         } else {
-            candidate.open_read()?
+            None
         };
-        let winusb = if candidate.endpoint.transport == otd_core::endpoint_match::Transport::WinUsb {
-            let interface = crate::winusb::Interface::open(&handle)?;
-            if interface.input_length() != candidate.input_length || interface.input_length() == 0 {
-                return Err(io::Error::new(io::ErrorKind::InvalidData,
-                    "WinUSB input pipe changed since device discovery"));
-            }
-            Some(interface)
-        } else { None };
-        crate::shared_devices::SharedIo::new(handle, winusb, candidate.endpoint.output_length,
-            candidate.endpoint.feature_length)?
+        let io = if let Some(reader) = &custom {
+            crate::shared_devices::SharedIo::new_custom(
+                reader.handle(),
+                candidate.endpoint.output_length,
+                candidate.endpoint.feature_length,
+            )?
+        } else {
+            let handle = if driver_access {
+                match candidate.open(true) {
+                    Ok(handle) => handle,
+                    Err(error) if initialization_writes(identifier) => return Err(error),
+                    Err(_) => candidate.open_read()?,
+                }
+            } else {
+                candidate.open_read()?
+            };
+            let winusb =
+                if candidate.endpoint.transport == otd_core::endpoint_match::Transport::WinUsb {
+                    let interface = crate::winusb::Interface::open(&handle)?;
+                    if interface.input_length() != candidate.input_length
+                        || interface.input_length() == 0
+                    {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "WinUSB input pipe changed since device discovery",
+                        ));
+                    }
+                    Some(interface)
+                } else {
+                    None
+                };
+            crate::shared_devices::SharedIo::new(
+                handle,
+                winusb,
+                candidate.endpoint.output_length,
+                candidate.endpoint.feature_length,
+            )?
         };
-        let shared = crate::shared_devices::Registration::new(candidate.path_text(), identifier.parser().to_owned(),
-            auxiliary, Arc::new(io), output, usize::from(candidate.input_length.max(1)),
+        let shared = crate::shared_devices::Registration::new(
+            candidate.path_text(),
+            identifier.parser().to_owned(),
+            auxiliary,
+            Arc::new(io),
+            output,
+            usize::from(candidate.input_length.max(1)),
             serde_json::json!({"Properties":configuration,"Identifiers":[identifier]}),
             serde_json::to_value(identifier).map_err(io::Error::other)?,
-            serde_json::to_value(configuration).map_err(io::Error::other)?, epoch).map_err(io::Error::other)?;
+            serde_json::to_value(configuration).map_err(io::Error::other)?,
+            epoch,
+        )
+        .map_err(io::Error::other)?;
         Ok(Self {
             operation: Box::new(OVERLAPPED {
                 hEvent: event.raw(),
                 ..Default::default()
             }),
             shared,
-            custom,custom_length:None,custom_ready:None,
+            custom,
+            custom_length: None,
+            custom_ready: None,
             event,
             // ReadFile needs room for the collection's whole input report.
             buffer: vec![0; usize::from(candidate.input_length.max(1))].into_boxed_slice(),
@@ -162,11 +197,13 @@ impl Reader {
             ReadState::Pending => return Ok(false),
             ReadState::Idle => {}
         }
-        if let Some(custom)=&mut self.custom {
-            let report=custom.poll_report(&mut self.buffer)?;
-            self.custom_length=report.map(|(length,_)|length);
-            self.custom_ready=report.map(|(_,ready)|ready);
-            if self.custom_length.is_some() { self.state = ReadState::Ready; }
+        if let Some(custom) = &mut self.custom {
+            let report = custom.poll_report(&mut self.buffer)?;
+            self.custom_length = report.map(|(length, _)| length);
+            self.custom_ready = report.map(|(_, ready)| ready);
+            if self.custom_length.is_some() {
+                self.state = ReadState::Ready;
+            }
             return Ok(self.state == ReadState::Ready);
         }
         // ReadFile resets the event when it starts the read.
@@ -176,9 +213,15 @@ impl Reader {
             ..Default::default()
         };
         if let Some(winusb) = &self.shared.endpoint.io.winusb {
-            if unsafe { ResetEvent(self.event.raw()) } == 0 { return Err(io::Error::last_os_error()); }
+            if unsafe { ResetEvent(self.event.raw()) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
             let immediate = unsafe { winusb.read(&mut self.buffer, &self.operation) }?;
-            self.state = if immediate { ReadState::Ready } else { ReadState::Pending };
+            self.state = if immediate {
+                ReadState::Ready
+            } else {
+                ReadState::Pending
+            };
             return Ok(immediate);
         }
         let started = unsafe {
@@ -209,14 +252,29 @@ impl Reader {
             return Ok(self.custom_length.take());
         }
         if self.state == ReadState::Idle {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "No outstanding input read"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "No outstanding input read",
+            ));
         }
         let mut transferred = 0u32;
         let completion = if let Some(winusb) = &self.shared.endpoint.io.winusb {
-            winusb.completed(&self.operation, false).map(|length| { transferred = length; })
-        } else if unsafe { GetOverlappedResult(self.shared.endpoint.io.native_handle()?.raw(), &*self.operation, &mut transferred, 0) } == 0 {
+            winusb.completed(&self.operation, false).map(|length| {
+                transferred = length;
+            })
+        } else if unsafe {
+            GetOverlappedResult(
+                self.shared.endpoint.io.native_handle()?.raw(),
+                &*self.operation,
+                &mut transferred,
+                0,
+            )
+        } == 0
+        {
             Err(io::Error::last_os_error())
-        } else { Ok(()) };
+        } else {
+            Ok(())
+        };
         // An unsuccessful readiness probe must not relinquish ownership
         // of storage which the kernel can still write into.
         self.state.completed(&completion);
@@ -250,7 +308,9 @@ impl Reader {
             self.state = ReadState::Idle;
             return;
         }
-        let Ok(handle)=self.shared.endpoint.io.native_handle()else{return;};
+        let Ok(handle) = self.shared.endpoint.io.native_handle() else {
+            return;
+        };
         unsafe { CancelIoEx(handle.raw(), &*self.operation) };
         let mut ignored = 0;
         // Cancellation is only a request; wait before reusing the buffer.
@@ -258,27 +318,99 @@ impl Reader {
         self.state = ReadState::Idle;
     }
 
-    fn initialize(&self, candidate: &Candidate, identifier: &DeviceIdentifier,
-        configuration: &otd_core::tablets::TabletConfiguration, stop: &Event) -> io::Result<()> {
-        let result = if self.custom.is_some() {self.initialize_custom(identifier,configuration,stop)}
-        else if let Some(winusb) = &self.shared.endpoint.io.winusb { winusb.initialize(candidate, identifier, configuration, stop) }
-        else { hid::initialize(candidate, self.shared.endpoint.io.native_handle()?, identifier, configuration, stop) };
-        if result.is_ok() { self.shared.endpoint.initialized.store(true, Ordering::Release); }
+    fn initialize(
+        &self,
+        candidate: &Candidate,
+        identifier: &DeviceIdentifier,
+        configuration: &otd_core::tablets::TabletConfiguration,
+        stop: &Event,
+    ) -> io::Result<()> {
+        let result = if self.custom.is_some() {
+            self.initialize_custom(identifier, configuration, stop)
+        } else if let Some(winusb) = &self.shared.endpoint.io.winusb {
+            winusb.initialize(candidate, identifier, configuration, stop)
+        } else {
+            hid::initialize(
+                candidate,
+                self.shared.endpoint.io.native_handle()?,
+                identifier,
+                configuration,
+                stop,
+            )
+        };
+        if result.is_ok() {
+            self.shared
+                .endpoint
+                .initialized
+                .store(true, Ordering::Release);
+        }
         result
     }
-    fn initialize_custom(&self,identifier:&DeviceIdentifier,configuration:&otd_core::tablets::TabletConfiguration,stop:&Event)->io::Result<()> {
-        let delay=configuration.attributes.as_ref().and_then(|attributes|attributes.get("FeatureInitDelayMs"))
-            .map(|text|text.parse::<u32>().map_err(io::Error::other)).transpose()?.unwrap_or(0);
-        if delay==u32::MAX {return Err(io::Error::other("Infinite custom initialization delay is unsupported"));}
-        let cancelled=||if unsafe{WaitForSingleObject(stop.raw(),0)}==WAIT_OBJECT_0 {Err(io::Error::new(io::ErrorKind::Interrupted,"Custom initialization cancelled"))}else{Ok(())};
-        for index in identifier.initialization_strings.iter().flatten() {cancelled()?;self.shared.endpoint.io.string(*index)?;}
-        for report in identifier.feature_init_report.iter().flatten().filter(|report|!report.0.is_empty()) {
-            cancelled()?;
-            match unsafe{WaitForSingleObject(stop.raw(),delay)} {WAIT_TIMEOUT=>{},WAIT_OBJECT_0=>return Err(io::Error::new(io::ErrorKind::Interrupted,"Custom initialization cancelled")),_=>return Err(io::Error::last_os_error())}
-            self.shared.endpoint.io.service(crate::managed_services::Operation::SetFeature,&mut report.0.clone())?;
+    fn initialize_custom(
+        &self,
+        identifier: &DeviceIdentifier,
+        configuration: &otd_core::tablets::TabletConfiguration,
+        stop: &Event,
+    ) -> io::Result<()> {
+        let delay = configuration
+            .attributes
+            .as_ref()
+            .and_then(|attributes| attributes.get("FeatureInitDelayMs"))
+            .map(|text| text.parse::<u32>().map_err(io::Error::other))
+            .transpose()?
+            .unwrap_or(0);
+        if delay == u32::MAX {
+            return Err(io::Error::other(
+                "Infinite custom initialization delay is unsupported",
+            ));
         }
-        for report in identifier.output_init_report.iter().flatten().filter(|report|!report.0.is_empty()) {cancelled()?;
-            self.shared.endpoint.io.service(crate::managed_services::Operation::WriteStream,&mut report.0.clone())?;
+        let cancelled = || {
+            if unsafe { WaitForSingleObject(stop.raw(), 0) } == WAIT_OBJECT_0 {
+                Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "Custom initialization cancelled",
+                ))
+            } else {
+                Ok(())
+            }
+        };
+        for index in identifier.initialization_strings.iter().flatten() {
+            cancelled()?;
+            self.shared.endpoint.io.string(*index)?;
+        }
+        for report in identifier
+            .feature_init_report
+            .iter()
+            .flatten()
+            .filter(|report| !report.0.is_empty())
+        {
+            cancelled()?;
+            match unsafe { WaitForSingleObject(stop.raw(), delay) } {
+                WAIT_TIMEOUT => {}
+                WAIT_OBJECT_0 => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "Custom initialization cancelled",
+                    ));
+                }
+                _ => return Err(io::Error::last_os_error()),
+            }
+            self.shared.endpoint.io.service(
+                crate::managed_services::Operation::SetFeature,
+                &mut report.0.clone(),
+            )?;
+        }
+        for report in identifier
+            .output_init_report
+            .iter()
+            .flatten()
+            .filter(|report| !report.0.is_empty())
+        {
+            cancelled()?;
+            self.shared.endpoint.io.service(
+                crate::managed_services::Operation::WriteStream,
+                &mut report.0.clone(),
+            )?;
         }
         Ok(())
     }
@@ -299,7 +431,10 @@ enum InputEndpoint {
 
 impl InputEndpoint {
     fn other(self) -> Self {
-        match self { Self::Pen => Self::Auxiliary, Self::Auxiliary => Self::Pen }
+        match self {
+            Self::Pen => Self::Auxiliary,
+            Self::Auxiliary => Self::Pen,
+        }
     }
 }
 
@@ -309,7 +444,9 @@ trait InputReader {
 }
 
 impl InputReader for Reader {
-    fn start(&mut self) -> io::Result<bool> { Reader::start(self) }
+    fn start(&mut self) -> io::Result<bool> {
+        Reader::start(self)
+    }
 }
 
 #[derive(Debug)]
@@ -322,15 +459,27 @@ enum InputSelection {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum InputPoll { Pending, Ready, Stopped }
+enum InputPoll {
+    Pending,
+    Ready,
+    Stopped,
+}
 
 /// Ownership transitions precede input, while queued reports precede a
 /// managed-only Idle. In particular, a zero-time fairness poll must still
 /// consume input when foreign producers keep the managed wake signaled.
-fn select_awakened_input(managed: bool, transition: bool, stopped: bool,
-    select: impl FnOnce() -> io::Result<InputSelection>) -> io::Result<InputSelection> {
-    if stopped { return Ok(InputSelection::Stopped); }
-    if transition { return Ok(InputSelection::Idle); }
+fn select_awakened_input(
+    managed: bool,
+    transition: bool,
+    stopped: bool,
+    select: impl FnOnce() -> io::Result<InputSelection>,
+) -> io::Result<InputSelection> {
+    if stopped {
+        return Ok(InputSelection::Stopped);
+    }
+    if transition {
+        return Ok(InputSelection::Idle);
+    }
     Ok(match select()? {
         InputSelection::Pending if managed => InputSelection::Idle,
         selection => selection,
@@ -340,9 +489,14 @@ fn select_awakened_input(managed: bool, transition: bool, stopped: bool,
 /// Start the preferred endpoint first. A pending read may already be
 /// signaled, so check it before delivering an immediate fallback completion.
 /// The ordinary all-pending path performs no additional poll or wakeup.
-fn select_input<R: InputReader>(pen: &mut R, auxiliary: Option<&mut R>, preferred: InputEndpoint, poll_pending: bool,
+fn select_input<R: InputReader>(
+    pen: &mut R,
+    auxiliary: Option<&mut R>,
+    preferred: InputEndpoint,
+    poll_pending: bool,
     mut poll: impl FnMut(&R) -> io::Result<InputPoll>,
-    mut stopped: impl FnMut() -> io::Result<bool>) -> io::Result<InputSelection> {
+    mut stopped: impl FnMut() -> io::Result<bool>,
+) -> io::Result<InputSelection> {
     let (first, second) = match preferred {
         InputEndpoint::Pen => (Some(pen), auxiliary),
         InputEndpoint::Auxiliary => (auxiliary, Some(pen)),
@@ -350,8 +504,14 @@ fn select_input<R: InputReader>(pen: &mut R, auxiliary: Option<&mut R>, preferre
     let mut first = first;
     let mut second = second;
     let start = |reader: &mut R, endpoint| match reader.start() {
-        Ok(ready) => Ok(if ready { Some(InputSelection::Report(endpoint, true)) } else { None }),
-        Err(error) if endpoint == InputEndpoint::Auxiliary => Ok(Some(InputSelection::AuxiliaryFailed(error))),
+        Ok(ready) => Ok(if ready {
+            Some(InputSelection::Report(endpoint, true))
+        } else {
+            None
+        }),
+        Err(error) if endpoint == InputEndpoint::Auxiliary => {
+            Ok(Some(InputSelection::AuxiliaryFailed(error)))
+        }
         Err(error) => Err(error),
     };
     let mut attempt = |reader: &mut R, endpoint, check_stop: bool| {
@@ -360,16 +520,36 @@ fn select_input<R: InputReader>(pen: &mut R, auxiliary: Option<&mut R>, preferre
             Ok(None) => Ok(None),
             // A preferred pending endpoint is polled together with Stop below,
             // replacing the usual Stop-only check on an immediate fallback.
-            Ok(Some(selection)) if !check_stop && matches!(selection, InputSelection::Report(..)) => Ok(Some(selection)),
-            Ok(Some(selection)) => Ok(Some(if stopped()? { InputSelection::Stopped } else { selection })),
-            Err(error) => if stopped()? { Ok(Some(InputSelection::Stopped)) } else { Err(error) },
+            Ok(Some(selection))
+                if !check_stop && matches!(selection, InputSelection::Report(..)) =>
+            {
+                Ok(Some(selection))
+            }
+            Ok(Some(selection)) => Ok(Some(if stopped()? {
+                InputSelection::Stopped
+            } else {
+                selection
+            })),
+            Err(error) => {
+                if stopped()? {
+                    Ok(Some(InputSelection::Stopped))
+                } else {
+                    Err(error)
+                }
+            }
         }
     };
-    if let Some(reader) = first.as_deref_mut() && let Some(selection) = attempt(reader, preferred, true)? {
+    if let Some(reader) = first.as_deref_mut()
+        && let Some(selection) = attempt(reader, preferred, true)?
+    {
         return Ok(selection);
     }
-    if let Some(reader) = second.as_deref_mut() && let Some(selection) = attempt(reader, preferred.other(), first.is_none())? {
-        if matches!(selection, InputSelection::Report(..)) && let Some(first) = first.as_deref() {
+    if let Some(reader) = second.as_deref_mut()
+        && let Some(selection) = attempt(reader, preferred.other(), first.is_none())?
+    {
+        if matches!(selection, InputSelection::Report(..))
+            && let Some(first) = first.as_deref()
+        {
             match poll(first)? {
                 InputPoll::Stopped => return Ok(InputSelection::Stopped),
                 InputPoll::Ready => return Ok(InputSelection::Report(preferred, false)),
@@ -382,7 +562,10 @@ fn select_input<R: InputReader>(pen: &mut R, auxiliary: Option<&mut R>, preferre
     // Probe retained pending completions here so repeated managed signals
     // cannot hide a ready input event. Ordinary input waits skip these probes.
     if poll_pending {
-        for (reader, endpoint) in [(first.as_deref(), preferred), (second.as_deref(), preferred.other())] {
+        for (reader, endpoint) in [
+            (first.as_deref(), preferred),
+            (second.as_deref(), preferred.other()),
+        ] {
             if let Some(reader) = reader {
                 match poll(reader)? {
                     InputPoll::Stopped => return Ok(InputSelection::Stopped),
@@ -412,8 +595,11 @@ struct HidSource<'a> {
     preferred: InputEndpoint,
 }
 
-fn opened_identifiers(primary: &DeviceIdentifier, auxiliary: Option<&DeviceIdentifier>,
-    auxiliary_opened: bool) -> Vec<DeviceIdentifier> {
+fn opened_identifiers(
+    primary: &DeviceIdentifier,
+    auxiliary: Option<&DeviceIdentifier>,
+    auxiliary_opened: bool,
+) -> Vec<DeviceIdentifier> {
     let mut identifiers = Vec::with_capacity(1 + usize::from(auxiliary_opened));
     identifiers.push(primary.clone());
     if let Some(auxiliary) = auxiliary.filter(|_| auxiliary_opened) {
@@ -431,7 +617,15 @@ impl<'a> HidSource<'a> {
     ) -> io::Result<Self> {
         let candidate = selected.pen;
         let output = crate::shared_devices::OutputGate::new()?;
-        let pen = Reader::open(candidate, &selected.identifier, driver_access, &selected.configuration, Arc::clone(&output), false, None)?;
+        let pen = Reader::open(
+            candidate,
+            &selected.identifier,
+            driver_access,
+            &selected.configuration,
+            Arc::clone(&output),
+            false,
+            None,
+        )?;
         let auxiliary = selected.auxiliary.as_ref().and_then(|(endpoint, identifier)| {
             Reader::open(endpoint, identifier, driver_access, &selected.configuration, Arc::clone(&output), true, Some(pen.shared.endpoint.epoch))
                 .inspect_err(|error| {
@@ -442,7 +636,9 @@ impl<'a> HidSource<'a> {
         let tablet = serde_json::json!({"Properties":selected.configuration,
             "Identifiers":opened_identifiers(&selected.identifier, selected.auxiliary.as_ref().map(|(_,id)|id), auxiliary.is_some())});
         pen.shared.tablet(tablet.clone());
-        if let Some(reader)=&auxiliary { reader.shared.tablet(tablet); }
+        if let Some(reader) = &auxiliary {
+            reader.shared.tablet(tablet);
+        }
         crate::managed_host::publish_owned_devices();
         Ok(Self {
             label: format!(
@@ -461,8 +657,14 @@ impl<'a> HidSource<'a> {
     }
 
     fn identifiers(&self, selected: &SelectedDevice<'_>) -> Vec<DeviceIdentifier> {
-        opened_identifiers(&selected.identifier,
-            selected.auxiliary.as_ref().map(|(_, identifier)| identifier), self.auxiliary.is_some())
+        opened_identifiers(
+            &selected.identifier,
+            selected
+                .auxiliary
+                .as_ref()
+                .map(|(_, identifier)| identifier),
+            self.auxiliary.is_some(),
+        )
     }
 
     /// Initializes the pen endpoint, then the auxiliary one. A failure on the
@@ -479,12 +681,8 @@ impl<'a> HidSource<'a> {
             self.stop,
         )?;
         if let (Some(reader), Some((endpoint, identifier))) = (&self.auxiliary, &selected.auxiliary)
-            && let Err(error) = reader.initialize(
-                endpoint,
-                identifier,
-                &selected.configuration,
-                self.stop,
-            )
+            && let Err(error) =
+                reader.initialize(endpoint, identifier, &selected.configuration, self.stop)
         {
             if error.kind() == io::ErrorKind::Interrupted {
                 return Err(error);
@@ -501,29 +699,53 @@ impl<'a> HidSource<'a> {
 
     fn prepare_parsers(&self, selected: &SelectedDevice<'_>) -> io::Result<()> {
         let missing = std::iter::once(&selected.identifier)
-            .chain(selected.auxiliary.as_ref().filter(|_| self.auxiliary.is_some()).map(|(_, identifier)| identifier))
+            .chain(
+                selected
+                    .auxiliary
+                    .as_ref()
+                    .filter(|_| self.auxiliary.is_some())
+                    .map(|(_, identifier)| identifier),
+            )
             .any(|identifier| !hid::parser_supported(identifier.parser()));
-        if missing { crate::plugins::load_parser_registry().map_err(io::Error::other)?; }
+        if missing {
+            crate::plugins::load_parser_registry().map_err(io::Error::other)?;
+        }
         Ok(())
     }
 
     fn needs_original_parser(&self, selected: &SelectedDevice<'_>) -> bool {
-        use otd_core::tablets::{parser_support, ParserSupport};
+        use otd_core::tablets::{ParserSupport, parser_support};
         parser_support(selected.identifier.parser()) == ParserSupport::Missing
-            || (self.auxiliary.is_some() && selected.auxiliary.as_ref().is_some_and(|(_, identifier)|
-                parser_support(identifier.parser()) == ParserSupport::Missing))
+            || (self.auxiliary.is_some()
+                && selected.auxiliary.as_ref().is_some_and(|(_, identifier)| {
+                    parser_support(identifier.parser()) == ParserSupport::Missing
+                }))
     }
 
     /// An independently owned parser for an actually opened auxiliary endpoint.
     /// Construction failures abort startup instead of silently dropping input.
-    fn auxiliary_decoder(&mut self, selected: &SelectedDevice<'_>, plugins: Option<&PluginChain>) -> io::Result<Option<RuntimeDecoder>> {
-        let Some((_, identifier)) = selected.auxiliary.as_ref() else { return Ok(None); };
-        if self.auxiliary.is_none() { return Ok(None); }
+    fn auxiliary_decoder(
+        &mut self,
+        selected: &SelectedDevice<'_>,
+        plugins: Option<&PluginChain>,
+    ) -> io::Result<Option<RuntimeDecoder>> {
+        let Some((_, identifier)) = selected.auxiliary.as_ref() else {
+            return Ok(None);
+        };
+        if self.auxiliary.is_none() {
+            return Ok(None);
+        }
         if !hid::parser_supported(identifier.parser()) && plugins.is_none() {
             crate::plugins::load_parser_registry().map_err(io::Error::other)?;
         }
-        match plugins { Some(plugins) => plugins.source_decoder_for_endpoint(identifier.parser(), selected.spec,true),
-            None => RuntimeDecoder::for_parser(identifier.parser(), selected.spec) }.map(Some).map_err(io::Error::other)
+        match plugins {
+            Some(plugins) => {
+                plugins.source_decoder_for_endpoint(identifier.parser(), selected.spec, true)
+            }
+            None => RuntimeDecoder::for_parser(identifier.parser(), selected.spec),
+        }
+        .map(Some)
+        .map_err(io::Error::other)
     }
 
     /// Arms the high-resolution timer to signal after `wait`.
@@ -568,24 +790,31 @@ impl<'a> HidSource<'a> {
 
     fn select_input(&mut self, poll_pending: bool) -> io::Result<InputSelection> {
         let stop = self.stop.raw();
-        select_input(&mut self.pen, self.auxiliary.as_mut(), self.preferred, poll_pending, |reader| {
-            if reader.custom.is_some() {
-                return match unsafe { WaitForSingleObject(stop, 0) } {
-                    WAIT_OBJECT_0 => Ok(InputPoll::Stopped),
-                    WAIT_TIMEOUT => Ok(InputPoll::Pending),
-                    _ => Err(io::Error::last_os_error()),
-                };
-            }
-            match wait(&[stop, reader.event.raw()], 0)? {
-                Some(0) => Ok(InputPoll::Stopped),
-                Some(_) => Ok(InputPoll::Ready),
-                None => Ok(InputPoll::Pending),
-            }
-        }, || match unsafe { WaitForSingleObject(stop, 0) } {
-            WAIT_OBJECT_0 => Ok(true),
-            WAIT_TIMEOUT => Ok(false),
-            _ => Err(io::Error::last_os_error()),
-        })
+        select_input(
+            &mut self.pen,
+            self.auxiliary.as_mut(),
+            self.preferred,
+            poll_pending,
+            |reader| {
+                if reader.custom.is_some() {
+                    return match unsafe { WaitForSingleObject(stop, 0) } {
+                        WAIT_OBJECT_0 => Ok(InputPoll::Stopped),
+                        WAIT_TIMEOUT => Ok(InputPoll::Pending),
+                        _ => Err(io::Error::last_os_error()),
+                    };
+                }
+                match wait(&[stop, reader.event.raw()], 0)? {
+                    Some(0) => Ok(InputPoll::Stopped),
+                    Some(_) => Ok(InputPoll::Ready),
+                    None => Ok(InputPoll::Pending),
+                }
+            },
+            || match unsafe { WaitForSingleObject(stop, 0) } {
+                WAIT_OBJECT_0 => Ok(true),
+                WAIT_TIMEOUT => Ok(false),
+                _ => Err(io::Error::last_os_error()),
+            },
+        )
     }
 
     fn input_report(&mut self, endpoint: InputEndpoint, queued: bool) -> io::Result<Read<'_>> {
@@ -612,19 +841,24 @@ impl<'a> HidSource<'a> {
     }
 
     fn auxiliary_report(&mut self, queued: bool) -> io::Result<Read<'_>> {
-        let ready = self.auxiliary.as_mut().and_then(|reader|reader.custom_ready.take()).unwrap_or_else(Instant::now);
+        let ready = self
+            .auxiliary
+            .as_mut()
+            .and_then(|reader| reader.custom_ready.take())
+            .unwrap_or_else(Instant::now);
         let finished = self.auxiliary.as_mut().map(Reader::finish);
         match finished {
-            Some(Ok(Some(length))) => {
-                match &self.auxiliary {
-                    Some(reader) => { reader.shared.publish(&reader.buffer[..length]); Ok(Read::Auxiliary {
+            Some(Ok(Some(length))) => match &self.auxiliary {
+                Some(reader) => {
+                    reader.shared.publish(&reader.buffer[..length]);
+                    Ok(Read::Auxiliary {
                         bytes: &reader.buffer[..length],
                         ready,
                         queued,
-                    }) },
-                    None => Ok(Read::Idle),
+                    })
                 }
-            }
+                None => Ok(Read::Idle),
+            },
             Some(Ok(None)) => Ok(self.lose_auxiliary("read cancelled".into())),
             Some(Err(error)) => Ok(self.lose_auxiliary(error.to_string())),
             None => Ok(Read::Idle),
@@ -639,9 +873,15 @@ impl<'a> HidSource<'a> {
 }
 
 impl ReportSource for HidSource<'_> {
-    fn native_output_enabled(&self) -> bool { self.output.native_enabled() }
-    fn output_started(&self) { self.output.start(); }
-    fn output_acknowledged(&self, enabled: bool) { self.output.acknowledge(enabled); }
+    fn native_output_enabled(&self) -> bool {
+        self.output.native_enabled()
+    }
+    fn output_started(&self) {
+        self.output.start();
+    }
+    fn output_acknowledged(&self, enabled: bool) {
+        self.output.acknowledge(enabled);
+    }
     fn shared_output(&self) -> bool {
         true
     }
@@ -658,14 +898,28 @@ impl ReportSource for HidSource<'_> {
     // checks it before returning any immediate completion.
     fn next(&mut self, timeout: Duration) -> io::Result<Read<'_>> {
         let selection = if unsafe { WaitForSingleObject(self.output.event(), 0) } == WAIT_OBJECT_0 {
-            if unsafe { ResetEvent(self.output.event()) } == 0 { return Err(io::Error::last_os_error()); }
+            if unsafe { ResetEvent(self.output.event()) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
             let managed = self.output.take_managed_pending();
-            select_awakened_input(managed, self.output.transition_pending(), self.stopped()?, || self.select_input(true))?
-        } else { self.select_input(false)? };
+            select_awakened_input(
+                managed,
+                self.output.transition_pending(),
+                self.stopped()?,
+                || self.select_input(true),
+            )?
+        } else {
+            self.select_input(false)?
+        };
         match selection {
             InputSelection::Report(endpoint, queued) => return self.input_report(endpoint, queued),
-            InputSelection::AuxiliaryFailed(error) => return Ok(self.lose_auxiliary(error.to_string())),
-            InputSelection::Stopped => { self.cancel(); return Ok(Read::Ended); }
+            InputSelection::AuxiliaryFailed(error) => {
+                return Ok(self.lose_auxiliary(error.to_string()));
+            }
+            InputSelection::Stopped => {
+                self.cancel();
+                return Ok(Read::Ended);
+            }
             InputSelection::Idle => return Ok(Read::Idle),
             InputSelection::Pending => {}
         }
@@ -690,9 +944,17 @@ impl ReportSource for HidSource<'_> {
         let output_change = add(self.output.event());
         let (pen, auxiliary) = if self.preferred == InputEndpoint::Pen {
             let pen = add(self.pen.event.raw());
-            (pen, self.auxiliary.as_ref().map(|reader| add(reader.event.raw())))
+            (
+                pen,
+                self.auxiliary
+                    .as_ref()
+                    .map(|reader| add(reader.event.raw())),
+            )
         } else {
-            let auxiliary = self.auxiliary.as_ref().map(|reader| add(reader.event.raw()));
+            let auxiliary = self
+                .auxiliary
+                .as_ref()
+                .map(|reader| add(reader.event.raw()));
             (add(self.pen.event.raw()), auxiliary)
         };
         let notification = add(self.notification.event());
@@ -714,17 +976,33 @@ impl ReportSource for HidSource<'_> {
             };
             match result {
                 Ok(Some(index)) if index == output_change => {
-                    if unsafe { ResetEvent(self.output.event()) } == 0 { return Err(io::Error::last_os_error()); }
+                    if unsafe { ResetEvent(self.output.event()) } == 0 {
+                        return Err(io::Error::last_os_error());
+                    }
                     let managed = self.output.take_managed_pending();
-                    match select_awakened_input(managed, self.output.transition_pending(), self.stopped()?, || self.select_input(true))? {
-                        InputSelection::Report(endpoint, queued) => return self.input_report(endpoint, queued),
-                        InputSelection::AuxiliaryFailed(error) => return Ok(self.lose_auxiliary(error.to_string())),
-                        InputSelection::Stopped => { self.cancel(); return Ok(Read::Ended); }
+                    match select_awakened_input(
+                        managed,
+                        self.output.transition_pending(),
+                        self.stopped()?,
+                        || self.select_input(true),
+                    )? {
+                        InputSelection::Report(endpoint, queued) => {
+                            return self.input_report(endpoint, queued);
+                        }
+                        InputSelection::AuxiliaryFailed(error) => {
+                            return Ok(self.lose_auxiliary(error.to_string()));
+                        }
+                        InputSelection::Stopped => {
+                            self.cancel();
+                            return Ok(Read::Ended);
+                        }
                         InputSelection::Pending | InputSelection::Idle => {}
                     }
                     return Ok(Read::Idle);
                 }
-                Ok(Some(index)) if index == pen => return self.input_report(InputEndpoint::Pen, false),
+                Ok(Some(index)) if index == pen => {
+                    return self.input_report(InputEndpoint::Pen, false);
+                }
                 Ok(Some(index)) if Some(index) == auxiliary => {
                     return self.input_report(InputEndpoint::Auxiliary, false);
                 }
@@ -768,20 +1046,40 @@ pub fn run(
         .map_err(io::Error::other)?;
     source.prepare_parsers(selected)?;
     if matches!(mode, Mode::Driver) {
-        plugins.bind_identifiers(&profile, &selected.configuration, &source.identifiers(selected))
+        plugins
+            .bind_identifiers(
+                &profile,
+                &selected.configuration,
+                &source.identifiers(selected),
+            )
             .map_err(io::Error::other)?;
     }
     if matches!(mode, Mode::Driver) && source.needs_original_parser(selected) {
-        plugins.prepare_managed_decoder().map_err(io::Error::other)?;
+        plugins
+            .prepare_managed_decoder()
+            .map_err(io::Error::other)?;
     }
-    let mut decoder = if matches!(mode, Mode::Driver) { plugins.source_decoder(selected.identifier.parser(), selected.spec).map_err(io::Error::other)? } else { selected.decoder()? };
-    let mut auxiliary = source.auxiliary_decoder(selected, matches!(mode, Mode::Driver).then_some(&*plugins))?;
-    if matches!(mode, Mode::Driver) && (decoder.is_managed() || auxiliary.as_ref().is_some_and(RuntimeDecoder::is_managed)) {
-        plugins.prepare_managed_decoder().map_err(io::Error::other)?;
+    let mut decoder = if matches!(mode, Mode::Driver) {
+        plugins
+            .source_decoder(selected.identifier.parser(), selected.spec)
+            .map_err(io::Error::other)?
+    } else {
+        selected.decoder()?
+    };
+    let mut auxiliary =
+        source.auxiliary_decoder(selected, matches!(mode, Mode::Driver).then_some(&*plugins))?;
+    if matches!(mode, Mode::Driver)
+        && (decoder.is_managed() || auxiliary.as_ref().is_some_and(RuntimeDecoder::is_managed))
+    {
+        plugins
+            .prepare_managed_decoder()
+            .map_err(io::Error::other)?;
     }
     plugins.reset();
     if let Some(name) = plugins.take_failure() {
-        return Err(io::Error::other(format!("Plugin failed during reset notification: {name}")));
+        return Err(io::Error::other(format!(
+            "Plugin failed during reset notification: {name}"
+        )));
     }
     announce_auxiliary(&source, selected, status);
     if matches!(mode, Mode::Driver) {
@@ -798,10 +1096,23 @@ pub fn run(
     } else {
         None
     };
-    if matches!(mode, Mode::Driver) { plugins.set_managed_wake(source.output.clone()).map_err(io::Error::other)?; }
+    if matches!(mode, Mode::Driver) {
+        plugins
+            .set_managed_wake(source.output.clone())
+            .map_err(io::Error::other)?;
+    }
     let pen = pen_device(&profile, mode)?;
-    let actions = action_sink(mode)?.map(|sink| plugins.wrap_action_sink_with_wake(&profile, &selected.configuration, sink, source.output.clone()))
-        .transpose().map_err(io::Error::other)?;
+    let actions = action_sink(mode)?
+        .map(|sink| {
+            plugins.wrap_action_sink_with_wake(
+                &profile,
+                &selected.configuration,
+                sink,
+                source.output.clone(),
+            )
+        })
+        .transpose()
+        .map_err(io::Error::other)?;
     let result = otd_core::session::run_gated_with_endpoints(
         &mut source,
         &mut WindowsDisplays,
@@ -868,9 +1179,16 @@ impl DebugDevice {
                     name: selected.configuration.name.clone(),
                     parser: selected.identifier.parser().to_owned(),
                 },
-                source.auxiliary.as_ref().map_or(source.pen.buffer.len(),
-                    |auxiliary| source.pen.buffer.len().max(auxiliary.buffer.len())),
-                source.auxiliary.as_ref().and(selected.auxiliary.as_ref())
+                source
+                    .auxiliary
+                    .as_ref()
+                    .map_or(source.pen.buffer.len(), |auxiliary| {
+                        source.pen.buffer.len().max(auxiliary.buffer.len())
+                    }),
+                source
+                    .auxiliary
+                    .as_ref()
+                    .and(selected.auxiliary.as_ref())
                     .map(|(_, identifier)| identifier.parser().to_owned()),
                 crate::device_sessions::debug_key(),
             ),
@@ -924,9 +1242,13 @@ impl<'a> PreparedSession<'a> {
                 .flatten()
                 .filter(|report| !report.0.is_empty())
             {
-                let invalid = if selected.pen.endpoint.transport == otd_core::endpoint_match::Transport::WinUsb {
+                let invalid = if selected.pen.endpoint.transport
+                    == otd_core::endpoint_match::Transport::WinUsb
+                {
                     report.0.len() > u16::MAX as usize || (output && length == 0)
-                } else { length == 0 || length > u16::MAX as u32 || report.0.len() > length as usize };
+                } else {
+                    length == 0 || length > u16::MAX as u32 || report.0.len() > length as usize
+                };
                 if invalid {
                     return Err(io::Error::other(
                         "initialization report exceeds endpoint report length",
@@ -943,7 +1265,7 @@ impl<'a> PreparedSession<'a> {
         self.source.identifiers(self.selected)
     }
 
-    pub fn retire(&mut self)->io::Result<()> {
+    pub fn retire(&mut self) -> io::Result<()> {
         retire_custom_readers(&mut self.source)
     }
 
@@ -961,16 +1283,20 @@ impl<'a> PreparedSession<'a> {
         // quiesced, so the replacement cannot replay its already-processed
         // pen/button reports.
         // https://learn.microsoft.com/windows-hardware/drivers/ddi/hidsdi/nf-hidsdi-hidd_flushqueue
-        for reader in std::iter::once(&mut self.source.pen)
-            .chain(self.source.auxiliary.iter_mut())
+        for reader in std::iter::once(&mut self.source.pen).chain(self.source.auxiliary.iter_mut())
         {
-            if let Some(custom)=&mut reader.custom {custom.flush()?;continue;}
+            if let Some(custom) = &mut reader.custom {
+                custom.flush()?;
+                continue;
+            }
             if let Some(interface) = &reader.shared.endpoint.io.winusb {
                 interface.flush_input()?;
                 continue;
             }
             if !unsafe {
-                windows_sys::Win32::Devices::HumanInterfaceDevice::HidD_FlushQueue(reader.shared.endpoint.io.native_handle()?.raw())
+                windows_sys::Win32::Devices::HumanInterfaceDevice::HidD_FlushQueue(
+                    reader.shared.endpoint.io.native_handle()?.raw(),
+                )
             } {
                 return Err(io::Error::last_os_error());
             }
@@ -993,30 +1319,62 @@ impl<'a> PreparedSession<'a> {
             .map_err(io::Error::other)?;
         let mut source = self.source;
         source.prepare_parsers(self.selected)?;
-        if plugins.bind_identifiers(&profile, &self.selected.configuration, &source.identifiers(self.selected))
-            .map_err(io::Error::other)? {
+        if plugins
+            .bind_identifiers(
+                &profile,
+                &self.selected.configuration,
+                &source.identifiers(self.selected),
+            )
+            .map_err(io::Error::other)?
+        {
             plugins.reset();
             if let Some(name) = plugins.take_failure() {
-                return Err(io::Error::other(format!("Plugin failed during endpoint reset notification: {name}")));
+                return Err(io::Error::other(format!(
+                    "Plugin failed during endpoint reset notification: {name}"
+                )));
             }
         }
         if source.needs_original_parser(self.selected) {
-            plugins.prepare_managed_decoder().map_err(io::Error::other)?;
+            plugins
+                .prepare_managed_decoder()
+                .map_err(io::Error::other)?;
         }
-        let mut decoder = plugins.source_decoder(self.selected.identifier.parser(), self.selected.spec).map_err(io::Error::other)?;
+        let mut decoder = plugins
+            .source_decoder(self.selected.identifier.parser(), self.selected.spec)
+            .map_err(io::Error::other)?;
         let mut auxiliary = source.auxiliary_decoder(self.selected, Some(&*plugins))?;
         if decoder.is_managed() || auxiliary.as_ref().is_some_and(RuntimeDecoder::is_managed) {
-            plugins.prepare_managed_decoder().map_err(io::Error::other)?;
+            plugins
+                .prepare_managed_decoder()
+                .map_err(io::Error::other)?;
         }
         let _debug = DebugDevice::set(self.selected, &source);
         announce_auxiliary(&source, self.selected, status);
         let _priority = ReaderPriority::for_driver(crate::experimental::mmcss_enabled(), status);
         let mut output = SessionOutput::new()?;
-        plugins.set_managed_wake(source.output.clone()).map_err(io::Error::other)?;
+        plugins
+            .set_managed_wake(source.output.clone())
+            .map_err(io::Error::other)?;
         let pen = pen_device(&profile, Mode::Driver)?;
-        let actions = action_sink(Mode::Driver)?.map(|sink| plugins.wrap_action_sink_with_wake(&profile, &self.selected.configuration, sink, source.output.clone()))
-            .transpose().map_err(io::Error::other)?;
-        let actions = match (actions, preset) { (Some(sink), Some(request)) => Some(crate::binding_presets::wrap(sink, request, profile.binding_inhibit)), (sink, _) => sink };
+        let actions = action_sink(Mode::Driver)?
+            .map(|sink| {
+                plugins.wrap_action_sink_with_wake(
+                    &profile,
+                    &self.selected.configuration,
+                    sink,
+                    source.output.clone(),
+                )
+            })
+            .transpose()
+            .map_err(io::Error::other)?;
+        let actions = match (actions, preset) {
+            (Some(sink), Some(request)) => Some(crate::binding_presets::wrap(
+                sink,
+                request,
+                profile.binding_inhibit,
+            )),
+            (sink, _) => sink,
+        };
         let identifiers = source.identifiers(self.selected);
         let result = otd_core::session::run_gated_with_endpoints(
             &mut source,
@@ -1042,14 +1400,16 @@ impl<'a> PreparedSession<'a> {
     }
 }
 
-fn retire_custom_readers(source:&mut HidSource<'_>)->io::Result<()> {
-    let mut failure=None;
+fn retire_custom_readers(source: &mut HidSource<'_>) -> io::Result<()> {
+    let mut failure = None;
     for reader in std::iter::once(&mut source.pen).chain(source.auxiliary.iter_mut()) {
-        if let Some(custom)=&mut reader.custom {
-            if let Err(error)=custom.close(std::time::Duration::from_secs(3)){failure.get_or_insert(error);}
+        if let Some(custom) = &mut reader.custom {
+            if let Err(error) = custom.close(std::time::Duration::from_secs(3)) {
+                failure.get_or_insert(error);
+            }
         }
     }
-    failure.map_or(Ok(()),Err)
+    failure.map_or(Ok(()), Err)
 }
 
 pub fn wait_for_retry(notification: &Notification, stop_event: &Event) -> io::Result<bool> {
@@ -1076,10 +1436,24 @@ mod identifier_metadata_tests {
     use super::*;
     #[test]
     fn discovered_but_unopened_auxiliary_is_not_a_live_identifier() {
-        let primary = DeviceIdentifier { product_id: Some(2), report_parser: Some("Matched.Digitizer".into()), ..Default::default() };
-        let auxiliary = DeviceIdentifier { product_id: Some(3), report_parser: Some("Matched.Auxiliary".into()), ..Default::default() };
-        assert_eq!(opened_identifiers(&primary, Some(&auxiliary), true), [primary.clone(), auxiliary.clone()]);
-        assert_eq!(opened_identifiers(&primary, Some(&auxiliary), false), [primary.clone()]);
+        let primary = DeviceIdentifier {
+            product_id: Some(2),
+            report_parser: Some("Matched.Digitizer".into()),
+            ..Default::default()
+        };
+        let auxiliary = DeviceIdentifier {
+            product_id: Some(3),
+            report_parser: Some("Matched.Auxiliary".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            opened_identifiers(&primary, Some(&auxiliary), true),
+            [primary.clone(), auxiliary.clone()]
+        );
+        assert_eq!(
+            opened_identifiers(&primary, Some(&auxiliary), false),
+            [primary.clone()]
+        );
         assert_eq!(opened_identifiers(&primary, None, false), [primary]);
     }
 }
@@ -1090,7 +1464,11 @@ mod input_fairness_tests {
     use std::{cell::Cell, collections::VecDeque};
 
     #[derive(Clone, Copy)]
-    enum Completion { Immediate(u8), Pending(u8), Fault }
+    enum Completion {
+        Immediate(u8),
+        Pending(u8),
+        Fault,
+    }
 
     /// One fixed completion slot per endpoint, as with OVERLAPPED input.
     /// Reissuing before consumption would discard a sequence number and fail
@@ -1106,8 +1484,14 @@ mod input_fairness_tests {
 
     impl FakeReader {
         fn new(reports: impl IntoIterator<Item = Completion>) -> Self {
-            Self { queued: reports.into_iter().collect(), state: ReadState::Idle,
-                report: None, signaled: false, starts: 0, consumed: Vec::new() }
+            Self {
+                queued: reports.into_iter().collect(),
+                state: ReadState::Idle,
+                report: None,
+                signaled: false,
+                starts: 0,
+                consumed: Vec::new(),
+            }
         }
         fn finish(&mut self) -> u8 {
             assert!(self.state == ReadState::Ready || self.signaled);
@@ -1117,7 +1501,10 @@ mod input_fairness_tests {
             self.consumed.push(report);
             report
         }
-        fn signal(&mut self) { assert_eq!(self.state, ReadState::Pending); self.signaled = true; }
+        fn signal(&mut self) {
+            assert_eq!(self.state, ReadState::Pending);
+            self.signaled = true;
+        }
     }
 
     impl InputReader for FakeReader {
@@ -1130,29 +1517,63 @@ mod input_fairness_tests {
             self.starts += 1;
             match self.queued.pop_front().unwrap_or(Completion::Pending(255)) {
                 Completion::Immediate(value) => {
-                    self.report = Some(value); self.state = ReadState::Ready; Ok(true)
+                    self.report = Some(value);
+                    self.state = ReadState::Ready;
+                    Ok(true)
                 }
                 Completion::Pending(value) => {
-                    self.report = Some(value); self.state = ReadState::Pending; Ok(false)
+                    self.report = Some(value);
+                    self.state = ReadState::Pending;
+                    Ok(false)
                 }
-                Completion::Fault => Err(io::Error::new(io::ErrorKind::BrokenPipe, "fake removed endpoint")),
+                Completion::Fault => Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "fake removed endpoint",
+                )),
             }
         }
     }
 
-    fn select(pen: &mut FakeReader, auxiliary: Option<&mut FakeReader>, preferred: InputEndpoint,
-        stop: bool, polls: &Cell<usize>) -> io::Result<InputSelection> {
-        select_input(pen, auxiliary, preferred, false, |reader| {
-            polls.set(polls.get() + 1);
-            Ok(if stop { InputPoll::Stopped } else if reader.signaled { InputPoll::Ready } else { InputPoll::Pending })
-        }, || Ok(stop))
+    fn select(
+        pen: &mut FakeReader,
+        auxiliary: Option<&mut FakeReader>,
+        preferred: InputEndpoint,
+        stop: bool,
+        polls: &Cell<usize>,
+    ) -> io::Result<InputSelection> {
+        select_input(
+            pen,
+            auxiliary,
+            preferred,
+            false,
+            |reader| {
+                polls.set(polls.get() + 1);
+                Ok(if stop {
+                    InputPoll::Stopped
+                } else if reader.signaled {
+                    InputPoll::Ready
+                } else {
+                    InputPoll::Pending
+                })
+            },
+            || Ok(stop),
+        )
     }
 
-    fn deliver(selection: InputSelection, pen: &mut FakeReader, auxiliary: &mut FakeReader,
-        preferred: &mut InputEndpoint) -> (InputEndpoint, u8) {
-        let InputSelection::Report(endpoint, _) = selection else { panic!("expected report, got {selection:?}"); };
+    fn deliver(
+        selection: InputSelection,
+        pen: &mut FakeReader,
+        auxiliary: &mut FakeReader,
+        preferred: &mut InputEndpoint,
+    ) -> (InputEndpoint, u8) {
+        let InputSelection::Report(endpoint, _) = selection else {
+            panic!("expected report, got {selection:?}");
+        };
         *preferred = endpoint.other();
-        let value = match endpoint { InputEndpoint::Pen => pen.finish(), InputEndpoint::Auxiliary => auxiliary.finish() };
+        let value = match endpoint {
+            InputEndpoint::Pen => pen.finish(),
+            InputEndpoint::Auxiliary => auxiliary.finish(),
+        };
         (endpoint, value)
     }
 
@@ -1163,12 +1584,31 @@ mod input_fairness_tests {
         let mut preferred = InputEndpoint::Pen;
         let polls = Cell::new(0);
         for index in 0..16 {
-            let selection = select(&mut pen, Some(&mut auxiliary), preferred, false, &polls).unwrap();
+            let selection =
+                select(&mut pen, Some(&mut auxiliary), preferred, false, &polls).unwrap();
             let (endpoint, value) = deliver(selection, &mut pen, &mut auxiliary, &mut preferred);
-            assert_eq!(endpoint, if index % 2 == 0 { InputEndpoint::Pen } else { InputEndpoint::Auxiliary });
-            assert_eq!(value, if index % 2 == 0 { index / 2 } else { 10 + index / 2 });
+            assert_eq!(
+                endpoint,
+                if index % 2 == 0 {
+                    InputEndpoint::Pen
+                } else {
+                    InputEndpoint::Auxiliary
+                }
+            );
+            assert_eq!(
+                value,
+                if index % 2 == 0 {
+                    index / 2
+                } else {
+                    10 + index / 2
+                }
+            );
         }
-        assert_eq!(polls.get(), 0, "immediate preferred completions need no extra readiness probe");
+        assert_eq!(
+            polls.get(),
+            0,
+            "immediate preferred completions need no extra readiness probe"
+        );
         assert_eq!(pen.starts, 8);
         assert_eq!(auxiliary.starts, 8);
     }
@@ -1184,47 +1624,115 @@ mod input_fairness_tests {
             let polls = Cell::new(0);
             for index in 0..16 {
                 if signaled_pending {
-                    let first = match preferred { InputEndpoint::Pen => &mut pen, InputEndpoint::Auxiliary => &mut auxiliary };
+                    let first = match preferred {
+                        InputEndpoint::Pen => &mut pen,
+                        InputEndpoint::Auxiliary => &mut auxiliary,
+                    };
                     assert!(first.start().unwrap());
                     first.state = ReadState::Pending;
                     first.signaled = true;
                 }
-                let selection = select_awakened_input(true, false, false,
-                    || select_input(&mut pen, Some(&mut auxiliary), preferred, true, |reader| {
-                        polls.set(polls.get() + 1);
-                        Ok(if reader.signaled { InputPoll::Ready } else { InputPoll::Pending })
-                    }, || Ok(false))).unwrap();
-                let (endpoint, value) = deliver(selection, &mut pen, &mut auxiliary, &mut preferred);
-                assert_eq!(endpoint, if index % 2 == 0 { InputEndpoint::Pen } else { InputEndpoint::Auxiliary });
-                assert_eq!(value, if index % 2 == 0 { index / 2 } else { 10 + index / 2 });
+                let selection = select_awakened_input(true, false, false, || {
+                    select_input(
+                        &mut pen,
+                        Some(&mut auxiliary),
+                        preferred,
+                        true,
+                        |reader| {
+                            polls.set(polls.get() + 1);
+                            Ok(if reader.signaled {
+                                InputPoll::Ready
+                            } else {
+                                InputPoll::Pending
+                            })
+                        },
+                        || Ok(false),
+                    )
+                })
+                .unwrap();
+                let (endpoint, value) =
+                    deliver(selection, &mut pen, &mut auxiliary, &mut preferred);
+                assert_eq!(
+                    endpoint,
+                    if index % 2 == 0 {
+                        InputEndpoint::Pen
+                    } else {
+                        InputEndpoint::Auxiliary
+                    }
+                );
+                assert_eq!(
+                    value,
+                    if index % 2 == 0 {
+                        index / 2
+                    } else {
+                        10 + index / 2
+                    }
+                );
             }
             assert_eq!(pen.consumed, (0..8).collect::<Vec<_>>());
             assert_eq!(auxiliary.consumed, (10..18).collect::<Vec<_>>());
-            assert!(matches!(select_awakened_input(true, false, false,
-                || select(&mut pen, Some(&mut auxiliary), preferred, false, &polls)).unwrap(), InputSelection::Idle));
+            assert!(matches!(
+                select_awakened_input(true, false, false, || select(
+                    &mut pen,
+                    Some(&mut auxiliary),
+                    preferred,
+                    false,
+                    &polls
+                ))
+                .unwrap(),
+                InputSelection::Idle
+            ));
         }
     }
 
     #[test]
     fn managed_wake_preserves_stop_transition_and_reader_notification_priority() {
-        assert!(matches!(select_awakened_input(true, true, true,
-            || panic!("Stop precedes input selection")).unwrap(), InputSelection::Stopped));
-        assert!(matches!(select_awakened_input(true, false, true,
-            || panic!("Stop precedes managed work")).unwrap(), InputSelection::Stopped));
-        assert!(matches!(select_awakened_input(true, true, false,
-            || panic!("Ownership transition precedes input selection")).unwrap(), InputSelection::Idle));
+        assert!(matches!(
+            select_awakened_input(true, true, true, || panic!("Stop precedes input selection"))
+                .unwrap(),
+            InputSelection::Stopped
+        ));
+        assert!(matches!(
+            select_awakened_input(true, false, true, || panic!("Stop precedes managed work"))
+                .unwrap(),
+            InputSelection::Stopped
+        ));
+        assert!(matches!(
+            select_awakened_input(true, true, false, || panic!(
+                "Ownership transition precedes input selection"
+            ))
+            .unwrap(),
+            InputSelection::Idle
+        ));
         // An ordinary custom-reader signal still probes its reader and retains
         // Pending for the normal initial wait when no report is ready yet.
-        assert!(matches!(select_awakened_input(false, false, false,
-            || Ok(InputSelection::Pending)).unwrap(), InputSelection::Pending));
-        assert!(matches!(select_awakened_input(true, false, false,
-            || Ok(InputSelection::AuxiliaryFailed(io::Error::other("removed")))).unwrap(), InputSelection::AuxiliaryFailed(_)));
+        assert!(matches!(
+            select_awakened_input(false, false, false, || Ok(InputSelection::Pending)).unwrap(),
+            InputSelection::Pending
+        ));
+        assert!(matches!(
+            select_awakened_input(true, false, false, || Ok(InputSelection::AuxiliaryFailed(
+                io::Error::other("removed")
+            )))
+            .unwrap(),
+            InputSelection::AuxiliaryFailed(_)
+        ));
         let mut pen = FakeReader::new([Completion::Pending(1)]);
         let mut auxiliary = FakeReader::new([Completion::Pending(10)]);
         // Stop can arrive after the wake's initial Stop check, while retained
         // read events are being polled. It still wins without consuming input.
-        assert!(matches!(select_input(&mut pen, Some(&mut auxiliary), InputEndpoint::Pen, true,
-            |_| Ok(InputPoll::Stopped), || Ok(false)).unwrap(), InputSelection::Stopped));
+        assert!(matches!(
+            select_input(
+                &mut pen,
+                Some(&mut auxiliary),
+                InputEndpoint::Pen,
+                true,
+                |_| Ok(InputPoll::Stopped),
+                || Ok(false)
+            )
+            .unwrap(),
+            InputSelection::Stopped
+        ));
         assert!(pen.consumed.is_empty() && auxiliary.consumed.is_empty());
     }
 
@@ -1239,30 +1747,71 @@ mod input_fairness_tests {
                 // In the single-signal case, readiness beats preference; in
                 // the dual-signal case the preferred endpoint wins first.
                 let mut preferred = if signal_both { first } else { first.other() };
-                match first { InputEndpoint::Pen => pen.signal(), InputEndpoint::Auxiliary => auxiliary.signal() }
+                match first {
+                    InputEndpoint::Pen => pen.signal(),
+                    InputEndpoint::Auxiliary => auxiliary.signal(),
+                }
                 if signal_both {
-                    match first.other() { InputEndpoint::Pen => pen.signal(), InputEndpoint::Auxiliary => auxiliary.signal() }
+                    match first.other() {
+                        InputEndpoint::Pen => pen.signal(),
+                        InputEndpoint::Auxiliary => auxiliary.signal(),
+                    }
                 }
                 let select_wake = |pen: &mut FakeReader, auxiliary: &mut FakeReader, preferred| {
-                    select_awakened_input(true, false, false,
-                        || select_input(pen, Some(auxiliary), preferred, true,
-                            |reader| Ok(if reader.signaled { InputPoll::Ready } else { InputPoll::Pending }),
-                            || Ok(false))).unwrap()
+                    select_awakened_input(true, false, false, || {
+                        select_input(
+                            pen,
+                            Some(auxiliary),
+                            preferred,
+                            true,
+                            |reader| {
+                                Ok(if reader.signaled {
+                                    InputPoll::Ready
+                                } else {
+                                    InputPoll::Pending
+                                })
+                            },
+                            || Ok(false),
+                        )
+                    })
+                    .unwrap()
                 };
                 let selected = select_wake(&mut pen, &mut auxiliary, preferred);
-                assert!(matches!(selected, InputSelection::Report(endpoint, false) if endpoint == first));
-                let expected = |endpoint| if endpoint == InputEndpoint::Pen { 1 } else { 10 };
-                assert_eq!(deliver(selected, &mut pen, &mut auxiliary, &mut preferred), (first, expected(first)));
+                assert!(
+                    matches!(selected, InputSelection::Report(endpoint, false) if endpoint == first)
+                );
+                let expected = |endpoint| {
+                    if endpoint == InputEndpoint::Pen {
+                        1
+                    } else {
+                        10
+                    }
+                };
+                assert_eq!(
+                    deliver(selected, &mut pen, &mut auxiliary, &mut preferred),
+                    (first, expected(first))
+                );
                 assert_eq!(preferred, first.other());
                 if !signal_both {
-                    match preferred { InputEndpoint::Pen => pen.signal(), InputEndpoint::Auxiliary => auxiliary.signal() }
+                    match preferred {
+                        InputEndpoint::Pen => pen.signal(),
+                        InputEndpoint::Auxiliary => auxiliary.signal(),
+                    }
                 }
                 let selected = select_wake(&mut pen, &mut auxiliary, preferred);
-                assert!(matches!(selected, InputSelection::Report(endpoint, false) if endpoint == first.other()));
-                assert_eq!(deliver(selected, &mut pen, &mut auxiliary, &mut preferred), (first.other(), expected(first.other())));
+                assert!(
+                    matches!(selected, InputSelection::Report(endpoint, false) if endpoint == first.other())
+                );
+                assert_eq!(
+                    deliver(selected, &mut pen, &mut auxiliary, &mut preferred),
+                    (first.other(), expected(first.other()))
+                );
                 assert_eq!(pen.consumed, [1]);
                 assert_eq!(auxiliary.consumed, [10]);
-                assert!(matches!(select_wake(&mut pen, &mut auxiliary, preferred), InputSelection::Idle));
+                assert!(matches!(
+                    select_wake(&mut pen, &mut auxiliary, preferred),
+                    InputSelection::Idle
+                ));
                 assert_eq!(pen.consumed, [1]);
                 assert_eq!(auxiliary.consumed, [10]);
             }
@@ -1273,23 +1822,39 @@ mod input_fairness_tests {
     fn signaled_pending_preferred_beats_immediate_fallback_without_overwriting_it() {
         for preferred in [InputEndpoint::Pen, InputEndpoint::Auxiliary] {
             let mut pen = FakeReader::new([Completion::Immediate(1), Completion::Immediate(2)]);
-            let mut auxiliary = FakeReader::new([Completion::Immediate(10), Completion::Immediate(11)]);
-            let first = match preferred { InputEndpoint::Pen => &mut pen, InputEndpoint::Auxiliary => &mut auxiliary };
+            let mut auxiliary =
+                FakeReader::new([Completion::Immediate(10), Completion::Immediate(11)]);
+            let first = match preferred {
+                InputEndpoint::Pen => &mut pen,
+                InputEndpoint::Auxiliary => &mut auxiliary,
+            };
             // Model a read submitted on an earlier call that completed between
             // calls: start() returns false although its event is now signaled.
             first.state = ReadState::Pending;
             first.report = Some(99);
             first.signaled = true;
             let polls = Cell::new(0);
-            let selection = select(&mut pen, Some(&mut auxiliary), preferred, false, &polls).unwrap();
-            assert!(matches!(selection, InputSelection::Report(endpoint, false) if endpoint == preferred));
+            let selection =
+                select(&mut pen, Some(&mut auxiliary), preferred, false, &polls).unwrap();
+            assert!(
+                matches!(selection, InputSelection::Report(endpoint, false) if endpoint == preferred)
+            );
             let mut next = preferred;
-            assert_eq!(deliver(selection, &mut pen, &mut auxiliary, &mut next), (preferred, 99));
+            assert_eq!(
+                deliver(selection, &mut pen, &mut auxiliary, &mut next),
+                (preferred, 99)
+            );
             let selection = select(&mut pen, Some(&mut auxiliary), next, false, &polls).unwrap();
             let (endpoint, _) = deliver(selection, &mut pen, &mut auxiliary, &mut next);
             assert_eq!(endpoint, preferred.other());
-            let fallback = match endpoint { InputEndpoint::Pen => &pen, InputEndpoint::Auxiliary => &auxiliary };
-            assert_eq!(fallback.starts, 1, "deferred immediate buffer must not be reissued");
+            let fallback = match endpoint {
+                InputEndpoint::Pen => &pen,
+                InputEndpoint::Auxiliary => &auxiliary,
+            };
+            assert_eq!(
+                fallback.starts, 1,
+                "deferred immediate buffer must not be reissued"
+            );
             assert_eq!(fallback.consumed.len(), 1);
             assert_eq!(polls.get(), 1);
         }
@@ -1302,12 +1867,21 @@ mod input_fairness_tests {
         let polls = Cell::new(0);
         let mut preferred = InputEndpoint::Auxiliary;
         let selection = select(&mut pen, Some(&mut auxiliary), preferred, false, &polls).unwrap();
-        assert_eq!(deliver(selection, &mut pen, &mut auxiliary, &mut preferred), (InputEndpoint::Pen, 1));
+        assert_eq!(
+            deliver(selection, &mut pen, &mut auxiliary, &mut preferred),
+            (InputEndpoint::Pen, 1)
+        );
         auxiliary.signal();
         let selection = select(&mut pen, Some(&mut auxiliary), preferred, false, &polls).unwrap();
-        assert_eq!(deliver(selection, &mut pen, &mut auxiliary, &mut preferred), (InputEndpoint::Auxiliary, 10));
+        assert_eq!(
+            deliver(selection, &mut pen, &mut auxiliary, &mut preferred),
+            (InputEndpoint::Auxiliary, 10)
+        );
         let selection = select(&mut pen, Some(&mut auxiliary), preferred, false, &polls).unwrap();
-        assert_eq!(deliver(selection, &mut pen, &mut auxiliary, &mut preferred), (InputEndpoint::Pen, 2));
+        assert_eq!(
+            deliver(selection, &mut pen, &mut auxiliary, &mut preferred),
+            (InputEndpoint::Pen, 2)
+        );
         assert_eq!(auxiliary.starts, 1);
         assert_eq!(pen.starts, 2);
     }
@@ -1318,7 +1892,17 @@ mod input_fairness_tests {
         let mut auxiliary = FakeReader::new([Completion::Pending(10)]);
         let polls = Cell::new(0);
         for _ in 0..4 {
-            assert!(matches!(select(&mut pen, Some(&mut auxiliary), InputEndpoint::Pen, false, &polls).unwrap(), InputSelection::Pending));
+            assert!(matches!(
+                select(
+                    &mut pen,
+                    Some(&mut auxiliary),
+                    InputEndpoint::Pen,
+                    false,
+                    &polls
+                )
+                .unwrap(),
+                InputSelection::Pending
+            ));
         }
         assert_eq!((pen.starts, auxiliary.starts, polls.get()), (1, 1, 0));
     }
@@ -1327,9 +1911,19 @@ mod input_fairness_tests {
     fn pending_preferred_poll_replaces_fallback_stop_only_check() {
         let mut pen = FakeReader::new([Completion::Immediate(1)]);
         let mut auxiliary = FakeReader::new([Completion::Pending(10)]);
-        let selection = select_input(&mut pen, Some(&mut auxiliary), InputEndpoint::Auxiliary, false,
-            |_| Ok(InputPoll::Pending), || panic!("combined preferred/Stop poll already checks Stop")).unwrap();
-        assert!(matches!(selection, InputSelection::Report(InputEndpoint::Pen, true)));
+        let selection = select_input(
+            &mut pen,
+            Some(&mut auxiliary),
+            InputEndpoint::Auxiliary,
+            false,
+            |_| Ok(InputPoll::Pending),
+            || panic!("combined preferred/Stop poll already checks Stop"),
+        )
+        .unwrap();
+        assert!(matches!(
+            selection,
+            InputSelection::Report(InputEndpoint::Pen, true)
+        ));
     }
 
     #[test]
@@ -1337,15 +1931,39 @@ mod input_fairness_tests {
         for pending in [false, true] {
             let mut pen = FakeReader::new([Completion::Immediate(1)]);
             let mut auxiliary = FakeReader::new([Completion::Immediate(10)]);
-            if pending { auxiliary.state = ReadState::Pending; auxiliary.report = Some(99); auxiliary.signaled = true; }
-            assert!(matches!(select(&mut pen, Some(&mut auxiliary), InputEndpoint::Auxiliary, true, &Cell::new(0)).unwrap(), InputSelection::Stopped));
+            if pending {
+                auxiliary.state = ReadState::Pending;
+                auxiliary.report = Some(99);
+                auxiliary.signaled = true;
+            }
+            assert!(matches!(
+                select(
+                    &mut pen,
+                    Some(&mut auxiliary),
+                    InputEndpoint::Auxiliary,
+                    true,
+                    &Cell::new(0)
+                )
+                .unwrap(),
+                InputSelection::Stopped
+            ));
             assert!(pen.consumed.is_empty());
             assert!(auxiliary.consumed.is_empty());
         }
         for preferred in [InputEndpoint::Pen, InputEndpoint::Auxiliary] {
             let mut pen = FakeReader::new([Completion::Fault]);
             let mut auxiliary = FakeReader::new([Completion::Fault]);
-            assert!(matches!(select(&mut pen, Some(&mut auxiliary), preferred, true, &Cell::new(0)).unwrap(), InputSelection::Stopped));
+            assert!(matches!(
+                select(
+                    &mut pen,
+                    Some(&mut auxiliary),
+                    preferred,
+                    true,
+                    &Cell::new(0)
+                )
+                .unwrap(),
+                InputSelection::Stopped
+            ));
         }
     }
 
@@ -1353,10 +1971,30 @@ mod input_fairness_tests {
     fn auxiliary_fault_is_isolated_and_keeps_pending_pen_owned() {
         let mut pen = FakeReader::new([Completion::Pending(1)]);
         let mut auxiliary = FakeReader::new([Completion::Fault]);
-        assert!(matches!(select(&mut pen, Some(&mut auxiliary), InputEndpoint::Pen, false, &Cell::new(0)).unwrap(), InputSelection::AuxiliaryFailed(_)));
+        assert!(matches!(
+            select(
+                &mut pen,
+                Some(&mut auxiliary),
+                InputEndpoint::Pen,
+                false,
+                &Cell::new(0)
+            )
+            .unwrap(),
+            InputSelection::AuxiliaryFailed(_)
+        ));
         assert_eq!(pen.state, ReadState::Pending);
         pen.signal();
-        assert!(matches!(select(&mut pen, None, InputEndpoint::Auxiliary, false, &Cell::new(0)).unwrap(), InputSelection::Pending));
+        assert!(matches!(
+            select(
+                &mut pen,
+                None,
+                InputEndpoint::Auxiliary,
+                false,
+                &Cell::new(0)
+            )
+            .unwrap(),
+            InputSelection::Pending
+        ));
         // With no immediate fallback, the source waits on this existing pen
         // event and consumes its sole completion.
         assert_eq!(pen.finish(), 1);
@@ -1367,11 +2005,29 @@ mod input_fairness_tests {
     fn pen_fault_and_poll_fault_propagate_without_consuming_fallback() {
         let mut pen = FakeReader::new([Completion::Fault]);
         let mut auxiliary = FakeReader::new([]);
-        assert_eq!(select(&mut pen, Some(&mut auxiliary), InputEndpoint::Pen, false, &Cell::new(0)).unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+        assert_eq!(
+            select(
+                &mut pen,
+                Some(&mut auxiliary),
+                InputEndpoint::Pen,
+                false,
+                &Cell::new(0)
+            )
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::BrokenPipe
+        );
         let mut pen = FakeReader::new([Completion::Pending(1)]);
         let mut auxiliary = FakeReader::new([Completion::Immediate(10)]);
-        let error = select_input(&mut pen, Some(&mut auxiliary), InputEndpoint::Pen, false,
-            |_| Err(io::Error::other("fake wait failure")), || Ok(false)).unwrap_err();
+        let error = select_input(
+            &mut pen,
+            Some(&mut auxiliary),
+            InputEndpoint::Pen,
+            false,
+            |_| Err(io::Error::other("fake wait failure")),
+            || Ok(false),
+        )
+        .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Other);
         assert_eq!(pen.state, ReadState::Pending);
         assert_eq!(auxiliary.state, ReadState::Ready);
@@ -1382,18 +2038,32 @@ mod input_fairness_tests {
     fn incomplete_completion_remains_owned_until_terminal_completion() {
         let mut pen = FakeReader::new([Completion::Pending(1)]);
         assert!(!pen.start().unwrap());
-        pen.state.completed(&Err(io::Error::from_raw_os_error(ERROR_IO_INCOMPLETE as i32)));
-        assert_eq!(pen.state, ReadState::Pending, "drop must still cancel and drain the outstanding operation");
+        pen.state.completed(&Err(io::Error::from_raw_os_error(
+            ERROR_IO_INCOMPLETE as i32,
+        )));
+        assert_eq!(
+            pen.state,
+            ReadState::Pending,
+            "drop must still cancel and drain the outstanding operation"
+        );
         assert!(!pen.start().unwrap());
-        assert_eq!(pen.starts, 1, "incomplete completion must not reuse kernel-owned storage");
+        assert_eq!(
+            pen.starts, 1,
+            "incomplete completion must not reuse kernel-owned storage"
+        );
         pen.signal();
         assert_eq!(pen.finish(), 1);
         assert_eq!(pen.state, ReadState::Idle);
 
-        for error in [ERROR_OPERATION_ABORTED, 1167] { // ERROR_DEVICE_NOT_CONNECTED
+        for error in [ERROR_OPERATION_ABORTED, 1167] {
+            // ERROR_DEVICE_NOT_CONNECTED
             let mut state = ReadState::Pending;
             state.completed(&Err(io::Error::from_raw_os_error(error as i32)));
-            assert_eq!(state, ReadState::Idle, "terminal completion relinquishes operation ownership");
+            assert_eq!(
+                state,
+                ReadState::Idle,
+                "terminal completion relinquishes operation ownership"
+            );
         }
     }
 }

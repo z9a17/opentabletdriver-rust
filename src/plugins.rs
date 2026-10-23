@@ -27,15 +27,30 @@ mod graph;
 /// Explicit startup only: load installed parser metadata for a named tablet
 /// whose configuration has a parser missing from the native implementation.
 /// Enumeration and ordinary native startup never initialize CLR here.
-pub fn prepare_parser_registry(profile: &crate::config::Profile, database: &Database) -> Result<(), String> {
-    let Some(name) = profile.tablet_name()? else { return Ok(()); };
-    let configuration = database.entries().iter().filter_map(otd_core::tablets::Entry::usable)
+pub fn prepare_parser_registry(
+    profile: &crate::config::Profile,
+    database: &Database,
+) -> Result<(), String> {
+    let Some(name) = profile.tablet_name()? else {
+        return Ok(());
+    };
+    let configuration = database
+        .entries()
+        .iter()
+        .filter_map(otd_core::tablets::Entry::usable)
         .find(|configuration| configuration.name == name);
     if let Some(configuration) = configuration {
-        let missing = configuration.digitizer_identifiers.iter()
-            .any(|identifier| otd_core::tablets::parser_support(identifier.parser()) == otd_core::tablets::ParserSupport::Missing
-                && !crate::dotnet::installed_report_parser(identifier.parser()));
-        if missing { load_parser_registry()?; }
+        let missing = configuration
+            .digitizer_identifiers
+            .iter()
+            .any(|identifier| {
+                otd_core::tablets::parser_support(identifier.parser())
+                    == otd_core::tablets::ParserSupport::Missing
+                    && !crate::dotnet::installed_report_parser(identifier.parser())
+            });
+        if missing {
+            load_parser_registry()?;
+        }
     }
     Ok(())
 }
@@ -43,12 +58,20 @@ pub fn prepare_parser_registry(profile: &crate::config::Profile, database: &Data
 /// cached; an absent optional auxiliary does not start CLR.
 #[cfg(windows)]
 pub fn prepare_connected_parsers(database: &Database) -> Result<(), String> {
-    let devices = crate::hid::enumerate_with_database(database).map_err(|error| error.to_string())?;
-    let missing = devices.iter().any(|device| database.find(device.vendor, device.product).any(|found|
-        found.role == Role::Digitizer && otd_core::endpoint_match::matches(&device.endpoint, &found).is_ok()
-            && otd_core::tablets::parser_support(found.identifier.parser()) == otd_core::tablets::ParserSupport::Missing
-            && !crate::dotnet::installed_report_parser(found.identifier.parser())));
-    if missing { load_parser_registry()?; }
+    let devices =
+        crate::hid::enumerate_with_database(database).map_err(|error| error.to_string())?;
+    let missing = devices.iter().any(|device| {
+        database.find(device.vendor, device.product).any(|found| {
+            found.role == Role::Digitizer
+                && otd_core::endpoint_match::matches(&device.endpoint, &found).is_ok()
+                && otd_core::tablets::parser_support(found.identifier.parser())
+                    == otd_core::tablets::ParserSupport::Missing
+                && !crate::dotnet::installed_report_parser(found.identifier.parser())
+        })
+    });
+    if missing {
+        load_parser_registry()?;
+    }
     Ok(())
 }
 /// Explicit Apply/Start validation. Missing named parsers may load the trusted
@@ -56,11 +79,16 @@ pub fn prepare_connected_parsers(database: &Database) -> Result<(), String> {
 pub fn validate_runtime_profile(profile: &crate::config::Profile) -> Result<(), String> {
     let database = crate::config::configured_tablets()?;
     prepare_parser_registry(profile, database.as_ref())?;
-    profile.validate_runtime_tablet_in_with_parser_support(database.as_ref(), &crate::dotnet::installed_report_parser)
+    profile.validate_runtime_tablet_in_with_parser_support(
+        database.as_ref(),
+        &crate::dotnet::installed_report_parser,
+    )
 }
 
 pub fn load_parser_registry() -> Result<(), String> {
-    if !crate::plugin_catalog::recover_installations()? { return Err("Plugin installation is busy; retry parser startup.".into()); }
+    if !crate::plugin_catalog::recover_installations()? {
+        return Err("Plugin installation is busy; retry parser startup.".into());
+    }
     let directory = crate::plugin_catalog::plugins_directory()?;
     std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     crate::dotnet::reload_installed_plugins(&directory)?;
@@ -69,35 +97,75 @@ pub fn load_parser_registry() -> Result<(), String> {
 
 /// Explicit original-settings import. Pure native profiles do not load CLR;
 /// unresolved managed stores use one retained installed-registry snapshot.
-pub fn import_otd_with_installed(text: &str, source: &Path, connected: &[String]) -> Result<crate::config::Profile, String> {
+pub fn import_otd_with_installed(
+    text: &str,
+    source: &Path,
+    connected: &[String],
+) -> Result<crate::config::Profile, String> {
     let document = crate::config::OtdSettingsDocument::from_json(text, source)?;
     let profiles = document.profiles();
     let database = crate::config::configured_tablets()?;
-    let selected = connected.iter().find_map(|name| profiles.iter().find(|profile| &profile.tablet == name))
-        .or_else(|| profiles.iter().find(|profile| profile.tablet == "Wacom PTH-660"))
-        .or_else(|| profiles.iter().find(|profile| profile.runtime_tablet_supported))
-        .or_else(|| profiles.iter().find(|profile| crate::config::spec_for_tablet_in(&profile.tablet, &database).is_ok()))
-        .ok_or("OpenTabletDriver settings have no profile for a tablet this driver supports")?.index;
+    let selected = connected
+        .iter()
+        .find_map(|name| profiles.iter().find(|profile| &profile.tablet == name))
+        .or_else(|| {
+            profiles
+                .iter()
+                .find(|profile| profile.tablet == "Wacom PTH-660")
+        })
+        .or_else(|| {
+            profiles
+                .iter()
+                .find(|profile| profile.runtime_tablet_supported)
+        })
+        .or_else(|| {
+            profiles.iter().find(|profile| {
+                crate::config::spec_for_tablet_in(&profile.tablet, &database).is_ok()
+            })
+        })
+        .ok_or("OpenTabletDriver settings have no profile for a tablet this driver supports")?
+        .index;
     import_otd_selected_with_installed(text, source, selected)
 }
-fn import_otd_selected_with_installed(text: &str, source: &Path, selected: usize) -> Result<crate::config::Profile, String> {
-    let pure = crate::config::Profile::from_otd_profile_text(text, source, selected, Default::default());
-    if pure.as_ref().is_ok_and(|profile| !profile.diagnostics.iter().any(|item| item.kind == "unsupported_active")) {
+fn import_otd_selected_with_installed(
+    text: &str,
+    source: &Path,
+    selected: usize,
+) -> Result<crate::config::Profile, String> {
+    let pure =
+        crate::config::Profile::from_otd_profile_text(text, source, selected, Default::default());
+    if pure.as_ref().is_ok_and(|profile| {
+        !profile
+            .diagnostics
+            .iter()
+            .any(|item| item.kind == "unsupported_active")
+    }) {
         return pure;
     }
-    let original: serde_json::Value = serde_json::from_str(text).map_err(|error| error.to_string())?;
+    let original: serde_json::Value =
+        serde_json::from_str(text).map_err(|error| error.to_string())?;
     let output = &original["Profiles"][selected]["OutputMode"];
-    if pure.is_err() && (!output["Enable"].as_bool().unwrap_or(false)
-        || matches!(output["Path"].as_str(), Some("OpenTabletDriver.Desktop.Output.AbsoluteMode"
-            | "OpenTabletDriver.Desktop.Output.RelativeMode" | crate::config::WINDOWS_INK_ABSOLUTE_MODE
-            | crate::config::WINDOWS_PEN_POINTER_MODE | crate::config::LINUX_ARTIST_MODE))) {
+    if pure.is_err()
+        && (!output["Enable"].as_bool().unwrap_or(false)
+            || matches!(
+                output["Path"].as_str(),
+                Some(
+                    "OpenTabletDriver.Desktop.Output.AbsoluteMode"
+                        | "OpenTabletDriver.Desktop.Output.RelativeMode"
+                        | crate::config::WINDOWS_INK_ABSOLUTE_MODE
+                        | crate::config::WINDOWS_PEN_POINTER_MODE
+                        | crate::config::LINUX_ARTIST_MODE
+                )
+            ))
+    {
         return pure;
     }
     let registry = match crate::dotnet::registry_snapshot() {
         Some(snapshot) => snapshot,
         None => {
             let directory = crate::plugin_catalog::plugins_directory()?;
-            std::fs::create_dir_all(&directory).map_err(|error| format!("cannot prepare plugin registry: {error}"))?;
+            std::fs::create_dir_all(&directory)
+                .map_err(|error| format!("cannot prepare plugin registry: {error}"))?;
             std::sync::Arc::new(crate::dotnet::reload_installed_plugins(&directory)?)
         }
     };
@@ -105,53 +173,105 @@ fn import_otd_selected_with_installed(text: &str, source: &Path, selected: usize
         Ok(profile) => profile,
         Err(original_error) => {
             let name = output["Path"].as_str();
-            let mut matches = registry.plugins.iter().filter(|entry| entry.metadata.category == "output"
-                && entry.metadata.supported && Some(entry.config.type_name.as_str()) == name);
-            let Some(entry) = matches.next() else { return Err(original_error); };
+            let mut matches = registry.plugins.iter().filter(|entry| {
+                entry.metadata.category == "output"
+                    && entry.metadata.supported
+                    && Some(entry.config.type_name.as_str()) == name
+            });
+            let Some(entry) = matches.next() else {
+                return Err(original_error);
+            };
             if matches.any(|other| other.config.path != entry.config.path) {
-                return Err("managed output class exists in multiple installed DLLs; select one explicitly".into());
+                return Err(
+                    "managed output class exists in multiple installed DLLs; select one explicitly"
+                        .into(),
+                );
             }
-            crate::config::Profile::from_managed_output_store(text, source, selected, Default::default(),
-                entry.config.clone(), entry.metadata.relative_output)?
+            crate::config::Profile::from_managed_output_store(
+                text,
+                source,
+                selected,
+                Default::default(),
+                entry.config.clone(),
+                entry.metadata.relative_output,
+            )?
         }
     };
     resolve_imported_stores(&mut profile, &registry.plugins)?;
     Ok(profile)
 }
 pub fn load_original_profile(connected: &[String]) -> Result<crate::config::Profile, String> {
-    let path = crate::config::otd_settings_path().ok_or("OpenTabletDriver settings path is unavailable")?;
-    let text = std::fs::read_to_string(&path).map_err(|error| format!("cannot read OpenTabletDriver settings {}: {error}", path.display()))?;
+    let path = crate::config::otd_settings_path()
+        .ok_or("OpenTabletDriver settings path is unavailable")?;
+    let text = std::fs::read_to_string(&path).map_err(|error| {
+        format!(
+            "cannot read OpenTabletDriver settings {}: {error}",
+            path.display()
+        )
+    })?;
     import_otd_with_installed(&text, &path, connected)
 }
-pub fn load_original_tablet_profile(tablet: &str) -> Result<Option<crate::config::Profile>, String> {
-    let Some(path) = crate::config::otd_settings_path() else { return Ok(None); };
+pub fn load_original_tablet_profile(
+    tablet: &str,
+) -> Result<Option<crate::config::Profile>, String> {
+    let Some(path) = crate::config::otd_settings_path() else {
+        return Ok(None);
+    };
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
     };
     let document = crate::config::OtdSettingsDocument::from_json(&text, &path)?;
-    let Some(selected) = document.profiles().into_iter().find(|profile| profile.tablet == tablet) else { return Ok(None); };
+    let Some(selected) = document
+        .profiles()
+        .into_iter()
+        .find(|profile| profile.tablet == tablet)
+    else {
+        return Ok(None);
+    };
     import_otd_selected_with_installed(&text, &path, selected.index).map(Some)
 }
 
 /// Verify an unchanged output class without constructing it, then import its
 /// original property store and geometry. Runtime construction verifies again.
-pub fn import_managed_output(text: &str, source: &Path, selected: usize, mut config: PluginConfig) -> Result<crate::config::Profile, String> {
-    let inspected = crate::dotnet::inspect_details(&config.path)?.into_iter().find(|entry| entry.config.type_name == config.type_name)
+pub fn import_managed_output(
+    text: &str,
+    source: &Path,
+    selected: usize,
+    mut config: PluginConfig,
+) -> Result<crate::config::Profile, String> {
+    let inspected = crate::dotnet::inspect_details(&config.path)?
+        .into_iter()
+        .find(|entry| entry.config.type_name == config.type_name)
         .ok_or("managed output type was not discovered in the selected DLL")?;
     config.path = inspected.config.path;
     let metadata = inspected.metadata;
-    if metadata.category != "output" || !metadata.supported { return Err("selected type is not a supported unchanged IOutputMode".into()); }
-    crate::config::Profile::from_managed_output_store(text, source, selected, otd_core::config::ImportOptions::default(), config, metadata.relative_output)
+    if metadata.category != "output" || !metadata.supported {
+        return Err("selected type is not a supported unchanged IOutputMode".into());
+    }
+    crate::config::Profile::from_managed_output_store(
+        text,
+        source,
+        selected,
+        otd_core::config::ImportOptions::default(),
+        config,
+        metadata.relative_output,
+    )
 }
 
 /// Resolve preserved stores only from already inspected installed DLL classes.
 /// A duplicate class is an explicit ambiguity; unknown stores remain archived.
-pub fn resolve_imported_bindings(profile: &mut crate::config::Profile, inspected: &[crate::dotnet::InspectedFilter]) -> Result<usize, String> {
-    let Some(imported) = &profile.imported_otd else { return Ok(0); };
+pub fn resolve_imported_bindings(
+    profile: &mut crate::config::Profile,
+    inspected: &[crate::dotnet::InspectedFilter],
+) -> Result<usize, String> {
+    let Some(imported) = &profile.imported_otd else {
+        return Ok(0);
+    };
     let mut resolved = profile.clone();
-    let source: serde_json::Value = serde_json::from_str(&imported.settings_json).map_err(|error| error.to_string())?;
+    let source: serde_json::Value =
+        serde_json::from_str(&imported.settings_json).map_err(|error| error.to_string())?;
     let bindings = &source["Profiles"][imported.selected_profile]["Bindings"];
     let selected = imported.selected_profile;
     let original_profile = profile;
@@ -159,107 +279,301 @@ pub fn resolve_imported_bindings(profile: &mut crate::config::Profile, inspected
     let mut locations = std::collections::BTreeSet::new();
     let mut count = 0;
     let mut resolve = |store: &serde_json::Value| -> Result<Option<PluginConfig>, String> {
-        let Some(type_name) = store["Path"].as_str() else { return Ok(None); };
-        let mut matches = inspected.iter().filter(|entry| entry.metadata.category == "binding" && entry.metadata.supported && entry.config.type_name == type_name);
-        let Some(entry) = matches.next() else { return Ok(None); };
-        if matches.any(|other| other.config.path != entry.config.path) { return Err(format!("unchanged binding {type_name} exists in multiple DLLs; select one explicitly")); }
-        let mut config = entry.config.clone(); config.enabled = store["Enable"].as_bool().unwrap_or(false);
-        config.settings_json = crate::config::Profile::managed_store_settings(store)?; config.validate()?;
-        count += 1; Ok(Some(config))
+        let Some(type_name) = store["Path"].as_str() else {
+            return Ok(None);
+        };
+        let mut matches = inspected.iter().filter(|entry| {
+            entry.metadata.category == "binding"
+                && entry.metadata.supported
+                && entry.config.type_name == type_name
+        });
+        let Some(entry) = matches.next() else {
+            return Ok(None);
+        };
+        if matches.any(|other| other.config.path != entry.config.path) {
+            return Err(format!(
+                "unchanged binding {type_name} exists in multiple DLLs; select one explicitly"
+            ));
+        }
+        let mut config = entry.config.clone();
+        config.enabled = store["Enable"].as_bool().unwrap_or(false);
+        config.settings_json = crate::config::Profile::managed_store_settings(store)?;
+        config.validate()?;
+        count += 1;
+        Ok(Some(config))
     };
-    for (field, destination) in [("TipButton", &mut profile.managed_tip_binding), ("EraserButton", &mut profile.managed_eraser_binding)] {
-        if let Some(config) = resolve(&bindings[field])? { *destination = Some(config); locations.insert(format!("Bindings.{}", if field == "TipButton" { "Tip" } else { "Eraser" })); }
-    }
-    if let Some(config) = &profile.managed_tip_binding { profile.contact.tip_enabled = config.enabled; }
-    if let Some(config) = &profile.managed_eraser_binding { profile.contact.eraser_enabled = config.enabled; }
-    for (field, destination) in [("PenButtons", &mut profile.pen_buttons), ("AuxButtons", &mut profile.aux_buttons), ("MouseButtons", &mut profile.mouse_buttons)] {
-        for (index, store) in bindings[field].as_array().into_iter().flatten().take(64).enumerate() {
-            if let Some(config) = resolve(store)? { if destination.len() <= index { destination.resize_with(index + 1, || otd_core::output::buttons::ButtonAction::None); } destination[index] = otd_core::output::buttons::ButtonAction::Managed(config); locations.insert(format!("Bindings.{field}[{index}]")); }
+    for (field, destination) in [
+        ("TipButton", &mut profile.managed_tip_binding),
+        ("EraserButton", &mut profile.managed_eraser_binding),
+    ] {
+        if let Some(config) = resolve(&bindings[field])? {
+            *destination = Some(config);
+            locations.insert(format!(
+                "Bindings.{}",
+                if field == "TipButton" {
+                    "Tip"
+                } else {
+                    "Eraser"
+                }
+            ));
         }
     }
-    for (field, destination) in [("MouseScrollUp", &mut profile.mouse_scroll_up), ("MouseScrollDown", &mut profile.mouse_scroll_down)] {
-        if let Some(config) = resolve(&bindings[field])? { *destination = otd_core::output::buttons::ButtonAction::Managed(config); locations.insert(format!("Bindings.{field}")); }
+    if let Some(config) = &profile.managed_tip_binding {
+        profile.contact.tip_enabled = config.enabled;
     }
-    for (index, wheel) in bindings["WheelBindings"].as_array().into_iter().flatten().take(otd_core::reports::MAX_WHEELS).enumerate() {
-        let clockwise = resolve(&wheel["ClockwiseRotation"])?; let counter_clockwise = resolve(&wheel["CounterClockwiseRotation"])?;
-        let buttons = wheel["WheelButtons"].as_array().into_iter().flatten().take(64).map(&mut resolve).collect::<Result<Vec<_>, _>>()?;
-        if clockwise.is_some() || counter_clockwise.is_some() || buttons.iter().any(Option::is_some) {
-            if profile.wheels.len() <= index { profile.wheels.resize_with(index + 1, Default::default); }
+    if let Some(config) = &profile.managed_eraser_binding {
+        profile.contact.eraser_enabled = config.enabled;
+    }
+    for (field, destination) in [
+        ("PenButtons", &mut profile.pen_buttons),
+        ("AuxButtons", &mut profile.aux_buttons),
+        ("MouseButtons", &mut profile.mouse_buttons),
+    ] {
+        for (index, store) in bindings[field]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(64)
+            .enumerate()
+        {
+            if let Some(config) = resolve(store)? {
+                if destination.len() <= index {
+                    destination
+                        .resize_with(index + 1, || otd_core::output::buttons::ButtonAction::None);
+                }
+                destination[index] = otd_core::output::buttons::ButtonAction::Managed(config);
+                locations.insert(format!("Bindings.{field}[{index}]"));
+            }
+        }
+    }
+    for (field, destination) in [
+        ("MouseScrollUp", &mut profile.mouse_scroll_up),
+        ("MouseScrollDown", &mut profile.mouse_scroll_down),
+    ] {
+        if let Some(config) = resolve(&bindings[field])? {
+            *destination = otd_core::output::buttons::ButtonAction::Managed(config);
+            locations.insert(format!("Bindings.{field}"));
+        }
+    }
+    for (index, wheel) in bindings["WheelBindings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(otd_core::reports::MAX_WHEELS)
+        .enumerate()
+    {
+        let clockwise = resolve(&wheel["ClockwiseRotation"])?;
+        let counter_clockwise = resolve(&wheel["CounterClockwiseRotation"])?;
+        let buttons = wheel["WheelButtons"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(64)
+            .map(&mut resolve)
+            .collect::<Result<Vec<_>, _>>()?;
+        if clockwise.is_some() || counter_clockwise.is_some() || buttons.iter().any(Option::is_some)
+        {
+            if profile.wheels.len() <= index {
+                profile.wheels.resize_with(index + 1, Default::default);
+            }
             let destination = &mut profile.wheels[index];
-            if let Some(config) = clockwise { destination.clockwise = otd_core::output::buttons::ButtonAction::Managed(config); locations.insert(format!("Bindings.WheelBindings[{index}].ClockwiseRotation")); }
-            if let Some(config) = counter_clockwise { destination.counter_clockwise = otd_core::output::buttons::ButtonAction::Managed(config); locations.insert(format!("Bindings.WheelBindings[{index}].CounterClockwiseRotation")); }
-            for (button, config) in buttons.into_iter().enumerate() { if let Some(config) = config { if destination.buttons.len() <= button { destination.buttons.resize_with(button + 1, || otd_core::output::buttons::ButtonAction::None); } destination.buttons[button] = otd_core::output::buttons::ButtonAction::Managed(config); locations.insert(format!("Bindings.WheelBindings[{index}].WheelButtons[{button}]")); } }
+            if let Some(config) = clockwise {
+                destination.clockwise = otd_core::output::buttons::ButtonAction::Managed(config);
+                locations.insert(format!("Bindings.WheelBindings[{index}].ClockwiseRotation"));
+            }
+            if let Some(config) = counter_clockwise {
+                destination.counter_clockwise =
+                    otd_core::output::buttons::ButtonAction::Managed(config);
+                locations.insert(format!(
+                    "Bindings.WheelBindings[{index}].CounterClockwiseRotation"
+                ));
+            }
+            for (button, config) in buttons.into_iter().enumerate() {
+                if let Some(config) = config {
+                    if destination.buttons.len() <= button {
+                        destination.buttons.resize_with(button + 1, || {
+                            otd_core::output::buttons::ButtonAction::None
+                        });
+                    }
+                    destination.buttons[button] =
+                        otd_core::output::buttons::ButtonAction::Managed(config);
+                    locations.insert(format!(
+                        "Bindings.WheelBindings[{index}].WheelButtons[{button}]"
+                    ));
+                }
+            }
         }
     }
-    profile.diagnostics.retain(|diagnostic| !locations.contains(&diagnostic.location) && !locations.contains(diagnostic.location.strip_prefix(&format!("Profiles[{selected}].")).unwrap_or(&diagnostic.location)));
+    profile.diagnostics.retain(|diagnostic| {
+        !locations.contains(&diagnostic.location)
+            && !locations.contains(
+                diagnostic
+                    .location
+                    .strip_prefix(&format!("Profiles[{selected}]."))
+                    .unwrap_or(&diagnostic.location),
+            )
+    });
     *original_profile = resolved;
     Ok(count)
 }
 
 /// Resolve original filter/tool/binding stores against an actual loaded registry.
 /// Unknown enabled stores remain rejected; this never saves or starts a profile.
-pub fn resolve_imported_stores(profile: &mut crate::config::Profile, inspected: &[crate::dotnet::InspectedFilter]) -> Result<usize, String> {
-    let Some(imported) = &profile.imported_otd else { return Ok(0); };
-    let source: serde_json::Value = serde_json::from_str(&imported.settings_json).map_err(|error| error.to_string())?;
+pub fn resolve_imported_stores(
+    profile: &mut crate::config::Profile,
+    inspected: &[crate::dotnet::InspectedFilter],
+) -> Result<usize, String> {
+    let Some(imported) = &profile.imported_otd else {
+        return Ok(0);
+    };
+    let source: serde_json::Value =
+        serde_json::from_str(&imported.settings_json).map_err(|error| error.to_string())?;
     let selected = imported.selected_profile;
     let mut next = profile.clone();
-    let saved_tip = next.managed_tip_binding.clone(); let saved_eraser = next.managed_eraser_binding.clone();
-    let saved_pen = next.pen_buttons.clone(); let saved_aux = next.aux_buttons.clone(); let saved_mouse = next.mouse_buttons.clone();
-    let saved_up = next.mouse_scroll_up.clone(); let saved_down = next.mouse_scroll_down.clone(); let saved_wheels = next.wheels.clone();
+    let saved_tip = next.managed_tip_binding.clone();
+    let saved_eraser = next.managed_eraser_binding.clone();
+    let saved_pen = next.pen_buttons.clone();
+    let saved_aux = next.aux_buttons.clone();
+    let saved_mouse = next.mouse_buttons.clone();
+    let saved_up = next.mouse_scroll_up.clone();
+    let saved_down = next.mouse_scroll_down.clone();
+    let saved_wheels = next.wheels.clone();
     let mut count = resolve_imported_bindings(&mut next, inspected)?;
     // Original stores seed missing slots. Existing managed slots are current
     // user choices and retain their own settings through subsequent reloads.
-    if let Some(config) = saved_tip { next.contact.tip_enabled = config.enabled; next.managed_tip_binding = Some(config); }
-    if let Some(config) = saved_eraser { next.contact.eraser_enabled = config.enabled; next.managed_eraser_binding = Some(config); }
-    let preserve = |current: &mut otd_core::output::buttons::ButtonAction, saved: &otd_core::output::buttons::ButtonAction| { if matches!(saved, otd_core::output::buttons::ButtonAction::Managed(_)) { *current = saved.clone(); } };
-    for (current, saved) in next.pen_buttons.iter_mut().zip(&saved_pen).chain(next.aux_buttons.iter_mut().zip(&saved_aux)).chain(next.mouse_buttons.iter_mut().zip(&saved_mouse)) { preserve(current, saved); }
-    preserve(&mut next.mouse_scroll_up, &saved_up); preserve(&mut next.mouse_scroll_down, &saved_down);
-    for (current, saved) in next.wheels.iter_mut().zip(&saved_wheels) { preserve(&mut current.clockwise, &saved.clockwise); preserve(&mut current.counter_clockwise, &saved.counter_clockwise); for (current, saved) in current.buttons.iter_mut().zip(&saved.buttons) { preserve(current, saved); } }
+    if let Some(config) = saved_tip {
+        next.contact.tip_enabled = config.enabled;
+        next.managed_tip_binding = Some(config);
+    }
+    if let Some(config) = saved_eraser {
+        next.contact.eraser_enabled = config.enabled;
+        next.managed_eraser_binding = Some(config);
+    }
+    let preserve = |current: &mut otd_core::output::buttons::ButtonAction,
+                    saved: &otd_core::output::buttons::ButtonAction| {
+        if matches!(saved, otd_core::output::buttons::ButtonAction::Managed(_)) {
+            *current = saved.clone();
+        }
+    };
+    for (current, saved) in next
+        .pen_buttons
+        .iter_mut()
+        .zip(&saved_pen)
+        .chain(next.aux_buttons.iter_mut().zip(&saved_aux))
+        .chain(next.mouse_buttons.iter_mut().zip(&saved_mouse))
+    {
+        preserve(current, saved);
+    }
+    preserve(&mut next.mouse_scroll_up, &saved_up);
+    preserve(&mut next.mouse_scroll_down, &saved_down);
+    for (current, saved) in next.wheels.iter_mut().zip(&saved_wheels) {
+        preserve(&mut current.clockwise, &saved.clockwise);
+        preserve(&mut current.counter_clockwise, &saved.counter_clockwise);
+        for (current, saved) in current.buttons.iter_mut().zip(&saved.buttons) {
+            preserve(current, saved);
+        }
+    }
     let mut entries = Vec::new();
     let mut unresolved_active_filter = false;
     let mut native_radial = false;
     let mut installed_radial = false;
     let mut other_active_filter = false;
     let mut resolved_tools = std::collections::BTreeSet::new();
-    let resolve = |store: &serde_json::Value, category: &str| -> Result<Option<PluginConfig>, String> {
-        let Some(name) = store["Path"].as_str() else { return Ok(None); };
-        let mut matches = inspected.iter().filter(|entry| entry.config.type_name == name && entry.metadata.category == category && entry.metadata.supported);
-        let Some(entry) = matches.next() else { return Ok(None); };
-        if matches.any(|other| other.config.path != entry.config.path) { return Err(format!("Unchanged {category} {name} occurs in multiple installed DLLs")); }
-        let mut config = entry.config.clone(); config.enabled = store["Enable"].as_bool().unwrap_or(false);
-        config.settings_json = crate::config::Profile::managed_store_settings(store)?; config.validate()?; Ok(Some(config))
-    };
-    for store in source["Profiles"][selected]["Filters"].as_array().into_iter().flatten() {
+    let resolve =
+        |store: &serde_json::Value, category: &str| -> Result<Option<PluginConfig>, String> {
+            let Some(name) = store["Path"].as_str() else {
+                return Ok(None);
+            };
+            let mut matches = inspected.iter().filter(|entry| {
+                entry.config.type_name == name
+                    && entry.metadata.category == category
+                    && entry.metadata.supported
+            });
+            let Some(entry) = matches.next() else {
+                return Ok(None);
+            };
+            if matches.any(|other| other.config.path != entry.config.path) {
+                return Err(format!(
+                    "Unchanged {category} {name} occurs in multiple installed DLLs"
+                ));
+            }
+            let mut config = entry.config.clone();
+            config.enabled = store["Enable"].as_bool().unwrap_or(false);
+            config.settings_json = crate::config::Profile::managed_store_settings(store)?;
+            config.validate()?;
+            Ok(Some(config))
+        };
+    for store in source["Profiles"][selected]["Filters"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
         let enabled = store["Enable"].as_bool().unwrap_or(false);
         let radial = store["Path"].as_str() == Some(otd_core::radial_follow::FILTER_PATH);
         if let Some(config) = resolve(store, "filter")? {
             installed_radial |= radial && enabled;
             other_active_filter |= enabled && !radial;
-            entries.push(config); count += 1;
+            entries.push(config);
+            count += 1;
         } else if radial && enabled && !next.radial_follow.is_empty() {
             // Existing explicit native port is retained only where its startup
             // stage preserves the original chain order. It is not a DLL claim.
-            if other_active_filter { return Err("Cannot resolve filter order: install the original Radial Follow DLL or explicitly select a native-only chain".into()); }
+            if other_active_filter {
+                return Err("Cannot resolve filter order: install the original Radial Follow DLL or explicitly select a native-only chain".into());
+            }
             native_radial = true;
-        } else if enabled { unresolved_active_filter = true; other_active_filter = true; }
+        } else if enabled {
+            unresolved_active_filter = true;
+            other_active_filter = true;
+        }
     }
-    if native_radial && installed_radial { return Err("Cannot mix imported native and installed unchanged Radial Follow instances".into()); }
-    if installed_radial { next.radial_follow.clear(); }
+    if native_radial && installed_radial {
+        return Err(
+            "Cannot mix imported native and installed unchanged Radial Follow instances".into(),
+        );
+    }
+    if installed_radial {
+        next.radial_follow.clear();
+    }
     for (index, store) in source["Tools"].as_array().into_iter().flatten().enumerate() {
-        if let Some(config) = resolve(store, "tool")? { entries.push(config); count += 1; resolved_tools.insert(format!("Tools[{index}]")); }
+        if let Some(config) = resolve(store, "tool")? {
+            entries.push(config);
+            count += 1;
+            resolved_tools.insert(format!("Tools[{index}]"));
+        }
     }
     // A repeated registry load must retain current property/enabled edits. A
     // different chain cannot be reconciled with source slot identity silently.
     if !next.plugins.is_empty() {
-        if next.plugins.len() != entries.len() || next.plugins.iter().zip(&entries).any(|(current, original)| current.kind != original.kind || current.path != original.path || current.type_name != original.type_name) {
+        if next.plugins.len() != entries.len()
+            || next
+                .plugins
+                .iter()
+                .zip(&entries)
+                .any(|(current, original)| {
+                    current.kind != original.kind
+                        || current.path != original.path
+                        || current.type_name != original.type_name
+                })
+        {
             return Err("Existing DLL chain differs from the imported store order; keep it explicitly or reimport before resolving installed stores".into());
         }
-    } else { next.plugins = entries; }
-    next.diagnostics.retain(|diagnostic| !resolved_tools.contains(&diagnostic.location)
-        && (unresolved_active_filter || diagnostic.location != format!("Profiles[{selected}].Filters"))
-        && !(installed_radial && diagnostic.location.starts_with(&format!("Profiles[{selected}].Filters."))));
-    next.validate_filter_execution()?; next.validate_actions()?;
-    *profile = next; Ok(count)
+    } else {
+        next.plugins = entries;
+    }
+    next.diagnostics.retain(|diagnostic| {
+        !resolved_tools.contains(&diagnostic.location)
+            && (unresolved_active_filter
+                || diagnostic.location != format!("Profiles[{selected}].Filters"))
+            && !(installed_radial
+                && diagnostic
+                    .location
+                    .starts_with(&format!("Profiles[{selected}].Filters.")))
+    });
+    next.validate_filter_execution()?;
+    next.validate_actions()?;
+    *profile = next;
+    Ok(count)
 }
 
 #[cfg(windows)]
@@ -352,8 +666,11 @@ impl Plugin {
         Self::load_with_identifiers(config, tablet, None)
     }
 
-    fn load_with_identifiers(config: &PluginConfig, tablet: &TabletConfiguration,
-        identifiers: Option<&[DeviceIdentifier]>) -> Result<Self, String> {
+    fn load_with_identifiers(
+        config: &PluginConfig,
+        tablet: &TabletConfiguration,
+        identifiers: Option<&[DeviceIdentifier]>,
+    ) -> Result<Self, String> {
         config.validate()?;
         let (api, library) = if config.kind == PluginKind::Dotnet {
             (crate::dotnet::filter_api()?, None)
@@ -591,21 +908,56 @@ impl PluginChain {
         Self::load_profile(profile, tablet, None)
     }
 
-    pub fn load_for_profile_with_identifiers(profile: &crate::config::Profile,
-        tablet: &TabletConfiguration, identifiers: &[DeviceIdentifier]) -> Result<Self, String> {
+    pub fn load_for_profile_with_identifiers(
+        profile: &crate::config::Profile,
+        tablet: &TabletConfiguration,
+        identifiers: &[DeviceIdentifier],
+    ) -> Result<Self, String> {
         Self::load_profile(profile, tablet, Some(identifiers))
     }
 
-    fn load_profile(profile: &crate::config::Profile, tablet: &TabletConfiguration,
-        identifiers: Option<&[DeviceIdentifier]>) -> Result<Self, String> {
-        if profile.managed_output.as_ref().is_some_and(|mode| !mode.enabled) { return Err("The selected original managed output mode is disabled; select an enabled output before starting".into()); }
-        let mut chain = Self::load_with_builtins(&profile.plugins, tablet, profile.builtin_filter_slot(), identifiers)?;
-        if !otd_core::output::buttons::ButtonOutput::managed_slots(profile).is_empty() { chain.prepare_managed_decoder()?; }
+    fn load_profile(
+        profile: &crate::config::Profile,
+        tablet: &TabletConfiguration,
+        identifiers: Option<&[DeviceIdentifier]>,
+    ) -> Result<Self, String> {
+        if profile
+            .managed_output
+            .as_ref()
+            .is_some_and(|mode| !mode.enabled)
+        {
+            return Err("The selected original managed output mode is disabled; select an enabled output before starting".into());
+        }
+        let mut chain = Self::load_with_builtins(
+            &profile.plugins,
+            tablet,
+            profile.builtin_filter_slot(),
+            identifiers,
+        )?;
+        if !otd_core::output::buttons::ButtonOutput::managed_slots(profile).is_empty() {
+            chain.prepare_managed_decoder()?;
+        }
 
-        if let Some(config) = profile.managed_output.as_ref().filter(|config| config.enabled) {
-            if chain.graph.is_none() { chain.graph = graph::create_if(&chain.plugins, chain.builtin_slot, true)?; }
-            let output = crate::dotnet::endpoints::OutputSession::new_for_graph(config, profile, tablet, identifiers, chain.graph.as_ref())?;
-            chain.graph.as_mut().ok_or("managed output graph was not created")?.attach_output(&output)?;
+        if let Some(config) = profile
+            .managed_output
+            .as_ref()
+            .filter(|config| config.enabled)
+        {
+            if chain.graph.is_none() {
+                chain.graph = graph::create_if(&chain.plugins, chain.builtin_slot, true)?;
+            }
+            let output = crate::dotnet::endpoints::OutputSession::new_for_graph(
+                config,
+                profile,
+                tablet,
+                identifiers,
+                chain.graph.as_ref(),
+            )?;
+            chain
+                .graph
+                .as_mut()
+                .ok_or("managed output graph was not created")?
+                .attach_output(&output)?;
             chain.managed_output = Some(output);
         }
         Ok(chain)
@@ -647,10 +999,17 @@ impl PluginChain {
 
     /// A newly opened/reopened endpoint set may differ after auxiliary failure.
     /// Reconstruct at this cold boundary before creating any host output sink.
-    pub fn bind_identifiers(&mut self, profile: &crate::config::Profile,
-        tablet: &TabletConfiguration, identifiers: &[DeviceIdentifier]) -> Result<bool, String> {
+    pub fn bind_identifiers(
+        &mut self,
+        profile: &crate::config::Profile,
+        tablet: &TabletConfiguration,
+        identifiers: &[DeviceIdentifier],
+    ) -> Result<bool, String> {
         if self.identifiers.as_deref() == Some(identifiers)
-            && (self.graph.is_none() || self.source_session == crate::dotnet::source_session_json()) { return Ok(false); }
+            && (self.graph.is_none() || self.source_session == crate::dotnet::source_session_json())
+        {
+            return Ok(false);
+        }
         let replacement = Self::load_for_profile_with_identifiers(profile, tablet, identifiers)?;
         replacement.validate_output_mode(profile.relative.is_some())?;
         *self = replacement;
@@ -659,36 +1018,85 @@ impl PluginChain {
 
     /// Original report consumers require an original parser object, including
     /// concrete type identity. Pure native profiles have no managed graph.
-    pub fn needs_concrete_reports(&self) -> bool { self.graph.is_some() }
-    pub fn source_decoder(&self, name: &str, spec: otd_core::spec::TabletSpec) -> Result<crate::dotnet::RuntimeDecoder, String> {
+    pub fn needs_concrete_reports(&self) -> bool {
+        self.graph.is_some()
+    }
+    pub fn source_decoder(
+        &self,
+        name: &str,
+        spec: otd_core::spec::TabletSpec,
+    ) -> Result<crate::dotnet::RuntimeDecoder, String> {
         crate::dotnet::RuntimeDecoder::for_pipeline(name, spec, self.graph.as_ref())
     }
-    pub fn source_decoder_for_endpoint(&self,name:&str,spec:otd_core::spec::TabletSpec,auxiliary:bool)->Result<crate::dotnet::RuntimeDecoder,String>{
-        crate::dotnet::RuntimeDecoder::for_pipeline_source(name,spec,self.graph.as_ref(),auxiliary)
+    pub fn source_decoder_for_endpoint(
+        &self,
+        name: &str,
+        spec: otd_core::spec::TabletSpec,
+        auxiliary: bool,
+    ) -> Result<crate::dotnet::RuntimeDecoder, String> {
+        crate::dotnet::RuntimeDecoder::for_pipeline_source(
+            name,
+            spec,
+            self.graph.as_ref(),
+            auxiliary,
+        )
     }
     pub fn prepare_managed_decoder(&mut self) -> Result<(), String> {
-        if self.graph.is_none() { self.graph = graph::create_if(&self.plugins, self.builtin_slot, true)?; }
+        if self.graph.is_none() {
+            self.graph = graph::create_if(&self.plugins, self.builtin_slot, true)?;
+        }
         Ok(())
     }
 
     /// Binds to this graph's exact output instance; third-party pointers retain
     /// their own real services/prerequisites rather than a native substitute.
-    pub fn wrap_action_sink(&self, profile: &crate::config::Profile, tablet: &TabletConfiguration,
-        native: Box<dyn otd_core::output::buttons::ActionSink>) -> Result<Box<dyn otd_core::output::buttons::ActionSink>, String> {
-        crate::dotnet::endpoints::wrap_sink_for_graph(profile, tablet, native, self.managed_output.as_ref(), self.identifiers.as_deref(), self.graph.as_ref())
+    pub fn wrap_action_sink(
+        &self,
+        profile: &crate::config::Profile,
+        tablet: &TabletConfiguration,
+        native: Box<dyn otd_core::output::buttons::ActionSink>,
+    ) -> Result<Box<dyn otd_core::output::buttons::ActionSink>, String> {
+        crate::dotnet::endpoints::wrap_sink_for_graph(
+            profile,
+            tablet,
+            native,
+            self.managed_output.as_ref(),
+            self.identifiers.as_deref(),
+            self.graph.as_ref(),
+        )
     }
 
     #[cfg(windows)]
-    pub(crate) fn set_managed_wake(&mut self, target: std::sync::Arc<crate::shared_devices::OutputGate>) -> Result<(), String> {
-        if let Some(graph) = &mut self.graph { graph.set_wake(target.clone())?; }
-        if let Some(output) = &mut self.managed_output { output.set_wake(target)?; }
+    pub(crate) fn set_managed_wake(
+        &mut self,
+        target: std::sync::Arc<crate::shared_devices::OutputGate>,
+    ) -> Result<(), String> {
+        if let Some(graph) = &mut self.graph {
+            graph.set_wake(target.clone())?;
+        }
+        if let Some(output) = &mut self.managed_output {
+            output.set_wake(target)?;
+        }
         Ok(())
     }
 
     #[cfg(windows)]
-    pub(crate) fn wrap_action_sink_with_wake(&self, profile: &crate::config::Profile, tablet: &TabletConfiguration,
-        native: Box<dyn otd_core::output::buttons::ActionSink>, target: std::sync::Arc<crate::shared_devices::OutputGate>) -> Result<Box<dyn otd_core::output::buttons::ActionSink>, String> {
-        crate::dotnet::endpoints::wrap_sink_for_graph_with_wake(profile, tablet, native, self.managed_output.as_ref(), self.identifiers.as_deref(), self.graph.as_ref(), target)
+    pub(crate) fn wrap_action_sink_with_wake(
+        &self,
+        profile: &crate::config::Profile,
+        tablet: &TabletConfiguration,
+        native: Box<dyn otd_core::output::buttons::ActionSink>,
+        target: std::sync::Arc<crate::shared_devices::OutputGate>,
+    ) -> Result<Box<dyn otd_core::output::buttons::ActionSink>, String> {
+        crate::dotnet::endpoints::wrap_sink_for_graph_with_wake(
+            profile,
+            tablet,
+            native,
+            self.managed_output.as_ref(),
+            self.identifiers.as_deref(),
+            self.graph.as_ref(),
+            target,
+        )
     }
 
     /// The filters in the order they run and the settings they run with, for
@@ -823,7 +1231,9 @@ impl PluginChain {
 }
 
 impl otd_core::plugins::Filters for PluginChain {
-    fn owns_mapping(&self) -> bool { self.managed_output.is_some() }
+    fn owns_mapping(&self) -> bool {
+        self.managed_output.is_some()
+    }
     fn uses_managed_graph(&self) -> bool {
         self.graph.is_some()
     }
@@ -1187,17 +1597,32 @@ mod identifier_setup_tests {
         let tablet = current_tablet();
         let identifiers = vec![tablet.digitizer_identifiers[0].clone()];
         let profile = crate::config::Profile::default();
-        let mut chain = PluginChain::load_for_profile_with_identifiers(&profile, tablet, &identifiers).unwrap();
+        let mut chain =
+            PluginChain::load_for_profile_with_identifiers(&profile, tablet, &identifiers).unwrap();
         let epoch = chain.epoch;
         let storage = chain.identifiers.as_ref().unwrap().as_ptr();
         for _ in 0..4 {
-            assert!(!chain.bind_identifiers(&profile, tablet, &identifiers).unwrap());
+            assert!(
+                !chain
+                    .bind_identifiers(&profile, tablet, &identifiers)
+                    .unwrap()
+            );
             assert_eq!(chain.epoch, epoch);
             assert_eq!(chain.identifiers.as_ref().unwrap().as_ptr(), storage);
         }
         let mut with_auxiliary = identifiers.clone();
-        with_auxiliary.push(DeviceIdentifier { product_id: Some(999), ..Default::default() });
-        assert!(chain.bind_identifiers(&profile, tablet, &with_auxiliary).unwrap());
-        assert_eq!(chain.identifiers.as_deref(), Some(with_auxiliary.as_slice()));
+        with_auxiliary.push(DeviceIdentifier {
+            product_id: Some(999),
+            ..Default::default()
+        });
+        assert!(
+            chain
+                .bind_identifiers(&profile, tablet, &with_auxiliary)
+                .unwrap()
+        );
+        assert_eq!(
+            chain.identifiers.as_deref(),
+            Some(with_auxiliary.as_slice())
+        );
     }
 }

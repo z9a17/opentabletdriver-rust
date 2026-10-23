@@ -24,8 +24,8 @@ use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
 };
 use windows_sys::Win32::Devices::HumanInterfaceDevice::{
     HIDD_ATTRIBUTES, HIDP_CAPS, HIDP_STATUS_SUCCESS, HidD_FreePreparsedData, HidD_GetAttributes,
-    HidD_GetHidGuid, HidD_GetIndexedString, HidD_GetPreparsedData, HidD_SetFeature, HidP_GetCaps,
-    HidD_GetManufacturerString, HidD_GetProductString, HidD_GetSerialNumberString,
+    HidD_GetHidGuid, HidD_GetIndexedString, HidD_GetManufacturerString, HidD_GetPreparsedData,
+    HidD_GetProductString, HidD_GetSerialNumberString, HidD_SetFeature, HidP_GetCaps,
     PHIDP_PREPARSED_DATA,
 };
 use windows_sys::Win32::Foundation::{
@@ -40,7 +40,7 @@ use windows_sys::Win32::System::Threading::{
     CreateEventW, GetCurrentProcess, SetEvent, WaitForMultipleObjects, WaitForSingleObject,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DBT_DEVTYP_DEVICEINTERFACE, DEVICE_NOTIFY_WINDOW_HANDLE, DEV_BROADCAST_DEVICEINTERFACE_W,
+    DBT_DEVTYP_DEVICEINTERFACE, DEV_BROADCAST_DEVICEINTERFACE_W, DEVICE_NOTIFY_WINDOW_HANDLE,
     HDEVNOTIFY, RegisterDeviceNotificationW, UnregisterDeviceNotification,
 };
 use windows_sys::core::GUID;
@@ -162,8 +162,9 @@ impl Candidate {
     /// Whether this collection's interface still exists. Opens it without
     /// access rights, which costs far less than enumerating every HID device.
     pub fn is_present(&self) -> bool {
-        if let Some(endpoint)=self.managed_endpoint {
-            return crate::dotnet::custom_devices::snapshot().is_ok_and(|devices|devices.iter().any(|device|device.endpoint==endpoint));
+        if let Some(endpoint) = self.managed_endpoint {
+            return crate::dotnet::custom_devices::snapshot()
+                .is_ok_and(|devices| devices.iter().any(|device| device.endpoint == endpoint));
         }
         OwnedHandle::new(unsafe {
             CreateFileW(
@@ -184,25 +185,32 @@ impl Candidate {
     }
 
     pub fn open(&self, write: bool) -> io::Result<OwnedHandle> {
-        if self.managed_endpoint.is_some() { return Err(io::Error::new(io::ErrorKind::Unsupported,
-            "Actual managed custom endpoints must use their sole managed reader owner, not a Windows file handle")); }
-        open_path(&self.path, write || self.endpoint.transport == Transport::WinUsb)
+        if self.managed_endpoint.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Actual managed custom endpoints must use their sole managed reader owner, not a Windows file handle",
+            ));
+        }
+        open_path(
+            &self.path,
+            write || self.endpoint.transport == Transport::WinUsb,
+        )
     }
 }
 
 pub(crate) fn open_path(path: &[u16], write: bool) -> io::Result<OwnedHandle> {
-        let raw = unsafe {
-            CreateFileW(
-                path.as_ptr(),
-                GENERIC_READ | if write { GENERIC_WRITE } else { 0 },
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
-                ptr::null(),
-                OPEN_EXISTING,
-                FILE_FLAG_OVERLAPPED,
-                ptr::null_mut(),
-            )
-        };
-        OwnedHandle::new(raw)
+    let raw = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            GENERIC_READ | if write { GENERIC_WRITE } else { 0 },
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OVERLAPPED,
+            ptr::null_mut(),
+        )
+    };
+    OwnedHandle::new(raw)
 }
 
 pub(crate) struct DeviceInfoSet(pub(crate) HDEVINFO);
@@ -296,10 +304,14 @@ fn usb_hid_ids(instance: &str) -> Option<(u16, u16)> {
     let mut product = None;
     for part in hardware.split('&') {
         if let Some(value) = part.strip_prefix("VID_") {
-            if value.len() != 4 { return None; }
+            if value.len() != 4 {
+                return None;
+            }
             vendor = Some(u16::from_str_radix(value, 16).ok()?);
         } else if let Some(value) = part.strip_prefix("PID_") {
-            if value.len() != 4 { return None; }
+            if value.len() != 4 {
+                return None;
+            }
             product = Some(u16::from_str_radix(value, 16).ok()?);
         }
     }
@@ -307,9 +319,9 @@ fn usb_hid_ids(instance: &str) -> Option<(u16, u16)> {
 }
 
 fn should_inspect(instance: Option<&str>, database: &Database) -> bool {
-    instance.and_then(usb_hid_ids).is_none_or(|(vendor, product)| {
-        database.find(vendor, product).next().is_some()
-    })
+    instance
+        .and_then(usb_hid_ids)
+        .is_none_or(|(vendor, product)| database.find(vendor, product).next().is_some())
 }
 
 // Walk collection/interface ancestors to the physical USB device. Never pair
@@ -352,7 +364,8 @@ fn indexed_string(handle: HANDLE, index: u8) -> io::Result<String> {
 }
 
 fn inspect(path: &[u16], instance: u32, database: Option<&Database>) -> Option<Candidate> {
-    if database.is_some_and(|database| !should_inspect(instance_id(instance).as_deref(), database)) {
+    if database.is_some_and(|database| !should_inspect(instance_id(instance).as_deref(), database))
+    {
         return None;
     }
     let handle = OwnedHandle::new(unsafe {
@@ -376,7 +389,9 @@ fn inspect(path: &[u16], instance: u32, database: Option<&Database>) -> Option<C
     if !unsafe { HidD_GetAttributes(handle.raw(), &mut attrs) } {
         return None;
     }
-    if let Some(database) = database { database.find(attrs.VendorID, attrs.ProductID).next()?; }
+    if let Some(database) = database {
+        database.find(attrs.VendorID, attrs.ProductID).next()?;
+    }
     let mut preparsed: PHIDP_PREPARSED_DATA = 0;
     if !unsafe { HidD_GetPreparsedData(handle.raw(), &mut preparsed) } {
         return None;
@@ -410,7 +425,9 @@ fn inspect(path: &[u16], instance: u32, database: Option<&Database>) -> Option<C
         attributes: Some(attributes),
     };
     if let Some(database) = database {
-        read_matching_strings(&mut endpoint, database, |index| indexed_string(handle.raw(), index));
+        read_matching_strings(&mut endpoint, database, |index| {
+            indexed_string(handle.raw(), index)
+        });
     }
     Some(Candidate {
         path: path.to_vec(),
@@ -434,12 +451,19 @@ pub(crate) fn read_matching_strings(
     let indices: BTreeSet<u8> = database
         .find(endpoint.vendor_id, endpoint.product_id)
         .filter(|found| endpoint_match::matches_report_lengths(endpoint, found.identifier))
-        .flat_map(|found| found.identifier.device_strings.iter().flat_map(|strings| strings.keys()))
+        .flat_map(|found| {
+            found
+                .identifier
+                .device_strings
+                .iter()
+                .flat_map(|strings| strings.keys())
+        })
         .filter_map(|index| index.parse().ok())
         .collect();
-    endpoint.strings = indices.into_iter().filter_map(|index| {
-        read(index).ok().map(|value| (index, value))
-    }).collect();
+    endpoint.strings = indices
+        .into_iter()
+        .filter_map(|index| read(index).ok().map(|value| (index, value)))
+        .collect();
 }
 
 pub fn enumerate() -> io::Result<Vec<Candidate>> {
@@ -491,25 +515,56 @@ pub fn enumerate_with_database(database: &Database) -> io::Result<Vec<Candidate>
 
 /// Custom original hubs become candidates only after managed code is actually
 /// loaded. Discovery never opens their stream or initializes CLR for native users.
-fn enumerate_managed(database:&Database)->io::Result<Vec<Candidate>> {
-    let mut found=Vec::new();
+fn enumerate_managed(database: &Database) -> io::Result<Vec<Candidate>> {
+    let mut found = Vec::new();
     for metadata in crate::dotnet::custom_devices::snapshot().map_err(io::Error::other)? {
-        if database.find(metadata.vendor,metadata.product).next().is_none(){continue;}
+        if database
+            .find(metadata.vendor, metadata.product)
+            .next()
+            .is_none()
+        {
+            continue;
+        }
         // Original custom endpoint contracts contain no parent-container ID.
         // Providers may publish an explicit physical identity as an attribute;
         // otherwise hub scope is the original matching domain for primary/aux.
-        let physical=metadata.attributes.as_ref().and_then(|attributes|attributes.get("OTD_PHYSICAL_ID")).cloned()
-            .unwrap_or_else(||format!("managed-hub:{}",metadata.scope));
-        let mut endpoint=Endpoint {path:metadata.path.clone(),physical_id:physical,
+        let physical = metadata
+            .attributes
+            .as_ref()
+            .and_then(|attributes| attributes.get("OTD_PHYSICAL_ID"))
+            .cloned()
+            .unwrap_or_else(|| format!("managed-hub:{}", metadata.scope));
+        let mut endpoint = Endpoint {
+            path: metadata.path.clone(),
+            physical_id: physical,
             // Original Driver accepts custom endpoints with ordinary report IDs;
             // UsbHid here selects identifier semantics, not a HID file backend.
-            transport:Transport::UsbHid,vendor_id:metadata.vendor,product_id:metadata.product,can_open:metadata.can_open,
-            input_length:u32::from(metadata.input_length),output_length:u32::from(metadata.output_length),
-            feature_length:u32::from(metadata.feature_length),strings:BTreeMap::new(),attributes:metadata.attributes};
-        read_matching_strings(&mut endpoint,database,|index|crate::dotnet::custom_devices::device_string(metadata.endpoint,index).map_err(io::Error::other));
-        let mut path:Vec<u16>=metadata.path.encode_utf16().collect();path.push(0);
-        found.push(Candidate {path,vendor:metadata.vendor,product:metadata.product,input_length:metadata.input_length,
-            usage_page:0,usage:0,endpoint,managed_endpoint:Some(metadata.endpoint)});
+            transport: Transport::UsbHid,
+            vendor_id: metadata.vendor,
+            product_id: metadata.product,
+            can_open: metadata.can_open,
+            input_length: u32::from(metadata.input_length),
+            output_length: u32::from(metadata.output_length),
+            feature_length: u32::from(metadata.feature_length),
+            strings: BTreeMap::new(),
+            attributes: metadata.attributes,
+        };
+        read_matching_strings(&mut endpoint, database, |index| {
+            crate::dotnet::custom_devices::device_string(metadata.endpoint, index)
+                .map_err(io::Error::other)
+        });
+        let mut path: Vec<u16> = metadata.path.encode_utf16().collect();
+        path.push(0);
+        found.push(Candidate {
+            path,
+            vendor: metadata.vendor,
+            product: metadata.product,
+            input_length: metadata.input_length,
+            usage_page: 0,
+            usage: 0,
+            endpoint,
+            managed_endpoint: Some(metadata.endpoint),
+        });
     }
     Ok(found)
 }
@@ -527,31 +582,68 @@ pub fn enumerate_service_devices() -> io::Result<Vec<serde_json::Value>> {
 }
 fn enumerate_device_metadata(probe_open: bool) -> io::Result<Vec<serde_json::Value>> {
     let guid = hid_guid();
-    let set = unsafe { SetupDiGetClassDevsW(&guid, ptr::null(), ptr::null_mut(),
-        DIGCF_PRESENT | DIGCF_DEVICEINTERFACE) };
-    if set == INVALID_HANDLE_VALUE as isize { return Err(io::Error::last_os_error()); }
+    let set = unsafe {
+        SetupDiGetClassDevsW(
+            &guid,
+            ptr::null(),
+            ptr::null_mut(),
+            DIGCF_PRESENT | DIGCF_DEVICEINTERFACE,
+        )
+    };
+    if set == INVALID_HANDLE_VALUE as isize {
+        return Err(io::Error::last_os_error());
+    }
     let _guard = DeviceInfoSet(set);
     let mut devices = Vec::new();
     for index in 0.. {
         let mut interface = SP_DEVICE_INTERFACE_DATA {
-            cbSize: size_of::<SP_DEVICE_INTERFACE_DATA>() as u32, ..Default::default()
+            cbSize: size_of::<SP_DEVICE_INTERFACE_DATA>() as u32,
+            ..Default::default()
         };
-        if unsafe { SetupDiEnumDeviceInterfaces(set, ptr::null(), &guid, index, &mut interface) } == 0 {
+        if unsafe { SetupDiEnumDeviceInterfaces(set, ptr::null(), &guid, index, &mut interface) }
+            == 0
+        {
             let error = io::Error::last_os_error();
-            if error.raw_os_error() == Some(ERROR_NO_MORE_ITEMS as i32) { break; }
+            if error.raw_os_error() == Some(ERROR_NO_MORE_ITEMS as i32) {
+                break;
+            }
             return Err(error);
         }
-        let Ok((path, instance)) = detail_path(set, &interface) else { continue; };
-        let Some(candidate) = inspect(&path, instance, None) else { continue; };
-        let handle = OwnedHandle::new(unsafe { CreateFileW(path.as_ptr(), 0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE, ptr::null(), OPEN_EXISTING, 0, ptr::null_mut()) });
+        let Ok((path, instance)) = detail_path(set, &interface) else {
+            continue;
+        };
+        let Some(candidate) = inspect(&path, instance, None) else {
+            continue;
+        };
+        let handle = OwnedHandle::new(unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                ptr::null(),
+                OPEN_EXISTING,
+                0,
+                ptr::null_mut(),
+            )
+        });
         let text = |getter: unsafe extern "system" fn(HANDLE, *mut c_void, u32) -> bool| {
-            let Ok(handle) = &handle else { return String::new(); };
+            let Ok(handle) = &handle else {
+                return String::new();
+            };
             let mut data = [0u16; 256];
-            if !unsafe { getter(handle.raw(), data.as_mut_ptr().cast(), size_of::<[u16; 256]>() as u32) } {
+            if !unsafe {
+                getter(
+                    handle.raw(),
+                    data.as_mut_ptr().cast(),
+                    size_of::<[u16; 256]>() as u32,
+                )
+            } {
                 return String::new();
             }
-            let end = data.iter().position(|word| *word == 0).unwrap_or(data.len());
+            let end = data
+                .iter()
+                .position(|word| *word == 0)
+                .unwrap_or(data.len());
             String::from_utf16_lossy(&data[..end])
         };
         let manufacturer = text(HidD_GetManufacturerString);
@@ -566,13 +658,19 @@ fn enumerate_device_metadata(probe_open: bool) -> io::Result<Vec<serde_json::Val
             "CanOpen":if probe_open { Some(candidate.open_read().is_ok()) } else { None },
             "DeviceAttributes":candidate.endpoint.attributes}));
     }
-    devices.extend(if probe_open { crate::winusb::rpc_devices()? } else { crate::winusb::service_metadata()? });
+    devices.extend(if probe_open {
+        crate::winusb::rpc_devices()?
+    } else {
+        crate::winusb::service_metadata()?
+    });
     for endpoint in crate::dotnet::custom_devices::snapshot().map_err(io::Error::other)? {
-        let mut metadata=serde_json::to_value(&endpoint.original).map_err(io::Error::other)?;
-        if let Some(object)=metadata.as_object_mut() {object.extend(serde_json::json!({"endpoint":endpoint.endpoint,"scope":endpoint.scope,
+        let mut metadata = serde_json::to_value(&endpoint.original).map_err(io::Error::other)?;
+        if let Some(object) = metadata.as_object_mut() {
+            object.extend(serde_json::json!({"endpoint":endpoint.endpoint,"scope":endpoint.scope,
             "DevicePath":endpoint.path,"VendorID":endpoint.vendor,"ProductID":endpoint.product,
             "InputReportLength":endpoint.input_length,"OutputReportLength":endpoint.output_length,
-            "FeatureReportLength":endpoint.feature_length,"CanOpen":endpoint.can_open,"DeviceAttributes":endpoint.attributes}).as_object().unwrap().clone());}
+            "FeatureReportLength":endpoint.feature_length,"CanOpen":endpoint.can_open,"DeviceAttributes":endpoint.attributes}).as_object().unwrap().clone());
+        }
         devices.push(metadata);
     }
     Ok(devices)
@@ -666,11 +764,13 @@ pub struct SelectedDevice<'a> {
 
 impl SelectedDevice<'_> {
     /// The decoder for this endpoint's configured parser.
-    pub fn decoder(&self) -> io::Result<RuntimeDecoder> { self.decoder_for_graph(false) }
-    pub fn decoder_for_graph(&self, prefer_original: bool) -> io::Result<RuntimeDecoder> {
-        RuntimeDecoder::for_graph(self.identifier.parser(), self.spec, prefer_original).map_err(io::Error::other)
+    pub fn decoder(&self) -> io::Result<RuntimeDecoder> {
+        self.decoder_for_graph(false)
     }
-
+    pub fn decoder_for_graph(&self, prefer_original: bool) -> io::Result<RuntimeDecoder> {
+        RuntimeDecoder::for_graph(self.identifier.parser(), self.spec, prefer_original)
+            .map_err(io::Error::other)
+    }
 }
 
 /// The configuration name and role of a discovered collection, if a usable
@@ -695,7 +795,12 @@ pub fn connected_tablets() -> Result<Vec<String>, String> {
     let mut names = Vec::new();
     for device in enumerate_with_database(&database).map_err(|error| error.to_string())? {
         if let Some((name, Role::Digitizer, true)) = identify(&device, &database)
-            && crate::config::runtime_tablet_in_with_parser_support(&name, &database, &crate::dotnet::installed_report_parser).is_ok()
+            && crate::config::runtime_tablet_in_with_parser_support(
+                &name,
+                &database,
+                &crate::dotnet::installed_report_parser,
+            )
+            .is_ok()
             && !names.contains(&name)
         {
             names.push(name);
@@ -743,12 +848,21 @@ pub fn select_device<'a>(
 
 /// Explicit output startup may load an installed parser for an actually matched
 /// missing endpoint. Ordinary discovery uses select_device and never does so.
-pub fn select_device_for_start<'a>(devices: &'a [Candidate], database: &Database,
-    path: Option<&str>, tablet: Option<&str>) -> Result<Option<SelectedDevice<'a>>, String> {
+pub fn select_device_for_start<'a>(
+    devices: &'a [Candidate],
+    database: &Database,
+    path: Option<&str>,
+    tablet: Option<&str>,
+) -> Result<Option<SelectedDevice<'a>>, String> {
     select_device_impl(devices, database, path, tablet, true)
 }
-fn select_device_impl<'a>(devices: &'a [Candidate], database: &Database,
-    path: Option<&str>, tablet: Option<&str>, load_registry: bool) -> Result<Option<SelectedDevice<'a>>, String> {
+fn select_device_impl<'a>(
+    devices: &'a [Candidate],
+    database: &Database,
+    path: Option<&str>,
+    tablet: Option<&str>,
+    load_registry: bool,
+) -> Result<Option<SelectedDevice<'a>>, String> {
     let mut registry_loaded = false;
     let mut unsupported = None;
     for device in devices
@@ -784,20 +898,29 @@ fn select_device_impl<'a>(devices: &'a [Candidate], database: &Database,
                     continue;
                 }
             };
-            let auxiliary = found.configuration.auxiliary_identifiers().iter().find_map(|identifier| {
-                let (vendor, product) = identifier.vendor_id().zip(identifier.product_id())?;
-                let aux = database.find(vendor, product).find(|aux| {
-                    aux.role == Role::Auxiliary
-                        && std::ptr::eq(aux.configuration, found.configuration)
-                        && std::ptr::eq(aux.identifier, identifier)
-                })?;
-                devices.iter().find(|other| {
-                    other.path != device.path
-                        && !other.endpoint.physical_id.is_empty()
-                        && other.endpoint.physical_id == device.endpoint.physical_id
-                        && endpoint_match::matches(&other.endpoint, &aux).is_ok()
-                }).map(|endpoint| (endpoint, aux.identifier.clone()))
-            });
+            let auxiliary =
+                found
+                    .configuration
+                    .auxiliary_identifiers()
+                    .iter()
+                    .find_map(|identifier| {
+                        let (vendor, product) =
+                            identifier.vendor_id().zip(identifier.product_id())?;
+                        let aux = database.find(vendor, product).find(|aux| {
+                            aux.role == Role::Auxiliary
+                                && std::ptr::eq(aux.configuration, found.configuration)
+                                && std::ptr::eq(aux.identifier, identifier)
+                        })?;
+                        devices
+                            .iter()
+                            .find(|other| {
+                                other.path != device.path
+                                    && !other.endpoint.physical_id.is_empty()
+                                    && other.endpoint.physical_id == device.endpoint.physical_id
+                                    && endpoint_match::matches(&other.endpoint, &aux).is_ok()
+                            })
+                            .map(|endpoint| (endpoint, aux.identifier.clone()))
+                    });
             let mut configuration = found.configuration.clone();
             // The managed TabletReference constructor receives the actual selected identifier.
             configuration.digitizer_identifiers = vec![found.identifier.clone()];
@@ -984,24 +1107,28 @@ pub struct WindowNotification(Vec<HDEVNOTIFY>);
 impl WindowNotification {
     pub fn register(window: HWND) -> io::Result<Self> {
         let mut this = Self(Vec::with_capacity(3));
-        for guid in [hid_guid(), crate::winusb::INTERFACE_GUIDS[0], crate::winusb::INTERFACE_GUIDS[1]] {
-        let filter = DEV_BROADCAST_DEVICEINTERFACE_W {
-            dbcc_size: size_of::<DEV_BROADCAST_DEVICEINTERFACE_W>() as u32,
-            dbcc_devicetype: DBT_DEVTYP_DEVICEINTERFACE,
-            dbcc_classguid: guid,
-            ..Default::default()
-        };
-        let registration = unsafe {
-            RegisterDeviceNotificationW(
-                window,
-                ptr::addr_of!(filter).cast(),
-                DEVICE_NOTIFY_WINDOW_HANDLE,
-            )
-        };
-        if registration.is_null() {
-            return Err(io::Error::last_os_error());
-        }
-        this.0.push(registration);
+        for guid in [
+            hid_guid(),
+            crate::winusb::INTERFACE_GUIDS[0],
+            crate::winusb::INTERFACE_GUIDS[1],
+        ] {
+            let filter = DEV_BROADCAST_DEVICEINTERFACE_W {
+                dbcc_size: size_of::<DEV_BROADCAST_DEVICEINTERFACE_W>() as u32,
+                dbcc_devicetype: DBT_DEVTYP_DEVICEINTERFACE,
+                dbcc_classguid: guid,
+                ..Default::default()
+            };
+            let registration = unsafe {
+                RegisterDeviceNotificationW(
+                    window,
+                    ptr::addr_of!(filter).cast(),
+                    DEVICE_NOTIFY_WINDOW_HANDLE,
+                )
+            };
+            if registration.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            this.0.push(registration);
         }
         Ok(this)
     }
@@ -1009,38 +1136,47 @@ impl WindowNotification {
 
 impl Drop for WindowNotification {
     fn drop(&mut self) {
-        for registration in &self.0 { unsafe { UnregisterDeviceNotification(*registration) }; }
+        for registration in &self.0 {
+            unsafe { UnregisterDeviceNotification(*registration) };
+        }
     }
 }
 
 impl Notification {
     pub fn register() -> io::Result<Self> {
-        let mut this = Self { registrations: Vec::with_capacity(3), event: Event::create(false)? };
-        for guid in [hid_guid(), crate::winusb::INTERFACE_GUIDS[0], crate::winusb::INTERFACE_GUIDS[1]] {
-        let filter = CM_NOTIFY_FILTER {
-            cbSize: size_of::<CM_NOTIFY_FILTER>() as u32,
-            Flags: 0,
-            FilterType: CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE,
-            Reserved: 0,
-            u: CM_NOTIFY_FILTER_0 {
-                DeviceInterface: CM_NOTIFY_FILTER_0_0 { ClassGuid: guid },
-            },
+        let mut this = Self {
+            registrations: Vec::with_capacity(3),
+            event: Event::create(false)?,
         };
-        let mut registration = ptr::null_mut();
-        let result = unsafe {
-            CM_Register_Notification(
-                &filter,
-                this.event.raw() as *const c_void,
-                Some(notification_callback),
-                &mut registration,
-            )
-        };
-        if result != CR_SUCCESS {
-            return Err(io::Error::other(format!(
-                "CM_Register_Notification failed: {result}"
-            )));
-        }
-        this.registrations.push(registration);
+        for guid in [
+            hid_guid(),
+            crate::winusb::INTERFACE_GUIDS[0],
+            crate::winusb::INTERFACE_GUIDS[1],
+        ] {
+            let filter = CM_NOTIFY_FILTER {
+                cbSize: size_of::<CM_NOTIFY_FILTER>() as u32,
+                Flags: 0,
+                FilterType: CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE,
+                Reserved: 0,
+                u: CM_NOTIFY_FILTER_0 {
+                    DeviceInterface: CM_NOTIFY_FILTER_0_0 { ClassGuid: guid },
+                },
+            };
+            let mut registration = ptr::null_mut();
+            let result = unsafe {
+                CM_Register_Notification(
+                    &filter,
+                    this.event.raw() as *const c_void,
+                    Some(notification_callback),
+                    &mut registration,
+                )
+            };
+            if result != CR_SUCCESS {
+                return Err(io::Error::other(format!(
+                    "CM_Register_Notification failed: {result}"
+                )));
+            }
+            this.registrations.push(registration);
         }
         Ok(this)
     }
@@ -1052,7 +1188,9 @@ impl Notification {
 
 impl Drop for Notification {
     fn drop(&mut self) {
-        for registration in &self.registrations { unsafe { CM_Unregister_Notification(*registration) }; }
+        for registration in &self.registrations {
+            unsafe { CM_Unregister_Notification(*registration) };
+        }
     }
 }
 
@@ -1064,12 +1202,25 @@ mod tests {
     #[test]
     fn unrelated_usb_hid_devices_are_rejected_before_opening_descriptors() {
         let database = Database::builtin();
-        assert!(!should_inspect(Some(r"HID\VID_FFFF&PID_FFFF&MI_00\7&123&0&0000"), database));
-        assert!(should_inspect(Some(r"hid\vid_056a&pid_0357&mi_00&col01\7&123&0&0000"), database));
-        assert_eq!(usb_hid_ids(r"HID\VID_056A&PID_0357&COL01\7&123"), Some((0x056a, 0x0357)));
+        assert!(!should_inspect(
+            Some(r"HID\VID_FFFF&PID_FFFF&MI_00\7&123&0&0000"),
+            database
+        ));
+        assert!(should_inspect(
+            Some(r"hid\vid_056a&pid_0357&mi_00&col01\7&123&0&0000"),
+            database
+        ));
+        assert_eq!(
+            usb_hid_ids(r"HID\VID_056A&PID_0357&COL01\7&123"),
+            Some((0x056a, 0x0357))
+        );
         // Unrecognized buses, failed metadata and malformed IDs must fall
         // back to descriptor inspection instead of hiding a tablet.
-        for unknown in [None, Some(r"BTHENUM\VID_056A&PID_0357"), Some(r"HID\VID_056A&PID_0357_EXTRA\1")] {
+        for unknown in [
+            None,
+            Some(r"BTHENUM\VID_056A&PID_0357"),
+            Some(r"HID\VID_056A&PID_0357_EXTRA\1"),
+        ] {
             assert!(should_inspect(unknown, database));
         }
     }
@@ -1091,10 +1242,17 @@ mod tests {
         // An unusable fixture would make every assertion below vacuous.
         assert_eq!(database.find(65534, 65534).count(), 5);
         let mut endpoint = Endpoint {
-            path: "fixture".into(), physical_id: "physical-fixture".into(),
-            transport: Transport::UsbHid, vendor_id: 65534, product_id: 65534,
-            can_open: true, input_length: 8, output_length: 0, feature_length: 0,
-            strings: BTreeMap::new(), attributes: None,
+            path: "fixture".into(),
+            physical_id: "physical-fixture".into(),
+            transport: Transport::UsbHid,
+            vendor_id: 65534,
+            product_id: 65534,
+            can_open: true,
+            input_length: 8,
+            output_length: 0,
+            feature_length: 0,
+            strings: BTreeMap::new(),
+            attributes: None,
         };
         let mut requested = Vec::new();
         read_matching_strings(&mut endpoint, &database, |index| {
@@ -1108,8 +1266,10 @@ mod tests {
         assert_eq!(requested, [1, 2]);
         assert_eq!(endpoint.strings.get(&1).map(String::as_str), Some("tablet"));
         assert!(!endpoint.strings.contains_key(&2));
-        let candidate = database.find(65534, 65534)
-            .find(|candidate| candidate.identifier.input_report_length == Some(8)).unwrap();
+        let candidate = database
+            .find(65534, 65534)
+            .find(|candidate| candidate.identifier.input_report_length == Some(8))
+            .unwrap();
         assert_eq!(endpoint_match::matches(&endpoint, &candidate), Ok(()));
     }
 

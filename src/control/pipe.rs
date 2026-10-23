@@ -152,7 +152,12 @@ fn create_server(sid: &str) -> io::Result<Handle> {
     create_named_server(sid, &name_for_sid(sid), true, 1)
 }
 
-fn create_named_server(sid: &str, endpoint: &str, first: bool, instances: u32) -> io::Result<Handle> {
+fn create_named_server(
+    sid: &str,
+    endpoint: &str,
+    first: bool,
+    instances: u32,
+) -> io::Result<Handle> {
     // Protected DACL: current user and SYSTEM only. The user receives full access
     // so the server can create its endpoint; clients request the narrower mask.
     let sddl = wide(&format!("D:P(A;;GA;;;SY)(A;;GA;;;{sid})"));
@@ -178,7 +183,13 @@ fn create_named_server(sid: &str, endpoint: &str, first: bool, instances: u32) -
     let handle = unsafe {
         CreateNamedPipeW(
             name.as_ptr(),
-            PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | if first { FILE_FLAG_FIRST_PIPE_INSTANCE } else { 0 },
+            PIPE_ACCESS_DUPLEX
+                | FILE_FLAG_OVERLAPPED
+                | if first {
+                    FILE_FLAG_FIRST_PIPE_INSTANCE
+                } else {
+                    0
+                },
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             instances,
             65536,
@@ -309,25 +320,49 @@ enum Buffer<'a> {
 }
 /// Exclusive per-worker compatibility connection. Reuses native cancellation
 /// draining and ACL construction, but never consumes the daemon owner's wake.
-pub(crate) struct CompatPipe { pipe: Handle }
+pub(crate) struct CompatPipe {
+    pipe: Handle,
+}
 // Each instance is moved once to its dedicated worker and never shared.
 unsafe impl Send for CompatPipe {}
 impl CompatPipe {
     /// A persistent same-user client used by the original-console workflow.
     /// The caller captures the native daemon PID before connecting, so a
     /// replacement or another application cannot receive its mutations.
-    pub(crate) fn open_client(name: &str, deadline: Instant, expected_process: Option<u32>) -> io::Result<Self> {
-        if name.is_empty() || name.len() > 200 || name.bytes().any(|byte| byte < 32 || matches!(byte, b'\\' | b'/' | b':')) {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid compatibility pipe name"));
+    pub(crate) fn open_client(
+        name: &str,
+        deadline: Instant,
+        expected_process: Option<u32>,
+    ) -> io::Result<Self> {
+        if name.is_empty()
+            || name.len() > 200
+            || name
+                .bytes()
+                .any(|byte| byte < 32 || matches!(byte, b'\\' | b'/' | b':'))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid compatibility pipe name",
+            ));
         }
         let sid = current_sid()?;
         let endpoint = format!(r"\\.\pipe\{name}");
-        Ok(Self { pipe: connect_named_client(&sid, &endpoint, deadline, expected_process)? })
+        Ok(Self {
+            pipe: connect_named_client(&sid, &endpoint, deadline, expected_process)?,
+        })
     }
     pub(crate) fn instances(name: &str, count: u32) -> io::Result<Vec<Self>> {
-        if name.is_empty() || name.len() > 200 || name.bytes().any(|byte| byte < 32 || matches!(byte, b'\\' | b'/' | b':'))
-            || !(1..=4).contains(&count) {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid compatibility pipe name or client limit"));
+        if name.is_empty()
+            || name.len() > 200
+            || name
+                .bytes()
+                .any(|byte| byte < 32 || matches!(byte, b'\\' | b'/' | b':'))
+            || !(1..=4).contains(&count)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid compatibility pipe name or client limit",
+            ));
         }
         let sid = current_sid()?;
         let endpoint = format!(r"\\.\pipe\{name}");
@@ -335,7 +370,9 @@ impl CompatPipe {
         // Keep the first instance alive while creating all others. First-instance
         // ownership failure leaves an existing original or Rust daemon untouched.
         for index in 0..count {
-            pipes.push(Self { pipe: create_named_server(&sid, &endpoint, index == 0, count)? });
+            pipes.push(Self {
+                pipe: create_named_server(&sid, &endpoint, index == 0, count)?,
+            });
         }
         Ok(pipes)
     }
@@ -343,8 +380,17 @@ impl CompatPipe {
     /// dispatches no RPC request and cannot start a tablet worker.
     pub(crate) fn server_process_id(endpoint: &str) -> io::Result<u32> {
         let name = wide(endpoint);
-        let pipe = Handle::new(unsafe { CreateFileW(name.as_ptr(), 0, 0, null(), OPEN_EXISTING,
-            SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, null_mut()) })?;
+        let pipe = Handle::new(unsafe {
+            CreateFileW(
+                name.as_ptr(),
+                0,
+                0,
+                null(),
+                OPEN_EXISTING,
+                SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+                null_mut(),
+            )
+        })?;
         let mut pid = 0;
         if unsafe { GetNamedPipeServerProcessId(pipe.0, &mut pid) } == 0 {
             return Err(io::Error::last_os_error());
@@ -357,28 +403,64 @@ impl CompatPipe {
         if unsafe { ConnectNamedPipe(self.pipe.0, &mut *op.overlapped) } == 0 {
             let error = io::Error::last_os_error();
             match error.raw_os_error().map(|value| value as u32) {
-                Some(ERROR_PIPE_CONNECTED) => {},
-                Some(ERROR_IO_PENDING) => { op.pending = true; op.wait(None, stop, &mut || {})?; },
+                Some(ERROR_PIPE_CONNECTED) => {}
+                Some(ERROR_IO_PENDING) => {
+                    op.pending = true;
+                    op.wait(None, stop, &mut || {})?;
+                }
                 _ => return Err(error),
             }
         }
         Ok(())
     }
     pub(crate) fn disconnect(&self) {
-        unsafe { DisconnectNamedPipe(self.pipe.0); }
+        unsafe {
+            DisconnectNamedPipe(self.pipe.0);
+        }
     }
     pub(crate) fn cancel_pending(&self) {
         // The owning worker drains its OVERLAPPED before freeing the buffer.
-        unsafe { CancelIoEx(self.pipe.0, null()); }
+        unsafe {
+            CancelIoEx(self.pipe.0, null());
+        }
     }
-    pub(crate) fn read(&self, buffer: &mut [u8], deadline: Instant, stop: &AtomicBool,
-        tick: &mut impl FnMut()) -> io::Result<usize> {
-        transfer_with_wake(self.pipe.0, Buffer::Read(buffer), deadline, stop, tick, false)
+    pub(crate) fn read(
+        &self,
+        buffer: &mut [u8],
+        deadline: Instant,
+        stop: &AtomicBool,
+        tick: &mut impl FnMut(),
+    ) -> io::Result<usize> {
+        transfer_with_wake(
+            self.pipe.0,
+            Buffer::Read(buffer),
+            deadline,
+            stop,
+            tick,
+            false,
+        )
     }
-    pub(crate) fn write(&self, mut buffer: &[u8], deadline: Instant, stop: &AtomicBool) -> io::Result<()> {
+    pub(crate) fn write(
+        &self,
+        mut buffer: &[u8],
+        deadline: Instant,
+        stop: &AtomicBool,
+    ) -> io::Result<()> {
         while !buffer.is_empty() {
-            let bytes = transfer_with_wake(self.pipe.0, Buffer::Write(buffer), deadline, stop, &mut || {}, false)?;
-            if bytes == 0 { return Err(io::Error::new(io::ErrorKind::WriteZero, "compatibility pipe closed")); }
+            let bytes = transfer_with_wake(
+                self.pipe.0,
+                Buffer::Write(buffer),
+                deadline,
+                stop,
+                &mut || {},
+                false,
+            )?;
+            if bytes == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "compatibility pipe closed",
+                ));
+            }
             buffer = &buffer[bytes..];
         }
         Ok(())
@@ -447,10 +529,23 @@ fn read_exact(
 ) -> io::Result<()> {
     read_exact_with_wake(pipe, buffer, deadline, stop, tick, true)
 }
-fn read_exact_with_wake(pipe: HANDLE, mut buffer: &mut [u8], deadline: Instant,
-    stop: &AtomicBool, tick: &mut impl FnMut(), wake_control: bool) -> io::Result<()> {
+fn read_exact_with_wake(
+    pipe: HANDLE,
+    mut buffer: &mut [u8],
+    deadline: Instant,
+    stop: &AtomicBool,
+    tick: &mut impl FnMut(),
+    wake_control: bool,
+) -> io::Result<()> {
     while !buffer.is_empty() {
-        let bytes = transfer_with_wake(pipe, Buffer::Read(buffer), deadline, stop, tick, wake_control)?;
+        let bytes = transfer_with_wake(
+            pipe,
+            Buffer::Read(buffer),
+            deadline,
+            stop,
+            tick,
+            wake_control,
+        )?;
         if bytes == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -461,10 +556,23 @@ fn read_exact_with_wake(pipe: HANDLE, mut buffer: &mut [u8], deadline: Instant,
     }
     Ok(())
 }
-fn write_all_with_wake(pipe: HANDLE, mut buffer: &[u8], deadline: Instant,
-    stop: &AtomicBool, tick: &mut impl FnMut(), wake_control: bool) -> io::Result<()> {
+fn write_all_with_wake(
+    pipe: HANDLE,
+    mut buffer: &[u8],
+    deadline: Instant,
+    stop: &AtomicBool,
+    tick: &mut impl FnMut(),
+    wake_control: bool,
+) -> io::Result<()> {
     while !buffer.is_empty() {
-        let bytes = transfer_with_wake(pipe, Buffer::Write(buffer), deadline, stop, tick, wake_control)?;
+        let bytes = transfer_with_wake(
+            pipe,
+            Buffer::Write(buffer),
+            deadline,
+            stop,
+            tick,
+            wake_control,
+        )?;
         if bytes == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::WriteZero,
@@ -483,8 +591,13 @@ fn read_frame(
 ) -> io::Result<Vec<u8>> {
     read_frame_with_wake(pipe, deadline, stop, tick, true)
 }
-fn read_frame_with_wake(pipe: HANDLE, deadline: Instant, stop: &AtomicBool,
-    tick: &mut impl FnMut(), wake_control: bool) -> io::Result<Vec<u8>> {
+fn read_frame_with_wake(
+    pipe: HANDLE,
+    deadline: Instant,
+    stop: &AtomicBool,
+    tick: &mut impl FnMut(),
+    wake_control: bool,
+) -> io::Result<Vec<u8>> {
     let mut prefix = [0u8; 4];
     read_exact_with_wake(pipe, &mut prefix, deadline, stop, tick, wake_control)?;
     let size = u32::from_le_bytes(prefix) as usize;
@@ -507,8 +620,14 @@ fn write_frame(
 ) -> io::Result<()> {
     write_frame_with_wake(pipe, frame, deadline, stop, tick, true)
 }
-fn write_frame_with_wake(pipe: HANDLE, frame: &[u8], deadline: Instant,
-    stop: &AtomicBool, tick: &mut impl FnMut(), wake_control: bool) -> io::Result<()> {
+fn write_frame_with_wake(
+    pipe: HANDLE,
+    frame: &[u8],
+    deadline: Instant,
+    stop: &AtomicBool,
+    tick: &mut impl FnMut(),
+    wake_control: bool,
+) -> io::Result<()> {
     if frame.is_empty() || frame.len() > MAX_FRAME_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -582,11 +701,20 @@ pub(super) fn serve(handler: &mut impl ControlHandler, stop: &AtomicBool) -> io:
     Ok(())
 }
 
-fn connect_client(sid: &str, deadline: Instant, expected_process: Option<u32>) -> io::Result<Handle> {
+fn connect_client(
+    sid: &str,
+    deadline: Instant,
+    expected_process: Option<u32>,
+) -> io::Result<Handle> {
     connect_named_client(sid, &name_for_sid(sid), deadline, expected_process)
 }
 
-fn connect_named_client(sid: &str, endpoint: &str, deadline: Instant, expected_process: Option<u32>) -> io::Result<Handle> {
+fn connect_named_client(
+    sid: &str,
+    endpoint: &str,
+    deadline: Instant,
+    expected_process: Option<u32>,
+) -> io::Result<Handle> {
     let name = wide(endpoint);
     loop {
         if Instant::now() >= deadline {
@@ -613,8 +741,10 @@ fn connect_named_client(sid: &str, endpoint: &str, deadline: Instant, expected_p
                 return Err(io::Error::last_os_error());
             }
             if expected_process.is_some_and(|expected| expected != pid) {
-                return Err(io::Error::new(io::ErrorKind::PermissionDenied,
-                    "native endpoint is not owned by this compatibility daemon; request was not sent"));
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "native endpoint is not owned by this compatibility daemon; request was not sent",
+                ));
             }
             let process =
                 Handle::new(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) })?;
@@ -657,7 +787,11 @@ fn connect_named_client(sid: &str, endpoint: &str, deadline: Instant, expected_p
 pub(super) fn request(request: &Request, timeout: Duration) -> io::Result<Response> {
     request_owned(request, timeout, None)
 }
-pub(super) fn request_owned(request: &Request, timeout: Duration, expected_process: Option<u32>) -> io::Result<Response> {
+pub(super) fn request_owned(
+    request: &Request,
+    timeout: Duration,
+    expected_process: Option<u32>,
+) -> io::Result<Response> {
     if timeout.is_zero() || timeout > Duration::from_secs(60) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

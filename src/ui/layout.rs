@@ -59,8 +59,10 @@ impl App {
         let bar_top = client.bottom - s(48);
         let button_top = bar_top + s(9);
         let mut right = client.right - s(10);
-        for (hwnd, width) in [(self.c.apply, 92), (self.c.save, 92)].into_iter()
-            .filter(|_| !matches!(self.tab, Tab::Experimental | Tab::Console)) {
+        for (hwnd, width) in [(self.c.apply, 92), (self.c.save, 92)]
+            .into_iter()
+            .filter(|_| !matches!(self.tab, Tab::Experimental | Tab::Console))
+        {
             shown.push((
                 hwnd,
                 rect(right - s(width), button_top, right, button_top + s(30)),
@@ -78,19 +80,39 @@ impl App {
             let mut left = content.left;
             for (index, (_, label)) in BUTTON_SECTIONS.iter().enumerate() {
                 let width = measure(fonts.ui, label).0 + s(24);
-                shown.push((self.c.button_sections[index], rect(left, content.top, left + width, content.top + s(28))));
+                shown.push((
+                    self.c.button_sections[index],
+                    rect(left, content.top, left + width, content.top + s(28)),
+                ));
                 left += width + s(6);
             }
             content.top += s(36);
         } else if self.tab.primary().is_none() {
-            shown.push((self.c.back, rect(content.left, content.top, content.left + s(72), content.top + s(28))));
-            items.push(Item::Title(rect(content.left + s(88), content.top, content.right, content.top + s(28)),
-                TABS[self.tab.index()].1.into()));
+            shown.push((
+                self.c.back,
+                rect(
+                    content.left,
+                    content.top,
+                    content.left + s(72),
+                    content.top + s(28),
+                ),
+            ));
+            items.push(Item::Title(
+                rect(
+                    content.left + s(88),
+                    content.top,
+                    content.right,
+                    content.top + s(28),
+                ),
+                TABS[self.tab.index()].1.into(),
+            ));
             content.top += s(36);
         }
         match self.tab {
             Tab::Output => self.layout_output(content, &mut items, &mut shown, &measure, dc),
-            Tab::Filters | Tab::Tools => self.layout_filters(content, &mut items, &mut shown, &measure, dc),
+            Tab::Filters | Tab::Tools => {
+                self.layout_filters(content, &mut items, &mut shown, &measure, dc)
+            }
             Tab::Pen => self.layout_pen(content, &mut items, &mut shown, &measure, dc),
             Tab::Mouse => self.layout_mouse(content, &mut items, &mut shown, &measure, dc),
             Tab::Aux => self.layout_aux(content, &mut items, &mut shown, &measure, dc),
@@ -98,7 +120,10 @@ impl App {
                 if let Some(page) = &self.experimental {
                     page.set_dpi(self.dpi);
                     let left = content.left + ((content.right - content.left - s(620)) / 2).max(0);
-                    shown.push((page.window(), rect(left, content.top, left + s(620), content.top + s(436))));
+                    shown.push((
+                        page.window(),
+                        rect(left, content.top, left + s(620), content.top + s(436)),
+                    ));
                 }
             }
             Tab::Console => self.layout_console(content, &mut items, &mut shown),
@@ -153,7 +178,10 @@ impl App {
             // Keep keyboard focus on a visible control after a page change.
             let focus = GetFocus();
             if !focus.is_null() && focus != self.hwnd && IsWindowVisible(focus) == 0 {
-                let target = self.tab.primary().map_or(self.c.back, |tab| self.c.tabs[tab.index()]);
+                let target = self
+                    .tab
+                    .primary()
+                    .map_or(self.c.back, |tab| self.c.tabs[tab.index()]);
                 SetFocus(target);
             }
             InvalidateRect(self.hwnd, ptr::null(), 0);
@@ -339,7 +367,8 @@ impl App {
                             self.unit_row(&fields, row, s(92), items, shown, measure);
                         }
                         AreaKind::Tablet => {
-                            self.tablet_view = self.editor
+                            self.tablet_view = self
+                                .editor
                                 .detected_tablet_bounds(&self.connected_tablets)
                                 .and_then(|bounds| AreaView::new(canvas_rect, bounds));
                             let fields = with_units(&self.c.tablet, &TABLET_FIELDS);
@@ -402,9 +431,15 @@ impl App {
         items.push(Item::Group(list_box));
         shown.push((self.c.filter_list, draw::inset(list_box, 1, s(4))));
         let width = (list_width - s(6)) / 2;
-        for (index, hwnd) in [self.c.add_dotnet, self.c.add_native, self.c.remove_filter, self.c.filter_defaults]
-            .into_iter().filter(|hwnd| self.tab != Tab::Tools || *hwnd != self.c.add_native)
-            .enumerate()
+        for (index, hwnd) in [
+            self.c.add_dotnet,
+            self.c.add_native,
+            self.c.remove_filter,
+            self.c.filter_defaults,
+        ]
+        .into_iter()
+        .filter(|hwnd| self.tab != Tab::Tools || *hwnd != self.c.add_native)
+        .enumerate()
         {
             let left = content.left + (index % 2) as i32 * (width + s(6));
             let top = buttons_top + (index / 2) as i32 * s(36);
@@ -420,9 +455,17 @@ impl App {
         items.push(Item::Group(panel));
         let inner = draw::inset(panel, s(16), s(14));
         let Some(target) = self.selected_target() else {
-            items.push(Item::Label(inner, if self.tab == Tab::Tools {
-                "No tools configured. Add a .NET tool or install one with Plugin Manager."
-            } else { "No filters configured." }.into(), Tone::Muted, DT_LEFT | DT_WORDBREAK));
+            items.push(Item::Label(
+                inner,
+                if self.tab == Tab::Tools {
+                    "No tools configured. Add a .NET tool or install one with Plugin Manager."
+                } else {
+                    "No filters configured."
+                }
+                .into(),
+                Tone::Muted,
+                DT_LEFT | DT_WORDBREAK,
+            ));
             return;
         };
         let mut y = inner.top;
@@ -504,7 +547,9 @@ impl App {
                 draw::TEXT_LEFT,
             ));
         }
-        if pages > 1 { y += s(36); }
+        if pages > 1 {
+            y += s(36);
+        }
         let visible_count = self
             .properties
             .len()
@@ -707,12 +752,19 @@ impl App {
         }
 
         let policy_top = content.top + height + gap;
-        let body = self.group("Pen Output", rect(content.left, policy_top, content.right, policy_top + s(70)), items);
+        let body = self.group(
+            "Pen Output",
+            rect(content.left, policy_top, content.right, policy_top + s(70)),
+            items,
+        );
         let inner = draw::inset(body, s(12), s(8));
         let width = (inner.right - inner.left) / self.c.pen_policy.len() as i32;
         for (index, hwnd) in self.c.pen_policy.iter().enumerate() {
             let left = inner.left + index as i32 * width;
-            shown.push((*hwnd, rect(left, inner.top, left + width, inner.top + s(28))));
+            shown.push((
+                *hwnd,
+                rect(left, inner.top, left + width, inner.top + s(28)),
+            ));
         }
         let top = policy_top + s(70) + gap;
         self.layout_pen_buttons(

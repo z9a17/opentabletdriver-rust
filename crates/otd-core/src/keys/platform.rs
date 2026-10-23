@@ -1,6 +1,6 @@
 //! Exact numeric tables from OpenTabletDriver Desktop/Native 736003ed.
 //! Original-name semantics are separate from native physical USB positions.
-pub(super) const MACOS:&[(&str,u16)]=&[
+pub(super) const MACOS: &[(&str, u16)] = &[
     ("None", 0x00),
     ("A", 0x00),
     ("B", 0x0b),
@@ -112,7 +112,7 @@ pub(super) const MACOS:&[(&str,u16)]=&[
     ("VolumeDown", 0x49),
     ("VolumeUp", 0x48),
 ];
-pub(super) const LINUX:&[(&str,u16)]=&[
+pub(super) const LINUX: &[(&str, u16)] = &[
     ("None", 0x00),
     ("A", 0x1e),
     ("B", 0x30),

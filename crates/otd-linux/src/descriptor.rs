@@ -140,8 +140,16 @@ mod tests {
         assert_eq!(lengths(&[0x77, 255, 255, 255, 255, 0x95, 2, 0x81, 2]), None);
         // Each field fits, but their sum does not. This used to panic in debug
         // builds and wrap into a misleading short report length in release.
-        assert_eq!(lengths(&[0x77, 255, 255, 255, 255, 0x95, 1, 0x81, 2, 0x81, 2]), None);
+        assert_eq!(
+            lengths(&[0x77, 255, 255, 255, 255, 0x95, 1, 0x81, 2, 0x81, 2]),
+            None
+        );
         // The largest representable field can still be normalized safely.
-        assert_eq!(lengths(&[0x77, 255, 255, 255, 255, 0x95, 1, 0x81, 2]).unwrap().input, 536_870_913);
+        assert_eq!(
+            lengths(&[0x77, 255, 255, 255, 255, 0x95, 1, 0x81, 2])
+                .unwrap()
+                .input,
+            536_870_913
+        );
     }
 }

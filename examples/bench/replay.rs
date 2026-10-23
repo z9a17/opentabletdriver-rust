@@ -145,7 +145,14 @@ impl Replay<'_> {
             let (signaled, sequence, done) = (signaled.clone(), sequence.clone(), done.clone());
             let canceled = canceled.clone();
             std::thread::spawn(move || {
-                device(device_event, reports, interval, &signaled, &sequence, &canceled);
+                device(
+                    device_event,
+                    reports,
+                    interval,
+                    &signaled,
+                    &sequence,
+                    &canceled,
+                );
                 done.store(true, Ordering::Release);
             })
         };
@@ -185,26 +192,27 @@ impl Replay<'_> {
                 let begin = clock::start();
                 let mut sent = 0;
                 if let Ok(Some(pen)) = protocol::parse(report) {
-                    pipeline.process_with_raw(
-                        pen,
-                        report,
-                        Instant::now(),
-                        self.mapper,
-                        filters,
-                        |packet| {
-                            let before = clock::start();
-                            let result = match self.send {
-                                Some(send) => send(packet),
-                                None => {
-                                    black_box(packet);
-                                    Ok(())
-                                }
-                            };
-                            sent += clock::stop() - before;
-                            result
-                        },
-                    )
-                    .map_err(|error| format!("Paced pipeline failed: {error}"))?;
+                    pipeline
+                        .process_with_raw(
+                            pen,
+                            report,
+                            Instant::now(),
+                            self.mapper,
+                            filters,
+                            |packet| {
+                                let before = clock::start();
+                                let result = match self.send {
+                                    Some(send) => send(packet),
+                                    None => {
+                                        black_box(packet);
+                                        Ok(())
+                                    }
+                                };
+                                sent += clock::stop() - before;
+                                result
+                            },
+                        )
+                        .map_err(|error| format!("Paced pipeline failed: {error}"))?;
                     if let Some(name) = filters.take_failure() {
                         return Err(format!("Paced replay disabled failing plugin: {name}"));
                     }

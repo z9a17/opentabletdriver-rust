@@ -75,8 +75,12 @@ fn parse(
             }
             0x42 => {
                 require_length(raw, 3)?;
-                if raw[2] == 3 { wheel(raw)? } else { auxiliary(raw)? }
-            },
+                if raw[2] == 3 {
+                    wheel(raw)?
+                } else {
+                    auxiliary(raw)?
+                }
+            }
             _ => ReportValues::default(),
         },
         Parser::Base | Parser::A15 => {

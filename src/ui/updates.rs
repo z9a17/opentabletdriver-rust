@@ -4,9 +4,9 @@
 use super::commands::message_box;
 use super::*;
 use crate::update::{self, Release};
+use std::os::windows::process::CommandExt;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::os::windows::process::CommandExt;
 
 pub(super) const WM_UPDATE: u32 = WM_APP + 21;
 pub(super) const WM_OFFER_UPDATE: u32 = WM_APP + 23;
@@ -36,7 +36,9 @@ pub(super) struct UpdateState {
 enum UpdatePhase {
     #[default]
     Idle,
-    Checking { manual: bool },
+    Checking {
+        manual: bool,
+    },
     Prompting,
     Installing,
 }
@@ -68,7 +70,9 @@ impl UpdateState {
     }
 
     fn begin_install(&mut self) -> bool {
-        if self.busy() { return false; }
+        if self.busy() {
+            return false;
+        }
         self.phase = UpdatePhase::Installing;
         self.deferred = None;
         true
@@ -76,7 +80,9 @@ impl UpdateState {
 
     fn finish_install(&mut self, installed: Option<String>) {
         self.phase = UpdatePhase::Idle;
-        if let Some(tag) = installed { self.installed = Some(tag); }
+        if let Some(tag) = installed {
+            self.installed = Some(tag);
+        }
     }
 
     pub(super) fn blocking(&self) -> bool {
@@ -111,8 +117,11 @@ pub(super) fn check(window: HWND, manual: bool) {
             return false;
         }
         app.updates.begin_check(manual)
-    }).unwrap_or(false);
-    if !start { return; }
+    })
+    .unwrap_or(false);
+    if !start {
+        return;
+    }
     let target = window as isize;
     if let Err(error) = std::thread::Builder::new()
         .name("update-check".into())
@@ -124,9 +133,16 @@ pub(super) fn check(window: HWND, manual: bool) {
                     result: update::latest(),
                 },
             )
-        }) {
-            send(target, Event::Checked { manual, result: Err(format!("Could not start the update check: {error}")) });
-        }
+        })
+    {
+        send(
+            target,
+            Event::Checked {
+                manual,
+                result: Err(format!("Could not start the update check: {error}")),
+            },
+        );
+    }
 }
 
 fn install(window: HWND, release: Release) {
@@ -135,8 +151,11 @@ fn install(window: HWND, release: Release) {
             return false;
         }
         app.updates.begin_install()
-    }).unwrap_or(false);
-    if !start { return; }
+    })
+    .unwrap_or(false);
+    if !start {
+        return;
+    }
     let target = window as isize;
     if let Err(error) = std::thread::Builder::new()
         .name("update-install".into())
@@ -154,9 +173,13 @@ fn install(window: HWND, release: Release) {
                 })
                 .map(|()| release.tag.clone());
             send(target, Event::Installed(result));
-        }) {
-            send(target, Event::Installed(Err(format!("Could not start update installation: {error}"))));
-        }
+        })
+    {
+        send(
+            target,
+            Event::Installed(Err(format!("Could not start update installation: {error}"))),
+        );
+    }
 }
 
 /// Whether the user is looking at the panel or one of its windows.
@@ -172,7 +195,9 @@ fn in_front(window: HWND) -> bool {
 
 /// Offers a deferred update; called when the panel becomes active.
 pub(super) fn offer_deferred(window: HWND) {
-    if !in_front(window) { return; }
+    if !in_front(window) {
+        return;
+    }
     let installed = with_app(|app| {
         if app.closing || app.update_restart_pending || app.updates.busy() {
             return None;
@@ -182,7 +207,8 @@ pub(super) fn offer_deferred(window: HWND) {
         } else {
             None
         }
-    }).flatten();
+    })
+    .flatten();
     if let Some(tag) = installed {
         offer_restart(window, &tag);
         return;
@@ -192,7 +218,8 @@ pub(super) fn offer_deferred(window: HWND) {
             return None;
         }
         app.updates.deferred.take()
-    }).flatten();
+    })
+    .flatten();
     if let Some(release) = release {
         checked(window, false, Ok(release));
     }
@@ -202,16 +229,26 @@ pub(super) fn offer_deferred(window: HWND) {
 /// completion posts WM_CLOSE again, leaving daemon cleanup to its usual path.
 pub(super) fn defer_close() -> bool {
     with_app(|app| {
-        if !app.updates.defer_close() { return false; }
-        app.show_status("Waiting for the update before closing…".into(), Level::Info, false);
+        if !app.updates.defer_close() {
+            return false;
+        }
+        app.show_status(
+            "Waiting for the update before closing…".into(),
+            Level::Info,
+            false,
+        );
         true
-    }).unwrap_or(false)
+    })
+    .unwrap_or(false)
 }
 
 fn resume_close(window: HWND) -> bool {
-    let requested = with_app(|app| std::mem::take(&mut app.updates.close_requested)).unwrap_or(false);
+    let requested =
+        with_app(|app| std::mem::take(&mut app.updates.close_requested)).unwrap_or(false);
     if requested {
-        unsafe { PostMessageW(window, WM_CLOSE, 0, 0); }
+        unsafe {
+            PostMessageW(window, WM_CLOSE, 0, 0);
+        }
     }
     requested
 }
@@ -226,16 +263,23 @@ pub(super) fn on_message(window: HWND) {
         match event {
             Event::Checked { manual, result } => {
                 let manual = with_app(|app| app.updates.finish_check(manual)).unwrap_or(manual);
-                if !RESTARTING.load(Ordering::Acquire) { checked(window, manual, result); }
+                if !RESTARTING.load(Ordering::Acquire) {
+                    checked(window, manual, result);
+                }
             }
             Event::Progress(line) => log(Level::Info, line),
             Event::Installed(Ok(tag)) => {
                 with_app(|app| {
                     app.updates.finish_install(Some(tag.clone()));
                 });
-                if resume_close(window) { continue; }
+                if resume_close(window) {
+                    continue;
+                }
                 if RESTARTING.load(Ordering::Acquire) {
-                    log(Level::Info, format!("{tag} is installed; a restart is already in progress."));
+                    log(
+                        Level::Info,
+                        format!("{tag} is installed; a restart is already in progress."),
+                    );
                     continue;
                 }
                 if in_front(window) {
@@ -252,13 +296,17 @@ pub(super) fn on_message(window: HWND) {
             Event::Installed(Err(error)) => {
                 with_app(|app| app.updates.finish_install(None));
                 log(Level::Error, format!("Update failed: {error}"));
-                if resume_close(window) { continue; }
-                if !RESTARTING.load(Ordering::Acquire) { prompt(
-                    window,
-                    &format!("The update did not complete.\n\n{error}"),
-                    "Update failed",
-                    MB_OK | MB_ICONERROR,
-                ); }
+                if resume_close(window) {
+                    continue;
+                }
+                if !RESTARTING.load(Ordering::Acquire) {
+                    prompt(
+                        window,
+                        &format!("The update did not complete.\n\n{error}"),
+                        "Update failed",
+                        MB_OK | MB_ICONERROR,
+                    );
+                }
             }
             Event::Restarted(result) => {
                 match result {
@@ -266,7 +314,9 @@ pub(super) fn on_message(window: HWND) {
                         // Unsaved edits were resolved before shutdown and the
                         // editor stayed frozen; do not prompt again after spawn.
                         with_app(|app| app.update_close_approved = true);
-                        unsafe { PostMessageW(window, WM_CLOSE, 0, 0); }
+                        unsafe {
+                            PostMessageW(window, WM_CLOSE, 0, 0);
+                        }
                     }
                     Err(error) => {
                         RESTARTING.store(false, Ordering::Release);
@@ -284,8 +334,9 @@ fn log(level: Level, message: String) {
 }
 
 fn checked(window: HWND, manual: bool, result: Result<Release, String>) {
-    if with_app(|app| app.closing || app.update_restart_pending
-        || app.updates.busy()).unwrap_or(true) {
+    if with_app(|app| app.closing || app.update_restart_pending || app.updates.busy())
+        .unwrap_or(true)
+    {
         return;
     }
     let current = env!("CARGO_PKG_VERSION");
@@ -297,8 +348,13 @@ fn checked(window: HWND, manual: bool, result: Result<Release, String>) {
                     release.tag
                 );
                 // Announce each release once, not every time it is deferred.
-                let announce = with_app(|app| app.updates.deferred.as_ref()
-                    .is_none_or(|known| known.tag != release.tag)).unwrap_or(false);
+                let announce = with_app(|app| {
+                    app.updates
+                        .deferred
+                        .as_ref()
+                        .is_none_or(|known| known.tag != release.tag)
+                })
+                .unwrap_or(false);
                 if announce {
                     log(Level::Info, message.clone());
                     if with_app(|app| app.in_tray).unwrap_or(false) {
@@ -309,7 +365,9 @@ fn checked(window: HWND, manual: bool, result: Result<Release, String>) {
                 return;
             }
             with_app(|app| app.updates.deferred = None);
-            if with_app(|app| app.updates.installed.as_deref() == Some(release.tag.as_str())).unwrap_or(false) {
+            if with_app(|app| app.updates.installed.as_deref() == Some(release.tag.as_str()))
+                .unwrap_or(false)
+            {
                 offer_restart(window, &release.tag);
                 return;
             }
@@ -363,11 +421,15 @@ fn offer_restart(window: HWND, tag: &str) {
     with_app(|app| app.updates.restart_deferred = false);
     let answer = prompt(
         window,
-        &format!("{tag} is installed. Restart the driver and the panel now to use it?\n\nRestarting stops pen input for a moment."),
+        &format!(
+            "{tag} is installed. Restart the driver and the panel now to use it?\n\nRestarting stops pen input for a moment."
+        ),
         "Update installed",
         MB_YESNO | MB_ICONQUESTION,
     );
-    if answer == IDYES { restart(window); }
+    if answer == IDYES {
+        restart(window);
+    }
 }
 
 fn prompt(window: HWND, text: &str, caption: &str, flags: MESSAGEBOX_STYLE) -> MESSAGEBOX_RESULT {
@@ -380,10 +442,15 @@ fn prompt(window: HWND, text: &str, caption: &str, flags: MESSAGEBOX_STYLE) -> M
 /// Stops the running daemon, starts the new panel and closes this one. The
 /// new panel starts the new driver if it is set to.
 fn restart(window: HWND) {
-    if RESTARTING.swap(true, Ordering::AcqRel) { return; }
+    if RESTARTING.swap(true, Ordering::AcqRel) {
+        return;
+    }
     if with_app(|app| app.closing || app.control_busy).unwrap_or(true) {
         RESTARTING.store(false, Ordering::Release);
-        log(Level::Warning, "Wait for the current daemon request before restarting for the update.".into());
+        log(
+            Level::Warning,
+            "Wait for the current daemon request before restarting for the update.".into(),
+        );
         return;
     }
     if !confirm_discard(window) {
@@ -393,23 +460,39 @@ fn restart(window: HWND) {
     lock_for_restart(window, true);
     debugger::close();
     if debugger::is_open() {
-        log(Level::Info, "Finishing debugger recording before restarting...".into());
-        unsafe { SetTimer(window, 0xD07, 33, None); }
+        log(
+            Level::Info,
+            "Finishing debugger recording before restarting...".into(),
+        );
+        unsafe {
+            SetTimer(window, 0xD07, 33, None);
+        }
         return;
     }
     resume_restart(window);
 }
 
 pub(super) fn resume_restart(window: HWND) {
-    if !RESTARTING.load(Ordering::Acquire) { return; }
-    log(Level::Info, "Waiting for the driver to stop before restarting...".into());
+    if !RESTARTING.load(Ordering::Acquire) {
+        return;
+    }
+    log(
+        Level::Info,
+        "Waiting for the driver to stop before restarting...".into(),
+    );
     let target = window as isize;
-    if let Err(error) = std::thread::Builder::new().name("update-restart".into()).spawn(move || {
-        send(target, Event::Restarted(restart_worker()));
-    }) {
+    if let Err(error) = std::thread::Builder::new()
+        .name("update-restart".into())
+        .spawn(move || {
+            send(target, Event::Restarted(restart_worker()));
+        })
+    {
         RESTARTING.store(false, Ordering::Release);
         lock_for_restart(window, false);
-        log(Level::Error, format!("Could not start restart work: {error}"));
+        log(
+            Level::Error,
+            format!("Could not start restart work: {error}"),
+        );
     }
 }
 
@@ -418,34 +501,49 @@ fn lock_for_restart(window: HWND, pending: bool) {
         app.update_restart_pending = pending;
         app.update_close_approved = false;
     });
-    unsafe { EnableWindow(window, i32::from(!pending)); }
+    unsafe {
+        EnableWindow(window, i32::from(!pending));
+    }
     plugin_manager::set_restart_pending(pending);
     if !pending {
         // Complete queued discovery/import/diagnostic work after a failed
         // restart; the owner can still inspect and save the unchanged edits.
-        unsafe { PostMessageW(window, WM_BACKGROUND, 0, 0); }
+        unsafe {
+            PostMessageW(window, WM_BACKGROUND, 0, 0);
+        }
     }
 }
 
 fn restart_worker() -> Result<(), String> {
     use crate::control::{Command, Reply, Request};
     use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject, CREATE_NO_WINDOW};
+    use windows_sys::Win32::System::Threading::{
+        CREATE_NO_WINDOW, OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    };
     let status = crate::control::request(&Request::new(1, Command::Status), Duration::from_secs(5));
     match status {
         Ok(response) => {
             let Reply::Status { status } = response.reply else {
-                return Err("The daemon did not return its process identity; the panel was kept open.".into());
+                return Err(
+                    "The daemon did not return its process identity; the panel was kept open."
+                        .into(),
+                );
             };
-            let pid = status.instance.split_once('-').and_then(|(pid, _)| pid.parse::<u32>().ok())
+            let pid = status
+                .instance
+                .split_once('-')
+                .and_then(|(pid, _)| pid.parse::<u32>().ok())
                 .ok_or("The daemon process identity is invalid; the panel was kept open.")?;
-            let process = crate::hid::OwnedHandle::new(unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) })
-                .map_err(|error| format!("Cannot watch the old daemon stop: {error}"))?;
+            let process =
+                crate::hid::OwnedHandle::new(unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) })
+                    .map_err(|error| format!("Cannot watch the old daemon stop: {error}"))?;
             let response = crate::control::request(&Request::new(1, Command::Shutdown), Duration::from_secs(10))
                 .map_err(|error| format!("The daemon shutdown was not acknowledged: {error}. Retry only after checking its state."))?;
             match response.reply {
                 Reply::ShutdownAccepted => {}
-                Reply::Error { error } => return Err(format!("The daemon refused shutdown: {}", error.message)),
+                Reply::Error { error } => {
+                    return Err(format!("The daemon refused shutdown: {}", error.message));
+                }
                 _ => return Err("The daemon returned an unexpected shutdown response.".into()),
             }
             if unsafe { WaitForSingleObject(process.raw(), 10_000) } != WAIT_OBJECT_0 {
@@ -453,15 +551,22 @@ fn restart_worker() -> Result<(), String> {
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(format!("Cannot determine whether the old daemon is running: {error}")),
+        Err(error) => {
+            return Err(format!(
+                "Cannot determine whether the old daemon is running: {error}"
+            ));
+        }
     }
-    std::env::current_exe().and_then(|exe| {
-        std::process::Command::new(exe)
-            .arg("ui")
-            .env(WAIT_PID, std::process::id().to_string())
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-    }).map(|_| ()).map_err(|error| format!("Could not start the new panel: {error}"))
+    std::env::current_exe()
+        .and_then(|exe| {
+            std::process::Command::new(exe)
+                .arg("ui")
+                .env(WAIT_PID, std::process::id().to_string())
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()
+        })
+        .map(|_| ())
+        .map_err(|error| format!("Could not start the new panel: {error}"))
 }
 
 /// In a panel started by `restart`, waits up to ten seconds for the previous

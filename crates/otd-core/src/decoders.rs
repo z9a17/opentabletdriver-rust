@@ -354,7 +354,8 @@ pub trait PenDecoder {
     /// sources keep their compact decoder and report construction path.
     #[inline]
     fn decode_input<'a>(&mut self, raw: &'a [u8]) -> Result<Option<DecodedInput<'a>>, DecodeError> {
-        self.decode(raw).map(|decoded| decoded.map(DecodedInput::Pen))
+        self.decode(raw)
+            .map(|decoded| decoded.map(DecodedInput::Pen))
     }
     /// Clears parser state when a session ends.
     fn reset(&mut self) {}
@@ -395,7 +396,10 @@ impl TabletDecoder {
         Self::IntuosV2 {
             spec: TabletSpec::PTH_660,
             prefixed: false,
-            fallback: Box::new(ReportParser::IntuosV2 { prefixed: false, touch: IntuosV2TouchParser::default() }),
+            fallback: Box::new(ReportParser::IntuosV2 {
+                prefixed: false,
+                touch: IntuosV2TouchParser::default(),
+            }),
         }
     }
 
@@ -405,12 +409,18 @@ impl TabletDecoder {
             INTUOS_V2 => Some(Self::IntuosV2 {
                 spec,
                 prefixed: false,
-                fallback: Box::new(ReportParser::IntuosV2 { prefixed: false, touch: IntuosV2TouchParser::default() }),
+                fallback: Box::new(ReportParser::IntuosV2 {
+                    prefixed: false,
+                    touch: IntuosV2TouchParser::default(),
+                }),
             }),
             WACOM_DRIVER_INTUOS_V2 => Some(Self::IntuosV2 {
                 spec,
                 prefixed: true,
-                fallback: Box::new(ReportParser::IntuosV2 { prefixed: true, touch: IntuosV2TouchParser::default() }),
+                fallback: Box::new(ReportParser::IntuosV2 {
+                    prefixed: true,
+                    touch: IntuosV2TouchParser::default(),
+                }),
             }),
             _ => ReportParser::for_type(type_name).map(|parser| Self::Values {
                 parser: Box::new(parser),
@@ -468,12 +478,24 @@ impl PenDecoder for TabletDecoder {
     #[inline]
     fn decode_input<'a>(&mut self, raw: &'a [u8]) -> Result<Option<DecodedInput<'a>>, DecodeError> {
         match self {
-            Self::IntuosV2 { prefixed, fallback, spec } => {
-                let payload = if *prefixed { raw.get(1..).unwrap_or_default() } else { raw };
+            Self::IntuosV2 {
+                prefixed,
+                fallback,
+                spec,
+            } => {
+                let payload = if *prefixed {
+                    raw.get(1..).unwrap_or_default()
+                } else {
+                    raw
+                };
                 if matches!(payload.first(), Some(0x10 | 0x1e)) {
-                    return self.decode(raw).map(|decoded| decoded.map(DecodedInput::Pen));
+                    return self
+                        .decode(raw)
+                        .map(|decoded| decoded.map(DecodedInput::Pen));
                 }
-                let (kind, report) = fallback.parse(raw, SESSION_METADATA).map_err(DecodeError::Report)?;
+                let (kind, report) = fallback
+                    .parse(raw, SESSION_METADATA)
+                    .map_err(DecodeError::Report)?;
                 let pen = pen_from_values(kind, &report.values, report.raw, *spec);
                 Ok(Some(DecodedInput::Report { kind, report, pen }))
             }
@@ -556,7 +578,9 @@ pub fn pen_from_values(
         tip_switch: pressure > 0,
         eraser,
         tilt,
-        rotation: values.rotation.and_then(|rotation| i16::try_from(rotation).ok()),
+        rotation: values
+            .rotation
+            .and_then(|rotation| i16::try_from(rotation).ok()),
         hover_distance: values
             .hover_distance
             .map(|distance| distance.min(u32::from(u8::MAX)) as u8),
@@ -601,7 +625,10 @@ mod tests {
                 ..TabletSpec::PTH_660
             },
             prefixed: false,
-            fallback: Box::new(ReportParser::IntuosV2 { prefixed: false, touch: IntuosV2TouchParser::default() }),
+            fallback: Box::new(ReportParser::IntuosV2 {
+                prefixed: false,
+                touch: IntuosV2TouchParser::default(),
+            }),
         };
         assert_eq!(larger.decode(&report).unwrap().unwrap().pen.x, 0x10000);
     }
@@ -753,16 +780,29 @@ mod tests {
             // This corpus is pinned to 0.6.7. Current-catalog behavior changes
             // have literal cases in tests/current_tablet_catalog.rs; do not
             // compare their new contracts with old upstream expectations.
-            if matches!(name.strip_prefix("OpenTabletDriver.Configurations.Parsers."),
-                Some("Huion.GianoReportParser" | "UCLogic.UCLogicV1ReportParser"
-                    | "Veikk.VeikkTiltReportParser" | "XP_Pen.XP_PenGen2ReportParser"
-                    | "XP_Pen.XP_PenDeco03ReportParser" | "Wacom.Bamboo.BambooReportParser"
-                    | "Wacom.IntuosV1.IntuosV1ReportParser" | "Wacom.IntuosV1.WacomDriverIntuosV1ReportParser"
-                    | "Wacom.Intuos3.Intuos3ReportParser" | "Wacom.Intuos3.WacomDriverIntuos3ReportParser"
-                    | "Wacom.Intuos4.Intuos4ReportParser" | "Wacom.Intuos4.WacomDriverIntuos4ReportParser"
-                    | "Wacom.IntuosPro.IntuosProReportParser" | "Wacom.IntuosPro.WacomDriverIntuosProReportParser"
-                    | "Wacom.CintiqV1.CintiqV1ReportParser" | "Wacom.IntuosV3.IntuosV3ReportParser"))
-            { continue; }
+            if matches!(
+                name.strip_prefix("OpenTabletDriver.Configurations.Parsers."),
+                Some(
+                    "Huion.GianoReportParser"
+                        | "UCLogic.UCLogicV1ReportParser"
+                        | "Veikk.VeikkTiltReportParser"
+                        | "XP_Pen.XP_PenGen2ReportParser"
+                        | "XP_Pen.XP_PenDeco03ReportParser"
+                        | "Wacom.Bamboo.BambooReportParser"
+                        | "Wacom.IntuosV1.IntuosV1ReportParser"
+                        | "Wacom.IntuosV1.WacomDriverIntuosV1ReportParser"
+                        | "Wacom.Intuos3.Intuos3ReportParser"
+                        | "Wacom.Intuos3.WacomDriverIntuos3ReportParser"
+                        | "Wacom.Intuos4.Intuos4ReportParser"
+                        | "Wacom.Intuos4.WacomDriverIntuos4ReportParser"
+                        | "Wacom.IntuosPro.IntuosProReportParser"
+                        | "Wacom.IntuosPro.WacomDriverIntuosProReportParser"
+                        | "Wacom.CintiqV1.CintiqV1ReportParser"
+                        | "Wacom.IntuosV3.IntuosV3ReportParser"
+                )
+            ) {
+                continue;
+            }
             let intuos_v2 = name.contains(".IntuosV2.");
             let touch = intuos_v2 || name.ends_with("Wacom64bAuxReportParser");
             let mut parser = ReportParser::for_type(name).unwrap();

@@ -4,38 +4,38 @@ mod binding_presets;
 mod cli;
 mod companions;
 mod control;
+mod custom_devices;
 mod daemon;
-mod device_sessions;
 mod decode_cli;
 mod device_cli;
+mod device_sessions;
 mod diagnostics;
 mod display;
+mod dotnet;
 mod download;
 mod experimental;
-mod dotnet;
-mod managed_host;
-mod managed_services;
-mod managed_inputs;
-mod plugin_manager;
-mod shared_devices;
-mod custom_devices;
 mod global_tools;
-mod tool_host;
 mod hid;
+mod managed_host;
+mod managed_inputs;
+mod managed_services;
 mod original_driver;
 mod output;
 mod pen_output;
 mod plugin_catalog;
+mod plugin_manager;
 mod plugins;
 mod preset_cli;
 mod priority;
 mod profile_cli;
 mod runtime;
 mod session;
+mod shared_devices;
+mod tool_host;
 mod ui;
 mod update;
-mod winusb;
 mod upstream_rpc;
+mod winusb;
 
 // The portable core, at the crate paths the Windows modules use.
 use otd_core::tablets::{self, Database, Origin, ParserSupport, Role, Severity};
@@ -111,7 +111,10 @@ enum Command {
     },
     Control(control::Command),
     Configuration,
-    Save { path: Option<PathBuf>, replace: bool },
+    Save {
+        path: Option<PathBuf>,
+        replace: bool,
+    },
     Stdio,
     ActiveSection(&'static str),
     BindingActions,
@@ -171,14 +174,26 @@ fn parse_args() -> Result<Command, String> {
     };
     // Keep explicit TOML saves/loads and their native subcommands available;
     // every original command otherwise talks to the daemon collection.
-    let remainder:Vec<String>=args.collect();
-    let native_file=matches!(command.as_str(),"load"|"save") && remainder.first().is_some_and(|file|
-        std::path::Path::new(file).extension().is_some_and(|ext|ext.eq_ignore_ascii_case("toml")));
+    let remainder: Vec<String> = args.collect();
+    let native_file = matches!(command.as_str(), "load" | "save")
+        && remainder.first().is_some_and(|file| {
+            std::path::Path::new(file)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"))
+        });
     if cli::recognizes(&command) && !native_file {
-        return Ok(Command::OriginalConsole(std::iter::once(command).chain(remainder).collect()));
+        return Ok(Command::OriginalConsole(
+            std::iter::once(command).chain(remainder).collect(),
+        ));
     }
-    let command=match command.as_str(){"native-save"=>"save","native-save-defaults"=>"save-defaults","native-stdio"=>"stdio",other=>other}.to_owned();
-    let mut args=remainder.into_iter();
+    let command = match command.as_str() {
+        "native-save" => "save",
+        "native-save-defaults" => "save-defaults",
+        "native-stdio" => "stdio",
+        other => other,
+    }
+    .to_owned();
+    let mut args = remainder.into_iter();
     match command.as_str() {
         "devices" => Ok(Command::Devices(args.collect())),
         "diagnostics" => Ok(Command::Diagnostics(args.collect())),
@@ -188,37 +203,81 @@ fn parse_args() -> Result<Command, String> {
         "area" => Ok(Command::Area(args.collect())),
         "configuration" if args.next().is_none() => Ok(Command::Configuration),
         "stdio" if args.next().is_none() => Ok(Command::Stdio),
-        "getallsettings" | "getoutputmode" | "getareas" | "getsensitivity" | "getbindings" | "getmiscsettings" | "getfilters" | "gettools" => {
-            if args.next().is_some() { return Err("active getters take no tablet argument; they read the daemon's active profile".into()); }
+        "getallsettings" | "getoutputmode" | "getareas" | "getsensitivity" | "getbindings"
+        | "getmiscsettings" | "getfilters" | "gettools" => {
+            if args.next().is_some() {
+                return Err(
+                    "active getters take no tablet argument; they read the daemon's active profile"
+                        .into(),
+                );
+            }
             Ok(Command::ActiveSection(match command.as_str() {
-                "getoutputmode" => "output", "getareas" => "areas", "getsensitivity" => "sensitivity",
-                "getbindings" => "bindings", "getmiscsettings" => "misc", "getfilters" => "filters", "gettools" => "tools", _ => "all",
+                "getoutputmode" => "output",
+                "getareas" => "areas",
+                "getsensitivity" => "sensitivity",
+                "getbindings" => "bindings",
+                "getmiscsettings" => "misc",
+                "getfilters" => "filters",
+                "gettools" => "tools",
+                _ => "all",
             }))
         }
         "listbindings" if args.next().is_none() => Ok(Command::BindingActions),
         "listoutputmodes" if args.next().is_none() => Ok(Command::OutputModes),
         "load" => {
             let path = PathBuf::from(args.next().ok_or("load requires FILE.toml or FILE.json")?);
-            if args.next().is_some() { return Err("load takes one file".into()); }
+            if args.next().is_some() {
+                return Err("load takes one file".into());
+            }
             match path.extension().and_then(|extension| extension.to_str()) {
-                Some(extension) if extension.eq_ignore_ascii_case("toml") => Ok(Command::Restart { config: Some(path), otd_settings: None }),
-                Some(extension) if extension.eq_ignore_ascii_case("json") => Ok(Command::Restart { config: None, otd_settings: Some(path) }),
+                Some(extension) if extension.eq_ignore_ascii_case("toml") => Ok(Command::Restart {
+                    config: Some(path),
+                    otd_settings: None,
+                }),
+                Some(extension) if extension.eq_ignore_ascii_case("json") => Ok(Command::Restart {
+                    config: None,
+                    otd_settings: Some(path),
+                }),
                 _ => Err("load requires FILE.toml or FILE.json".into()),
             }
         }
-        "detect" if args.next().is_none() => Ok(Command::Restart { config: None, otd_settings: None }),
+        "detect" if args.next().is_none() => Ok(Command::Restart {
+            config: None,
+            otd_settings: None,
+        }),
         "log" if args.next().is_none() => Ok(Command::Control(control::Command::Status)),
         "hasupdate" if args.next().is_none() => Ok(Command::Update { check: true }),
         "installupdate" if args.next().is_none() => Ok(Command::Update { check: false }),
-        "save-defaults" if args.next().is_none() => Ok(Command::Save { path: None, replace: true }),
+        "save-defaults" if args.next().is_none() => Ok(Command::Save {
+            path: None,
+            replace: true,
+        }),
         "save" => {
-            let path = args.next().filter(|path| !path.starts_with("--")).ok_or("save requires FILE [--replace]")?;
-            let replace = match args.next().as_deref() { None => false, Some("--replace") => true, _ => return Err("save requires FILE [--replace]".into()) };
-            if args.next().is_some() { return Err("save requires FILE [--replace]".into()); }
-            Ok(Command::Save { path: Some(path.into()), replace })
+            let path = args
+                .next()
+                .filter(|path| !path.starts_with("--"))
+                .ok_or("save requires FILE [--replace]")?;
+            let replace = match args.next().as_deref() {
+                None => false,
+                Some("--replace") => true,
+                _ => return Err("save requires FILE [--replace]".into()),
+            };
+            if args.next().is_some() {
+                return Err("save requires FILE [--replace]".into());
+            }
+            Ok(Command::Save {
+                path: Some(path.into()),
+                replace,
+            })
         }
-        "preset" => Ok(Command::Presets(std::iter::once("apply".to_owned()).chain(args).collect())),
-        "savepreset" => Ok(Command::Presets(std::iter::once("save-active".to_owned()).chain(args).collect())),
+        "preset" => Ok(Command::Presets(
+            std::iter::once("apply".to_owned()).chain(args).collect(),
+        )),
+        "savepreset" => Ok(Command::Presets(
+            std::iter::once("save-active".to_owned())
+                .chain(args)
+                .collect(),
+        )),
         "listpresets" if args.next().is_none() => Ok(Command::Presets(vec!["list".into()])),
         "profiles" => Ok(Command::Profiles(args.collect())),
         "presets" => Ok(Command::Presets(args.collect())),
@@ -228,12 +287,20 @@ fn parse_args() -> Result<Command, String> {
                 match argument.as_str() {
                     "--background" if !background => background = true,
                     "--upstream-rpc" if !upstream => upstream = true,
-                    "--upstream-pipe" if pipe.is_none() => pipe = Some(args.next().ok_or("--upstream-pipe requires NAME")?),
+                    "--upstream-pipe" if pipe.is_none() => {
+                        pipe = Some(args.next().ok_or("--upstream-pipe requires NAME")?)
+                    }
                     _ => return Err(usage().into()),
                 }
             }
-            if pipe.is_some() && !upstream { return Err("--upstream-pipe requires --upstream-rpc".into()); }
-            Ok(Command::Daemon { background, upstream_pipe: upstream.then(|| pipe.unwrap_or_else(|| upstream_rpc::DEFAULT_PIPE.to_owned())) })
+            if pipe.is_some() && !upstream {
+                return Err("--upstream-pipe requires --upstream-rpc".into());
+            }
+            Ok(Command::Daemon {
+                background,
+                upstream_pipe: upstream
+                    .then(|| pipe.unwrap_or_else(|| upstream_rpc::DEFAULT_PIPE.to_owned())),
+            })
         }
         "status" | "stop" | "shutdown" | "debug" => {
             if args.next().is_some() {
@@ -528,7 +595,11 @@ fn tablets(list: bool, directory: Option<PathBuf>) -> Result<(), String> {
     let explicit = directory.is_some();
     let directory = directory.or_else(otd_core::config::configurations_directory);
     let directory = match directory {
-        Some(directory) if explicit || directory.try_exists().map_err(|error| error.to_string())? => Some(directory),
+        Some(directory)
+            if explicit || directory.try_exists().map_err(|error| error.to_string())? =>
+        {
+            Some(directory)
+        }
         _ => None,
     };
     let (database, files) = otd_core::config::tablets_from_directory(directory.as_deref())?;
@@ -688,16 +759,29 @@ fn show_settings(config: Option<PathBuf>, otd_settings: Option<PathBuf>) -> Resu
 }
 
 /// Runtime/import boundary; settings-only inspection keeps the pure loader.
-fn load_runtime_profile(config: Option<&PathBuf>, otd_settings: Option<&PathBuf>) -> Result<Profile, String> {
+fn load_runtime_profile(
+    config: Option<&PathBuf>,
+    otd_settings: Option<&PathBuf>,
+) -> Result<Profile, String> {
     if let Some(path) = otd_settings {
-        let text = std::fs::read_to_string(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-        return plugins::import_otd_with_installed(&text, path, &hid::connected_tablets_for_import()?);
+        let text = std::fs::read_to_string(path)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        return plugins::import_otd_with_installed(
+            &text,
+            path,
+            &hid::connected_tablets_for_import()?,
+        );
     }
     if config.is_none() && std::env::var_os("OTD_RUST_PORTABLE_DIR").is_none() {
         let native = otd_core::storage::data_directory()?.join("driver.toml");
-        if !native.try_exists().map_err(|error| format!("cannot inspect {}: {error}", native.display()))?
+        if !native
+            .try_exists()
+            .map_err(|error| format!("cannot inspect {}: {error}", native.display()))?
             && let Some(original) = config::otd_settings_path()
-            && original.try_exists().map_err(|error| format!("cannot inspect {}: {error}", original.display()))? {
+            && original
+                .try_exists()
+                .map_err(|error| format!("cannot inspect {}: {error}", original.display()))?
+        {
             return plugins::load_original_profile(&hid::connected_tablets_for_import()?);
         }
     }
@@ -710,7 +794,9 @@ fn run(
     capture_seconds: Option<u64>,
 ) -> Result<(), String> {
     let profile = load_runtime_profile(config.as_ref(), otd_settings.as_ref())?;
-    if capture_seconds.is_none(){return daemon::serve_profile(profile);}
+    if capture_seconds.is_none() {
+        return daemon::serve_profile(profile);
+    }
     let stop_event = Event::create(true).map_err(|e| format!("stop event failed: {e}"))?;
     let stop_handle = stop_event.raw() as usize;
     ctrlc::set_handler(move || {
@@ -729,7 +815,10 @@ fn drive(
     let configured_tablets = check_tablet_configurations()?;
     let database = configured_tablets.as_ref();
     plugins::prepare_parser_registry(&profile, database)?;
-    profile.validate_runtime_tablet_in_with_parser_support(database, &dotnet::installed_report_parser)?;
+    profile.validate_runtime_tablet_in_with_parser_support(
+        database,
+        &dotnet::installed_report_parser,
+    )?;
     profile.validate_filter_execution()?;
     let tablet_name = profile.tablet_name()?;
     if tablet_name.is_some() && profile.relative.is_none() {
@@ -757,7 +846,8 @@ fn drive(
         original_driver::ensure_stopped()
             .map_err(|error| format!("driver coexistence check failed: {error}"))?;
         if profile.plugins.iter().any(|plugin| plugin.enabled)
-            && !plugin_catalog::recover_installations()? {
+            && !plugin_catalog::recover_installations()?
+        {
             return Err("Plugins are being installed or recovered; retry starting the driver after that finishes.".into());
         }
         plugin_catalog::use_native_ports(&mut profile, |line| eprintln!("{line}"));
@@ -765,12 +855,16 @@ fn drive(
     let _tools = capture_seconds
         .is_none()
         .then(|| plugins::Tools::start(&profile.plugins, |line| eprintln!("{line}")));
-    if capture_seconds.is_none() { plugins::prepare_connected_parsers(database)?; }
+    if capture_seconds.is_none() {
+        plugins::prepare_connected_parsers(database)?;
+    }
     let mut companions = None::<companions::Companions>;
     let outcome = (|| {
         let mut waiting = false;
         loop {
-            if let Some(companions) = &mut companions { companions.check_finished()?; }
+            if let Some(companions) = &mut companions {
+                companions.check_finished()?;
+            }
             if unsafe { WaitForSingleObject(stop_event.raw(), 0) } == WAIT_OBJECT_0 {
                 break;
             }
@@ -806,7 +900,8 @@ fn drive(
             };
             waiting = false;
             if let Some(companions) = &mut companions {
-                companions.reserve_primary(&selected.pen.path_text(), &selected.configuration.name)?;
+                companions
+                    .reserve_primary(&selected.pen.path_text(), &selected.configuration.name)?;
             }
             // Bind real opened identifiers in session::run before constructing
             // third-party endpoints. Capture mode keeps this empty chain.
@@ -835,7 +930,9 @@ fn drive(
                 &mut plugins,
                 &status,
             );
-            if let Some(companions) = &mut companions { companions.check_finished()?; }
+            if let Some(companions) = &mut companions {
+                companions.check_finished()?;
+            }
             match result {
                 Ok(()) => {}
                 Err(error) => {
@@ -857,7 +954,10 @@ fn drive(
         }
         Ok(())
     })();
-    let outcome = companions.as_mut().map_or(Ok(()), companions::Companions::finish).and(outcome);
+    let outcome = companions
+        .as_mut()
+        .map_or(Ok(()), companions::Companions::finish)
+        .and(outcome);
     drop(_tools);
     outcome
 }
@@ -867,7 +967,9 @@ fn main() {
     // The daemon and the panel have no console; their panics and fatal
     // errors go to crash.log, where the panel reads the daemon's back.
     let role = match &command {
-        Ok(Command::Daemon { background: false, .. }) => "daemon",
+        Ok(Command::Daemon {
+            background: false, ..
+        }) => "daemon",
         Ok(Command::Ui) => "panel",
         Ok(Command::Run { .. } | Command::Capture { .. }) => "driver",
         _ => "cli",

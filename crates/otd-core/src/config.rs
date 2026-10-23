@@ -59,9 +59,14 @@ impl Default for ContactPolicy {
 
 impl ContactPolicy {
     pub fn validate_percentages(self) -> Result<(), String> {
-        for percent in [self.tip_threshold_percent, self.eraser_threshold_percent].into_iter().flatten() {
+        for percent in [self.tip_threshold_percent, self.eraser_threshold_percent]
+            .into_iter()
+            .flatten()
+        {
             if !percent.is_finite() || !(0.0..=100.0).contains(&percent) {
-                return Err("contact threshold percentages must be finite values from 0 to 100".into());
+                return Err(
+                    "contact threshold percentages must be finite values from 0 to 100".into(),
+                );
             }
         }
         Ok(())
@@ -75,9 +80,14 @@ impl ContactPolicy {
     /// to downstream unchanged bindings/output. Activation can be true even
     /// when truncating a small remapped pressure to zero.
     pub fn threshold_report(self, pressure: u32, max_pressure: u32, eraser: bool) -> (bool, u32) {
-        let (percent, raw) = if eraser { (self.eraser_threshold_percent, self.eraser_threshold_raw) }
-            else { (self.tip_threshold_percent, self.tip_threshold_raw) };
-        if max_pressure == 0 { return (false, 0); }
+        let (percent, raw) = if eraser {
+            (self.eraser_threshold_percent, self.eraser_threshold_raw)
+        } else {
+            (self.tip_threshold_percent, self.tip_threshold_raw)
+        };
+        if max_pressure == 0 {
+            return (false, 0);
+        }
         let threshold = percent.unwrap_or_else(|| match raw {
             Some(raw) if u32::from(raw) == max_pressure => 100.0,
             Some(raw) if raw != 0 => (f32::from(raw) - 0.5) * 100.0 / max_pressure as f32,
@@ -86,17 +96,28 @@ impl ContactPolicy {
         let value = pressure as f32 / max_pressure as f32 * 100.0;
         let maxed = threshold == 100.0 && value == 100.0;
         let active = value > threshold || maxed;
-        let remapped = if maxed { max_pressure } else if active {
+        let remapped = if maxed {
+            max_pressure
+        } else if active {
             (max_pressure as f32 * ((value - threshold) / (100.0 - threshold))) as u32
-        } else { 0 };
+        } else {
+            0
+        };
         (active, remapped)
     }
 
-    pub fn drag_pressure(self, pressure: Option<u32>, max_pressure: u32, eraser: bool) -> Option<u32> {
+    pub fn drag_pressure(
+        self,
+        pressure: Option<u32>,
+        max_pressure: u32,
+        eraser: bool,
+    ) -> Option<u32> {
         let pressure = pressure?;
         let (percent, raw) = if eraser {
             (self.eraser_threshold_percent, self.eraser_threshold_raw)
-        } else { (self.tip_threshold_percent, self.tip_threshold_raw) };
+        } else {
+            (self.tip_threshold_percent, self.tip_threshold_raw)
+        };
         let threshold = match percent {
             Some(percent) => percent,
             None => match raw {
@@ -105,12 +126,18 @@ impl ContactPolicy {
                 Some(raw) => (f32::from(raw) - 0.5) * 100.0 / max_pressure as f32,
             },
         };
-        if max_pressure == 0 || !threshold.is_finite() { return Some(0); }
+        if max_pressure == 0 || !threshold.is_finite() {
+            return Some(0);
+        }
         let value = pressure as f32 / max_pressure as f32 * 100.0;
         let maxed = threshold == 100.0 && value == 100.0;
-        Some(if maxed { max_pressure } else if value > threshold {
+        Some(if maxed {
+            max_pressure
+        } else if value > threshold {
             (max_pressure as f32 * ((value - threshold) / (100.0 - threshold))) as u32
-        } else { 0 })
+        } else {
+            0
+        })
     }
 }
 
@@ -160,7 +187,13 @@ mod native_binding_handoff_tests {
     use super::*;
     #[test]
     fn transient_inhibition_is_absent_from_settings_and_native_actions_round_trip() {
-        let mut profile = Profile { pen_buttons: vec!["toggle:keys:Control+Z".parse().unwrap(), "preset:Écriture.2".parse().unwrap()], ..Default::default() };
+        let mut profile = Profile {
+            pen_buttons: vec![
+                "toggle:keys:Control+Z".parse().unwrap(),
+                "preset:Écriture.2".parse().unwrap(),
+            ],
+            ..Default::default()
+        };
         let authored = profile.to_toml().unwrap();
         profile.binding_inhibit = Some(0);
         profile.use_settings_collection = true;
@@ -169,11 +202,28 @@ mod native_binding_handoff_tests {
         assert_eq!(reopened.binding_inhibit, None);
         assert!(!reopened.use_settings_collection);
         assert_eq!(reopened.pen_buttons, profile.pen_buttons);
-        for value in ["toggle:preset:Work", "toggle:scroll:up", "toggle:toggle:keys:Z", "toggle:none", "preset:../other", "preset:CON.txt"] {
+        for value in [
+            "toggle:preset:Work",
+            "toggle:scroll:up",
+            "toggle:toggle:keys:Z",
+            "toggle:none",
+            "preset:../other",
+            "preset:CON.txt",
+        ] {
             assert!(value.parse::<ButtonAction>().is_err(), "{value}");
         }
-        assert!(("toggle:".repeat(4096) + "keys:Z").parse::<ButtonAction>().is_err());
-        profile.pen_buttons = vec![ButtonAction::Toggle(Box::new(ButtonAction::Scroll(crate::output::buttons::ScrollAction { axis: crate::output::buttons::ScrollAxis::Vertical, amount: 120, interval_ms: 1 })))];
+        assert!(
+            ("toggle:".repeat(4096) + "keys:Z")
+                .parse::<ButtonAction>()
+                .is_err()
+        );
+        profile.pen_buttons = vec![ButtonAction::Toggle(Box::new(ButtonAction::Scroll(
+            crate::output::buttons::ScrollAction {
+                axis: crate::output::buttons::ScrollAxis::Vertical,
+                amount: 120,
+                interval_ms: 1,
+            },
+        )))];
         assert!(profile.to_toml().is_err());
     }
 }
@@ -362,7 +412,10 @@ impl RawWheel {
         };
         for (value, field) in [
             (self.clockwise_threshold, "clockwise_threshold"),
-            (self.counter_clockwise_threshold, "counter_clockwise_threshold"),
+            (
+                self.counter_clockwise_threshold,
+                "counter_clockwise_threshold",
+            ),
         ] {
             if value.is_some_and(|value| !value.is_finite() || value <= 0.0) {
                 return Err(format!(
@@ -380,9 +433,8 @@ impl RawWheel {
     }
 
     fn from_binding(binding: &WheelBinding) -> Self {
-        let text = |action: &ButtonAction| {
-            (*action != ButtonAction::None).then(|| action.to_string())
-        };
+        let text =
+            |action: &ButtonAction| (*action != ButtonAction::None).then(|| action.to_string());
         Self {
             clockwise: text(&binding.clockwise),
             counter_clockwise: text(&binding.counter_clockwise),
@@ -685,15 +737,29 @@ fn pen_button_action(store: Option<&OtdStore>, pen: bool) -> Result<ButtonAction
         },
         MULTI_KEY_BINDING => match property("Keys") {
             None => Ok(ButtonAction::None),
-            Some(names) => keys::parse_original_chord(names).map(|keys| if keys.is_empty() { ButtonAction::None } else { ButtonAction::Keys(keys) }),
+            Some(names) => keys::parse_original_chord(names).map(|keys| {
+                if keys.is_empty() {
+                    ButtonAction::None
+                } else {
+                    ButtonAction::Keys(keys)
+                }
+            }),
         },
         MOUSE_SCROLL_BINDING => {
             use crate::output::buttons::{ScrollAction, ScrollAxis};
             let integer = |name: &str, constructor: i32, default: i32| -> Result<i32, String> {
-                match store.settings.iter().rev().find(|setting| setting.property == name).map(|setting| &setting.value) {
+                match store
+                    .settings
+                    .iter()
+                    .rev()
+                    .find(|setting| setting.property == name)
+                    .map(|setting| &setting.value)
+                {
                     None => Ok(constructor),
                     Some(serde_json::Value::Null) => Ok(default),
-                    Some(value) => value.as_i64().and_then(|value| i32::try_from(value).ok())
+                    Some(value) => value
+                        .as_i64()
+                        .and_then(|value| i32::try_from(value).ok())
                         .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
                         .ok_or_else(|| format!("scroll {name} must be a signed 32-bit integer")),
                 }
@@ -701,20 +767,38 @@ fn pen_button_action(store: Option<&OtdStore>, pen: bool) -> Result<ButtonAction
             // Direction's upstream string setter uses Enum.TryParse, which
             // also accepts numeric strings. Scroll() treats any nonzero enum
             // value as horizontal; an invalid name keeps the initial vertical.
-            let direction = store.settings.iter().rev().find(|setting| setting.property == "Direction").map(|setting| &setting.value);
+            let direction = store
+                .settings
+                .iter()
+                .rev()
+                .find(|setting| setting.property == "Direction")
+                .map(|setting| &setting.value);
             let horizontal = match direction {
-                Some(serde_json::Value::String(value)) => value.trim() == "Horizontal"
-                    || value.trim().parse::<i32>().is_ok_and(|value| value != 0),
-                Some(value) => value.as_i64().and_then(|value| i32::try_from(value).ok()).is_some_and(|value| value != 0),
+                Some(serde_json::Value::String(value)) => {
+                    value.trim() == "Horizontal"
+                        || value.trim().parse::<i32>().is_ok_and(|value| value != 0)
+                }
+                Some(value) => value
+                    .as_i64()
+                    .and_then(|value| i32::try_from(value).ok())
+                    .is_some_and(|value| value != 0),
                 None => false,
             };
-            let axis = if horizontal { ScrollAxis::Horizontal } else { ScrollAxis::Vertical };
+            let axis = if horizontal {
+                ScrollAxis::Horizontal
+            } else {
+                ScrollAxis::Vertical
+            };
             let amount = integer("Amount", 120, 120)?;
             let amount = if amount == 0 { 1 } else { amount };
             // ApplySettings visits saved entries only: an absent Interval
             // keeps _interval=1; an explicit null selects the attribute's 300.
             let interval_ms = integer("Interval", 1, 300)?.max(1) as u32;
-            Ok(ButtonAction::Scroll(ScrollAction { axis, amount, interval_ms }))
+            Ok(ButtonAction::Scroll(ScrollAction {
+                axis,
+                amount,
+                interval_ms,
+            }))
         }
         path => Err(format!("unsupported pen button binding: {path}")),
     }
@@ -794,11 +878,7 @@ fn import_wheels(
         return Vec::new();
     };
     let mut wheels = Vec::new();
-    for (index, entry) in entries
-        .iter()
-        .take(crate::reports::MAX_WHEELS)
-        .enumerate()
-    {
+    for (index, entry) in entries.iter().take(crate::reports::MAX_WHEELS).enumerate() {
         let at = format!("Bindings.WheelBindings[{index}]");
         let threshold = |name: &str| {
             entry[name]
@@ -889,8 +969,13 @@ pub fn spec_for_tablet(name: &str) -> Result<TabletSpec, String> {
     spec_for_tablet_in(name, configured_tablets()?.as_ref())
 }
 
-pub fn spec_for_tablet_in(name: &str, database: &crate::tablets::Database) -> Result<TabletSpec, String> {
-    let configuration = database.entries().iter()
+pub fn spec_for_tablet_in(
+    name: &str,
+    database: &crate::tablets::Database,
+) -> Result<TabletSpec, String> {
+    let configuration = database
+        .entries()
+        .iter()
         .filter_map(crate::tablets::Entry::usable)
         .find(|configuration| configuration.name == name)
         .ok_or_else(|| format!("no usable tablet configuration is named {name}"))?;
@@ -907,7 +992,13 @@ pub fn runtime_tablet(name: &str) -> Result<TabletSpec, String> {
 pub fn configured_tablets() -> Result<std::borrow::Cow<'static, crate::tablets::Database>, String> {
     let directory = configurations_directory();
     let directory = match directory {
-        Some(directory) if directory.try_exists().map_err(|error| format!("cannot inspect tablet configurations: {error}"))? => Some(directory),
+        Some(directory)
+            if directory
+                .try_exists()
+                .map_err(|error| format!("cannot inspect tablet configurations: {error}"))? =>
+        {
+            Some(directory)
+        }
         _ => None,
     };
     tablets_from_directory(directory.as_deref()).map(|(database, _)| database)
@@ -918,7 +1009,9 @@ pub fn configurations_directory() -> Option<PathBuf> {
 }
 
 /// One configuration read per operation; an explicit directory must be readable.
-pub fn tablets_from_directory(directory: Option<&Path>) -> Result<(std::borrow::Cow<'static, crate::tablets::Database>, usize), String> {
+pub fn tablets_from_directory(
+    directory: Option<&Path>,
+) -> Result<(std::borrow::Cow<'static, crate::tablets::Database>, usize), String> {
     use crate::tablets::{Database, read_directory};
     let files = match directory {
         Some(directory) => read_directory(directory).map_err(|error| error.to_string())?,
@@ -932,13 +1025,20 @@ pub fn tablets_from_directory(directory: Option<&Path>) -> Result<(std::borrow::
     Ok((database, files.len()))
 }
 
-pub fn runtime_tablet_in(name: &str, database: &crate::tablets::Database) -> Result<TabletSpec, String> {
+pub fn runtime_tablet_in(
+    name: &str,
+    database: &crate::tablets::Database,
+) -> Result<TabletSpec, String> {
     runtime_tablet_in_with_parser_support(name, database, &|_| false)
 }
 
 /// Platform setup can accept an actually loaded managed parser without making
 /// the portable core initialize a runtime or change native parser selection.
-pub fn runtime_tablet_in_with_parser_support(name: &str, database: &crate::tablets::Database, additional: &impl Fn(&str) -> bool) -> Result<TabletSpec, String> {
+pub fn runtime_tablet_in_with_parser_support(
+    name: &str,
+    database: &crate::tablets::Database,
+    additional: &impl Fn(&str) -> bool,
+) -> Result<TabletSpec, String> {
     use crate::tablets::{Entry, ParserSupport, parser_support};
     let configuration = database
         .entries()
@@ -949,7 +1049,10 @@ pub fn runtime_tablet_in_with_parser_support(name: &str, database: &crate::table
     if let Some(identifier) = configuration
         .digitizer_identifiers
         .iter()
-        .find(|identifier| parser_support(identifier.parser()) == ParserSupport::Missing && !additional(identifier.parser()))
+        .find(|identifier| {
+            parser_support(identifier.parser()) == ParserSupport::Missing
+                && !additional(identifier.parser())
+        })
     {
         return Err(format!(
             "{name} uses {}, which this driver cannot decode",
@@ -1036,7 +1139,9 @@ impl Profile {
     /// Only this tablet's saved profile. Absence permits defaults; a rejected
     /// profile is an error and must never silently activate different output.
     pub fn load_otd_tablet(tablet: &str) -> Result<Option<Self>, String> {
-        let Some(path) = otd_settings_path() else { return Ok(None); };
+        let Some(path) = otd_settings_path() else {
+            return Ok(None);
+        };
         let text = match fs::read_to_string(&path) {
             Ok(text) => text,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -1046,9 +1151,19 @@ impl Profile {
             .map_err(|error| format!("invalid OpenTabletDriver settings: {error}"))?;
         let Some(index) = settings.profiles.iter().position(|profile| {
             profile.get("Tablet").and_then(serde_json::Value::as_str) == Some(tablet)
-        }) else { return Ok(None); };
+        }) else {
+            return Ok(None);
+        };
         let database = configured_tablets()?;
-        Self::from_otd_settings(&settings, &text, &path, index, ImportOptions::default(), &database).map(Some)
+        Self::from_otd_settings(
+            &settings,
+            &text,
+            &path,
+            index,
+            ImportOptions::default(),
+            &database,
+        )
+        .map(Some)
     }
 
     pub fn load_otd(path: &Path) -> Result<Self, String> {
@@ -1129,34 +1244,67 @@ impl Profile {
     /// preserving its original store/DLL for actual unchanged execution.
     /// The platform caller must verify output classification from inspection;
     /// the managed constructor verifies IOutputMode again before execution.
-    pub fn from_managed_output_store(text: &str, path: &Path, selected: usize, options: ImportOptions,
-        mut config: PluginConfig, relative: bool) -> Result<Self, String> {
+    pub fn from_managed_output_store(
+        text: &str,
+        path: &Path,
+        selected: usize,
+        options: ImportOptions,
+        mut config: PluginConfig,
+        relative: bool,
+    ) -> Result<Self, String> {
         config.validate()?;
-        if config.kind != crate::plugins::PluginKind::Dotnet { return Err("managed output requires kind = dotnet".into()); }
-        let mut document: serde_json::Value = serde_json::from_str(text).map_err(|error| error.to_string())?;
-        let store = document.get_mut("Profiles").and_then(serde_json::Value::as_array_mut).and_then(|profiles| profiles.get_mut(selected))
-            .and_then(|profile| profile.get_mut("OutputMode")).ok_or("selected source output store is missing")?;
-        if store["Path"].as_str() != Some(config.type_name.as_str()) { return Err("verified managed output type differs from the source store".into()); }
+        if config.kind != crate::plugins::PluginKind::Dotnet {
+            return Err("managed output requires kind = dotnet".into());
+        }
+        let mut document: serde_json::Value =
+            serde_json::from_str(text).map_err(|error| error.to_string())?;
+        let store = document
+            .get_mut("Profiles")
+            .and_then(serde_json::Value::as_array_mut)
+            .and_then(|profiles| profiles.get_mut(selected))
+            .and_then(|profile| profile.get_mut("OutputMode"))
+            .ok_or("selected source output store is missing")?;
+        if store["Path"].as_str() != Some(config.type_name.as_str()) {
+            return Err("verified managed output type differs from the source store".into());
+        }
         config.enabled = store["Enable"].as_bool().unwrap_or(false);
         config.settings_json = Self::managed_store_settings(store)?;
-        store["Path"] = serde_json::json!(if relative { "OpenTabletDriver.Desktop.Output.RelativeMode" } else { "OpenTabletDriver.Desktop.Output.AbsoluteMode" });
-        let mut profile = Self::from_otd_profile_text(&document.to_string(), path, selected, options)?;
+        store["Path"] = serde_json::json!(if relative {
+            "OpenTabletDriver.Desktop.Output.RelativeMode"
+        } else {
+            "OpenTabletDriver.Desktop.Output.AbsoluteMode"
+        });
+        let mut profile =
+            Self::from_otd_profile_text(&document.to_string(), path, selected, options)?;
         profile.managed_output = Some(config);
-        if let Some(imported) = &mut profile.imported_otd { imported.settings_json = text.to_owned(); }
-        profile.diagnostics.retain(|diagnostic| diagnostic.location != format!("Profiles[{selected}].OutputMode.Settings"));
+        if let Some(imported) = &mut profile.imported_otd {
+            imported.settings_json = text.to_owned();
+        }
+        profile.diagnostics.retain(|diagnostic| {
+            diagnostic.location != format!("Profiles[{selected}].OutputMode.Settings")
+        });
         Ok(profile)
     }
     /// Missing keys remain absent and explicit null remains null. Duplicate
     /// source entries retain last-value semantics while the archive keeps all.
     pub fn managed_store_settings(store: &serde_json::Value) -> Result<String, String> {
-        if store["Enable"].as_bool() == Some(true) && store.get("Settings").is_none_or(serde_json::Value::is_null) {
+        if store["Enable"].as_bool() == Some(true)
+            && store.get("Settings").is_none_or(serde_json::Value::is_null)
+        {
             return Err("Enabled original managed store has null/missing Settings; upstream ApplySettings cannot iterate it".into());
         }
         let mut result = serde_json::Map::new();
         if let Some(settings) = store.get("Settings").filter(|settings| !settings.is_null()) {
-            for setting in settings.as_array().ok_or("managed store Settings must be an array")? {
-                let property = setting["Property"].as_str().ok_or("managed setting Property must be a string")?;
-                if let Some(value) = setting.get("Value") { result.insert(property.to_owned(), value.clone()); }
+            for setting in settings
+                .as_array()
+                .ok_or("managed store Settings must be an array")?
+            {
+                let property = setting["Property"]
+                    .as_str()
+                    .ok_or("managed setting Property must be a string")?;
+                if let Some(value) = setting.get("Value") {
+                    result.insert(property.to_owned(), value.clone());
+                }
             }
         }
         Ok(serde_json::Value::Object(result).to_string())
@@ -1279,9 +1427,27 @@ impl Profile {
             "express key",
             &mut diagnostics,
         );
-        let mouse_buttons = import_buttons(&selected.bindings.mouse_buttons, false, "Bindings.MouseButtons", "mouse button", &mut diagnostics);
-        let mouse_scroll_up = import_store(&selected.bindings.mouse_scroll_up, false, "Bindings.MouseScrollUp".into(), "mouse scroll up", &mut diagnostics);
-        let mouse_scroll_down = import_store(&selected.bindings.mouse_scroll_down, false, "Bindings.MouseScrollDown".into(), "mouse scroll down", &mut diagnostics);
+        let mouse_buttons = import_buttons(
+            &selected.bindings.mouse_buttons,
+            false,
+            "Bindings.MouseButtons",
+            "mouse button",
+            &mut diagnostics,
+        );
+        let mouse_scroll_up = import_store(
+            &selected.bindings.mouse_scroll_up,
+            false,
+            "Bindings.MouseScrollUp".into(),
+            "mouse scroll up",
+            &mut diagnostics,
+        );
+        let mouse_scroll_down = import_store(
+            &selected.bindings.mouse_scroll_down,
+            false,
+            "Bindings.MouseScrollDown".into(),
+            "mouse scroll down",
+            &mut diagnostics,
+        );
         let wheels = import_wheels(&selected.bindings.wheel_bindings, pen, &mut diagnostics);
         let mut radial_follow = Vec::new();
         let mut auto_enabled_radial_follow = 0;
@@ -1355,7 +1521,9 @@ impl Profile {
                     disable_tilt: selected.bindings.disable_tilt,
                     disable_rotation: selected.bindings.disable_rotation,
                     tip_threshold_percent: Some(selected.bindings.tip_activation_threshold as f32),
-                    eraser_threshold_percent: Some(selected.bindings.eraser_activation_threshold as f32),
+                    eraser_threshold_percent: Some(
+                        selected.bindings.eraser_activation_threshold as f32,
+                    ),
                     tip_threshold_raw: Some(activation_raw_for(
                         selected.bindings.tip_activation_threshold,
                         tablet.max_pressure,
@@ -1467,8 +1635,13 @@ impl Profile {
         }
         if let Some(mode) = &mut raw.managed_output {
             mode.validate()?;
-            if mode.kind != crate::plugins::PluginKind::Dotnet { return Err("managed_output requires kind = dotnet".into()); }
-            if mode.path.is_relative() { mode.path = std::path::absolute(base.join(&mode.path)).map_err(|e| e.to_string())?; }
+            if mode.kind != crate::plugins::PluginKind::Dotnet {
+                return Err("managed_output requires kind = dotnet".into());
+            }
+            if mode.path.is_relative() {
+                mode.path =
+                    std::path::absolute(base.join(&mode.path)).map_err(|e| e.to_string())?;
+            }
         }
         let mut plugins = raw.plugins;
         if plugins.len() > 32 {
@@ -1500,8 +1673,16 @@ impl Profile {
         };
         let aux_buttons = parse_actions(&raw.aux_buttons, "aux_buttons")?;
         let mouse_buttons = parse_actions(&raw.mouse_buttons, "mouse_buttons")?;
-        let mouse_scroll_up = raw.mouse_scroll_up.as_deref().unwrap_or("none").parse::<ButtonAction>()?;
-        let mouse_scroll_down = raw.mouse_scroll_down.as_deref().unwrap_or("none").parse::<ButtonAction>()?;
+        let mouse_scroll_up = raw
+            .mouse_scroll_up
+            .as_deref()
+            .unwrap_or("none")
+            .parse::<ButtonAction>()?;
+        let mouse_scroll_down = raw
+            .mouse_scroll_down
+            .as_deref()
+            .unwrap_or("none")
+            .parse::<ButtonAction>()?;
         if raw.wheels.len() > crate::reports::MAX_WHEELS {
             return Err(format!(
                 "at most {} wheels are supported",
@@ -1549,10 +1730,14 @@ impl Profile {
             ..Self::default()
         };
         for config in profile.plugin_configs_mut() {
-            if config.path.is_relative() { config.path = std::path::absolute(base.join(&config.path)).map_err(|error| error.to_string())?; }
+            if config.path.is_relative() {
+                config.path = std::path::absolute(base.join(&config.path))
+                    .map_err(|error| error.to_string())?;
+            }
         }
         profile.contact.validate_percentages()?;
-        if profile.crop.width == 0 || profile.crop.height == 0
+        if profile.crop.width == 0
+            || profile.crop.height == 0
             || profile.crop.x.checked_add(profile.crop.width).is_none()
             || profile.crop.y.checked_add(profile.crop.height).is_none()
         {
@@ -1570,45 +1755,120 @@ impl Profile {
 
     /// Saved managed entries share path handling with filter/tool entries.
     pub fn plugin_configs(&self) -> impl Iterator<Item = &PluginConfig> {
-        self.plugins.iter().chain(self.managed_output.iter()).chain(self.managed_tip_binding.iter()).chain(self.managed_eraser_binding.iter()).chain(
-            self.pen_buttons.iter().chain(self.aux_buttons.iter()).chain(self.mouse_buttons.iter())
-                .chain([&self.mouse_scroll_up, &self.mouse_scroll_down])
-                .chain(self.wheels.iter().flat_map(|wheel| [&wheel.clockwise, &wheel.counter_clockwise].into_iter().chain(wheel.buttons.iter())))
-                .filter_map(|action| if let ButtonAction::Managed(config) = action { Some(config) } else { None }))
+        self.plugins
+            .iter()
+            .chain(self.managed_output.iter())
+            .chain(self.managed_tip_binding.iter())
+            .chain(self.managed_eraser_binding.iter())
+            .chain(
+                self.pen_buttons
+                    .iter()
+                    .chain(self.aux_buttons.iter())
+                    .chain(self.mouse_buttons.iter())
+                    .chain([&self.mouse_scroll_up, &self.mouse_scroll_down])
+                    .chain(self.wheels.iter().flat_map(|wheel| {
+                        [&wheel.clockwise, &wheel.counter_clockwise]
+                            .into_iter()
+                            .chain(wheel.buttons.iter())
+                    }))
+                    .filter_map(|action| {
+                        if let ButtonAction::Managed(config) = action {
+                            Some(config)
+                        } else {
+                            None
+                        }
+                    }),
+            )
     }
 
     /// Mutable counterpart for relocating all saved plugin paths.
     pub fn plugin_configs_mut(&mut self) -> impl Iterator<Item = &mut PluginConfig> {
-        self.plugins.iter_mut().chain(self.managed_output.iter_mut()).chain(self.managed_tip_binding.iter_mut()).chain(self.managed_eraser_binding.iter_mut()).chain(
-            self.pen_buttons.iter_mut().chain(self.aux_buttons.iter_mut()).chain(self.mouse_buttons.iter_mut())
-                .chain([&mut self.mouse_scroll_up, &mut self.mouse_scroll_down])
-                .chain(self.wheels.iter_mut().flat_map(|wheel| [&mut wheel.clockwise, &mut wheel.counter_clockwise].into_iter().chain(wheel.buttons.iter_mut())))
-                .filter_map(|action| if let ButtonAction::Managed(config) = action { Some(config) } else { None }))
+        self.plugins
+            .iter_mut()
+            .chain(self.managed_output.iter_mut())
+            .chain(self.managed_tip_binding.iter_mut())
+            .chain(self.managed_eraser_binding.iter_mut())
+            .chain(
+                self.pen_buttons
+                    .iter_mut()
+                    .chain(self.aux_buttons.iter_mut())
+                    .chain(self.mouse_buttons.iter_mut())
+                    .chain([&mut self.mouse_scroll_up, &mut self.mouse_scroll_down])
+                    .chain(self.wheels.iter_mut().flat_map(|wheel| {
+                        [&mut wheel.clockwise, &mut wheel.counter_clockwise]
+                            .into_iter()
+                            .chain(wheel.buttons.iter_mut())
+                    }))
+                    .filter_map(|action| {
+                        if let ButtonAction::Managed(config) = action {
+                            Some(config)
+                        } else {
+                            None
+                        }
+                    }),
+            )
     }
 
     pub fn validate_actions(&self) -> Result<(), String> {
-        for config in [&self.managed_tip_binding, &self.managed_eraser_binding].into_iter().flatten() { config.validate()?; if config.kind != crate::plugins::PluginKind::Dotnet { return Err("managed contact binding requires kind = dotnet".into()); } }
-        let actions = self.pen_buttons.iter().chain(&self.aux_buttons).chain(&self.mouse_buttons)
+        for config in [&self.managed_tip_binding, &self.managed_eraser_binding]
+            .into_iter()
+            .flatten()
+        {
+            config.validate()?;
+            if config.kind != crate::plugins::PluginKind::Dotnet {
+                return Err("managed contact binding requires kind = dotnet".into());
+            }
+        }
+        let actions = self
+            .pen_buttons
+            .iter()
+            .chain(&self.aux_buttons)
+            .chain(&self.mouse_buttons)
             .chain([&self.mouse_scroll_up, &self.mouse_scroll_down])
-            .chain(self.wheels.iter().flat_map(|wheel| [&wheel.clockwise, &wheel.counter_clockwise].into_iter().chain(&wheel.buttons)));
+            .chain(self.wheels.iter().flat_map(|wheel| {
+                [&wheel.clockwise, &wheel.counter_clockwise]
+                    .into_iter()
+                    .chain(&wheel.buttons)
+            }));
         for action in actions {
             if let ButtonAction::Toggle(inner) = action {
                 match inner.as_ref() {
-                    ButtonAction::Mouse(_) | ButtonAction::Barrel(1..=3) => {},
-                    ButtonAction::Keys(keys) if !keys.is_empty() && keys.iter().all(|key| crate::keys::name_of(*key).is_some()) => {},
-                    _ => return Err("toggle requires a valid native key/chord, mouse or barrel action".into()),
+                    ButtonAction::Mouse(_) | ButtonAction::Barrel(1..=3) => {}
+                    ButtonAction::Keys(keys)
+                        if !keys.is_empty()
+                            && keys.iter().all(|key| crate::keys::name_of(*key).is_some()) => {}
+                    _ => {
+                        return Err(
+                            "toggle requires a valid native key/chord, mouse or barrel action"
+                                .into(),
+                        );
+                    }
                 }
             }
-            if let ButtonAction::Preset(name) = action { crate::presets::PresetName::parse(name.as_str())?; }
-            if let ButtonAction::Scroll(scroll) = action { scroll.validate()?; }
-            if let ButtonAction::Managed(config) = action { config.validate()?; if config.kind != crate::plugins::PluginKind::Dotnet { return Err("managed binding requires kind = dotnet".into()); } }
+            if let ButtonAction::Preset(name) = action {
+                crate::presets::PresetName::parse(name.as_str())?;
+            }
+            if let ButtonAction::Scroll(scroll) = action {
+                scroll.validate()?;
+            }
+            if let ButtonAction::Managed(config) = action {
+                config.validate()?;
+                if config.kind != crate::plugins::PluginKind::Dotnet {
+                    return Err("managed binding requires kind = dotnet".into());
+                }
+            }
         }
         Ok(())
     }
 
     /// Reject double execution after migrating a native filter to a managed DLL.
     pub fn validate_filter_execution(&self) -> Result<(), String> {
-        if let Some(mode) = &self.managed_output { mode.validate()?; if mode.kind != crate::plugins::PluginKind::Dotnet { return Err("managed_output requires kind = dotnet".into()); } }
+        if let Some(mode) = &self.managed_output {
+            mode.validate()?;
+            if mode.kind != crate::plugins::PluginKind::Dotnet {
+                return Err("managed_output requires kind = dotnet".into());
+            }
+        }
         if !self.radial_follow.is_empty()
             && self.plugins.iter().any(|plugin| {
                 plugin.enabled
@@ -1635,12 +1895,9 @@ impl Profile {
             return 0;
         }
         let mut candidates = Vec::new();
-        for (index, plugin) in self
-            .plugins
-            .iter()
-            .enumerate()
-            .filter(|(_, plugin)| plugin.enabled && plugin.kind != crate::plugins::PluginKind::DotnetTool)
-        {
+        for (index, plugin) in self.plugins.iter().enumerate().filter(|(_, plugin)| {
+            plugin.enabled && plugin.kind != crate::plugins::PluginKind::DotnetTool
+        }) {
             let settings = (plugin.kind == crate::plugins::PluginKind::Dotnet
                 && plugin.type_name == FILTER_PATH)
                 .then(|| RadialFollowSettings::from_dotnet_json(&plugin.settings_json))
@@ -1649,9 +1906,12 @@ impl Profile {
             let Some(settings) = settings else { break };
             candidates.push((index, settings));
         }
-        let Some(&(last, _)) = candidates.last() else { return 0 };
+        let Some(&(last, _)) = candidates.last() else {
+            return 0;
+        };
         if self.plugins[last + 1..].iter().any(|plugin| {
-            plugin.enabled && plugin.kind == crate::plugins::PluginKind::Dotnet
+            plugin.enabled
+                && plugin.kind == crate::plugins::PluginKind::Dotnet
                 && plugin.type_name == FILTER_PATH
         }) {
             return 0;
@@ -1715,15 +1975,24 @@ impl Profile {
         self.validate_runtime_tablet_in(configured_tablets()?.as_ref())
     }
 
-    pub fn validate_runtime_tablet_in(&self, database: &crate::tablets::Database) -> Result<(), String> {
+    pub fn validate_runtime_tablet_in(
+        &self,
+        database: &crate::tablets::Database,
+    ) -> Result<(), String> {
         if let Some(name) = self.tablet_name()? {
             runtime_tablet_in(&name, database)?;
         }
         Ok(())
     }
 
-    pub fn validate_runtime_tablet_in_with_parser_support(&self, database: &crate::tablets::Database, additional: &impl Fn(&str) -> bool) -> Result<(), String> {
-        if let Some(name) = self.tablet_name()? { runtime_tablet_in_with_parser_support(&name, database, additional)?; }
+    pub fn validate_runtime_tablet_in_with_parser_support(
+        &self,
+        database: &crate::tablets::Database,
+        additional: &impl Fn(&str) -> bool,
+    ) -> Result<(), String> {
+        if let Some(name) = self.tablet_name()? {
+            runtime_tablet_in_with_parser_support(&name, database, additional)?;
+        }
         Ok(())
     }
 
@@ -1746,7 +2015,10 @@ impl Profile {
             }
         }
         if self.crop != Crop::default() && !self.crop.valid_for(spec) {
-            return Err(format!("crop must be nonzero and within 0..{} X, 0..{} Y", spec.max_x, spec.max_y));
+            return Err(format!(
+                "crop must be nonzero and within 0..{} X, 0..{} Y",
+                spec.max_x, spec.max_y
+            ));
         }
         if let Some(relative) = self.relative {
             relative.validate_for(spec)?;
@@ -1806,8 +2078,10 @@ impl Profile {
                 .then(|| self.pen_buttons.iter().map(ToString::to_string).collect()),
             aux_buttons: self.aux_buttons.iter().map(ToString::to_string).collect(),
             mouse_buttons: self.mouse_buttons.iter().map(ToString::to_string).collect(),
-            mouse_scroll_up: (self.mouse_scroll_up != ButtonAction::None).then(|| self.mouse_scroll_up.to_string()),
-            mouse_scroll_down: (self.mouse_scroll_down != ButtonAction::None).then(|| self.mouse_scroll_down.to_string()),
+            mouse_scroll_up: (self.mouse_scroll_up != ButtonAction::None)
+                .then(|| self.mouse_scroll_up.to_string()),
+            mouse_scroll_down: (self.mouse_scroll_down != ButtonAction::None)
+                .then(|| self.mouse_scroll_down.to_string()),
             wheels: {
                 // Trailing wheels that do nothing need no entry.
                 let used = self
@@ -1815,7 +2089,10 @@ impl Profile {
                     .iter()
                     .rposition(|wheel| *wheel != WheelBinding::default())
                     .map_or(0, |last| last + 1);
-                self.wheels[..used].iter().map(RawWheel::from_binding).collect()
+                self.wheels[..used]
+                    .iter()
+                    .map(RawWheel::from_binding)
+                    .collect()
             },
             output: self.output,
             managed_output: self.managed_output.clone(),
@@ -1986,18 +2263,50 @@ mod tests {
 
     #[test]
     fn managed_parser_validation_requires_an_explicit_verified_factory() {
-        let mut configuration = crate::tablets::Database::builtin().entries().iter()
-            .filter_map(crate::tablets::Entry::usable).find(|value| value.name == "Wacom PTH-660").unwrap().clone();
+        let mut configuration = crate::tablets::Database::builtin()
+            .entries()
+            .iter()
+            .filter_map(crate::tablets::Entry::usable)
+            .find(|value| value.name == "Wacom PTH-660")
+            .unwrap()
+            .clone();
         configuration.name = "Managed parser fixture".into();
         configuration.digitizer_identifiers[0].report_parser = Some("Fixture.CustomParser".into());
-        let database = crate::tablets::Database::with_overrides(&[("fixture.json".into(), serde_json::to_string(&configuration).unwrap())]);
+        let database = crate::tablets::Database::with_overrides(&[(
+            "fixture.json".into(),
+            serde_json::to_string(&configuration).unwrap(),
+        )]);
         assert!(runtime_tablet_in("Managed parser fixture", &database).is_err());
-        assert!(runtime_tablet_in_with_parser_support("Managed parser fixture", &database, &|name| name == "Fixture.OtherParser").is_err());
-        assert_eq!(runtime_tablet_in_with_parser_support("Managed parser fixture", &database, &|name| name == "Fixture.CustomParser").unwrap(),
-            TabletSpec::from_configuration(&configuration).unwrap());
+        assert!(
+            runtime_tablet_in_with_parser_support(
+                "Managed parser fixture",
+                &database,
+                &|name| name == "Fixture.OtherParser"
+            )
+            .is_err()
+        );
+        assert_eq!(
+            runtime_tablet_in_with_parser_support(
+                "Managed parser fixture",
+                &database,
+                &|name| name == "Fixture.CustomParser"
+            )
+            .unwrap(),
+            TabletSpec::from_configuration(&configuration).unwrap()
+        );
         let calls = std::cell::Cell::new(0);
-        assert!(runtime_tablet_in_with_parser_support("Wacom PTH-660", &database, &|_| { calls.set(calls.get() + 1); false }).is_ok());
-        assert_eq!(calls.get(), 0, "native validation must not call managed discovery");
+        assert!(
+            runtime_tablet_in_with_parser_support("Wacom PTH-660", &database, &|_| {
+                calls.set(calls.get() + 1);
+                false
+            })
+            .is_ok()
+        );
+        assert_eq!(
+            calls.get(),
+            0,
+            "native validation must not call managed discovery"
+        );
     }
 
     #[test]
@@ -2008,12 +2317,20 @@ mod tests {
         let enabled_null = serde_json::json!({ "Enable": true, "Settings": null });
         assert!(Profile::managed_store_settings(&enabled_null).is_err());
         assert!(Profile::managed_store_settings(&serde_json::json!({ "Enable": true })).is_err());
-        assert_eq!(Profile::managed_store_settings(&serde_json::json!({ "Enable": true, "Settings": [] })).unwrap(), "{}");
+        assert_eq!(
+            Profile::managed_store_settings(&serde_json::json!({ "Enable": true, "Settings": [] }))
+                .unwrap(),
+            "{}"
+        );
     }
 
     #[test]
     fn unchanged_contact_threshold_mutates_pressure_before_binding() {
-        let mut policy = ContactPolicy { tip_threshold_percent: Some(50.0), eraser_threshold_percent: Some(25.0), ..Default::default() };
+        let mut policy = ContactPolicy {
+            tip_threshold_percent: Some(50.0),
+            eraser_threshold_percent: Some(25.0),
+            ..Default::default()
+        };
         assert_eq!(policy.threshold_report(500, 1000, false), (false, 0));
         assert_eq!(policy.threshold_report(750, 1000, false), (true, 500));
         assert_eq!(policy.threshold_report(750, 1000, true), (true, 666));
@@ -2027,14 +2344,26 @@ mod tests {
 
     #[test]
     fn managed_output_and_binding_payloads_round_trip_without_loading_dlls() {
-        let config = PluginConfig { path: std::path::absolute("MissingOriginal.dll").unwrap(), kind: crate::plugins::PluginKind::Dotnet,
-            enabled: true, type_name: "Original.Output".into(), settings_json: r#"{"ExplicitNull":null,"UnknownFutureProperty":17}"#.into() };
-        let profile = Profile { managed_output: Some(config.clone()), pen_buttons: vec![ButtonAction::Managed(config.clone())], ..Default::default() };
+        let config = PluginConfig {
+            path: std::path::absolute("MissingOriginal.dll").unwrap(),
+            kind: crate::plugins::PluginKind::Dotnet,
+            enabled: true,
+            type_name: "Original.Output".into(),
+            settings_json: r#"{"ExplicitNull":null,"UnknownFutureProperty":17}"#.into(),
+        };
+        let profile = Profile {
+            managed_output: Some(config.clone()),
+            pen_buttons: vec![ButtonAction::Managed(config.clone())],
+            ..Default::default()
+        };
         let saved = profile.to_toml().unwrap();
         let restored = Profile::from_toml_text(&saved, Path::new("roundtrip.toml")).unwrap();
         assert_eq!(restored.managed_output, Some(config));
         assert_eq!(restored.pen_buttons, profile.pen_buttons);
-        assert!(restored.plugins.is_empty(), "output and binding stores must not become filter entries");
+        assert!(
+            restored.plugins.is_empty(),
+            "output and binding stores must not become filter entries"
+        );
     }
 
     #[test]
@@ -2323,7 +2652,11 @@ mod tests {
         assert!(profile.plugins[1].enabled);
 
         // Every leading eligible instance moves together, preserving order.
-        let mut profile = load(format!("{}{}{other}", radial("radial.dll", SAVED), radial("radial.dll", SAVED)));
+        let mut profile = load(format!(
+            "{}{}{other}",
+            radial("radial.dll", SAVED),
+            radial("radial.dll", SAVED)
+        ));
         assert_eq!(profile.use_native_ports(ported), 2);
         assert_eq!(profile.radial_follow.len(), 2);
         assert!(profile.plugins[2].enabled);
@@ -2335,7 +2668,10 @@ mod tests {
             radial("radial.dll", r#"{"InnerRadius":0.302}"#),
             radial("modified.dll", SAVED),
             format!("{other}{}", radial("radial.dll", SAVED)),
-            radial("radial.dll", r#"{"InnerRadius":true,"OuterRadius":1,"SmoothingCoefficient":1,"SmoothingLeakCoefficient":0,"SoftKneeScale":1}"#),
+            radial(
+                "radial.dll",
+                r#"{"InnerRadius":true,"OuterRadius":1,"SmoothingCoefficient":1,"SmoothingLeakCoefficient":0,"SoftKneeScale":1}"#,
+            ),
         ] {
             let mut profile = load(format!("{}{suffix}", radial("radial.dll", SAVED)));
             let before = profile.to_toml().unwrap();
@@ -2355,7 +2691,10 @@ mod tests {
         for text in [
             radial("modified.dll", SAVED),
             radial("radial.dll", r#"{"InnerRadius":0.302}"#),
-            radial("radial.dll", r#"{"InnerRadius":"0.3","OuterRadius":1,"SmoothingCoefficient":1,"SmoothingLeakCoefficient":0,"SoftKneeScale":1}"#),
+            radial(
+                "radial.dll",
+                r#"{"InnerRadius":"0.3","OuterRadius":1,"SmoothingCoefficient":1,"SmoothingLeakCoefficient":0,"SoftKneeScale":1}"#,
+            ),
         ] {
             let mut profile = load(text);
             assert_eq!(profile.use_native_ports(ported), 0);
@@ -2370,7 +2709,10 @@ mod tests {
         assert_eq!(profile.use_native_ports(ported), 1);
         let defaults = RadialFollowSettings::default();
         assert_eq!(profile.radial_follow[0].outer_radius, defaults.outer_radius);
-        assert_eq!(profile.radial_follow[0].smoothing_coefficient, defaults.smoothing_coefficient);
+        assert_eq!(
+            profile.radial_follow[0].smoothing_coefficient,
+            defaults.smoothing_coefficient
+        );
     }
 
     #[test]
@@ -2383,7 +2725,9 @@ mod tests {
             path.parent().unwrap().join("filters/test.dll")
         );
         assert!(Profile::from_toml_text("[[radial_follow]]\nouter_radius=nan\n", &path).is_err());
-        assert!(Profile::from_toml_text("[disabled_radial_follow]\nouter_radius=nan\n", &path).is_err());
+        assert!(
+            Profile::from_toml_text("[disabled_radial_follow]\nouter_radius=nan\n", &path).is_err()
+        );
         // Thresholds are checked against the tablet that runs the profile,
         // since other tablets report more pressure levels than the PTH-660.
         let above = Profile::from_toml_text("[bindings]\ntip_threshold_raw=8192\n", &path).unwrap();
@@ -2556,10 +2900,21 @@ mod tests {
             profile.pen_buttons[0],
             ButtonAction::Mouse(MouseButton::Forward)
         );
-        assert_eq!(profile.pen_buttons[1].to_string(), if cfg!(windows) { "keys:vk:Escape" } else { "keys:Escape" });
+        assert_eq!(
+            profile.pen_buttons[1].to_string(),
+            if cfg!(windows) {
+                "keys:vk:Escape"
+            } else {
+                "keys:Escape"
+            }
+        );
         assert_eq!(
             profile.pen_buttons[2].to_string(),
-            if cfg!(windows) { "keys:vk:Control+vk:Shift+vk:Z" } else { "keys:LeftControl+LeftShift+Z" }
+            if cfg!(windows) {
+                "keys:vk:Control+vk:Shift+vk:Z"
+            } else {
+                "keys:LeftControl+LeftShift+Z"
+            }
         );
         assert!(
             profile
@@ -2578,8 +2933,12 @@ mod tests {
         assert!(native.contains("keys:vk:Control+vk:A+vk:VolumeUp"));
         let reloaded = Profile::from_toml_text(&native, Path::new("logical.toml")).unwrap();
         assert_eq!(reloaded.pen_buttons, profile.pen_buttons);
-        let exported: serde_json::Value = serde_json::from_str(&reloaded.to_otd_json().unwrap()).unwrap();
-        assert_eq!(exported["Profiles"][0]["Bindings"]["PenButtons"][0], original);
+        let exported: serde_json::Value =
+            serde_json::from_str(&reloaded.to_otd_json().unwrap()).unwrap();
+        assert_eq!(
+            exported["Profiles"][0]["Bindings"]["PenButtons"][0],
+            original
+        );
     }
 
     #[test]
@@ -2700,8 +3059,26 @@ mod tests {
     fn edited_pen_buttons_export_and_reimport_all_supported_action_types() {
         let mut profile = import_pen_buttons_from(serde_json::json!([]));
         assert!(profile.to_otd_json().is_ok());
-        profile.pen_buttons = if cfg!(windows) { ["barrel:3", "mouse:forward", "keys:vk:Escape", "keys:vk:Control+vk:Shift+vk:Z", "none"] } else { ["barrel:3", "mouse:forward", "keys:Escape", "keys:Control+Shift+Z", "none"] }
-            .into_iter().map(|action| action.parse().unwrap()).collect();
+        profile.pen_buttons = if cfg!(windows) {
+            [
+                "barrel:3",
+                "mouse:forward",
+                "keys:vk:Escape",
+                "keys:vk:Control+vk:Shift+vk:Z",
+                "none",
+            ]
+        } else {
+            [
+                "barrel:3",
+                "mouse:forward",
+                "keys:Escape",
+                "keys:Control+Shift+Z",
+                "none",
+            ]
+        }
+        .into_iter()
+        .map(|action| action.parse().unwrap())
+        .collect();
         let exported = profile.to_otd_json().unwrap();
         let json: serde_json::Value = serde_json::from_str(&exported).unwrap();
         let buttons = &json["Profiles"][0]["Bindings"]["PenButtons"];
@@ -2712,7 +3089,14 @@ mod tests {
         assert_eq!(buttons[2]["Path"], KEY_BINDING);
         assert_eq!(buttons[2]["Settings"][0]["Value"], "Escape");
         assert_eq!(buttons[3]["Path"], MULTI_KEY_BINDING);
-        assert_eq!(buttons[3]["Settings"][0]["Value"], if cfg!(windows) { "Control+Shift+Z" } else { "LeftControl+LeftShift+Z" });
+        assert_eq!(
+            buttons[3]["Settings"][0]["Value"],
+            if cfg!(windows) {
+                "Control+Shift+Z"
+            } else {
+                "LeftControl+LeftShift+Z"
+            }
+        );
         assert!(buttons[4].is_null());
         let reimported = Profile::from_otd_text(&exported, Path::new("exported.json")).unwrap();
         assert_eq!(reimported.pen_buttons, profile.pen_buttons);
@@ -2724,32 +3108,53 @@ mod tests {
             "Settings": [{"Property": "Mystery", "Value": [null, {"x": 17}]}]});
         let mut original = store(MOUSE_BINDING, "Button", "Right".into());
         original["Metadata"] = serde_json::json!({"keep": true});
-        original["Settings"].as_array_mut().unwrap().push(serde_json::json!(
-            {"Property": "FutureProperty", "Value": "preserved"}
-        ));
-        let mut profile = import_pen_buttons_from(serde_json::json!([original.clone(), unknown.clone()]));
+        original["Settings"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!(
+                {"Property": "FutureProperty", "Value": "preserved"}
+            ));
+        let mut profile =
+            import_pen_buttons_from(serde_json::json!([original.clone(), unknown.clone()]));
         profile.pen_buttons[0] = "mouse:left".parse().unwrap();
-        let exported: serde_json::Value = serde_json::from_str(&profile.to_otd_json().unwrap()).unwrap();
+        let exported: serde_json::Value =
+            serde_json::from_str(&profile.to_otd_json().unwrap()).unwrap();
         original["Settings"][0]["Value"] = "Left".into();
-        assert_eq!(exported["Profiles"][0]["Bindings"]["PenButtons"], serde_json::json!([original, unknown]));
+        assert_eq!(
+            exported["Profiles"][0]["Bindings"]["PenButtons"],
+            serde_json::json!([original, unknown])
+        );
         profile.pen_buttons[1] = "mouse:middle".parse().unwrap();
         let error = profile.to_otd_json().unwrap_err();
-        assert!(error.contains("pen button 2") && error.contains("unsupported"), "{error}");
+        assert!(
+            error.contains("pen button 2") && error.contains("unsupported"),
+            "{error}"
+        );
     }
 
     #[test]
     fn edited_pen_buttons_change_known_types_and_disable_without_losing_properties() {
         let source = store(ADAPTIVE_BINDING, "Binding", "Button 1".into());
         let mut profile = import_pen_buttons_from(serde_json::json!([source.clone()]));
-        profile.pen_buttons[0] = if cfg!(windows) { "keys:vk:Escape" } else { "keys:Escape" }.parse().unwrap();
+        profile.pen_buttons[0] = if cfg!(windows) {
+            "keys:vk:Escape"
+        } else {
+            "keys:Escape"
+        }
+        .parse()
+        .unwrap();
         let exported = profile.to_otd_json().unwrap();
         let reimported = Profile::from_otd_text(&exported, Path::new("edited.json")).unwrap();
         assert_eq!(reimported.pen_buttons, profile.pen_buttons);
         profile.pen_buttons[0] = ButtonAction::None;
-        let exported: serde_json::Value = serde_json::from_str(&profile.to_otd_json().unwrap()).unwrap();
+        let exported: serde_json::Value =
+            serde_json::from_str(&profile.to_otd_json().unwrap()).unwrap();
         let mut disabled = source;
         disabled["Enable"] = false.into();
-        assert_eq!(exported["Profiles"][0]["Bindings"]["PenButtons"][0], disabled);
+        assert_eq!(
+            exported["Profiles"][0]["Bindings"]["PenButtons"][0],
+            disabled
+        );
     }
 
     #[test]
@@ -2775,12 +3180,19 @@ mod tests {
         source.push(unknown.clone());
         let mut profile = import_pen_buttons_from(serde_json::json!(source));
         profile.pen_buttons[0] = "mouse:right".parse().unwrap();
-        let exported: serde_json::Value = serde_json::from_str(&profile.to_otd_json().unwrap()).unwrap();
-        assert_eq!(exported["Profiles"][0]["Bindings"]["PenButtons"][64], unknown);
+        let exported: serde_json::Value =
+            serde_json::from_str(&profile.to_otd_json().unwrap()).unwrap();
+        assert_eq!(
+            exported["Profiles"][0]["Bindings"]["PenButtons"][64],
+            unknown
+        );
         profile.pen_buttons.pop();
         assert!(profile.to_otd_json().unwrap_err().contains("cannot shrink"));
-        for action in [ButtonAction::Barrel(4), ButtonAction::Keys(vec![]),
-            ButtonAction::Keys(vec![crate::actions::KeyboardUsage::new(0xffff).unwrap()])] {
+        for action in [
+            ButtonAction::Barrel(4),
+            ButtonAction::Keys(vec![]),
+            ButtonAction::Keys(vec![crate::actions::KeyboardUsage::new(0xffff).unwrap()]),
+        ] {
             let mut profile = import_pen_buttons_from(serde_json::json!([]));
             profile.pen_buttons.push(action);
             assert!(profile.to_otd_json().is_err());
@@ -2790,16 +3202,17 @@ mod tests {
     #[test]
     fn pen_buttons_export_preserves_mouse_action_when_output_changes_to_pen() {
         let mut json = relative_profile();
-        json["Profiles"][0]["OutputMode"]["Path"] = "OpenTabletDriver.Desktop.Output.AbsoluteMode".into();
+        json["Profiles"][0]["OutputMode"]["Path"] =
+            "OpenTabletDriver.Desktop.Output.AbsoluteMode".into();
         json["Profiles"][0]["AbsoluteModeSettings"] = serde_json::json!({
             "Display": {"Width": 2560, "Height": 1440, "X": 1280, "Y": 720, "Rotation": 0},
             "Tablet": {"Width": 85, "Height": 47.8125, "X": 110, "Y": 23.90625, "Rotation": 0},
             "EnableClipping": true, "EnableAreaLimiting": false
         });
-        json["Profiles"][0]["Bindings"]["PenButtons"] = serde_json::json!([
-            store(ADAPTIVE_BINDING, "Binding", "Tip".into())
-        ]);
-        let mut profile = Profile::from_otd_text(&json.to_string(), Path::new("mouse.json")).unwrap();
+        json["Profiles"][0]["Bindings"]["PenButtons"] =
+            serde_json::json!([store(ADAPTIVE_BINDING, "Binding", "Tip".into())]);
+        let mut profile =
+            Profile::from_otd_text(&json.to_string(), Path::new("mouse.json")).unwrap();
         profile.output = OutputKind::Pen;
         let exported = profile.to_otd_json().unwrap();
         let reimported = Profile::from_otd_text(&exported, Path::new("pen.json")).unwrap();
@@ -2913,10 +3326,28 @@ mod tests {
                 "StepSize": 5.0
             }]
         }));
-        let texts: Vec<String> = profile.aux_buttons.iter().map(ToString::to_string).collect();
-        assert_eq!(texts, if cfg!(windows) { ["keys:vk:E", "none", "keys:vk:Control+vk:Z", "none"] } else { ["keys:E", "none", "keys:LeftControl+Z", "none"] });
+        let texts: Vec<String> = profile
+            .aux_buttons
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            texts,
+            if cfg!(windows) {
+                ["keys:vk:E", "none", "keys:vk:Control+vk:Z", "none"]
+            } else {
+                ["keys:E", "none", "keys:LeftControl+Z", "none"]
+            }
+        );
         let wheel = &profile.wheels[0];
-        assert_eq!(wheel.clockwise.to_string(), if cfg!(windows) { "keys:vk:PageDown" } else { "keys:PageDown" });
+        assert_eq!(
+            wheel.clockwise.to_string(),
+            if cfg!(windows) {
+                "keys:vk:PageDown"
+            } else {
+                "keys:PageDown"
+            }
+        );
         assert_eq!(wheel.counter_clockwise, ButtonAction::None);
         assert_eq!(
             (wheel.clockwise_threshold, wheel.counter_clockwise_threshold),
@@ -2929,7 +3360,11 @@ mod tests {
             .filter(|d| d.location.contains("AuxButtons") || d.location.contains("WheelBindings"))
             .map(|d| d.location.as_str())
             .collect();
-        assert_eq!(unsupported, ["Bindings.AuxButtons[3]"], "only the preset binding");
+        assert_eq!(
+            unsupported,
+            ["Bindings.AuxButtons[3]"],
+            "only the preset binding"
+        );
     }
 
     #[test]
@@ -2959,7 +3394,10 @@ mod tests {
             ..Profile::default()
         };
         let text = empty.to_toml().unwrap();
-        assert!(!text.contains("wheels") && !text.contains("aux_buttons"), "{text}");
+        assert!(
+            !text.contains("wheels") && !text.contains("aux_buttons"),
+            "{text}"
+        );
         for bad in [
             "aux_buttons = [\"keys:UnknownKey\"]\n",
             "[[wheels]]\nclockwise = \"wheel:1\"\n",
@@ -2967,7 +3405,10 @@ mod tests {
             "[[wheels]]\ncounter_clockwise_threshold = -5.0\n",
             "[[wheels]]\nspeed = 2\n",
         ] {
-            assert!(Profile::from_toml_text(bad, Path::new("bad.toml")).is_err(), "{bad}");
+            assert!(
+                Profile::from_toml_text(bad, Path::new("bad.toml")).is_err(),
+                "{bad}"
+            );
         }
     }
 
@@ -2976,14 +3417,32 @@ mod tests {
         let mut profile = import_bindings(serde_json::json!({
             "AuxButtons": [store(KEY_BINDING, "Key", "E".into()), null],
         }));
-        profile.aux_buttons = if cfg!(windows) { ["keys:vk:E", "keys:vk:Control+vk:Z", "mouse:middle"] } else { ["keys:E", "keys:Control+Z", "mouse:middle"] }
-            .into_iter()
-            .map(|action| action.parse().unwrap())
-            .collect();
+        profile.aux_buttons = if cfg!(windows) {
+            ["keys:vk:E", "keys:vk:Control+vk:Z", "mouse:middle"]
+        } else {
+            ["keys:E", "keys:Control+Z", "mouse:middle"]
+        }
+        .into_iter()
+        .map(|action| action.parse().unwrap())
+        .collect();
         profile.wheels = vec![crate::output::buttons::WheelBinding {
-            clockwise: if cfg!(windows) { "keys:vk:PageDown" } else { "keys:PageDown" }.parse().unwrap(),
+            clockwise: if cfg!(windows) {
+                "keys:vk:PageDown"
+            } else {
+                "keys:PageDown"
+            }
+            .parse()
+            .unwrap(),
             counter_clockwise_threshold: Some(20.0),
-            buttons: vec![if cfg!(windows) { "keys:vk:Escape" } else { "keys:Escape" }.parse().unwrap()],
+            buttons: vec![
+                if cfg!(windows) {
+                    "keys:vk:Escape"
+                } else {
+                    "keys:Escape"
+                }
+                .parse()
+                .unwrap(),
+            ],
             ..Default::default()
         }];
         let exported = profile.to_otd_json().unwrap();
@@ -2992,7 +3451,10 @@ mod tests {
         assert_eq!(bindings["AuxButtons"][1]["Path"], MULTI_KEY_BINDING);
         assert_eq!(bindings["AuxButtons"][2]["Settings"][0]["Value"], "Middle");
         let wheel = &bindings["WheelBindings"][0];
-        assert_eq!(wheel["ClockwiseRotation"]["Settings"][0]["Value"], "PageDown");
+        assert_eq!(
+            wheel["ClockwiseRotation"]["Settings"][0]["Value"],
+            "PageDown"
+        );
         assert!(wheel["CounterClockwiseRotation"].is_null());
         // A new wheel gets upstream's one-step thresholds unless set.
         assert_eq!(wheel["ClockwiseActivationThreshold"], 5.0);
@@ -3012,14 +3474,28 @@ mod tests {
             "EnableDragBindings": true, "DisablePressure": true, "DisableTilt": true,
             "MouseButtons": [store(MOUSE_BINDING, "Button", "Right".into()), null],
         }));
-        assert!(profile.contact.drag_only && profile.contact.disable_pressure && profile.contact.disable_tilt);
+        assert!(
+            profile.contact.drag_only
+                && profile.contact.disable_pressure
+                && profile.contact.disable_tilt
+        );
         assert_eq!(profile.mouse_buttons[0].to_string(), "mouse:right");
         let text = profile.to_toml().unwrap();
         let reloaded = Profile::from_toml_text(&text, Path::new("copy.toml")).unwrap();
-        assert!(reloaded.contact.drag_only && reloaded.contact.disable_pressure && reloaded.contact.disable_tilt);
+        assert!(
+            reloaded.contact.drag_only
+                && reloaded.contact.disable_pressure
+                && reloaded.contact.disable_tilt
+        );
         assert_eq!(reloaded.mouse_buttons, profile.mouse_buttons);
         profile.contact.drag_only = false;
-        profile.mouse_buttons[1] = if cfg!(windows) { "keys:vk:Control+vk:Z" } else { "keys:Control+Z" }.parse().unwrap();
+        profile.mouse_buttons[1] = if cfg!(windows) {
+            "keys:vk:Control+vk:Z"
+        } else {
+            "keys:Control+Z"
+        }
+        .parse()
+        .unwrap();
         let exported = profile.to_otd_json().unwrap();
         let imported = Profile::from_otd_text(&exported, Path::new("export.json")).unwrap();
         assert!(!imported.contact.drag_only);
@@ -3029,7 +3505,10 @@ mod tests {
 
     #[test]
     fn drag_pressure_uses_upstream_threshold_remap_at_equality_zero_and_maximum() {
-        let mut policy = ContactPolicy { tip_threshold_percent: Some(50.0), ..Default::default() };
+        let mut policy = ContactPolicy {
+            tip_threshold_percent: Some(50.0),
+            ..Default::default()
+        };
         assert_eq!(policy.drag_pressure(Some(50), 100, false), Some(0));
         assert_eq!(policy.drag_pressure(Some(51), 100, false), Some(2));
         assert_eq!(policy.drag_pressure(Some(100), 100, false), Some(100));
@@ -3051,7 +3530,10 @@ mod tests {
         for field in ["tip_threshold_percent", "eraser_threshold_percent"] {
             for value in ["nan", "inf", "-inf", "-1", "101"] {
                 let text = format!("[bindings]\n{field} = {value}\n");
-                assert!(Profile::from_toml_text(&text, Path::new("unnamed.toml")).is_err(), "{text}");
+                assert!(
+                    Profile::from_toml_text(&text, Path::new("unnamed.toml")).is_err(),
+                    "{text}"
+                );
             }
         }
         let mut profile = Profile::default();
@@ -3067,31 +3549,60 @@ mod tests {
             {"Property":"Retain", "Value":"custom"}
         ] });
         let mut profile = import_bindings(serde_json::json!({"MouseScrollUp": binding}));
-        assert_eq!(profile.mouse_scroll_up.to_string(), "scroll:horizontal:-240:25");
+        assert_eq!(
+            profile.mouse_scroll_up.to_string(),
+            "scroll:horizontal:-240:25"
+        );
         assert_eq!(profile.mouse_scroll_down, ButtonAction::None);
-        assert!(!profile.diagnostics.iter().any(|diagnostic| diagnostic.location.contains("MouseScroll")));
+        assert!(
+            !profile
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.location.contains("MouseScroll"))
+        );
         let text = profile.to_toml().unwrap();
         let copy = Profile::from_toml_text(&text, Path::new("scroll.toml")).unwrap();
         assert_eq!(copy.mouse_scroll_up, profile.mouse_scroll_up);
         profile.mouse_scroll_up = "scroll:vertical:-120:300".parse().unwrap();
         profile.mouse_scroll_down = "scroll:down".parse().unwrap();
-        let exported: serde_json::Value = serde_json::from_str(&profile.to_otd_json().unwrap()).unwrap();
-        let settings = exported["Profiles"][0]["Bindings"]["MouseScrollUp"]["Settings"].as_array().unwrap();
-        assert!(settings.iter().any(|property| property["Property"] == "Retain" && property["Value"] == "custom"));
-        let imported = Profile::from_otd_text(&exported.to_string(), Path::new("export.json")).unwrap();
+        let exported: serde_json::Value =
+            serde_json::from_str(&profile.to_otd_json().unwrap()).unwrap();
+        let settings = exported["Profiles"][0]["Bindings"]["MouseScrollUp"]["Settings"]
+            .as_array()
+            .unwrap();
+        assert!(
+            settings
+                .iter()
+                .any(|property| property["Property"] == "Retain" && property["Value"] == "custom")
+        );
+        let imported =
+            Profile::from_otd_text(&exported.to_string(), Path::new("export.json")).unwrap();
         assert_eq!(imported.mouse_scroll_up, profile.mouse_scroll_up);
         assert_eq!(imported.mouse_scroll_down, profile.mouse_scroll_down);
         profile.mouse_scroll_up = "keys:Escape".parse().unwrap();
-        assert!(profile.to_otd_json().unwrap_err().contains("unknown source properties"));
+        assert!(
+            profile
+                .to_otd_json()
+                .unwrap_err()
+                .contains("unknown source properties")
+        );
     }
 
     #[test]
     fn invalid_native_scroll_settings_are_rejected_without_a_named_tablet() {
-        for text in ["mouse_scroll_up = \"scroll:vertical:0\"", "mouse_scroll_down = \"scroll:vertical:120:0\"", "pen_buttons = [\"scroll:horizontal:1:2147483648\"]"] {
+        for text in [
+            "mouse_scroll_up = \"scroll:vertical:0\"",
+            "mouse_scroll_down = \"scroll:vertical:120:0\"",
+            "pen_buttons = [\"scroll:horizontal:1:2147483648\"]",
+        ] {
             assert!(Profile::from_toml_text(text, Path::new("unnamed.toml")).is_err());
         }
         let mut profile = Profile::default();
-        profile.mouse_scroll_up = ButtonAction::Scroll(crate::output::buttons::ScrollAction { axis: crate::output::buttons::ScrollAxis::Vertical, amount: 0, interval_ms: 1 });
+        profile.mouse_scroll_up = ButtonAction::Scroll(crate::output::buttons::ScrollAction {
+            axis: crate::output::buttons::ScrollAxis::Vertical,
+            amount: 0,
+            interval_ms: 1,
+        });
         assert!(profile.to_toml().is_err());
         assert!(crate::pipeline::ReportPipeline::new(&profile).is_err());
     }
@@ -3101,12 +3612,35 @@ mod tests {
         let sparse = import_bindings(serde_json::json!({"MouseScrollDown": {
             "Path": MOUSE_SCROLL_BINDING, "Enable": true, "Settings": []
         }}));
-        assert_eq!(sparse.mouse_scroll_down.to_string(), "scroll:vertical:120:1");
+        assert_eq!(
+            sparse.mouse_scroll_down.to_string(),
+            "scroll:vertical:120:1"
+        );
         for (direction, amount, interval, expected) in [
-            (serde_json::Value::Null, serde_json::Value::Null, serde_json::Value::Null, "scroll:vertical:120:300"),
-            (serde_json::json!("invalid"), serde_json::json!(0), serde_json::json!(-20), "scroll:vertical:1:1"),
-            (serde_json::json!("1"), serde_json::json!("-120"), serde_json::json!("25"), "scroll:horizontal:-120:25"),
-            (serde_json::json!(2), serde_json::json!(120), serde_json::json!(1), "scroll:horizontal:120:1"),
+            (
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+                "scroll:vertical:120:300",
+            ),
+            (
+                serde_json::json!("invalid"),
+                serde_json::json!(0),
+                serde_json::json!(-20),
+                "scroll:vertical:1:1",
+            ),
+            (
+                serde_json::json!("1"),
+                serde_json::json!("-120"),
+                serde_json::json!("25"),
+                "scroll:horizontal:-120:25",
+            ),
+            (
+                serde_json::json!(2),
+                serde_json::json!(120),
+                serde_json::json!(1),
+                "scroll:horizontal:120:1",
+            ),
         ] {
             let profile = import_bindings(serde_json::json!({"MouseScrollDown": {
                 "Path": MOUSE_SCROLL_BINDING, "Enable": true, "Settings": [
@@ -3116,5 +3650,4 @@ mod tests {
             assert_eq!(profile.mouse_scroll_down.to_string(), expected);
         }
     }
-
 }

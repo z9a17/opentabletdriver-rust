@@ -12,17 +12,17 @@
 //! HttpClient. Certificates and host names are still verified, and plugins
 //! and update packages are still checked against their published SHA-256.
 
+#[cfg(unix)]
+use crate::process::CommandExt;
 use std::fs;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
-#[cfg(unix)]
-use crate::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
 #[cfg(windows)]
 use std::ptr::null;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{GetLastError, GlobalFree};
 #[cfg(windows)]
@@ -40,7 +40,7 @@ use windows_sys::core::PWSTR;
 
 const USER_AGENT: &str = concat!("opentabletdriver-rust/", env!("CARGO_PKG_VERSION"));
 #[cfg(unix)]
-const CREATE_NO_WINDOW:u32=0;
+const CREATE_NO_WINDOW: u32 = 0;
 const MAX_REDIRECTS: usize = 10;
 
 /// Holds a GitHub token in a temporary header file, so it never appears on a
@@ -57,13 +57,20 @@ impl TokenFile {
         #[cfg(windows)]
         fs::write(&path, format!("Authorization: Bearer {token}\n"))
             .map_err(|error| format!("cannot prepare the request: {error}"))?;
-        #[cfg(unix)] {
-            use std::os::unix::fs::OpenOptionsExt;
+        #[cfg(unix)]
+        {
             use std::io::Write;
-            let mut file=fs::OpenOptions::new().create_new(true).write(true).mode(0o600).custom_flags(libc::O_NOFOLLOW|libc::O_CLOEXEC)
-                .open(&path).map_err(|error|format!("cannot prepare private request header: {error}"))?;
-            let guard=Self(path);
-            file.write_all(format!("Authorization: Bearer {token}\n").as_bytes()).map_err(|error|error.to_string())?;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(&path)
+                .map_err(|error| format!("cannot prepare private request header: {error}"))?;
+            let guard = Self(path);
+            file.write_all(format!("Authorization: Bearer {token}\n").as_bytes())
+                .map_err(|error| error.to_string())?;
             return Ok(guard);
         }
         Ok(Self(path))
@@ -90,7 +97,9 @@ pub(crate) fn to_file(
 pub(crate) fn cancelled(cancel: Option<&AtomicBool>) -> Result<(), String> {
     if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
         Err("operation cancelled because the daemon is shutting down".into())
-    } else { Ok(()) }
+    } else {
+        Ok(())
+    }
 }
 
 /// Only background-owned helpers use this. Drain both pipes concurrently with
@@ -99,7 +108,10 @@ pub(crate) fn cancelled(cancel: Option<&AtomicBool>) -> Result<(), String> {
 pub(crate) fn run(command: &mut Command, cancel: Option<&AtomicBool>) -> Result<Output, String> {
     use std::io::Read;
     cancelled(cancel)?;
-    let mut child = command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|error| format!("cannot run download/install helper: {error}"))?;
     let stdout = child.stdout.take().ok_or("helper stdout unavailable")?;
     let stderr = child.stderr.take().ok_or("helper stderr unavailable")?;
@@ -109,20 +121,27 @@ pub(crate) fn run(command: &mut Command, cancel: Option<&AtomicBool>) -> Result<
         let mut exceeded = false;
         loop {
             let length = pipe.read(&mut buffer).map_err(|error| error.to_string())?;
-            if length == 0 { break; }
+            if length == 0 {
+                break;
+            }
             let keep = length.min((64 * 1024usize).saturating_sub(output.len()));
             output.extend_from_slice(&buffer[..keep]);
             exceeded |= keep != length;
         }
-        if exceeded { Err("helper output exceeds 64 KiB".into()) } else { Ok(output) }
+        if exceeded {
+            Err("helper output exceeds 64 KiB".into())
+        } else {
+            Ok(output)
+        }
     };
     std::thread::scope(|scope| {
         let stdout = scope.spawn(|| drain(Box::new(stdout)));
         let stderr = scope.spawn(|| drain(Box::new(stderr)));
         let deadline = Instant::now() + Duration::from_secs(180);
         let status = loop {
-            let failure = cancelled(cancel).err().or_else(||
-                (Instant::now() >= deadline).then(|| "download/install helper timed out".to_owned()));
+            let failure = cancelled(cancel).err().or_else(|| {
+                (Instant::now() >= deadline).then(|| "download/install helper timed out".to_owned())
+            });
             if let Some(error) = failure {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -132,19 +151,31 @@ pub(crate) fn run(command: &mut Command, cancel: Option<&AtomicBool>) -> Result<
                 Ok(Some(status)) => break Ok(status),
                 Ok(None) => std::thread::sleep(Duration::from_millis(50)),
                 Err(error) => {
-                    let _ = child.kill(); let _ = child.wait();
+                    let _ = child.kill();
+                    let _ = child.wait();
                     break Err(error.to_string());
                 }
             }
         };
-        let stdout = stdout.join().map_err(|_| "helper stdout reader panicked".to_owned());
-        let stderr = stderr.join().map_err(|_| "helper stderr reader panicked".to_owned());
-        Ok(Output { status: status?, stdout: stdout??, stderr: stderr?? })
+        let stdout = stdout
+            .join()
+            .map_err(|_| "helper stdout reader panicked".to_owned());
+        let stderr = stderr
+            .join()
+            .map_err(|_| "helper stderr reader panicked".to_owned());
+        Ok(Output {
+            status: status?,
+            stdout: stdout??,
+            stderr: stderr??,
+        })
     })
 }
 
 pub(crate) fn to_file_with_cancel(
-    url: &str, accept: Option<&str>, token: Option<&str>, output: &Path,
+    url: &str,
+    accept: Option<&str>,
+    token: Option<&str>,
+    output: &Path,
     cancel: Option<&AtomicBool>,
 ) -> Result<(), String> {
     cancelled(cancel)?;
@@ -224,7 +255,10 @@ pub(crate) fn to_memory(
 }
 
 pub(crate) fn to_memory_with_cancel(
-    url: &str, accept: Option<&str>, token: Option<&str>, cancel: Option<&AtomicBool>,
+    url: &str,
+    accept: Option<&str>,
+    token: Option<&str>,
+    cancel: Option<&AtomicBool>,
 ) -> Result<Vec<u8>, String> {
     cancelled(cancel)?;
     let work = crate::update::temporary_work("otd-download")?;
@@ -362,7 +396,9 @@ fn wide(text: &str) -> Vec<u16> {
 
 /// Entries of a Windows proxy or exception list.
 #[cfg(unix)]
-fn system_proxy(_url:&str,_host:&str)->Option<String>{None}
+fn system_proxy(_url: &str, _host: &str) -> Option<String> {
+    None
+}
 
 fn entries(list: &str) -> impl Iterator<Item = &str> {
     list.split([';', ' ', '\t', '\r', '\n'])
@@ -416,12 +452,21 @@ mod tests {
     fn pre_cancelled_operations_do_not_spawn_or_create_downloads() {
         let stop = AtomicBool::new(true);
         let missing = Path::new("does-not-exist/cancelled-download");
-        assert!(to_file_with_cancel("not an address", None, None, missing, Some(&stop))
-            .unwrap_err().contains("cancelled"));
-        assert!(run(&mut Command::new("nonexistent-otd-helper"), Some(&stop))
-            .unwrap_err().contains("cancelled"));
-        assert!(to_memory_with_cancel("not an address", None, None, Some(&stop))
-            .unwrap_err().contains("cancelled"));
+        assert!(
+            to_file_with_cancel("not an address", None, None, missing, Some(&stop))
+                .unwrap_err()
+                .contains("cancelled")
+        );
+        assert!(
+            run(&mut Command::new("nonexistent-otd-helper"), Some(&stop))
+                .unwrap_err()
+                .contains("cancelled")
+        );
+        assert!(
+            to_memory_with_cancel("not an address", None, None, Some(&stop))
+                .unwrap_err()
+                .contains("cancelled")
+        );
     }
 
     #[test]

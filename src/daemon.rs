@@ -16,16 +16,19 @@ pub fn serve() -> Result<(), String> {
     serve_with_rpc(None)
 }
 pub fn serve_with_rpc(upstream_pipe: Option<&str>) -> Result<(), String> {
-    serve_owned(upstream_pipe,None)
+    serve_owned(upstream_pipe, None)
 }
 /// Foreground input has the same services, preset actions and cleanup owner as
 /// the panel daemon. Capture stays a separate read-only path.
-pub fn serve_profile(profile:crate::config::Profile)->Result<(),String>{
+pub fn serve_profile(profile: crate::config::Profile) -> Result<(), String> {
     println!("Reading tablet input. Press Ctrl+C to stop.");
     profile.print_summary();
-    serve_owned(None,Some(profile))
+    serve_owned(None, Some(profile))
 }
-fn serve_owned(upstream_pipe:Option<&str>,profile:Option<crate::config::Profile>)->Result<(),String>{
+fn serve_owned(
+    upstream_pipe: Option<&str>,
+    profile: Option<crate::config::Profile>,
+) -> Result<(), String> {
     println!(
         "Daemon control endpoint: {}",
         control::endpoint_name().map_err(|error| error.to_string())?
@@ -37,16 +40,27 @@ fn serve_owned(upstream_pipe:Option<&str>,profile:Option<crate::config::Profile>
         control::wake();
     })
     .map_err(|error| error.to_string())?;
-    let console = if upstream_pipe == Some(crate::upstream_rpc::CONSOLE_PIPE) { None } else {
-        Some(crate::upstream_rpc::Listener::start(crate::upstream_rpc::CONSOLE_PIPE)
-            .map_err(|error| format!("console endpoint: {error}"))?)
+    let console = if upstream_pipe == Some(crate::upstream_rpc::CONSOLE_PIPE) {
+        None
+    } else {
+        Some(
+            crate::upstream_rpc::Listener::start(crate::upstream_rpc::CONSOLE_PIPE)
+                .map_err(|error| format!("console endpoint: {error}"))?,
+        )
     };
-    if let Some(name) = upstream_pipe { println!("Upstream compatibility endpoint: {name}"); }
+    if let Some(name) = upstream_pipe {
+        println!("Upstream compatibility endpoint: {name}");
+    }
     let mut daemon = Daemon::new(Arc::clone(&cancelled));
-    if let Some(pipe)=upstream_pipe{daemon.host_rpc(pipe);}
-    if let Some(profile)=profile {daemon.foreground(profile);}
-    let managed_services = crate::managed_host::Owner::start(daemon.identity(), Arc::clone(&cancelled))
-        .map_err(|error| format!("managed service owner: {error}"))?;
+    if let Some(pipe) = upstream_pipe {
+        daemon.host_rpc(pipe);
+    }
+    if let Some(profile) = profile {
+        daemon.foreground(profile);
+    }
+    let managed_services =
+        crate::managed_host::Owner::start(daemon.identity(), Arc::clone(&cancelled))
+            .map_err(|error| format!("managed service owner: {error}"))?;
     if let Err(error) = crate::experimental::apply_saved(false) {
         daemon.scheduling_warning(error);
     }
@@ -128,11 +142,16 @@ pub fn restart(replacement: Option<String>) -> Result<Reply, String> {
 /// the daemon's loader. Saving it relocates those paths to the destination.
 pub fn active_profile() -> Result<crate::config::Profile, String> {
     match configuration()? {
-        Reply::Configuration { profile_toml: Some(text), .. } => {
+        Reply::Configuration {
+            profile_toml: Some(text),
+            ..
+        } => {
             let path = otd_core::storage::data_directory()?.join("driver.toml");
             crate::config::Profile::from_toml_text(&text, &path)
         }
-        Reply::Configuration { profile_toml: None, .. } => Err("daemon has no active configuration".into()),
+        Reply::Configuration {
+            profile_toml: None, ..
+        } => Err("daemon has no active configuration".into()),
         _ => Err("unexpected daemon configuration response".into()),
     }
 }
@@ -142,21 +161,32 @@ pub fn active_profile() -> Result<crate::config::Profile, String> {
 pub fn save_configuration(path: &std::path::Path, replace: bool) -> Result<(), String> {
     use otd_core::storage::{self, SaveMode};
     let previous = storage::capture(path)?;
-    if previous.exists() && !replace { return Err("destination exists; use --replace to replace it with a backup".into()); }
+    if previous.exists() && !replace {
+        return Err("destination exists; use --replace to replace it with a backup".into());
+    }
     let profile = active_profile()?;
     let text = profile.to_toml_at(path)?;
-    let mode = if previous.exists() { SaveMode::Replace(&previous) } else { SaveMode::CreateNew };
+    let mode = if previous.exists() {
+        SaveMode::Replace(&previous)
+    } else {
+        SaveMode::CreateNew
+    };
     storage::save(path, text.as_bytes(), mode)?;
-    println!("{}", serde_json::json!({"output": path, "settings_revision": profile.settings_revision, "replaced": previous.exists()}));
+    println!(
+        "{}",
+        serde_json::json!({"output": path, "settings_revision": profile.settings_revision, "replaced": previous.exists()})
+    );
     Ok(())
 }
 
 /// Newline-delimited native protocol-v2 requests and responses. This is the
 /// Rust control contract, not StreamJsonRpc. No daemon is launched implicitly.
 pub fn stdio() -> Result<(), String> {
-    stdio_with(std::io::stdin().lock(), std::io::stdout().lock(), |request| {
-        control::request(request, REQUEST_TIMEOUT)
-    })
+    stdio_with(
+        std::io::stdin().lock(),
+        std::io::stdout().lock(),
+        |request| control::request(request, REQUEST_TIMEOUT),
+    )
 }
 
 fn stdio_with(
@@ -167,9 +197,14 @@ fn stdio_with(
     use std::io::{BufRead, Read};
     loop {
         let mut line = Vec::new();
-        let count = input.by_ref().take((control::MAX_FRAME_BYTES + 1) as u64)
-            .read_until(b'\n', &mut line).map_err(|error| error.to_string())?;
-        if count == 0 { return Ok(()); }
+        let count = input
+            .by_ref()
+            .take((control::MAX_FRAME_BYTES + 1) as u64)
+            .read_until(b'\n', &mut line)
+            .map_err(|error| error.to_string())?;
+        if count == 0 {
+            return Ok(());
+        }
         if line.len() > control::MAX_FRAME_BYTES {
             return Err("stdio request exceeds 256 KiB; input closed without dispatch".into());
         }
@@ -178,22 +213,45 @@ fn stdio_with(
                 // Validate here as well as in request(), before handing anything
                 // to the transport (including a fake endpoint in regression tests).
                 if let Err(error) = request.validate() {
-                    let response = control::Response { version: control::PROTOCOL_VERSION, id: request.id, reply: Reply::Error { error } };
-                    serde_json::to_writer(&mut output, &response).map_err(|error| error.to_string())?;
+                    let response = control::Response {
+                        version: control::PROTOCOL_VERSION,
+                        id: request.id,
+                        reply: Reply::Error { error },
+                    };
+                    serde_json::to_writer(&mut output, &response)
+                        .map_err(|error| error.to_string())?;
                     output.write_all(b"\n").map_err(|error| error.to_string())?;
                     output.flush().map_err(|error| error.to_string())?;
                     continue;
                 }
                 match call(&request) {
                     Ok(response) => response,
-                    Err(error) => control::Response { version: control::PROTOCOL_VERSION, id: request.id,
-                        reply: Reply::Error { error: control::ControlError::new(
-                            if error.kind() == std::io::ErrorKind::InvalidInput { control::ErrorCode::InvalidRequest } else { control::ErrorCode::Internal },
-                            error.to_string()) } },
+                    Err(error) => control::Response {
+                        version: control::PROTOCOL_VERSION,
+                        id: request.id,
+                        reply: Reply::Error {
+                            error: control::ControlError::new(
+                                if error.kind() == std::io::ErrorKind::InvalidInput {
+                                    control::ErrorCode::InvalidRequest
+                                } else {
+                                    control::ErrorCode::Internal
+                                },
+                                error.to_string(),
+                            ),
+                        },
+                    },
                 }
             }
-            Err(error) => control::Response { version: control::PROTOCOL_VERSION, id: 0,
-                reply: Reply::Error { error: control::ControlError::new(control::ErrorCode::InvalidRequest, error.to_string()) } },
+            Err(error) => control::Response {
+                version: control::PROTOCOL_VERSION,
+                id: 0,
+                reply: Reply::Error {
+                    error: control::ControlError::new(
+                        control::ErrorCode::InvalidRequest,
+                        error.to_string(),
+                    ),
+                },
+            },
         };
         serde_json::to_writer(&mut output, &response).map_err(|error| error.to_string())?;
         output.write_all(b"\n").map_err(|error| error.to_string())?;
@@ -215,7 +273,10 @@ pub fn background_with_rpc(upstream_pipe: Option<&str>) -> Result<(), String> {
 pub fn ensure_running(cancelled: &AtomicBool) -> Result<ControlStatus, String> {
     ensure_running_with_rpc(cancelled, None)
 }
-fn ensure_running_with_rpc(cancelled: &AtomicBool, upstream_pipe: Option<&str>) -> Result<ControlStatus, String> {
+fn ensure_running_with_rpc(
+    cancelled: &AtomicBool,
+    upstream_pipe: Option<&str>,
+) -> Result<ControlStatus, String> {
     let get_status = || -> Result<ControlStatus, std::io::Error> {
         let response = control::request(
             &Request::new(1, Command::Status),
@@ -246,14 +307,18 @@ fn ensure_running_with_rpc(cancelled: &AtomicBool, upstream_pipe: Option<&str>) 
     // Unit-test pipe names are isolated, but the sibling release executable
     // would own the real user's endpoint. Never launch it from a test binary.
     if cfg!(test) {
-        return Err("Unit tests cannot launch a live driver daemon; provide a fake test endpoint.".into());
+        return Err(
+            "Unit tests cannot launch a live driver daemon; provide a fake test endpoint.".into(),
+        );
     }
     let executable = std::env::current_exe()
         .map_err(|error| error.to_string())?
         .with_file_name("opentabletdriver-rust.exe");
     let mut launch = ProcessCommand::new(executable);
     launch.arg("daemon");
-    if let Some(name) = upstream_pipe { launch.args(["--upstream-rpc", "--upstream-pipe", name]); }
+    if let Some(name) = upstream_pipe {
+        launch.args(["--upstream-rpc", "--upstream-pipe", name]);
+    }
     let mut child = launch
         .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
         .stdin(Stdio::null())
@@ -271,16 +336,22 @@ fn ensure_running_with_rpc(cancelled: &AtomicBool, upstream_pipe: Option<&str>) 
         if let Ok(status) = get_status() {
             let owns_endpoints = upstream_pipe.is_none_or(|name| {
                 let owner = crate::control::pipe::CompatPipe::server_process_id;
-                let native = control::endpoint_name().ok().and_then(|endpoint| owner(&endpoint).ok());
+                let native = control::endpoint_name()
+                    .ok()
+                    .and_then(|endpoint| owner(&endpoint).ok());
                 let compat = owner(&format!(r"\\.\pipe\{name}")).ok();
                 native == Some(child.id()) && compat == Some(child.id())
             });
-            if owns_endpoints { return Ok(status); }
+            if owns_endpoints {
+                return Ok(status);
+            }
         }
         if let Some(code) = child.try_wait().map_err(|error| error.to_string())? {
             // Another client may have won the launch race and owns the endpoint.
             if upstream_pipe.is_none() {
-                if let Ok(status) = get_status() { return Ok(status); }
+                if let Ok(status) = get_status() {
+                    return Ok(status);
+                }
             }
             return Err(format!(
                 "daemon exited with {code}; run 'daemon' from a terminal to see its error"
@@ -312,11 +383,19 @@ mod stdio_tests {
         stdio_with(std::io::Cursor::new(bytes), &mut output, |request| {
             calls += 1;
             assert_eq!(request.id, 7);
-            Ok(control::Response { version: control::PROTOCOL_VERSION, id: request.id, reply: Reply::ShutdownAccepted })
-        }).unwrap();
+            Ok(control::Response {
+                version: control::PROTOCOL_VERSION,
+                id: request.id,
+                reply: Reply::ShutdownAccepted,
+            })
+        })
+        .unwrap();
         assert_eq!(calls, 1);
-        let replies = output.split(|byte| *byte == b'\n').filter(|line| !line.is_empty())
-            .map(|line| serde_json::from_slice::<control::Response>(line).unwrap()).collect::<Vec<_>>();
+        let replies = output
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice::<control::Response>(line).unwrap())
+            .collect::<Vec<_>>();
         assert_eq!(replies.len(), 3);
         assert!(matches!(replies[0].reply, Reply::Error { .. }));
         assert!(matches!(replies[1].reply, Reply::Error { .. }));
@@ -327,7 +406,12 @@ mod stdio_tests {
     fn stdio_bounds_unterminated_lines_without_dispatch() {
         let mut output = Vec::new();
         let oversized = vec![b' '; control::MAX_FRAME_BYTES + 1];
-        assert!(stdio_with(std::io::Cursor::new(oversized), &mut output, |_| panic!("must not dispatch")).is_err());
+        assert!(
+            stdio_with(std::io::Cursor::new(oversized), &mut output, |_| panic!(
+                "must not dispatch"
+            ))
+            .is_err()
+        );
         assert!(output.is_empty());
     }
 }

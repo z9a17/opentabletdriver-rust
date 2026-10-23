@@ -272,19 +272,31 @@ pub(crate) fn debug_report() -> crate::control::DebugReport {
 
 /// Hex encoding and metadata allocation belong to the daemon control thread;
 /// the report tap stores only fixed-size raw bytes and timestamps.
-pub(crate) fn debug_capture_status(instance: &str, capture: otd_core::debug::CaptureStatus)
-    -> crate::control::DebugCaptureStatus {
+pub(crate) fn debug_capture_status(
+    instance: &str,
+    capture: otd_core::debug::CaptureStatus,
+) -> crate::control::DebugCaptureStatus {
     use crate::control::{DebugCaptureStatus, DebugCaptureStopReason, DebugCaptureToken};
     use otd_core::debug::CaptureStopReason;
     DebugCaptureStatus {
-        token: DebugCaptureToken { instance: instance.to_owned(), epoch: capture.epoch, session: capture.session },
-        tablet: capture.device.name, parser: capture.device.parser,
+        token: DebugCaptureToken {
+            instance: instance.to_owned(),
+            epoch: capture.epoch,
+            session: capture.session,
+        },
+        tablet: capture.device.name,
+        parser: capture.device.parser,
         auxiliary_parser: capture.auxiliary_parser,
-        report_length: capture.report_length as u32, capacity_reports: capture.capacity_reports as u32,
-        started_unix_ms: capture.started_unix_ms, active: capture.active,
-        last_sequence: capture.last_sequence, resolved_reports: capture.resolved_reports,
-        pending_reports: capture.pending_reports, lost_tap: capture.lost_tap,
-        overflow: capture.overflow, oversized: capture.oversized,
+        report_length: capture.report_length as u32,
+        capacity_reports: capture.capacity_reports as u32,
+        started_unix_ms: capture.started_unix_ms,
+        active: capture.active,
+        last_sequence: capture.last_sequence,
+        resolved_reports: capture.resolved_reports,
+        pending_reports: capture.pending_reports,
+        lost_tap: capture.lost_tap,
+        overflow: capture.overflow,
+        oversized: capture.oversized,
         acknowledged_sequence: capture.acknowledged_sequence,
         stop_reason: capture.stop_reason.map(|reason| match reason {
             CaptureStopReason::Requested => DebugCaptureStopReason::Requested,
@@ -295,14 +307,22 @@ pub(crate) fn debug_capture_status(instance: &str, capture: otd_core::debug::Cap
         lease_remaining_ms: capture.lease_remaining_ms,
     }
 }
-pub(crate) fn debug_capture_batch(instance: &str, batch: otd_core::debug::CaptureBatch)
-    -> crate::control::DebugCaptureBatch {
+pub(crate) fn debug_capture_batch(
+    instance: &str,
+    batch: otd_core::debug::CaptureBatch,
+) -> crate::control::DebugCaptureBatch {
     crate::control::DebugCaptureBatch {
         capture: debug_capture_status(instance, batch.capture),
-        packets: batch.packets.into_iter().map(|packet| crate::control::DebugCapturePacket {
-            sequence: packet.sequence, elapsed_us: packet.elapsed_us, auxiliary: packet.auxiliary,
-            raw_hex: encode_hex(&packet.bytes),
-        }).collect(),
+        packets: batch
+            .packets
+            .into_iter()
+            .map(|packet| crate::control::DebugCapturePacket {
+                sequence: packet.sequence,
+                elapsed_us: packet.elapsed_us,
+                auxiliary: packet.auxiliary,
+                raw_hex: encode_hex(&packet.bytes),
+            })
+            .collect(),
         next_sequence: batch.next_sequence,
     }
 }
@@ -358,14 +378,18 @@ impl DebugCaptureDecoder {
         Self {
             parser_type: parser.map(str::to_owned),
             parser: parser.and_then(otd_core::decoders::ReportParser::for_type),
-            session, endpoint, generation: 0,
+            session,
+            endpoint,
+            generation: 0,
         }
     }
     /// Reconstruct rather than relying on a parser-specific partial reset.
     /// Values before this boundary remain unknown even if later packets can
     /// rebuild particular touch slots, pressure, rotation or tool state.
     pub(crate) fn reset(&mut self) {
-        self.parser = self.parser_type.as_deref()
+        self.parser = self
+            .parser_type
+            .as_deref()
             .and_then(otd_core::decoders::ReportParser::for_type);
         self.generation = self.generation.saturating_add(1);
     }
@@ -458,8 +482,13 @@ fn values_json(values: ReportValues) -> Value {
 mod tests {
     use super::*;
     fn capture_packet(parser: &str, sequence: u64, bytes: &[u8]) -> crate::control::DebugReport {
-        crate::control::DebugReport { tablet: Some("capture fixture".into()), parser: Some(parser.into()),
-            sequence, raw_hex: encode_hex(bytes), values: Value::Null }
+        crate::control::DebugReport {
+            tablet: Some("capture fixture".into()),
+            parser: Some(parser.into()),
+            sequence,
+            raw_hex: encode_hex(bytes),
+            values: Value::Null,
+        }
     }
     #[test]
     fn capture_decoder_preserves_touch_updates_and_resets_unknown_gap_state() {
@@ -473,8 +502,14 @@ mod tests {
         let mut report = capture_packet(parser, 1, &first);
         decoder.decode(&mut report, 123);
         assert_eq!(report.values["values"]["touches"][0]["position"][0], 10.0);
-        assert_eq!(report.values["decoder_state"]["scope"], "since_capture_start");
-        assert_eq!(report.values["decoder_state"]["pre_capture_state_known"], false);
+        assert_eq!(
+            report.values["decoder_state"]["scope"],
+            "since_capture_start"
+        );
+        assert_eq!(
+            report.values["decoder_state"]["pre_capture_state_known"],
+            false
+        );
         assert_eq!(report.values["decoder_state"]["source_session"], 41);
         assert_eq!(report.values["decoder_state"]["elapsed_us"], 123);
         let mut second = first;
@@ -486,7 +521,10 @@ mod tests {
         assert_eq!(report.values["values"]["touches"][1]["position"][0], 20.0);
         let mut independent = DebugCaptureDecoder::new(Some(parser), 41, 1);
         independent.decode(&mut report, 456);
-        assert!(report.values["values"]["touches"][0].is_null(), "another endpoint cannot inherit touches");
+        assert!(
+            report.values["values"]["touches"][0].is_null(),
+            "another endpoint cannot inherit touches"
+        );
         assert_eq!(report.values["decoder_state"]["endpoint"], 1);
         decoder.reset();
         let mut report = capture_packet(parser, 4, &second);
@@ -512,13 +550,25 @@ mod tests {
         let mut second = capture_packet(parser, 2, &rotation);
         decoder.decode(&mut second, 2_000);
         assert_eq!(second.values["values"]["pressure"], 1_031);
-        assert_eq!(second.values["values"]["pressure"], first.values["values"]["pressure"]);
-        assert_eq!(second.values["values"]["tilt"], first.values["values"]["tilt"]);
-        assert_eq!(second.values["values"]["pen_buttons"], first.values["values"]["pen_buttons"]);
+        assert_eq!(
+            second.values["values"]["pressure"],
+            first.values["values"]["pressure"]
+        );
+        assert_eq!(
+            second.values["values"]["tilt"],
+            first.values["values"]["tilt"]
+        );
+        assert_eq!(
+            second.values["values"]["pen_buttons"],
+            first.values["values"]["pen_buttons"]
+        );
         decoder.reset();
         decoder.decode(&mut second, 2_000);
         assert_eq!(second.values["values"]["pressure"], 0);
-        assert_eq!(second.values["decoder_state"]["state_before_boundary_known"], false);
+        assert_eq!(
+            second.values["decoder_state"]["state_before_boundary_known"],
+            false
+        );
         assert_eq!(second.values["decoder_state"]["generation"], 1);
     }
     #[test]
@@ -534,7 +584,12 @@ mod tests {
         assert_eq!(report.values["decoder_state"]["generation"], 1);
         let mut changed = capture_packet("Unknown.Parser", 4, &[1]);
         decoder.decode(&mut changed, 9);
-        assert!(changed.values["error"].as_str().unwrap().contains("parser changed"));
+        assert!(
+            changed.values["error"]
+                .as_str()
+                .unwrap()
+                .contains("parser changed")
+        );
         assert_eq!(changed.values["decoder_state"]["generation"], 2);
     }
 

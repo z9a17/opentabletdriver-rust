@@ -8,8 +8,8 @@
 //! detected tablet the same way, each with its own profile.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, mpsc};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
 
 use crate::config::Profile;
@@ -56,12 +56,24 @@ impl Companions {
             .name("tablet-companions".into())
             .spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    supervise(profile, database, reserved, primary_name, thread_stop, thread_wake, requests, log)
-                })).unwrap_or_else(|_| Err("companion supervisor panicked".into()));
+                    supervise(
+                        profile,
+                        database,
+                        reserved,
+                        primary_name,
+                        thread_stop,
+                        thread_wake,
+                        requests,
+                        log,
+                    )
+                }))
+                .unwrap_or_else(|_| Err("companion supervisor panicked".into()));
                 thread_completed.store(true, Ordering::Release);
                 // Optional discovery can end harmlessly. Only a failure that
                 // threatens cleanup interrupts the primary report worker.
-                if result.is_err() { let _ = interrupt.signal(); }
+                if result.is_err() {
+                    let _ = interrupt.signal();
+                }
                 result
             })
             .map_err(|error| error.to_string())?;
@@ -79,9 +91,15 @@ impl Companions {
     /// primary configuration remains reserved while its path is absent.
     pub fn reserve_primary(&mut self, path: &str, name: &str) -> Result<(), String> {
         self.check_finished()?;
-        if self.thread.is_none() || self.primary.eq_ignore_ascii_case(path) { return Ok(()); }
+        if self.thread.is_none() || self.primary.eq_ignore_ascii_case(path) {
+            return Ok(());
+        }
         let (reply, response) = mpsc::sync_channel(1);
-        if self.reservations.send((path.to_owned(), name.to_owned(), reply)).is_err() {
+        if self
+            .reservations
+            .send((path.to_owned(), name.to_owned(), reply))
+            .is_err()
+        {
             return self.finish();
         }
         self.wake.signal().map_err(|error| error.to_string())?;
@@ -104,7 +122,9 @@ impl Companions {
 
     /// Returns only after every companion has stopped and reported cleanup.
     pub fn finish(&mut self) -> Result<(), String> {
-        if self.thread.is_none() { return Ok(()); }
+        if self.thread.is_none() {
+            return Ok(());
+        }
         self.stop.store(true, Ordering::Release);
         let signalled = self.wake.signal().map_err(|error| error.to_string());
         let joined = self.thread.take().map_or(Ok(()), |thread| {
@@ -166,16 +186,25 @@ fn supervise(
             }
             // A stop signalled between the loop test and ResetEvent must not
             // lose its wake and wait for the discovery timeout.
-            if stop.load(Ordering::Acquire) { break; }
+            if stop.load(Ordering::Acquire) {
+                break;
+            }
             for (path, name, reply) in requests.try_iter() {
                 primary = path;
                 primary_name = name;
-                let key = running.keys().find(|path| path.eq_ignore_ascii_case(&primary)).cloned();
+                let key = running
+                    .keys()
+                    .find(|path| path.eq_ignore_ascii_case(&primary))
+                    .cloned();
                 let result = if let Some(key) = key {
                     let mut reserved = BTreeMap::new();
-                    if let Some(session) = running.remove(&key) { reserved.insert(key, session); }
+                    if let Some(session) = running.remove(&key) {
+                        reserved.insert(key, session);
+                    }
                     stop_all(&mut reserved)
-                } else { Ok(()) };
+                } else {
+                    Ok(())
+                };
                 let _ = reply.send(result.clone());
                 result?;
             }
@@ -207,16 +236,22 @@ fn supervise(
             // Reserve the configuration across changed-path reconnects. While
             // the primary is absent this also defers new identical-model
             // companions; already-running companions retain their ownership.
-            let primary_present = known.iter().any(|(path, _)| path.eq_ignore_ascii_case(&primary));
+            let primary_present = known
+                .iter()
+                .any(|(path, _)| path.eq_ignore_ascii_case(&primary));
             for (path, name) in &known {
                 if stop.load(Ordering::Acquire) {
                     break;
                 }
-                if running.contains_key(path) || rejected.contains(path) || path.eq_ignore_ascii_case(&primary)
-                    || (!primary_present && name == &primary_name) {
+                if running.contains_key(path)
+                    || rejected.contains(path)
+                    || path.eq_ignore_ascii_case(&primary)
+                    || (!primary_present && name == &primary_name)
+                {
                     continue;
                 }
-                let profile = match companion_profile(&profile, named.as_deref(), name, import_otd) {
+                let profile = match companion_profile(&profile, named.as_deref(), name, import_otd)
+                {
                     Ok(profile) => profile,
                     Err(error) => {
                         log(&format!("{name} was not started: {error}"));
@@ -242,7 +277,8 @@ fn supervise(
             };
         }
         Ok(())
-    })).unwrap_or_else(|_| Err("companion supervision panicked".into()));
+    }))
+    .unwrap_or_else(|_| Err("companion supervision panicked".into()));
     let cleanup = stop_all(&mut running);
     cleanup.and(outcome)
 }
@@ -435,7 +471,10 @@ mod tests {
             target_tablet: Some("Wacom PTH-660".into()),
             ..Profile::default()
         };
-        let own = companion_profile(&named, Some("Wacom PTH-660"), "Wacom CTL-4100", |_| Ok(None)).unwrap();
+        let own = companion_profile(&named, Some("Wacom PTH-660"), "Wacom CTL-4100", |_| {
+            Ok(None)
+        })
+        .unwrap();
         assert_eq!(own.target_tablet.as_deref(), Some("Wacom CTL-4100"));
         assert_eq!(
             own.tablet,

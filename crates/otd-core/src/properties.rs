@@ -452,15 +452,24 @@ fn filters_run_in_stage_order() {
         // Explicit endpoint-loss notifications remain positionless and reset
         // filters, unlike IntuosV2 samples with cleared proximity flags.
         filters.calls.clear();
-        pipeline.process_report(
-            crate::plugins::DispatchInput {
-                kind: crate::reports::ReportKind::OutOfRange,
-                values: crate::reports::ReportValues::default(),
-                raw: &[], pen: None, now: start + Duration::from_secs(2),
-            },
-            mapper, &mut filters, |_| Ok(()),
-        ).unwrap();
-        assert_eq!(filters.calls, "r", "case {case}: explicit loss must reset filters");
+        pipeline
+            .process_report(
+                crate::plugins::DispatchInput {
+                    kind: crate::reports::ReportKind::OutOfRange,
+                    values: crate::reports::ReportValues::default(),
+                    raw: &[],
+                    pen: None,
+                    now: start + Duration::from_secs(2),
+                },
+                mapper,
+                &mut filters,
+                |_| Ok(()),
+            )
+            .unwrap();
+        assert_eq!(
+            filters.calls, "r",
+            "case {case}: explicit loss must reset filters"
+        );
     }
     assert!(
         seen.iter().all(|&count| count > 500),

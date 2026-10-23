@@ -16,7 +16,9 @@ pub(super) fn import_tablet_order(mut names: Vec<String>, selected: Option<&str>
 pub(super) enum DeviceScan {
     #[default]
     Idle,
-    Running { again: Option<bool> },
+    Running {
+        again: Option<bool>,
+    },
 }
 
 impl DeviceScan {
@@ -51,7 +53,10 @@ impl App {
         // Do not finish a pending drag against a tablet that disappeared.
         let bounds = self.editor.detected_tablet_bounds(&self.connected_tablets);
         if bounds != self.tablet_view.map(|view| view.bounds)
-            && self.drag.as_ref().is_some_and(|drag| drag.which == AreaKind::Tablet)
+            && self
+                .drag
+                .as_ref()
+                .is_some_and(|drag| drag.which == AreaKind::Tablet)
         {
             self.drag = None;
             unsafe { ReleaseCapture() };
@@ -95,11 +100,18 @@ impl App {
         let generation = self.metadata_generation;
         let inspection_path = path.clone();
         let mut paths: Vec<_> = if add {
-            self.editor.profile.plugins.iter().map(|plugin| plugin.path.clone()).collect()
+            self.editor
+                .profile
+                .plugins
+                .iter()
+                .map(|plugin| plugin.path.clone())
+                .collect()
         } else {
             vec![path.clone()]
         };
-        if add { paths.push(path.clone()); }
+        if add {
+            paths.push(path.clone());
+        }
         if !self.background("plugin-inspection", move || BackgroundResult::Metadata {
             generation,
             revision,
@@ -114,10 +126,14 @@ impl App {
     pub(super) fn background_results(&mut self) -> Option<String> {
         // A confirmed update restart freezes the editor until it succeeds or
         // fails; keep profile-changing completions queued during that interval.
-        if self.closing || self.update_restart_pending { return None; }
+        if self.closing || self.update_restart_pending {
+            return None;
+        }
         while let Ok(event) = self.background_rx.try_recv() {
             match event {
-                BackgroundResult::Managed { guard, result } => managed_settings::inspected(self, guard, result),
+                BackgroundResult::Managed { guard, result } => {
+                    managed_settings::inspected(self, guard, result)
+                }
                 BackgroundResult::Metadata {
                     generation,
                     revision,
@@ -125,25 +141,29 @@ impl App {
                     result,
                     aliases,
                 } => {
-                    if generation != self.metadata_generation || self.metadata_versions.get(&path) != Some(&revision) {
+                    if generation != self.metadata_generation
+                        || self.metadata_versions.get(&path) != Some(&revision)
+                    {
                         continue;
                     }
                     let add = self.metadata_pending.remove(&path).unwrap_or(false);
                     match result {
                         Ok(entries) => {
-                            let metadata = Ok(entries.iter().map(|entry| entry.metadata.clone()).collect());
-                            self.plugin_metadata.insert(
-                                path.clone(),
-                                metadata.clone(),
-                            );
+                            let metadata =
+                                Ok(entries.iter().map(|entry| entry.metadata.clone()).collect());
+                            self.plugin_metadata.insert(path.clone(), metadata.clone());
                             let inspected = canonical_alias(&path, &aliases);
                             for (original, canonical) in &aliases {
                                 if canonical == inspected {
-                                    self.plugin_metadata.insert(original.clone(), metadata.clone());
+                                    self.plugin_metadata
+                                        .insert(original.clone(), metadata.clone());
                                 }
                             }
                             if add {
-                                let entries: Vec<_> = entries.into_iter().filter(|entry| auto_add_metadata(&entry.metadata)).collect();
+                                let entries: Vec<_> = entries
+                                    .into_iter()
+                                    .filter(|entry| auto_add_metadata(&entry.metadata))
+                                    .collect();
                                 if entries.is_empty() {
                                     self.metadata_changed();
                                     self.log(
@@ -155,7 +175,10 @@ impl App {
                                     self.complete_plugin_add(
                                         entries
                                             .into_iter()
-                                            .map(|entry| PluginConfig { path: path.clone(), ..entry.config })
+                                            .map(|entry| PluginConfig {
+                                                path: path.clone(),
+                                                ..entry.config
+                                            })
                                             .collect(),
                                         &aliases,
                                         true,
@@ -193,7 +216,9 @@ impl App {
                     errors,
                     aliases,
                 } => {
-                    if generation != self.metadata_generation || self.metadata_versions.get(&folder) != Some(&revision) {
+                    if generation != self.metadata_generation
+                        || self.metadata_versions.get(&folder) != Some(&revision)
+                    {
                         continue;
                     }
                     self.metadata_pending.remove(&folder);
@@ -212,17 +237,24 @@ impl App {
                     }
                     let mut configs = Vec::new();
                     if !entries.is_empty() {
-                        let mut metadata_by_path: HashMap<PathBuf, Vec<FilterMetadata>> = HashMap::new();
+                        let mut metadata_by_path: HashMap<PathBuf, Vec<FilterMetadata>> =
+                            HashMap::new();
                         for entry in entries {
                             let auto_add = auto_add_metadata(&entry.metadata);
-                            metadata_by_path.entry(entry.config.path.clone()).or_default().push(entry.metadata);
-                            if auto_add { configs.push(entry.config); }
+                            metadata_by_path
+                                .entry(entry.config.path.clone())
+                                .or_default()
+                                .push(entry.metadata);
+                            if auto_add {
+                                configs.push(entry.config);
+                            }
                         }
                         for (path, metadata) in metadata_by_path {
                             let inspected = canonical_alias(&path, &aliases);
                             for (original, canonical) in &aliases {
                                 if canonical == inspected {
-                                    self.plugin_metadata.insert(original.clone(), Ok(metadata.clone()));
+                                    self.plugin_metadata
+                                        .insert(original.clone(), Ok(metadata.clone()));
                                 }
                             }
                             self.plugin_metadata.insert(path, Ok(metadata));
@@ -231,11 +263,16 @@ impl App {
                     // A removed DLL or failed inspection must not leave the old
                     // property controls visible or trigger another scan each refresh.
                     for plugin in &self.editor.profile.plugins {
-                        if within_folder(&plugin.path, &folder) && !self.plugin_metadata.contains_key(&plugin.path) {
+                        if within_folder(&plugin.path, &folder)
+                            && !self.plugin_metadata.contains_key(&plugin.path)
+                        {
                             let error = if errors.is_empty() {
                                 "The installed plugin no longer exports this assembly's filters or tools.".to_owned()
                             } else {
-                                format!("Could not inspect the updated plugin:\n{}", errors.join("\n"))
+                                format!(
+                                    "Could not inspect the updated plugin:\n{}",
+                                    errors.join("\n")
+                                )
                             };
                             self.plugin_metadata.insert(plugin.path.clone(), Err(error));
                         }
@@ -295,25 +332,40 @@ impl App {
                             self.refresh_tablet_view();
                             self.update_title();
                             self.set_driver_state(self.driver);
-                            self.log(Level::Error, "Tablet", format!("HID discovery failed: {error}"));
+                            self.log(
+                                Level::Error,
+                                "Tablet",
+                                format!("HID discovery failed: {error}"),
+                            );
                         }
                     }
                     if let Some(again) = again {
                         self.refresh_tablets(announce || again);
                     }
                 }
-                BackgroundResult::Original { generation,revision,result } => {
-                    self.original_pending=false;
+                BackgroundResult::Original {
+                    generation,
+                    revision,
+                    result,
+                } => {
+                    self.original_pending = false;
                     match result {
-                        Ok((message,profile))=>{
-                            if let Some(profile)=profile {
-                                if generation==self.metadata_generation&&revision==self.edit_revision&&!self.closing&&!self.update_restart_pending {self.replace_profile(*profile,None,true);}
-                                else{self.log(Level::Warning,"Original settings","The collection was applied; newer editor changes were kept.");}
+                        Ok((message, profile)) => {
+                            if let Some(profile) = profile {
+                                if generation == self.metadata_generation
+                                    && revision == self.edit_revision
+                                    && !self.closing
+                                    && !self.update_restart_pending
+                                {
+                                    self.replace_profile(*profile, None, true);
+                                } else {
+                                    self.log(Level::Warning,"Original settings","The collection was applied; newer editor changes were kept.");
+                                }
                             }
-                            self.log(Level::Info,"Original settings",message);
+                            self.log(Level::Info, "Original settings", message);
                             self.refresh_presets();
                         }
-                        Err(error)=>self.log(Level::Error,"Original settings",error),
+                        Err(error) => self.log(Level::Error, "Original settings", error),
                     }
                 }
                 BackgroundResult::Import {
@@ -350,8 +402,10 @@ impl App {
                     }
                 }
                 BackgroundResult::OriginalDiagnostics { token, result } => {
-                    self.diagnostics_pending=false;
-                    if token!=self.managed_token || self.closing || self.update_restart_pending { continue; }
+                    self.diagnostics_pending = false;
+                    if token != self.managed_token || self.closing || self.update_restart_pending {
+                        continue;
+                    }
                     match result {
                         Ok(DiagnosticExport::Clipboard(text)) if copy_to_clipboard(self.hwnd,&text)=>self.log(Level::Info,"UI","Copied original daemon diagnostics, including environment variables and console logs, to the clipboard."),
                         Ok(DiagnosticExport::Clipboard(_))=>self.log(Level::Error,"UI","Cannot open the clipboard."),
@@ -388,16 +442,27 @@ impl App {
         let revision = *revision;
         let generation = self.metadata_generation;
         let work_folder = folder.clone();
-        let mut paths: Vec<_> = self.editor.profile.plugins.iter().map(|plugin| plugin.path.clone()).collect();
+        let mut paths: Vec<_> = self
+            .editor
+            .profile
+            .plugins
+            .iter()
+            .map(|plugin| plugin.path.clone())
+            .collect();
         if !self.background("plugin-folder-inspection", move || {
             let mut entries = Vec::new();
             let mut errors = Vec::new();
             for path in crate::plugin_catalog::dlls(&work_folder) {
                 paths.push(path.clone());
                 match crate::dotnet::inspect_details(&path) {
-                    Ok(found) => entries.extend(found.into_iter().map(|entry| crate::dotnet::InspectedFilter {
-                        config: PluginConfig { path: path.clone(), ..entry.config },
-                        metadata: entry.metadata,
+                    Ok(found) => entries.extend(found.into_iter().map(|entry| {
+                        crate::dotnet::InspectedFilter {
+                            config: PluginConfig {
+                                path: path.clone(),
+                                ..entry.config
+                            },
+                            metadata: entry.metadata,
+                        }
                     })),
                     Err(error) => errors.push(format!("{}: {error}", path.display())),
                 }
@@ -422,27 +487,51 @@ impl App {
             self.inspect_plugin(path, true);
             return;
         }
-        self.complete_plugin_add(vec![PluginConfig {
-            path,
-            kind: PluginKind::Native,
-            enabled: false,
-            type_name: String::new(),
-            settings_json: "{}".into(),
-        }], &[], true);
+        self.complete_plugin_add(
+            vec![PluginConfig {
+                path,
+                kind: PluginKind::Native,
+                enabled: false,
+                type_name: String::new(),
+                settings_json: "{}".into(),
+            }],
+            &[],
+            true,
+        );
     }
 
-    fn complete_plugin_add(&mut self, mut entries: Vec<PluginConfig>, aliases: &[(PathBuf, PathBuf)], select_added: bool) {
-        entries.retain(|entry| !self.editor.profile.plugins.iter().any(|existing| {
-            canonical_alias(&existing.path, aliases) == canonical_alias(&entry.path, aliases)
-                && existing.kind == entry.kind && existing.type_name == entry.type_name
-        }));
+    fn complete_plugin_add(
+        &mut self,
+        mut entries: Vec<PluginConfig>,
+        aliases: &[(PathBuf, PathBuf)],
+        select_added: bool,
+    ) {
+        entries.retain(|entry| {
+            !self.editor.profile.plugins.iter().any(|existing| {
+                canonical_alias(&existing.path, aliases) == canonical_alias(&entry.path, aliases)
+                    && existing.kind == entry.kind
+                    && existing.type_name == entry.type_name
+            })
+        });
         let mut identities = HashSet::new();
-        entries.retain(|entry| identities.insert((canonical_alias(&entry.path, aliases).clone(), match entry.kind {
-            PluginKind::Native => 0u8, PluginKind::Dotnet => 1, PluginKind::DotnetTool => 2,
-        }, entry.type_name.clone())));
+        entries.retain(|entry| {
+            identities.insert((
+                canonical_alias(&entry.path, aliases).clone(),
+                match entry.kind {
+                    PluginKind::Native => 0u8,
+                    PluginKind::Dotnet => 1,
+                    PluginKind::DotnetTool => 2,
+                },
+                entry.type_name.clone(),
+            ))
+        });
         if entries.is_empty() {
             self.metadata_changed();
-            self.log(Level::Info, "Plugins", "Updated plugin information; existing filters and settings were kept.");
+            self.log(
+                Level::Info,
+                "Plugins",
+                "Updated plugin information; existing filters and settings were kept.",
+            );
             return;
         }
         if self.editor.profile.plugins.len() + entries.len() > 32 {
@@ -459,13 +548,19 @@ impl App {
         self.editor.profile.plugins.extend(entries);
         let page = if self.editor.profile.plugins[first_plugin].kind == PluginKind::DotnetTool {
             Tab::Tools
-        } else { Tab::Filters };
+        } else {
+            Tab::Filters
+        };
         self.mark_dirty();
         if self.editing_controls() || !select_added {
             self.metadata_changed();
         } else {
-            if self.tab != page { self.select_tab(page); }
-            self.selected_filter = self.page_plugin_index(FilterRef::Plugin(first_plugin)).unwrap_or(0);
+            if self.tab != page {
+                self.select_tab(page);
+            }
+            self.selected_filter = self
+                .page_plugin_index(FilterRef::Plugin(first_plugin))
+                .unwrap_or(0);
             self.refresh_filters();
             self.layout();
         }
@@ -483,18 +578,27 @@ impl App {
     }
 
     pub(super) fn forget_plugin_folder(&mut self, folder: &Path) {
-        self.plugin_metadata.retain(|path, _| !within_folder(path, folder));
+        self.plugin_metadata
+            .retain(|path, _| !within_folder(path, folder));
         for (path, version) in &mut self.metadata_versions {
-            if within_folder(path, folder) { *version = version.wrapping_add(1); }
+            if within_folder(path, folder) {
+                *version = version.wrapping_add(1);
+            }
         }
-        self.metadata_pending.retain(|path, _| !within_folder(path, folder));
+        self.metadata_pending
+            .retain(|path, _| !within_folder(path, folder));
     }
 
     pub(super) fn plugin_removed(&mut self, folder: &Path) {
         self.forget_plugin_folder(folder);
         for plugin in &self.editor.profile.plugins {
             if within_folder(&plugin.path, folder) {
-                self.plugin_metadata.insert(plugin.path.clone(), Err("This plugin was removed. Reinstall it or remove its saved entries.".into()));
+                self.plugin_metadata.insert(
+                    plugin.path.clone(),
+                    Err(
+                        "This plugin was removed. Reinstall it or remove its saved entries.".into(),
+                    ),
+                );
             }
         }
         self.metadata_changed();
@@ -508,38 +612,64 @@ impl App {
         let profile = self.editor.profile.clone();
         self.diagnostics_pending = self.background("diagnostic-export", move || {
             let result = crate::diagnostics::bundle(Some(&profile), false)
-                .and_then(|bundle| serde_json::to_string_pretty(&bundle).map_err(|error| error.to_string()))
+                .and_then(|bundle| {
+                    serde_json::to_string_pretty(&bundle).map_err(|error| error.to_string())
+                })
                 .and_then(|text| match path {
-                    Some(path) => std::fs::write(&path, text).map(|()| DiagnosticExport::Saved(path)).map_err(|error| error.to_string()),
+                    Some(path) => std::fs::write(&path, text)
+                        .map(|()| DiagnosticExport::Saved(path))
+                        .map_err(|error| error.to_string()),
                     None => Ok(DiagnosticExport::Clipboard(text)),
                 });
             BackgroundResult::Diagnostics(result)
         });
     }
 
-    pub(super) fn export_original_diagnostics(&mut self,path:Option<PathBuf>) {
-        if self.closing || self.update_restart_pending { return; }
-        if self.diagnostics_pending { self.log(Level::Info,"UI","A diagnostic export is already running.");return; }
-        let token=self.managed_token;
-        let expected=self.daemon_instance.clone();
-        self.diagnostics_pending=self.background("original-diagnostic-export",move||{
-            let result=(||{
-                let mut client=crate::cli::Client::connect()?;
-                if expected.as_ref().is_some_and(|expected|expected!=client.instance()){return Err("daemon changed before original diagnostic export".into());}
-                let value=client.call("GetDiagnosticInfo",serde_json::json!([]))?;
-                let text=serde_json::to_string_pretty(&value).map_err(|error|error.to_string())?;
+    pub(super) fn export_original_diagnostics(&mut self, path: Option<PathBuf>) {
+        if self.closing || self.update_restart_pending {
+            return;
+        }
+        if self.diagnostics_pending {
+            self.log(Level::Info, "UI", "A diagnostic export is already running.");
+            return;
+        }
+        let token = self.managed_token;
+        let expected = self.daemon_instance.clone();
+        self.diagnostics_pending = self.background("original-diagnostic-export", move || {
+            let result = (|| {
+                let mut client = crate::cli::Client::connect()?;
+                if expected
+                    .as_ref()
+                    .is_some_and(|expected| expected != client.instance())
+                {
+                    return Err("daemon changed before original diagnostic export".into());
+                }
+                let value = client.call("GetDiagnosticInfo", serde_json::json!([]))?;
+                let text =
+                    serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?;
                 match path {
-                    Some(path)=>{otd_core::storage::save(&path,text.as_bytes(),otd_core::storage::SaveMode::CreateNew)?;Ok(DiagnosticExport::Saved(path))},
-                    None=>Ok(DiagnosticExport::Clipboard(text)),
+                    Some(path) => {
+                        otd_core::storage::save(
+                            &path,
+                            text.as_bytes(),
+                            otd_core::storage::SaveMode::CreateNew,
+                        )?;
+                        Ok(DiagnosticExport::Saved(path))
+                    }
+                    None => Ok(DiagnosticExport::Clipboard(text)),
                 }
             })();
-            BackgroundResult::OriginalDiagnostics{token,result}
+            BackgroundResult::OriginalDiagnostics { token, result }
         });
     }
 
     pub(super) fn refresh_presets(&mut self) {
-        if self.preset_scan_pending { return; }
-        self.preset_scan_pending = self.background("preset-listing", || BackgroundResult::Presets(presets::list_names()));
+        if self.preset_scan_pending {
+            return;
+        }
+        self.preset_scan_pending = self.background("preset-listing", || {
+            BackgroundResult::Presets(presets::list_names())
+        });
     }
 
     pub(super) fn refresh_tablets(&mut self, announce: bool) {
@@ -589,14 +719,20 @@ mod device_scan_tests {
 
 /// Resolve DLL identities on the inspection worker, never in a window callback.
 fn path_aliases(paths: Vec<PathBuf>) -> Vec<(PathBuf, PathBuf)> {
-    paths.into_iter().map(|path| {
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
-        (path, canonical)
-    }).collect()
+    paths
+        .into_iter()
+        .map(|path| {
+            let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+            (path, canonical)
+        })
+        .collect()
 }
 
 fn canonical_alias<'a>(path: &'a PathBuf, aliases: &'a [(PathBuf, PathBuf)]) -> &'a PathBuf {
-    aliases.iter().find(|(original, _)| original == path).map_or(path, |(_, canonical)| canonical)
+    aliases
+        .iter()
+        .find(|(original, _)| original == path)
+        .map_or(path, |(_, canonical)| canonical)
 }
 
 /// Canonical Windows paths can carry a verbatim prefix while stored paths do not.
@@ -614,17 +750,31 @@ pub(super) fn within_folder(path: &Path, folder: &Path) -> bool {
     path == folder || path.starts_with(&(folder.trim_end_matches('\\').to_owned() + "\\"))
 }
 
-fn auto_add_metadata(metadata: &FilterMetadata) -> bool { metadata.supported && matches!(metadata.category.as_str(), "filter" | "tool") }
+fn auto_add_metadata(metadata: &FilterMetadata) -> bool {
+    metadata.supported && matches!(metadata.category.as_str(), "filter" | "tool")
+}
 
 #[cfg(test)]
 mod managed_category_tests {
     use super::*;
     #[test]
     fn only_supported_filters_and_tools_are_automatically_added() {
-        for category in ["output", "binding", "other"] { assert!(!auto_add_metadata(&FilterMetadata { category: category.into(), ..Default::default() })); }
+        for category in ["output", "binding", "other"] {
+            assert!(!auto_add_metadata(&FilterMetadata {
+                category: category.into(),
+                ..Default::default()
+            }));
+        }
         for category in ["filter", "tool"] {
-            assert!(auto_add_metadata(&FilterMetadata { category: category.into(), ..Default::default() }));
-            assert!(!auto_add_metadata(&FilterMetadata { category: category.into(), supported: false, ..Default::default() }));
+            assert!(auto_add_metadata(&FilterMetadata {
+                category: category.into(),
+                ..Default::default()
+            }));
+            assert!(!auto_add_metadata(&FilterMetadata {
+                category: category.into(),
+                supported: false,
+                ..Default::default()
+            }));
         }
     }
 }
@@ -635,8 +785,14 @@ mod import_tests {
     #[test]
     fn selected_profile_is_imported_before_another_connected_model() {
         let names = vec!["Tablet A".into(), "Tablet B".into(), "Tablet B".into()];
-        assert_eq!(import_tablet_order(names.clone(), Some("Tablet B")), ["Tablet B", "Tablet A"]);
+        assert_eq!(
+            import_tablet_order(names.clone(), Some("Tablet B")),
+            ["Tablet B", "Tablet A"]
+        );
         assert_eq!(import_tablet_order(names.clone(), None), names);
-        assert_eq!(import_tablet_order(Vec::new(), Some("Stopped tablet")), ["Stopped tablet"]);
+        assert_eq!(
+            import_tablet_order(Vec::new(), Some("Stopped tablet")),
+            ["Stopped tablet"]
+        );
     }
 }

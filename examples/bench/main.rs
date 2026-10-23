@@ -401,14 +401,8 @@ fn pipeline(
         if let Ok(Some(pen)) = protocol::parse(report) {
             // With the raw packet, as the driver passes it: .NET filters
             // refuse a pen report without one.
-            let _ = black_box(pipeline.process_with_raw(
-                pen,
-                report,
-                now,
-                mapper,
-                &mut filters,
-                send,
-            ));
+            let _ =
+                black_box(pipeline.process_with_raw(pen, report, now, mapper, &mut filters, send));
         }
     }))
 }

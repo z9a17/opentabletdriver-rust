@@ -7,7 +7,9 @@
 use otd_core::actions::KeyboardUsage;
 
 pub fn key_code(key: KeyboardUsage) -> Option<u16> {
-    if let Some(code)=key.macos_virtual_code(){return Some(code);}
+    if let Some(code) = key.macos_virtual_code() {
+        return Some(code);
+    }
     Some(match key.usage() {
         0x04 => 0x00,
         0x05 => 0x0b,
@@ -117,9 +119,9 @@ pub fn key_code(key: KeyboardUsage) -> Option<u16> {
         0xe5 => 0x3c,
         0xe6 => 0x3d,
         0xe7 => 0x36,
-        0x10e2=>0x4a,
-        0x10e9=>0x48,
-        0x10ea=>0x49,
+        0x10e2 => 0x4a,
+        0x10e9 => 0x48,
+        0x10ea => 0x49,
         _ => return None,
     })
 }
@@ -127,11 +129,26 @@ pub fn key_code(key: KeyboardUsage) -> Option<u16> {
 /// Aggregate CoreGraphics modifier flags for independently held left/right keys.
 pub fn modifier_flags(held: u8) -> u64 {
     let mut flags = 0;
-    for (mask, flag) in [(0x11, 1 << 18), (0x22, 1 << 17), (0x44, 1 << 19), (0x88, 1 << 20)] {
-        if held & mask != 0 { flags |= flag; }
+    for (mask, flag) in [
+        (0x11, 1 << 18),
+        (0x22, 1 << 17),
+        (0x44, 1 << 19),
+        (0x88, 1 << 20),
+    ] {
+        if held & mask != 0 {
+            flags |= flag;
+        }
     }
     flags
 }
 
 /// Pinned MacOSVirtualKeyboard also carries AlphaShift, Help and SecondaryFn.
-pub fn auxiliary_flags(held:u8)->u64{let mut flags=0;for(bit,flag)in[(1,1<<16),(2,1<<22),(4,1<<23)]{if held&bit!=0{flags|=flag;}}flags}
+pub fn auxiliary_flags(held: u8) -> u64 {
+    let mut flags = 0;
+    for (bit, flag) in [(1, 1 << 16), (2, 1 << 22), (4, 1 << 23)] {
+        if held & bit != 0 {
+            flags |= flag;
+        }
+    }
+    flags
+}
