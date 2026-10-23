@@ -25,7 +25,7 @@ python scripts/parity-evidence.py validate
 python -m unittest discover -s scripts/tests -p 'test_parity_*.py'
 ```
 
-Run these commands locally when changing the ledger schema or baseline; GitHub CI is disabled by owner preference. The validator rejects missing or extra IDs, changed inventory contents, stale source revisions, invalid task IDs, malformed evidence and completion states without their required tests. It checks record structure; reviewers must still judge whether linked results substantiate the claim. The Git history and [workstream issues](GITHUB_TRACKING.md) remain the record of review and ownership.
+Run these commands locally when changing the ledger schema or baseline; CI also runs them on Linux for every pull request. The validator rejects missing or extra IDs, changed inventory contents, stale source revisions, invalid task IDs, malformed evidence and completion states without their required tests. It checks record structure; reviewers must still judge whether linked results substantiate the claim. The Git history and [workstream issues](GITHUB_TRACKING.md) remain the record of review and ownership.
 
 ## Change the pinned baseline
 

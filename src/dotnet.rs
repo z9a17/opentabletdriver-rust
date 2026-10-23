@@ -4,29 +4,40 @@
 use crate::plugins::{HostChar, Library, wide};
 use otd_plugin_api::{FilterApi, Sample};
 use std::ffi::{OsStr, OsString, c_void};
-#[cfg(windows)]
-use std::os::windows::ffi::OsStringExt;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-#[path = "dotnet/graph.rs"]
-mod graph;
-#[path = "dotnet/endpoints.rs"]
-pub mod endpoints;
-#[path = "dotnet/registry.rs"]
-mod registry;
-#[path = "dotnet/parser.rs"]
-mod parser;
 #[path = "dotnet/custom_devices.rs"]
 pub mod custom_devices;
-pub use parser::{RuntimeDecoder, ManagedReportParser, installed_report_parser};
-pub use registry::{drain_managed_retirements, mutate_installed_plugins, ManagedDebugDecoder, ManagedDebugReport, ManagedRegistryInfo, known_report_parser, registry_snapshot, reload_installed_plugins};
-pub use registry::{HostedRpc, get_plugin_types, construct_plugin_store, original_display_snapshot};
-pub(crate) fn source_session_json()->Option<serde_json::Value> {
-    #[cfg(windows)] {crate::shared_devices::source_session_json()}
-    #[cfg(unix)] {crate::device_sessions::source_session_json()}
+#[path = "dotnet/endpoints.rs"]
+pub mod endpoints;
+#[path = "dotnet/graph.rs"]
+mod graph;
+#[path = "dotnet/parser.rs"]
+mod parser;
+#[path = "dotnet/registry.rs"]
+mod registry;
+pub use parser::{ManagedReportParser, RuntimeDecoder, installed_report_parser};
+pub use registry::{
+    HostedRpc, construct_plugin_store, get_plugin_types, original_display_snapshot,
+};
+pub use registry::{
+    ManagedDebugDecoder, ManagedDebugReport, ManagedRegistryInfo, drain_managed_retirements,
+    known_report_parser, mutate_installed_plugins, registry_snapshot, reload_installed_plugins,
+};
+pub(crate) fn source_session_json() -> Option<serde_json::Value> {
+    #[cfg(windows)]
+    {
+        crate::shared_devices::source_session_json()
+    }
+    #[cfg(unix)]
+    {
+        crate::device_sessions::source_session_json()
+    }
 }
 pub use graph::{Graph, GraphNode, GraphReport};
 
@@ -45,15 +56,24 @@ type SetWake = unsafe extern "C" fn(*mut c_void, Option<WakeCallback>, *mut c_vo
 struct WakeTarget(Box<std::sync::Arc<crate::shared_devices::OutputGate>>);
 #[cfg(windows)]
 impl WakeTarget {
-    fn install(context: *mut c_void, set: SetWake, target: std::sync::Arc<crate::shared_devices::OutputGate>) -> Result<Self, String> {
+    fn install(
+        context: *mut c_void,
+        set: SetWake,
+        target: std::sync::Arc<crate::shared_devices::OutputGate>,
+    ) -> Result<Self, String> {
         let mut scope = Self(Box::new(target));
-        let pointer = (&mut *scope.0 as *mut std::sync::Arc<crate::shared_devices::OutputGate>).cast();
-        if unsafe { set(context, Some(signal_managed), pointer) } != 0 { return Err(last_error()); }
+        let pointer =
+            (&mut *scope.0 as *mut std::sync::Arc<crate::shared_devices::OutputGate>).cast();
+        if unsafe { set(context, Some(signal_managed), pointer) } != 0 {
+            return Err(last_error());
+        }
         Ok(scope)
     }
     fn detach(self, context: *mut c_void, set: SetWake) {
         // Unexpected bridge failure must not free a potentially retained scope.
-        if unsafe { set(context, None, std::ptr::null_mut()) } != 0 { std::mem::forget(self); }
+        if unsafe { set(context, None, std::ptr::null_mut()) } != 0 {
+            std::mem::forget(self);
+        }
     }
 }
 #[cfg(windows)]
@@ -80,7 +100,7 @@ struct NativePenReport {
 }
 
 struct Bridge {
-    custom_devices:Option<custom_devices::Api>,
+    custom_devices: Option<custom_devices::Api>,
     endpoints: Option<endpoints::Api>,
     registry: Option<registry::Api>,
     parser: Option<parser::Api>,
@@ -108,7 +128,9 @@ type CreateTool = unsafe extern "C" fn(*const u8, usize) -> *mut c_void;
 type DestroyTool = unsafe extern "C" fn(*mut c_void);
 static BRIDGE: OnceLock<Result<Bridge, String>> = OnceLock::new();
 /// Metadata/observer work must remain asleep for ordinary native profiles.
-pub fn initialized() -> bool { BRIDGE.get().is_some_and(|value| value.is_ok()) }
+pub fn initialized() -> bool {
+    BRIDGE.get().is_some_and(|value| value.is_ok())
+}
 
 fn bridge_dir() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("OTD_COMPAT_DIR") {
@@ -149,9 +171,17 @@ mod package_tests {
         std::fs::write(legacy.join("OtdCompat.runtimeconfig.json"), b"{}").unwrap();
         assert_eq!(packaged_bridge_dir(&root), legacy);
         std::fs::create_dir_all(&bundled).unwrap();
-        assert_eq!(packaged_bridge_dir(&root), legacy, "empty bundle is not selected");
+        assert_eq!(
+            packaged_bridge_dir(&root),
+            legacy,
+            "empty bundle is not selected"
+        );
         std::fs::write(bundled.join("OtdCompat.runtimeconfig.json"), b"{}").unwrap();
-        assert_eq!(packaged_bridge_dir(&root), bundled, "old installed files cannot shadow the bundle");
+        assert_eq!(
+            packaged_bridge_dir(&root),
+            bundled,
+            "old installed files cannot shadow the bundle"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }
@@ -170,7 +200,13 @@ fn load_bridge() -> Result<Bridge, String> {
         *mut *mut c_void,
     ) -> i32;
     let directory = bridge_dir()?;
-    let nethost_name = if cfg!(windows) { "nethost.dll" } else if cfg!(target_os = "macos") { "libnethost.dylib" } else { "libnethost.so" };
+    let nethost_name = if cfg!(windows) {
+        "nethost.dll"
+    } else if cfg!(target_os = "macos") {
+        "libnethost.dylib"
+    } else {
+        "libnethost.so"
+    };
     let nethost = Library::load(&directory.join(nethost_name))
         .map_err(|e| format!(".NET bridge is not installed beside the driver: {e}"))?;
     let get_path: GetHostPath =
@@ -178,9 +214,10 @@ fn load_bridge() -> Result<Bridge, String> {
     let mut path = vec![0 as HostChar; 32_768];
     let mut size = path.len();
     if unsafe { get_path(path.as_mut_ptr(), &mut size, std::ptr::null()) } != 0 {
-        return Err(
-            format!(".NET hosting runtime was not found; install the {} .NET runtime required by OtdCompat.runtimeconfig.json", std::env::consts::ARCH),
-        );
+        return Err(format!(
+            ".NET hosting runtime was not found; install the {} .NET runtime required by OtdCompat.runtimeconfig.json",
+            std::env::consts::ARCH
+        ));
     }
     let length = path
         .iter()
@@ -240,7 +277,7 @@ fn load_bridge() -> Result<Bridge, String> {
     let bridge = Bridge {
         endpoints: endpoints::Api::load(&entry).ok(),
         registry: registry::Api::load(&entry).ok(),
-        custom_devices:custom_devices::Api::load(&entry).ok(),
+        custom_devices: custom_devices::Api::load(&entry).ok(),
         parser: parser::Api::load(&entry).ok(),
         create_graph: unsafe {
             std::mem::transmute::<*mut c_void, graph::CreateGraph>(entry("CreateGraph").map_err(|error| format!("The installed .NET bridge lacks synchronous graph support. Replace the data/compat directory with this release's files: {error}"))?)
@@ -258,9 +295,9 @@ fn load_bridge() -> Result<Bridge, String> {
         graph_next_tick: entry("GraphNextTick").ok().map(|entry| unsafe {
             std::mem::transmute::<*mut c_void, graph::GraphNextTick>(entry)
         }),
-        set_graph_wake: entry("SetGraphWake").ok().map(|entry| unsafe {
-            std::mem::transmute::<*mut c_void, SetWake>(entry)
-        }),
+        set_graph_wake: entry("SetGraphWake")
+            .ok()
+            .map(|entry| unsafe { std::mem::transmute::<*mut c_void, SetWake>(entry) }),
         tick_graph: entry("TickGraph")
             .ok()
             .map(|entry| unsafe { std::mem::transmute::<*mut c_void, graph::TickGraph>(entry) }),
@@ -302,7 +339,8 @@ fn load_bridge() -> Result<Bridge, String> {
         return Err("Cannot install native managed-service callbacks.".into());
     }
     type ConfigureApp = unsafe extern "C" fn(*const u8, u32) -> i32;
-    let configure: ConfigureApp = unsafe { std::mem::transmute(entry("ConfigureHostedApplication")?) };
+    let configure: ConfigureApp =
+        unsafe { std::mem::transmute(entry("ConfigureHostedApplication")?) };
     let app = serde_json::to_vec(&crate::upstream_rpc::original_application_info()?)
         .map_err(|error| error.to_string())?;
     if app.len() > 1048576 || unsafe { configure(app.as_ptr(), app.len() as u32) } != 0 {
@@ -467,10 +505,22 @@ pub struct FilterMetadata {
     pub default_settings_json: String,
 }
 
-fn filter_category() -> String { "filter".into() }
+fn filter_category() -> String {
+    "filter".into()
+}
 impl Default for FilterMetadata {
-    fn default() -> Self { Self { category: filter_category(), supported: true, absolute_output: false, relative_output: false,
-        type_name: String::new(), display_name: None, properties: Vec::new(), default_settings_json: "{}".into() } }
+    fn default() -> Self {
+        Self {
+            category: filter_category(),
+            supported: true,
+            absolute_output: false,
+            relative_output: false,
+            type_name: String::new(),
+            display_name: None,
+            properties: Vec::new(),
+            default_settings_json: "{}".into(),
+        }
+    }
 }
 
 /// Starts an OpenTabletDriver tool: constructs it, applies its settings and
@@ -485,7 +535,9 @@ pub fn create_tool(config: &crate::plugins::PluginConfig) -> Result<*mut c_void,
     registry::create_retained_tool(&settings)
 }
 
-pub fn destroy_tool(handle: *mut c_void) { registry::destroy_retained_tool(handle); }
+pub fn destroy_tool(handle: *mut c_void) {
+    registry::destroy_retained_tool(handle);
+}
 
 #[derive(Clone, Debug)]
 pub struct InspectedFilter {
@@ -526,9 +578,12 @@ fn inspect_metadata_bytes(bytes: &[u8], path: &Path) -> Result<Vec<InspectedFilt
     struct Entry {
         #[serde(default)]
         kind: Option<String>,
-        #[serde(default = "property_writable")] supported: bool,
-        #[serde(default)] absolute_output: bool,
-        #[serde(default)] relative_output: bool,
+        #[serde(default = "property_writable")]
+        supported: bool,
+        #[serde(default)]
+        absolute_output: bool,
+        #[serde(default)]
+        relative_output: bool,
         type_name: String,
         display_name: Option<String>,
         settings: serde_json::Value,
@@ -550,14 +605,20 @@ fn inspect_metadata_bytes(bytes: &[u8], path: &Path) -> Result<Vec<InspectedFilt
                 settings_json: entry.settings.to_string(),
             },
             metadata: FilterMetadata {
-                category: entry.kind.unwrap_or_else(filter_category), supported: entry.supported,
-                absolute_output: entry.absolute_output, relative_output: entry.relative_output,
+                category: entry.kind.unwrap_or_else(filter_category),
+                supported: entry.supported,
+                absolute_output: entry.absolute_output,
+                relative_output: entry.relative_output,
                 type_name: entry.type_name,
                 display_name: entry.display_name,
-                properties: entry.properties.into_iter().map(|mut property| {
-                    property.default_value = entry.settings.get(&property.name).cloned();
-                    property
-                }).collect(),
+                properties: entry
+                    .properties
+                    .into_iter()
+                    .map(|mut property| {
+                        property.default_value = entry.settings.get(&property.name).cloned();
+                        property
+                    })
+                    .collect(),
                 default_settings_json: entry.settings.to_string(),
             },
         })
@@ -565,7 +626,16 @@ fn inspect_metadata_bytes(bytes: &[u8], path: &Path) -> Result<Vec<InspectedFilt
 }
 
 pub fn inspect(path: &Path) -> Result<Vec<crate::plugins::PluginConfig>, String> {
-    inspect_details(path).map(|entries| entries.into_iter().filter(|entry| entry.metadata.supported && matches!(entry.metadata.category.as_str(), "filter" | "tool")).map(|entry| entry.config).collect())
+    inspect_details(path).map(|entries| {
+        entries
+            .into_iter()
+            .filter(|entry| {
+                entry.metadata.supported
+                    && matches!(entry.metadata.category.as_str(), "filter" | "tool")
+            })
+            .map(|entry| entry.config)
+            .collect()
+    })
 }
 
 #[cfg(test)]

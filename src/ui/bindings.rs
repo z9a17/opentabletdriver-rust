@@ -22,8 +22,10 @@ const CHOICE_MANAGED: u16 = 50;
 const CHOICE_TOGGLE: u16 = 60;
 const CHOICE_PRESET: u16 = 100;
 const SCROLL_CHOICES: [(&str, &str); 4] = [
-    ("scroll:up", "Scroll Up"), ("scroll:down", "Scroll Down"),
-    ("scroll:left", "Scroll Left"), ("scroll:right", "Scroll Right"),
+    ("scroll:up", "Scroll Up"),
+    ("scroll:down", "Scroll Down"),
+    ("scroll:left", "Scroll Left"),
+    ("scroll:right", "Scroll Right"),
 ];
 const MOUSE_CHOICES: [(MouseButton, &str); 5] = [
     (MouseButton::Left, "Left Click"),
@@ -106,12 +108,23 @@ pub(super) fn action_text(action: &ButtonAction) -> String {
             .map_or("Mouse", |(_, label)| label)
             .into(),
         ButtonAction::Keys(keys) => otd_core::keys::chord_text(keys),
-        ButtonAction::Scroll(scroll) => {
-            SCROLL_CHOICES.iter().find(|(value, _)| value.parse::<ButtonAction>().ok().as_ref() == Some(action))
-                .map_or_else(|| format!("{} scroll: {} units, {} ms",
-                    match scroll.axis { ScrollAxis::Vertical => "Vertical", ScrollAxis::Horizontal => "Horizontal" },
-                    scroll.amount, scroll.interval_ms), |(_, label)| (*label).into())
-        },
+        ButtonAction::Scroll(scroll) => SCROLL_CHOICES
+            .iter()
+            .find(|(value, _)| value.parse::<ButtonAction>().ok().as_ref() == Some(action))
+            .map_or_else(
+                || {
+                    format!(
+                        "{} scroll: {} units, {} ms",
+                        match scroll.axis {
+                            ScrollAxis::Vertical => "Vertical",
+                            ScrollAxis::Horizontal => "Horizontal",
+                        },
+                        scroll.amount,
+                        scroll.interval_ms
+                    )
+                },
+                |(_, label)| (*label).into(),
+            ),
     }
 }
 
@@ -143,11 +156,17 @@ impl App {
                 .iter()
                 .map(|wheel| usize::from(wheel.buttons))
                 .collect(),
-            None => profile.wheels.iter().map(|wheel| wheel.buttons.len()).collect(),
+            None => profile
+                .wheels
+                .iter()
+                .map(|wheel| wheel.buttons.len())
+                .collect(),
         };
         let mut rows: Vec<BindingTarget> = (0..pen).map(BindingTarget::Pen).collect();
         rows.extend((0..aux).map(BindingTarget::Aux));
-        let mouse = detected.map_or(profile.mouse_buttons.len(), |c| usize::from(c.mouse_buttons));
+        let mouse = detected.map_or(profile.mouse_buttons.len(), |c| {
+            usize::from(c.mouse_buttons)
+        });
         rows.extend((0..mouse).map(BindingTarget::Mouse));
         rows.extend([BindingTarget::MouseScrollUp, BindingTarget::MouseScrollDown]);
         let mut fields = Vec::new();
@@ -208,7 +227,9 @@ impl App {
         match target {
             BindingTarget::Pen(index) => put(&mut self.editor.profile.pen_buttons, index, action),
             BindingTarget::Aux(index) => put(&mut self.editor.profile.aux_buttons, index, action),
-            BindingTarget::Mouse(index) => put(&mut self.editor.profile.mouse_buttons, index, action),
+            BindingTarget::Mouse(index) => {
+                put(&mut self.editor.profile.mouse_buttons, index, action)
+            }
             BindingTarget::MouseScrollUp => self.editor.profile.mouse_scroll_up = action,
             BindingTarget::MouseScrollDown => self.editor.profile.mouse_scroll_down = action,
             BindingTarget::Clockwise(index) => self.wheel_mut(index).clockwise = action,
@@ -236,9 +257,12 @@ impl App {
             .iter()
             .flat_map(|row| [row.hwnd, row.label])
             .chain(fields.iter().flat_map(|field| {
-                [Some(field.hwnd), self.labels.get(&(field.hwnd as isize)).copied()]
-                    .into_iter()
-                    .flatten()
+                [
+                    Some(field.hwnd),
+                    self.labels.get(&(field.hwnd as isize)).copied(),
+                ]
+                .into_iter()
+                .flatten()
             }))
             .collect::<Vec<_>>();
         for hwnd in controls {
@@ -258,13 +282,19 @@ impl App {
     pub(super) fn sync_bindings(&mut self) {
         let plan = self.binding_plan();
         let same = plan.rows.len() == self.binding_rows.len()
-            && plan.rows.iter().zip(&self.binding_rows).all(|(a, b)| *a == b.target)
+            && plan
+                .rows
+                .iter()
+                .zip(&self.binding_rows)
+                .all(|(a, b)| *a == b.target)
             && plan.fields.len() == self.wheel_fields.len()
             && plan
                 .fields
                 .iter()
                 .zip(&self.wheel_fields)
-                .all(|((wheel, ccw), field)| field.wheel == *wheel && field.counter_clockwise == *ccw);
+                .all(|((wheel, ccw), field)| {
+                    field.wheel == *wheel && field.counter_clockwise == *ccw
+                });
         self.bindings_detected = plan.detected;
         if !same {
             self.destroy_binding_controls();
@@ -273,7 +303,15 @@ impl App {
             let mut after = self.c.eraser_field;
             let place = |hwnd: HWND, after: &mut HWND| {
                 unsafe {
-                    SetWindowPos(hwnd, *after, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                    SetWindowPos(
+                        hwnd,
+                        *after,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                    );
                 }
                 *after = hwnd;
             };
@@ -282,8 +320,12 @@ impl App {
                 let Ok(label) = self.label(&target.label()) else {
                     continue;
                 };
-                let Ok(hwnd) = self.button("None", ID_BINDING + index as u16, Kind::Dropdown, Surface::Group)
-                else {
+                let Ok(hwnd) = self.button(
+                    "None",
+                    ID_BINDING + index as u16,
+                    Kind::Dropdown,
+                    Surface::Group,
+                ) else {
                     unsafe { DestroyWindow(label) };
                     continue;
                 };
@@ -305,7 +347,8 @@ impl App {
                         } else {
                             "Clockwise Threshold"
                         };
-                        let Ok(field) = self.labeled_field(ID_WHEEL_THRESHOLD + field_index as u16, text)
+                        let Ok(field) =
+                            self.labeled_field(ID_WHEEL_THRESHOLD + field_index as u16, text)
                         else {
                             continue;
                         };
@@ -337,7 +380,12 @@ impl App {
         self.editor
             .detected_controls(&self.connected_tablets)
             .or_else(|| Some(self.editor.profile.tablet.controls))
-            .and_then(|controls| controls.wheels().get(wheel).and_then(|w| w.degrees_per_step()))
+            .and_then(|controls| {
+                controls
+                    .wheels()
+                    .get(wheel)
+                    .and_then(|w| w.degrees_per_step())
+            })
     }
 
     pub(super) fn sync_wheel_fields(&mut self, skip: Option<HWND>) {
@@ -365,7 +413,9 @@ impl App {
             });
             set_text(
                 hwnd,
-                &value.map(|value| model::format_number(f64::from(value), 2)).unwrap_or_default(),
+                &value
+                    .map(|value| model::format_number(f64::from(value), 2))
+                    .unwrap_or_default(),
             );
             self.set_invalid(hwnd, false, None);
         }
@@ -380,7 +430,8 @@ impl App {
         let degrees = if value.trim().is_empty() {
             None
         } else {
-            match model::parse_number(value).filter(|degrees| *degrees > 0.0 && *degrees <= 3600.0) {
+            match model::parse_number(value).filter(|degrees| *degrees > 0.0 && *degrees <= 3600.0)
+            {
                 Some(degrees) => Some(degrees as f32),
                 None => {
                     self.set_invalid(hwnd, true, Some("Enter a positive number of degrees, or leave it empty for one wheel step."));
@@ -459,7 +510,12 @@ impl App {
             items.push(Item::Unit(unit));
             self.place_label(
                 row.hwnd,
-                rect(unit.left + s(10), unit.top, unit.left + s(10) + label_width, unit.bottom),
+                rect(
+                    unit.left + s(10),
+                    unit.top,
+                    unit.left + s(10) + label_width,
+                    unit.bottom,
+                ),
                 &row.target.label(),
                 items,
                 shown,
@@ -468,7 +524,12 @@ impl App {
             let middle = (unit.top + unit.bottom) / 2;
             shown.push((
                 row.hwnd,
-                rect(control_left, middle - s(14), unit.right - s(10), middle + s(14)),
+                rect(
+                    control_left,
+                    middle - s(14),
+                    unit.right - s(10),
+                    middle + s(14),
+                ),
             ));
         }
         bottom
@@ -478,7 +539,9 @@ impl App {
         if self.bindings_detected {
             format!("The detected tablet declares no {what}.")
         } else {
-            format!("No tablet detected. Connect the tablet to list its {what}; saved bindings are kept.")
+            format!(
+                "No tablet detected. Connect the tablet to list its {what}; saved bindings are kept."
+            )
         }
     }
 
@@ -499,8 +562,12 @@ impl App {
             .filter(|target| matches!(target, BindingTarget::Pen(_)))
             .collect();
         let note = match self.editor.profile.output {
-            crate::config::OutputKind::Pen => "With Windows Ink output, Pen Button bindings press the pen's barrel button.",
-            crate::config::OutputKind::Mouse => "With mouse output, Pen Button 1 clicks right and Pen Button 2 clicks middle.",
+            crate::config::OutputKind::Pen => {
+                "With Windows Ink output, Pen Button bindings press the pen's barrel button."
+            }
+            crate::config::OutputKind::Mouse => {
+                "With mouse output, Pen Button 1 clicks right and Pen Button 2 clicks middle."
+            }
         };
         let empty = targets.is_empty().then(|| self.no_rows_text("pen buttons"));
         let text = empty.as_deref().unwrap_or(note);
@@ -511,10 +578,18 @@ impl App {
         let lines = targets.len().div_ceil(columns) as i32;
         let grid = if lines > 0 { lines * (s(38) + gap) } else { 0 };
         let bottom = (area.top + s(24) + s(12) + grid + text_height + s(14)).min(area.bottom);
-        let body = self.group("Pen Buttons", rect(area.left, area.top, area.right, bottom), items);
+        let body = self.group(
+            "Pen Buttons",
+            rect(area.left, area.top, area.right, bottom),
+            items,
+        );
         let inner = draw::inset(body, s(12), s(12));
         let grid_bottom = self.layout_binding_grid(&targets, inner, items, shown, measure);
-        let text_top = if targets.is_empty() { inner.top } else { grid_bottom + gap };
+        let text_top = if targets.is_empty() {
+            inner.top
+        } else {
+            grid_bottom + gap
+        };
         items.push(Item::Label(
             rect(inner.left, text_top, inner.right, inner.bottom),
             text.into(),
@@ -524,23 +599,51 @@ impl App {
     }
 
     /// Mouse tools have buttons and a separate scroll direction binding pair.
-    pub(super) fn layout_mouse(&mut self, content: RECT, items: &mut Vec<Item>,
-        shown: &mut Vec<(HWND, RECT)>, measure: &dyn Fn(HFONT, &str) -> (i32, i32), dc: HDC) {
+    pub(super) fn layout_mouse(
+        &mut self,
+        content: RECT,
+        items: &mut Vec<Item>,
+        shown: &mut Vec<(HWND, RECT)>,
+        measure: &dyn Fn(HFONT, &str) -> (i32, i32),
+        dc: HDC,
+    ) {
         let s = |value: i32| scale(value, self.dpi);
-        let targets: Vec<_> = self.binding_rows.iter().map(|row| row.target)
-            .filter(|target| matches!(target, BindingTarget::Mouse(_))).collect();
+        let targets: Vec<_> = self
+            .binding_rows
+            .iter()
+            .map(|row| row.target)
+            .filter(|target| matches!(target, BindingTarget::Mouse(_)))
+            .collect();
         let note = "Use these bindings for a tablet mouse tool. Configure tablet rings and dials in Tablet buttons.";
-        let note_height = canvas::wrapped_height(dc, self.style().fonts.ui, note, content.right - content.left - s(24));
-        let columns = self.binding_grid_columns(&[BindingTarget::MouseScrollUp, BindingTarget::MouseScrollDown], draw::inset(content, s(12), 0), measure);
+        let note_height = canvas::wrapped_height(
+            dc,
+            self.style().fonts.ui,
+            note,
+            content.right - content.left - s(24),
+        );
+        let columns = self.binding_grid_columns(
+            &[BindingTarget::MouseScrollUp, BindingTarget::MouseScrollDown],
+            draw::inset(content, s(12), 0),
+            measure,
+        );
         let scroll_height = s(48) + (2usize.div_ceil(columns) as i32) * s(46) + note_height;
         let scroll_top = content.bottom - scroll_height;
-        let body = self.group("Mouse Buttons", rect(content.left, content.top, content.right, scroll_top - s(12)), items);
+        let body = self.group(
+            "Mouse Buttons",
+            rect(content.left, content.top, content.right, scroll_top - s(12)),
+            items,
+        );
         let mut inner = draw::inset(body, s(12), s(12));
         if targets.is_empty() {
             let text = self.no_rows_text("mouse buttons");
-            let height = canvas::wrapped_height(dc, self.style().fonts.ui, &text, inner.right - inner.left);
-            items.push(Item::Label(rect(inner.left, inner.top, inner.right, inner.top + height),
-                text, Tone::Muted, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX));
+            let height =
+                canvas::wrapped_height(dc, self.style().fonts.ui, &text, inner.right - inner.left);
+            items.push(Item::Label(
+                rect(inner.left, inner.top, inner.right, inner.top + height),
+                text,
+                Tone::Muted,
+                DT_LEFT | DT_WORDBREAK | DT_NOPREFIX,
+            ));
         } else {
             let columns = self.binding_grid_columns(&targets, inner, measure);
             // Reserve the navigation row even when one page currently fits,
@@ -552,29 +655,72 @@ impl App {
             if pages > 1 {
                 for (hwnd, left, enabled) in [
                     (self.c.property_prev, inner.left, self.property_page > 0),
-                    (self.c.property_next, inner.left + s(84), self.property_page + 1 < pages),
+                    (
+                        self.c.property_next,
+                        inner.left + s(84),
+                        self.property_page + 1 < pages,
+                    ),
                 ] {
-                    unsafe { EnableWindow(hwnd, enabled.into()); }
+                    unsafe {
+                        EnableWindow(hwnd, enabled.into());
+                    }
                     shown.push((hwnd, rect(left, inner.top, left + s(78), inner.top + s(28))));
                 }
-                items.push(Item::Label(rect(inner.left + s(170), inner.top, inner.right, inner.top + s(28)),
-                    format!("{} / {pages}", self.property_page + 1), Tone::Muted, draw::TEXT_LEFT));
+                items.push(Item::Label(
+                    rect(
+                        inner.left + s(170),
+                        inner.top,
+                        inner.right,
+                        inner.top + s(28),
+                    ),
+                    format!("{} / {pages}", self.property_page + 1),
+                    Tone::Muted,
+                    draw::TEXT_LEFT,
+                ));
                 inner.top += s(36);
             }
             let start = self.property_page * page_size;
-            self.layout_binding_grid(&targets[start..(start + page_size).min(targets.len())], inner, items, shown, measure);
+            self.layout_binding_grid(
+                &targets[start..(start + page_size).min(targets.len())],
+                inner,
+                items,
+                shown,
+                measure,
+            );
         }
-        let body = self.group("Mouse Scrollwheel", rect(content.left, scroll_top, content.right, content.bottom), items);
+        let body = self.group(
+            "Mouse Scrollwheel",
+            rect(content.left, scroll_top, content.right, content.bottom),
+            items,
+        );
         let inner = draw::inset(body, s(12), s(12));
-        let bottom = self.layout_binding_grid(&[BindingTarget::MouseScrollUp, BindingTarget::MouseScrollDown], inner, items, shown, measure);
-        items.push(Item::Label(rect(inner.left, bottom + s(8), inner.right, inner.bottom),
-            note.into(), Tone::Muted, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX));
+        let bottom = self.layout_binding_grid(
+            &[BindingTarget::MouseScrollUp, BindingTarget::MouseScrollDown],
+            inner,
+            items,
+            shown,
+            measure,
+        );
+        items.push(Item::Label(
+            rect(inner.left, bottom + s(8), inner.right, inner.bottom),
+            note.into(),
+            Tone::Muted,
+            DT_LEFT | DT_WORDBREAK | DT_NOPREFIX,
+        ));
     }
 
-    fn binding_grid_columns(&self, targets: &[BindingTarget], area: RECT,
-        measure: &dyn Fn(HFONT, &str) -> (i32, i32)) -> usize {
+    fn binding_grid_columns(
+        &self,
+        targets: &[BindingTarget],
+        area: RECT,
+        measure: &dyn Fn(HFONT, &str) -> (i32, i32),
+    ) -> usize {
         let s = |value: i32| scale(value, self.dpi);
-        let label = targets.iter().map(|target| measure(self.style().fonts.ui, &target.label()).0).max().unwrap_or(0);
+        let label = targets
+            .iter()
+            .map(|target| measure(self.style().fonts.ui, &target.label()).0)
+            .max()
+            .unwrap_or(0);
         ((area.right - area.left + s(8)) / (label.max(s(130)) + s(200) + s(8))).max(1) as usize
     }
 
@@ -608,10 +754,19 @@ impl App {
                 None => lines * (s(38) + s(8)) - s(8),
             };
             let bottom = (top + s(24) + s(24) + body_height).min(content.bottom);
-            let body = self.group("Express Keys", rect(content.left, top, content.right, bottom), items);
+            let body = self.group(
+                "Express Keys",
+                rect(content.left, top, content.right, bottom),
+                items,
+            );
             let inner = draw::inset(body, s(12), s(12));
             match text {
-                Some(text) => items.push(Item::Label(inner, text, Tone::Muted, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX)),
+                Some(text) => items.push(Item::Label(
+                    inner,
+                    text,
+                    Tone::Muted,
+                    DT_LEFT | DT_WORDBREAK | DT_NOPREFIX,
+                )),
                 None => {
                     self.layout_binding_grid(&keys, inner, items, shown, measure);
                 }
@@ -636,7 +791,10 @@ impl App {
                 .map(|row| row.target)
                 .filter(|target| matches!(target, BindingTarget::WheelButton(w, _) if *w == wheel))
                 .collect();
-            let rotation = [BindingTarget::Clockwise(wheel), BindingTarget::CounterClockwise(wheel)];
+            let rotation = [
+                BindingTarget::Clockwise(wheel),
+                BindingTarget::CounterClockwise(wheel),
+            ];
             let fields: Vec<(HWND, &str, &str)> = self
                 .wheel_fields
                 .iter()
@@ -654,8 +812,14 @@ impl App {
                 })
                 .collect();
             let grid_area = draw::inset(content, s(12), 0);
-            let rotation_lines = rotation.len().div_ceil(self.binding_grid_columns(&rotation, grid_area, measure)) as i32;
-            let button_lines = buttons.len().div_ceil(self.binding_grid_columns(&buttons, grid_area, measure)) as i32;
+            let rotation_lines = rotation
+                .len()
+                .div_ceil(self.binding_grid_columns(&rotation, grid_area, measure))
+                as i32;
+            let button_lines = buttons
+                .len()
+                .div_ceil(self.binding_grid_columns(&buttons, grid_area, measure))
+                as i32;
             let height = s(24)
                 + s(24)
                 + rotation_lines * (s(38) + s(8))
@@ -668,15 +832,33 @@ impl App {
             } else {
                 "Wheel".to_owned()
             };
-            let body = self.group(&title, rect(content.left, top, content.right, bottom), items);
+            let body = self.group(
+                &title,
+                rect(content.left, top, content.right, bottom),
+                items,
+            );
             let inner = draw::inset(body, s(12), s(12));
-            let mut row_top = self.layout_binding_grid(&rotation, inner, items, shown, measure) + s(8);
+            let mut row_top =
+                self.layout_binding_grid(&rotation, inner, items, shown, measure) + s(8);
             if !fields.is_empty() && row_top + s(38) <= inner.bottom {
-                self.unit_row(&fields, rect(inner.left, row_top, inner.right, row_top + s(38)), s(84), items, shown, measure);
+                self.unit_row(
+                    &fields,
+                    rect(inner.left, row_top, inner.right, row_top + s(38)),
+                    s(84),
+                    items,
+                    shown,
+                    measure,
+                );
                 row_top += s(38) + s(8);
             }
             if !buttons.is_empty() {
-                self.layout_binding_grid(&buttons, rect(inner.left, row_top, inner.right, inner.bottom), items, shown, measure);
+                self.layout_binding_grid(
+                    &buttons,
+                    rect(inner.left, row_top, inner.right, inner.bottom),
+                    items,
+                    shown,
+                    measure,
+                );
             }
             top = bottom + gap;
         }
@@ -691,16 +873,35 @@ fn wheels_total(app: &App) -> usize {
 }
 
 fn can_toggle(current: &ButtonAction) -> bool {
-    matches!(current, ButtonAction::Keys(_) | ButtonAction::Mouse(_) | ButtonAction::Barrel(_) | ButtonAction::Toggle(_))
+    matches!(
+        current,
+        ButtonAction::Keys(_)
+            | ButtonAction::Mouse(_)
+            | ButtonAction::Barrel(_)
+            | ButtonAction::Toggle(_)
+    )
 }
 
 /// Build from the captured preset list so a modal menu keeps its command mapping.
 /// The caller owns the returned menu, including its attached submenus.
-fn binding_menu(target: BindingTarget, current: &ButtonAction, presets: &[otd_core::presets::PresetName]) -> HMENU {
+fn binding_menu(
+    target: BindingTarget,
+    current: &ButtonAction,
+    presets: &[otd_core::presets::PresetName],
+) -> HMENU {
     let menu = unsafe { CreatePopupMenu() };
-    commands::append(menu, MFT_RADIOCHECK | commands::checked(*current == ButtonAction::None), CHOICE_NONE, "None");
-    commands::append(menu, MFT_RADIOCHECK | commands::checked(matches!(current, ButtonAction::Keys(_))),
-        CHOICE_KEYS, "Key or shortcut...");
+    commands::append(
+        menu,
+        MFT_RADIOCHECK | commands::checked(*current == ButtonAction::None),
+        CHOICE_NONE,
+        "None",
+    );
+    commands::append(
+        menu,
+        MFT_RADIOCHECK | commands::checked(matches!(current, ButtonAction::Keys(_))),
+        CHOICE_KEYS,
+        "Key or shortcut...",
+    );
     commands::append(menu, MF_SEPARATOR, 0, "");
     let mouse = unsafe { CreatePopupMenu() };
     for (index, (button, label)) in MOUSE_CHOICES.iter().enumerate() {
@@ -714,31 +915,51 @@ fn binding_menu(target: BindingTarget, current: &ButtonAction, presets: &[otd_co
     commands::append_submenu(menu, mouse, "Mouse button");
     let scroll = unsafe { CreatePopupMenu() };
     for (index, (value, label)) in SCROLL_CHOICES.iter().enumerate() {
-        let action = value.parse::<ButtonAction>().expect("valid built-in scroll action");
-        commands::append(scroll, MFT_RADIOCHECK | commands::checked(*current == action),
-            CHOICE_SCROLL + index as u16, label);
+        let action = value
+            .parse::<ButtonAction>()
+            .expect("valid built-in scroll action");
+        commands::append(
+            scroll,
+            MFT_RADIOCHECK | commands::checked(*current == action),
+            CHOICE_SCROLL + index as u16,
+            label,
+        );
     }
     commands::append_submenu(menu, scroll, "Scroll");
     if matches!(target, BindingTarget::Pen(_)) {
         let pen = unsafe { CreatePopupMenu() };
         for number in 1..=otd_core::output::buttons::MAX_BARREL {
-            commands::append(pen,
+            commands::append(
+                pen,
                 MFT_RADIOCHECK | commands::checked(*current == ButtonAction::Barrel(number)),
-                CHOICE_BARREL + u16::from(number), &format!("Pen Button {number}"));
+                CHOICE_BARREL + u16::from(number),
+                &format!("Pen Button {number}"),
+            );
         }
         commands::append_submenu(menu, pen, "Pen button");
     }
     commands::append(menu, MF_SEPARATOR, 0, "");
-    commands::append(menu, MFT_RADIOCHECK | commands::checked(matches!(current, ButtonAction::Toggle(_)))
-        | if can_toggle(current) { 0 } else { MF_GRAYED }, CHOICE_TOGGLE, "Toggle binding");
+    commands::append(
+        menu,
+        MFT_RADIOCHECK
+            | commands::checked(matches!(current, ButtonAction::Toggle(_)))
+            | if can_toggle(current) { 0 } else { MF_GRAYED },
+        CHOICE_TOGGLE,
+        "Toggle binding",
+    );
     commands::append(menu, 0, CHOICE_MANAGED, "Plugin binding...");
     if presets.is_empty() {
         commands::append(menu, MF_GRAYED, CHOICE_PRESET, "Preset");
     } else {
         let preset_menu = unsafe { CreatePopupMenu() };
         for (index, preset) in presets.iter().enumerate() {
-            commands::append(preset_menu, MFT_RADIOCHECK | commands::checked(*current == ButtonAction::Preset(preset.clone())),
-                CHOICE_PRESET + index as u16, preset.as_str());
+            commands::append(
+                preset_menu,
+                MFT_RADIOCHECK
+                    | commands::checked(*current == ButtonAction::Preset(preset.clone())),
+                CHOICE_PRESET + index as u16,
+                preset.as_str(),
+            );
         }
         commands::append_submenu(menu, preset_menu, "Preset");
     }
@@ -753,35 +974,79 @@ pub(super) fn choose(window: HWND, control: HWND) {
     let toggleable = can_toggle(&current);
     let presets = match otd_core::presets::PresetStore::user().and_then(|store| store.list()) {
         Ok(list) => {
-            for warning in list.warnings { with_app(|app| app.log(Level::Warning, "Bindings", warning)); }
+            for warning in list.warnings {
+                with_app(|app| app.log(Level::Warning, "Bindings", warning));
+            }
             let mut names = Vec::new();
             for preset in list.presets {
-                if let Some(error) = preset.error { with_app(|app| app.log(Level::Error, "Bindings", format!("Preset {:?} is unavailable: {error}", preset.name))); }
-                else if names.len() < 256 { if let Ok(name) = otd_core::presets::PresetName::parse(&preset.name) { names.push(name); } }
+                if let Some(error) = preset.error {
+                    with_app(|app| {
+                        app.log(
+                            Level::Error,
+                            "Bindings",
+                            format!("Preset {:?} is unavailable: {error}", preset.name),
+                        )
+                    });
+                } else if names.len() < 256 {
+                    if let Ok(name) = otd_core::presets::PresetName::parse(&preset.name) {
+                        names.push(name);
+                    }
+                }
             }
             names
-        },
-        Err(error) => { with_app(|app| app.log(Level::Error, "Bindings", format!("Cannot list presets: {error}"))); Vec::new() }
+        }
+        Err(error) => {
+            with_app(|app| {
+                app.log(
+                    Level::Error,
+                    "Bindings",
+                    format!("Cannot list presets: {error}"),
+                )
+            });
+            Vec::new()
+        }
     };
     let menu = binding_menu(target, &current, &presets);
     let action = match commands::popup(window, menu, control) {
-        CHOICE_TOGGLE => match current { ButtonAction::Toggle(action) => Some(*action), action if toggleable => Some(ButtonAction::Toggle(Box::new(action))), _ => None },
-        choice if (CHOICE_PRESET..CHOICE_PRESET + presets.len() as u16).contains(&choice) => Some(ButtonAction::Preset(presets[(choice - CHOICE_PRESET) as usize].clone())),
-        CHOICE_MANAGED => { managed_settings::choose(window, control, managed_settings::Target::Binding(target)); None },
+        CHOICE_TOGGLE => match current {
+            ButtonAction::Toggle(action) => Some(*action),
+            action if toggleable => Some(ButtonAction::Toggle(Box::new(action))),
+            _ => None,
+        },
+        choice if (CHOICE_PRESET..CHOICE_PRESET + presets.len() as u16).contains(&choice) => Some(
+            ButtonAction::Preset(presets[(choice - CHOICE_PRESET) as usize].clone()),
+        ),
+        CHOICE_MANAGED => {
+            managed_settings::choose(window, control, managed_settings::Target::Binding(target));
+            None
+        }
         CHOICE_NONE => Some(ButtonAction::None),
         choice if (CHOICE_BARREL + 1..=CHOICE_BARREL + 3).contains(&choice) => {
             Some(ButtonAction::Barrel((choice - CHOICE_BARREL) as u8))
         }
         choice if (CHOICE_MOUSE..CHOICE_MOUSE + MOUSE_CHOICES.len() as u16).contains(&choice) => {
-            Some(ButtonAction::Mouse(MOUSE_CHOICES[(choice - CHOICE_MOUSE) as usize].0))
+            Some(ButtonAction::Mouse(
+                MOUSE_CHOICES[(choice - CHOICE_MOUSE) as usize].0,
+            ))
         }
-        choice if (CHOICE_SCROLL..CHOICE_SCROLL + SCROLL_CHOICES.len() as u16).contains(&choice) => {
-            SCROLL_CHOICES[(choice - CHOICE_SCROLL) as usize].0.parse::<ButtonAction>().ok()
+        choice
+            if (CHOICE_SCROLL..CHOICE_SCROLL + SCROLL_CHOICES.len() as u16).contains(&choice) =>
+        {
+            SCROLL_CHOICES[(choice - CHOICE_SCROLL) as usize]
+                .0
+                .parse::<ButtonAction>()
+                .ok()
         }
         CHOICE_KEYS => match shortcut::show(window, &target.describe()) {
             Ok(keys) => keys.map(ButtonAction::Keys),
             Err(error) => {
-                with_app(|app| app.log(Level::Error, "Bindings", format!("The shortcut dialog failed: {error}")));
+                with_app(|app| {
+                    app.log(
+                        Level::Error,
+                        "Bindings",
+                        format!("The shortcut dialog failed: {error}"),
+                    )
+                });
                 None
             }
         },
@@ -798,13 +1063,25 @@ mod menu_tests {
 
     struct Menu(HMENU);
     impl Drop for Menu {
-        fn drop(&mut self) { unsafe { DestroyMenu(self.0); } }
+        fn drop(&mut self) {
+            unsafe {
+                DestroyMenu(self.0);
+            }
+        }
     }
 
     fn submenu(menu: HMENU, label: &str) -> Option<HMENU> {
         for index in 0..unsafe { GetMenuItemCount(menu) } {
             let mut text = [0u16; 64];
-            let length = unsafe { GetMenuStringW(menu, index as u32, text.as_mut_ptr(), text.len() as i32, MF_BYPOSITION) };
+            let length = unsafe {
+                GetMenuStringW(
+                    menu,
+                    index as u32,
+                    text.as_mut_ptr(),
+                    text.len() as i32,
+                    MF_BYPOSITION,
+                )
+            };
             if String::from_utf16_lossy(&text[..length.max(0) as usize]) == label {
                 let child = unsafe { GetSubMenu(menu, index) };
                 return (!child.is_null()).then_some(child);
@@ -816,41 +1093,95 @@ mod menu_tests {
     /// Constructs real native menus without windows, files, a daemon or a popup.
     #[test]
     fn grouped_binding_menu_preserves_ids_checks_and_toggle_eligibility() {
-        let presets: Vec<_> = (0..256).map(|index|
-            otd_core::presets::PresetName::parse(&format!("Preset {index}")).unwrap()).collect();
+        let presets: Vec<_> = (0..256)
+            .map(|index| otd_core::presets::PresetName::parse(&format!("Preset {index}")).unwrap())
+            .collect();
         for (current, group, selected, toggle_enabled) in [
             (ButtonAction::None, None, CHOICE_NONE, false),
             ("keys:Control+Z".parse().unwrap(), None, CHOICE_KEYS, true),
-            (ButtonAction::Mouse(MouseButton::Right), Some("Mouse button"), CHOICE_MOUSE + 1, true),
-            ("scroll:down".parse().unwrap(), Some("Scroll"), CHOICE_SCROLL + 1, false),
-            (ButtonAction::Barrel(2), Some("Pen button"), CHOICE_BARREL + 2, true),
-            (ButtonAction::Toggle(Box::new(ButtonAction::Mouse(MouseButton::Left))), None, CHOICE_TOGGLE, true),
-            (ButtonAction::Preset(presets[255].clone()), Some("Preset"), CHOICE_PRESET + 255, false),
+            (
+                ButtonAction::Mouse(MouseButton::Right),
+                Some("Mouse button"),
+                CHOICE_MOUSE + 1,
+                true,
+            ),
+            (
+                "scroll:down".parse().unwrap(),
+                Some("Scroll"),
+                CHOICE_SCROLL + 1,
+                false,
+            ),
+            (
+                ButtonAction::Barrel(2),
+                Some("Pen button"),
+                CHOICE_BARREL + 2,
+                true,
+            ),
+            (
+                ButtonAction::Toggle(Box::new(ButtonAction::Mouse(MouseButton::Left))),
+                None,
+                CHOICE_TOGGLE,
+                true,
+            ),
+            (
+                ButtonAction::Preset(presets[255].clone()),
+                Some("Preset"),
+                CHOICE_PRESET + 255,
+                false,
+            ),
         ] {
             let menu = Menu(binding_menu(BindingTarget::Pen(0), &current, &presets));
             assert!(!menu.0.is_null());
-            assert!(unsafe { GetMenuItemCount(menu.0) } <= 10, "root stays short with 256 presets");
+            assert!(
+                unsafe { GetMenuItemCount(menu.0) } <= 10,
+                "root stays short with 256 presets"
+            );
             let selected_menu = group.map_or(menu.0, |label| submenu(menu.0, label).unwrap());
-            assert_ne!(unsafe { GetMenuState(selected_menu, u32::from(selected), MF_BYCOMMAND) } & MF_CHECKED, 0);
-            assert_eq!(unsafe { GetMenuState(menu.0, u32::from(CHOICE_TOGGLE), MF_BYCOMMAND) } & MF_GRAYED == 0, toggle_enabled);
+            assert_ne!(
+                unsafe { GetMenuState(selected_menu, u32::from(selected), MF_BYCOMMAND) }
+                    & MF_CHECKED,
+                0
+            );
+            assert_eq!(
+                unsafe { GetMenuState(menu.0, u32::from(CHOICE_TOGGLE), MF_BYCOMMAND) } & MF_GRAYED
+                    == 0,
+                toggle_enabled
+            );
             let mut children = Vec::new();
             for (label, first, count) in [
-                ("Mouse button", CHOICE_MOUSE, 5), ("Scroll", CHOICE_SCROLL, 4),
-                ("Pen button", CHOICE_BARREL + 1, 3), ("Preset", CHOICE_PRESET, 256),
+                ("Mouse button", CHOICE_MOUSE, 5),
+                ("Scroll", CHOICE_SCROLL, 4),
+                ("Pen button", CHOICE_BARREL + 1, 3),
+                ("Preset", CHOICE_PRESET, 256),
             ] {
                 let child = submenu(menu.0, label).unwrap();
                 assert_eq!(unsafe { GetMenuItemCount(child) }, count);
                 for index in 0..count {
-                    assert_eq!(unsafe { GetMenuItemID(child, index) }, u32::from(first) + index as u32);
+                    assert_eq!(
+                        unsafe { GetMenuItemID(child, index) },
+                        u32::from(first) + index as u32
+                    );
                 }
                 children.push(child);
             }
             drop(menu);
-            assert!(children.into_iter().all(|child| unsafe { IsMenu(child) } == 0), "parent destruction owns all submenus");
+            assert!(
+                children
+                    .into_iter()
+                    .all(|child| unsafe { IsMenu(child) } == 0),
+                "parent destruction owns all submenus"
+            );
         }
-        let menu = Menu(binding_menu(BindingTarget::Aux(0), &ButtonAction::None, &[]));
+        let menu = Menu(binding_menu(
+            BindingTarget::Aux(0),
+            &ButtonAction::None,
+            &[],
+        ));
         assert!(submenu(menu.0, "Pen button").is_none());
         assert!(submenu(menu.0, "Preset").is_none());
-        assert_ne!(unsafe { GetMenuState(menu.0, u32::from(CHOICE_PRESET), MF_BYCOMMAND) } & MF_GRAYED, 0);
+        assert_ne!(
+            unsafe { GetMenuState(menu.0, u32::from(CHOICE_PRESET), MF_BYCOMMAND) } & MF_GRAYED,
+            0
+        );
     }
 }

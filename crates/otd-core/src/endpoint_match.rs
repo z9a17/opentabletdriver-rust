@@ -78,7 +78,10 @@ pub enum Rejection {
 /// Configuration attributes supply defaults; identifier attributes win.
 pub fn matches(endpoint: &Endpoint, candidate: &Match<'_>) -> Result<(), Rejection> {
     let id = candidate.identifier;
-    if !matches!(endpoint.transport, Transport::UsbHid | Transport::BluetoothHid | Transport::WinUsb) {
+    if !matches!(
+        endpoint.transport,
+        Transport::UsbHid | Transport::BluetoothHid | Transport::WinUsb
+    ) {
         return Err(Rejection::UnsupportedTransport);
     }
     if endpoint.vendor_id != id.vendor_id().unwrap_or_default()
@@ -129,13 +132,22 @@ pub fn matches(endpoint: &Endpoint, candidate: &Match<'_>) -> Result<(), Rejecti
         }
     }
     if let Some(pattern) = attribute("HidReports")
-        && let Some(reports) = endpoint.attributes.as_ref().and_then(|a| a.get("HID_REPORTS"))
+        && let Some(reports) = endpoint
+            .attributes
+            .as_ref()
+            .and_then(|a| a.get("HID_REPORTS"))
     {
         let regex = Regex::new(pattern).map_err(|_| Rejection::InvalidPattern(pattern.clone()))?;
-        if !regex.is_match(reports) { return Err(Rejection::WrongHidReports); }
+        if !regex.is_match(reports) {
+            return Err(Rejection::WrongHidReports);
+        }
     }
     if let Some(interface) = attribute("Interface")
-        && endpoint.attributes.as_ref().and_then(|a| a.get("USB_INTERFACE_NUMBER")) != Some(interface)
+        && endpoint
+            .attributes
+            .as_ref()
+            .and_then(|a| a.get("USB_INTERFACE_NUMBER"))
+            != Some(interface)
     {
         return Err(Rejection::WrongInterface);
     }
@@ -145,9 +157,14 @@ pub fn matches(endpoint: &Endpoint, candidate: &Match<'_>) -> Result<(), Rejecti
 /// Shared by descriptor discovery and selection so impossible collections
 /// never need indexed USB string requests. Omitted sizes remain wildcards.
 pub fn matches_report_lengths(endpoint: &Endpoint, id: &DeviceIdentifier) -> bool {
-    id.input_report_length.is_none_or(|n| n == endpoint.input_length)
-        && id.output_report_length.is_none_or(|n| n == endpoint.output_length)
-        && id.feature_report_length.is_none_or(|n| n == endpoint.feature_length)
+    id.input_report_length
+        .is_none_or(|n| n == endpoint.input_length)
+        && id
+            .output_report_length
+            .is_none_or(|n| n == endpoint.output_length)
+        && id
+            .feature_report_length
+            .is_none_or(|n| n == endpoint.feature_length)
 }
 
 /// Regex patterns in a loaded database which Rust cannot parse. Run at setup
@@ -170,7 +187,10 @@ pub fn unsupported_patterns(database: &Database) -> Vec<(String, String)> {
                     }
                 }
             }
-            if let Some(pattern) = id.attributes.as_ref().and_then(|a| a.get("HidReports"))
+            if let Some(pattern) = id
+                .attributes
+                .as_ref()
+                .and_then(|a| a.get("HidReports"))
                 .or_else(|| config.attributes.as_ref().and_then(|a| a.get("HidReports")))
                 && Regex::new(pattern).is_err()
             {
@@ -425,9 +445,11 @@ mod tests {
 
     #[test]
     fn bluetooth_hid_uses_the_same_actual_identifier_constraints() {
-        let mut ep=endpoint("bluetooth-pen","bluetooth-parent",192);ep.transport=Transport::BluetoothHid;
-        assert!(select(Database::builtin(),&[ep.clone()]).is_some());
-        ep.input_length=1;assert!(select(Database::builtin(),&[ep]).is_none());
+        let mut ep = endpoint("bluetooth-pen", "bluetooth-parent", 192);
+        ep.transport = Transport::BluetoothHid;
+        assert!(select(Database::builtin(), &[ep.clone()]).is_some());
+        ep.input_length = 1;
+        assert!(select(Database::builtin(), &[ep]).is_none());
     }
 
     #[test]

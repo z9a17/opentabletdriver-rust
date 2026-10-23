@@ -20,8 +20,9 @@
 //! No device selection, initialization, binding, or output is enabled here.
 
 use super::{
-    AbsoluteAnalog, AbsoluteAnalogReport, AnalogKind, Buttons, ReportEnvelope, ReportError,
-    ReportKind, ReportMetadata, ReportValues, WheelButtons, RelativeAnalog, RelativeAnalogReport,
+    AbsoluteAnalog, AbsoluteAnalogReport, AnalogKind, Buttons, RelativeAnalog,
+    RelativeAnalogReport, ReportEnvelope, ReportError, ReportKind, ReportMetadata, ReportValues,
+    WheelButtons,
 };
 
 /// Decode `OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicReportParser`.
@@ -118,7 +119,9 @@ fn parse(
             }
         }
         Parser::V1 => {
-            if flags == 0xe0 { require_length(raw, 4)?; }
+            if flags == 0xe0 {
+                require_length(raw, 4)?;
+            }
             if flags == 0xe0 && raw[3] == 1 {
                 Layout::Auxiliary
             } else if flags == 0xe0 && raw[3] == 0x10 {
@@ -160,7 +163,7 @@ fn parse(
                 }),
                 ..ReportValues::default()
             }
-        },
+        }
         Layout::Raw | Layout::OutOfRange => ReportValues::default(),
     };
     Ok((

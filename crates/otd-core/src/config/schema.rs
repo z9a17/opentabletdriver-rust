@@ -100,8 +100,18 @@ pub(super) fn import_diagnostics(
             // Buttons and wheels are imported one by one, with their own diagnostics.
             if matches!(
                 name.as_str(),
-                "TipButton" | "EraserButton" | "PenButtons" | "AuxButtons" | "MouseButtons" | "MouseScrollUp" | "MouseScrollDown" | "WheelBindings"
-                    | "DisablePressure" | "DisableTilt" | "DisableRotation" | "EnableDragBindings"
+                "TipButton"
+                    | "EraserButton"
+                    | "PenButtons"
+                    | "AuxButtons"
+                    | "MouseButtons"
+                    | "MouseScrollUp"
+                    | "MouseScrollDown"
+                    | "WheelBindings"
+                    | "DisablePressure"
+                    | "DisableTilt"
+                    | "DisableRotation"
+                    | "EnableDragBindings"
             ) {
                 continue;
             }
@@ -208,9 +218,18 @@ pub(super) fn extract_unknown_fields(document: &mut toml::Value) -> BTreeMap<Str
         &mut preserved,
     );
     for (name, keys) in [
-        ("managed_output", &["path", "kind", "enabled", "type_name", "settings_json"][..]),
-        ("managed_tip_binding", &["path", "kind", "enabled", "type_name", "settings_json"][..]),
-        ("managed_eraser_binding", &["path", "kind", "enabled", "type_name", "settings_json"][..]),
+        (
+            "managed_output",
+            &["path", "kind", "enabled", "type_name", "settings_json"][..],
+        ),
+        (
+            "managed_tip_binding",
+            &["path", "kind", "enabled", "type_name", "settings_json"][..],
+        ),
+        (
+            "managed_eraser_binding",
+            &["path", "kind", "enabled", "type_name", "settings_json"][..],
+        ),
         ("crop", &["x", "y", "width", "height"][..]),
         (
             "disabled_radial_follow",
@@ -381,9 +400,9 @@ impl OtdSettingsDocument {
                 let tablet = profile["Tablet"].as_str().unwrap_or("").to_owned();
                 OtdProfileSummary {
                     index,
-                    runtime_tablet_supported: database.as_ref().is_ok_and(|database| {
-                        super::runtime_tablet_in(&tablet, database).is_ok()
-                    }),
+                    runtime_tablet_supported: database
+                        .as_ref()
+                        .is_ok_and(|database| super::runtime_tablet_in(&tablet, database).is_ok()),
                     tablet,
                     output_mode: profile["OutputMode"]["Path"]
                         .as_str()
@@ -652,8 +671,14 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
     }
     let mut baseline_json = imported.settings_json.clone();
     if profile.managed_output.is_some() {
-        let mut source: Value = serde_json::from_str(&baseline_json).map_err(|error| error.to_string())?;
-        source["Profiles"][imported.selected_profile]["OutputMode"]["Path"] = json!(if profile.relative.is_some() { "OpenTabletDriver.Desktop.Output.RelativeMode" } else { "OpenTabletDriver.Desktop.Output.AbsoluteMode" });
+        let mut source: Value =
+            serde_json::from_str(&baseline_json).map_err(|error| error.to_string())?;
+        source["Profiles"][imported.selected_profile]["OutputMode"]["Path"] =
+            json!(if profile.relative.is_some() {
+                "OpenTabletDriver.Desktop.Output.RelativeMode"
+            } else {
+                "OpenTabletDriver.Desktop.Output.AbsoluteMode"
+            });
         baseline_json = source.to_string();
     }
     let baseline = Profile::from_otd_profile_text(
@@ -668,13 +693,20 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
         serde_json::from_str(&imported.settings_json).map_err(|error| error.to_string())?;
     let mut document = original.clone();
     let selected = &mut document["Profiles"][imported.selected_profile];
-    let target = profile.tablet_name()?.ok_or("OTD export requires a named tablet; choose a tablet before exporting an automatic profile")?;
+    let target = profile.tablet_name()?.ok_or(
+        "OTD export requires a named tablet; choose a tablet before exporting an automatic profile",
+    )?;
     selected["Tablet"] = Value::String(target);
     let mut target_mode;
-    let managed_radial = profile.plugins.iter().any(|plugin| plugin.kind == crate::plugins::PluginKind::Dotnet
-        && plugin.type_name == crate::radial_follow::FILTER_PATH);
+    let managed_radial = profile.plugins.iter().any(|plugin| {
+        plugin.kind == crate::plugins::PluginKind::Dotnet
+            && plugin.type_name == crate::radial_follow::FILTER_PATH
+    });
     if managed_radial && !profile.radial_follow.is_empty() {
-        return Err("OTD export cannot reconcile mixed native and unchanged managed Radial Follow entries".into());
+        return Err(
+            "OTD export cannot reconcile mixed native and unchanged managed Radial Follow entries"
+                .into(),
+        );
     }
     let pen = profile.output == super::OutputKind::Pen;
     if let Some(relative) = profile.relative {
@@ -787,8 +819,11 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
     if let Some(config) = &profile.managed_output {
         target_mode = config.type_name.as_str();
         ensure_object(&mut selected["OutputMode"])?;
-        let settings: serde_json::Map<String, Value> = serde_json::from_str(&config.settings_json).map_err(|error| error.to_string())?;
-        for (property, value) in settings { set_store_property(&mut selected["OutputMode"], &property, value)?; }
+        let settings: serde_json::Map<String, Value> =
+            serde_json::from_str(&config.settings_json).map_err(|error| error.to_string())?;
+        for (property, value) in settings {
+            set_store_property(&mut selected["OutputMode"], &property, value)?;
+        }
         set_field(&mut selected["OutputMode"], "Enable", json!(config.enabled))?;
     }
     if selected["OutputMode"]["Path"].as_str() != Some(target_mode) {
@@ -803,8 +838,17 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
         }
         set_field(&mut selected["OutputMode"], "Path", json!(target_mode))?;
     }
-    for (field, config) in [("TipButton", &profile.managed_tip_binding), ("EraserButton", &profile.managed_eraser_binding)] {
-        if let Some(config) = config { write_pen_button(&mut selected["Bindings"][field], &crate::output::buttons::ButtonAction::Managed(config.clone()), pen)?; }
+    for (field, config) in [
+        ("TipButton", &profile.managed_tip_binding),
+        ("EraserButton", &profile.managed_eraser_binding),
+    ] {
+        if let Some(config) = config {
+            write_pen_button(
+                &mut selected["Bindings"][field],
+                &crate::output::buttons::ButtonAction::Managed(config.clone()),
+                pen,
+            )?;
+        }
     }
     for (
         button,
@@ -842,7 +886,11 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
     ] {
         // A changed output kind rewrites an enabled contact binding for it.
         let rebind = current_enabled && profile.output != baseline.output;
-        let managed = if button == "TipButton" { &profile.managed_tip_binding } else { &profile.managed_eraser_binding };
+        let managed = if button == "TipButton" {
+            &profile.managed_tip_binding
+        } else {
+            &profile.managed_eraser_binding
+        };
         if managed.is_none() && (current_enabled != old_enabled || rebind) {
             ensure_object(&mut selected["Bindings"])?;
             let store = &mut selected["Bindings"][button];
@@ -878,7 +926,12 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
                 "hardware tip-switch contact cannot be represented as an OTD pressure threshold",
             )?;
             let max_pressure = profile.tablet.max_pressure;
-            let percent = current_percent.filter(|percent| super::activation_raw_for(f64::from(*percent), max_pressure).ok() == Some(raw)).map(f64::from).unwrap_or_else(|| (f64::from(raw) - 0.5) * 100.0 / f64::from(max_pressure));
+            let percent = current_percent
+                .filter(|percent| {
+                    super::activation_raw_for(f64::from(*percent), max_pressure).ok() == Some(raw)
+                })
+                .map(f64::from)
+                .unwrap_or_else(|| (f64::from(raw) - 0.5) * 100.0 / f64::from(max_pressure));
             if super::activation_raw_for(percent, max_pressure).ok() != Some(raw) {
                 return Err(format!(
                     "raw threshold {raw} has no supported OTD percent representation"
@@ -888,20 +941,52 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
         }
     }
     for (name, current, old) in [
-        ("EnableDragBindings", profile.contact.drag_only, baseline.contact.drag_only),
-        ("DisablePressure", profile.contact.disable_pressure, baseline.contact.disable_pressure),
-        ("DisableTilt", profile.contact.disable_tilt, baseline.contact.disable_tilt),
-        ("DisableRotation", profile.contact.disable_rotation, baseline.contact.disable_rotation),
+        (
+            "EnableDragBindings",
+            profile.contact.drag_only,
+            baseline.contact.drag_only,
+        ),
+        (
+            "DisablePressure",
+            profile.contact.disable_pressure,
+            baseline.contact.disable_pressure,
+        ),
+        (
+            "DisableTilt",
+            profile.contact.disable_tilt,
+            baseline.contact.disable_tilt,
+        ),
+        (
+            "DisableRotation",
+            profile.contact.disable_rotation,
+            baseline.contact.disable_rotation,
+        ),
     ] {
-        if current != old { set_field(&mut selected["Bindings"], name, json!(current))?; }
+        if current != old {
+            set_field(&mut selected["Bindings"], name, json!(current))?;
+        }
     }
     if profile.mouse_buttons != baseline.mouse_buttons {
         ensure_object(&mut selected["Bindings"])?;
-        export_button_list(&mut selected["Bindings"]["MouseButtons"], "mouse button", &profile.mouse_buttons, &baseline.mouse_buttons, false)?;
+        export_button_list(
+            &mut selected["Bindings"]["MouseButtons"],
+            "mouse button",
+            &profile.mouse_buttons,
+            &baseline.mouse_buttons,
+            false,
+        )?;
     }
     for (name, current, old) in [
-        ("MouseScrollUp", &profile.mouse_scroll_up, &baseline.mouse_scroll_up),
-        ("MouseScrollDown", &profile.mouse_scroll_down, &baseline.mouse_scroll_down),
+        (
+            "MouseScrollUp",
+            &profile.mouse_scroll_up,
+            &baseline.mouse_scroll_up,
+        ),
+        (
+            "MouseScrollDown",
+            &profile.mouse_scroll_down,
+            &baseline.mouse_scroll_down,
+        ),
     ] {
         if current != old {
             ensure_object(&mut selected["Bindings"])?;
@@ -981,44 +1066,102 @@ pub(super) fn export_otd(profile: &Profile) -> Result<String, String> {
 /// resolved chain cannot be reported as though a DLL currently runs it.
 fn reconcile_managed_stores(document: &mut Value, profile: &Profile) -> Result<(), String> {
     use crate::plugins::PluginKind;
-    if profile.plugins.is_empty() { return Ok(()); }
+    if profile.plugins.is_empty() {
+        return Ok(());
+    }
     for plugin in &profile.plugins {
         plugin.validate()?;
-        if !plugin.kind.is_managed() { return Err("Native ABI DLL entries have no unchanged OTD store identity".into()); }
+        if !plugin.kind.is_managed() {
+            return Err("Native ABI DLL entries have no unchanged OTD store identity".into());
+        }
     }
-    let filters: Vec<_> = profile.plugins.iter().filter(|plugin| plugin.kind == PluginKind::Dotnet).collect();
-    let tools: Vec<_> = profile.plugins.iter().filter(|plugin| plugin.kind == PluginKind::DotnetTool).collect();
-    let managed_radial = filters.iter().any(|plugin| plugin.type_name == crate::radial_follow::FILTER_PATH);
-    let selected = profile.imported_otd.as_ref().ok_or("Managed stores require their original OTD archive")?.selected_profile;
-    reconcile_collection(&mut document["Profiles"][selected]["Filters"], &filters, !managed_radial, "Filters")?;
+    let filters: Vec<_> = profile
+        .plugins
+        .iter()
+        .filter(|plugin| plugin.kind == PluginKind::Dotnet)
+        .collect();
+    let tools: Vec<_> = profile
+        .plugins
+        .iter()
+        .filter(|plugin| plugin.kind == PluginKind::DotnetTool)
+        .collect();
+    let managed_radial = filters
+        .iter()
+        .any(|plugin| plugin.type_name == crate::radial_follow::FILTER_PATH);
+    let selected = profile
+        .imported_otd
+        .as_ref()
+        .ok_or("Managed stores require their original OTD archive")?
+        .selected_profile;
+    reconcile_collection(
+        &mut document["Profiles"][selected]["Filters"],
+        &filters,
+        !managed_radial,
+        "Filters",
+    )?;
     reconcile_collection(&mut document["Tools"], &tools, false, "Tools")?;
     Ok(())
 }
 
-fn reconcile_collection(stores: &mut Value, plugins: &[&crate::plugins::PluginConfig], native_radial: bool, noun: &str) -> Result<(), String> {
-    if stores.is_null() && plugins.is_empty() { return Ok(()); }
-    let stores = stores.as_array_mut().ok_or_else(|| format!("Preserved {noun} must be an array to reconcile unchanged DLLs"))?;
+fn reconcile_collection(
+    stores: &mut Value,
+    plugins: &[&crate::plugins::PluginConfig],
+    native_radial: bool,
+    noun: &str,
+) -> Result<(), String> {
+    if stores.is_null() && plugins.is_empty() {
+        return Ok(());
+    }
+    let stores = stores
+        .as_array_mut()
+        .ok_or_else(|| format!("Preserved {noun} must be an array to reconcile unchanged DLLs"))?;
     // Repeated class slots are matched only when every occurrence is present;
     // otherwise a disabled duplicate would make property ownership ambiguous.
     for plugin in plugins {
-        let source = stores.iter().filter(|store| store["Path"].as_str() == Some(plugin.type_name.as_str())).count();
-        let runtime = plugins.iter().filter(|entry| entry.type_name == plugin.type_name).count();
-        if source != runtime { return Err(format!("Preserved {noun} has ambiguous count for unchanged class {}", plugin.type_name)); }
+        let source = stores
+            .iter()
+            .filter(|store| store["Path"].as_str() == Some(plugin.type_name.as_str()))
+            .count();
+        let runtime = plugins
+            .iter()
+            .filter(|entry| entry.type_name == plugin.type_name)
+            .count();
+        if source != runtime {
+            return Err(format!(
+                "Preserved {noun} has ambiguous count for unchanged class {}",
+                plugin.type_name
+            ));
+        }
     }
     let mut next = 0;
     for store in stores {
-        let Some(name) = store["Path"].as_str() else { continue; };
-        if native_radial && name == crate::radial_follow::FILTER_PATH { continue; }
-        if plugins.get(next).is_some_and(|plugin| plugin.type_name == name) {
+        let Some(name) = store["Path"].as_str() else {
+            continue;
+        };
+        if native_radial && name == crate::radial_follow::FILTER_PATH {
+            continue;
+        }
+        if plugins
+            .get(next)
+            .is_some_and(|plugin| plugin.type_name == name)
+        {
             reconcile_store(store, plugins[next])?;
             next += 1;
         } else if store["Enable"].as_bool().unwrap_or(false) {
-            return Err(format!("Preserved active {noun} class {name} has no matching runtime slot/order"));
+            return Err(format!(
+                "Preserved active {noun} class {name} has no matching runtime slot/order"
+            ));
         } else if plugins.iter().any(|plugin| plugin.type_name == name) {
-            return Err(format!("Preserved {noun} order differs from the unchanged runtime chain"));
+            return Err(format!(
+                "Preserved {noun} order differs from the unchanged runtime chain"
+            ));
         }
     }
-    if next != plugins.len() { return Err(format!("Runtime {noun} contains classes absent from preserved source order")); }
+    if next != plugins.len() {
+        return Err(format!(
+            "Runtime {noun} contains classes absent from preserved source order"
+        ));
+    }
     Ok(())
 }
 
@@ -1026,20 +1169,33 @@ fn reconcile_store(store: &mut Value, plugin: &crate::plugins::PluginConfig) -> 
     if plugin.enabled && store["Settings"].is_null() {
         return Err("Enabled unchanged OTD store has missing/null Settings; upstream ApplySettings cannot enumerate it".into());
     }
-    let current: serde_json::Map<String, Value> = serde_json::from_str(&plugin.settings_json).map_err(|error| error.to_string())?;
-    let original: serde_json::Map<String, Value> = serde_json::from_str(&Profile::managed_store_settings(store)?).map_err(|error| error.to_string())?;
+    let current: serde_json::Map<String, Value> =
+        serde_json::from_str(&plugin.settings_json).map_err(|error| error.to_string())?;
+    let original: serde_json::Map<String, Value> =
+        serde_json::from_str(&Profile::managed_store_settings(store)?)
+            .map_err(|error| error.to_string())?;
     // Newtonsoft's private JsonConstructor leaves bool Enable=false when
     // absent. Its ordinary Type constructor's default true does not apply to
     // a deserialized original settings document.
-    if store["Enable"].as_bool().unwrap_or(false) != plugin.enabled { set_field(store, "Enable", json!(plugin.enabled))?; }
-    if original == current { return Ok(()); }
+    if store["Enable"].as_bool().unwrap_or(false) != plugin.enabled {
+        set_field(store, "Enable", json!(plugin.enabled))?;
+    }
+    if original == current {
+        return Ok(());
+    }
     // Removing a saved property restores its constructor default. Preserve
     // other setting entries and duplicate last-value semantics on edited keys.
     if let Some(settings) = store["Settings"].as_array_mut() {
-        settings.retain(|setting| setting["Property"].as_str().is_none_or(|name| !original.contains_key(name) || current.contains_key(name)));
+        settings.retain(|setting| {
+            setting["Property"]
+                .as_str()
+                .is_none_or(|name| !original.contains_key(name) || current.contains_key(name))
+        });
     }
     for (name, value) in current {
-        if original.get(&name) != Some(&value) { set_store_property(store, &name, value)?; }
+        if original.get(&name) != Some(&value) {
+            set_store_property(store, &name, value)?;
+        }
     }
     Ok(())
 }
@@ -1101,7 +1257,10 @@ fn export_pen_buttons(
     Ok(())
 }
 
-fn check_actions(actions: &[crate::output::buttons::ButtonAction], noun: &str) -> Result<(), String> {
+fn check_actions(
+    actions: &[crate::output::buttons::ButtonAction],
+    noun: &str,
+) -> Result<(), String> {
     if actions.len() > super::MAX_PEN_BUTTONS {
         return Err(format!(
             "OTD export supports at most {} {noun} actions",
@@ -1109,8 +1268,15 @@ fn check_actions(actions: &[crate::output::buttons::ButtonAction], noun: &str) -
         ));
     }
     for action in actions {
-        if action.to_string().parse::<crate::output::buttons::ButtonAction>().as_ref() != Ok(action) {
-            return Err(format!("OTD export requires supported, nonempty {noun} actions"));
+        if action
+            .to_string()
+            .parse::<crate::output::buttons::ButtonAction>()
+            .as_ref()
+            != Ok(action)
+        {
+            return Err(format!(
+                "OTD export requires supported, nonempty {noun} actions"
+            ));
         }
     }
     Ok(())
@@ -1164,7 +1330,8 @@ fn export_wheels(
     let unbound = WheelBinding::default();
     let count = profile.wheels.len().max(baseline.wheels.len());
     if (0..count).all(|index| {
-        profile.wheels.get(index).unwrap_or(&unbound) == baseline.wheels.get(index).unwrap_or(&unbound)
+        profile.wheels.get(index).unwrap_or(&unbound)
+            == baseline.wheels.get(index).unwrap_or(&unbound)
     }) {
         return Ok(());
     }
@@ -1205,7 +1372,12 @@ fn export_wheels(
         ensure_object(entry)?;
         let wheel = index + 1;
         for (key, now, before, noun) in [
-            ("ClockwiseRotation", &current.clockwise, &old.clockwise, "clockwise rotation"),
+            (
+                "ClockwiseRotation",
+                &current.clockwise,
+                &old.clockwise,
+                "clockwise rotation",
+            ),
             (
                 "CounterClockwiseRotation",
                 &current.counter_clockwise,
@@ -1273,18 +1445,27 @@ mod native_binding_export_tests {
     #[test]
     fn original_logical_keys_export_names_and_native_positions_are_not_reinterpreted() {
         let mut store = serde_json::Value::Null;
-        super::write_pen_button(&mut store, &"keys:vk:Control+vk:A".parse().unwrap(), false).unwrap();
-        assert_eq!(store["Path"], "OpenTabletDriver.Desktop.Binding.MultiKeyBinding");
+        super::write_pen_button(&mut store, &"keys:vk:Control+vk:A".parse().unwrap(), false)
+            .unwrap();
+        assert_eq!(
+            store["Path"],
+            "OpenTabletDriver.Desktop.Binding.MultiKeyBinding"
+        );
         assert_eq!(store["Settings"][0]["Value"], "Control+A");
         let mut physical = serde_json::Value::Null;
-        assert!(super::write_pen_button(&mut physical, &"keys:A".parse().unwrap(), false).unwrap_err().contains("physical Windows"));
+        assert!(
+            super::write_pen_button(&mut physical, &"keys:A".parse().unwrap(), false)
+                .unwrap_err()
+                .contains("physical Windows")
+        );
         assert!(physical.is_null());
     }
     #[test]
     fn native_extensions_do_not_fabricate_original_binding_stores() {
         for action in ["toggle:mouse:left", "preset:Work"] {
             let mut source = serde_json::Value::Null;
-            let error = super::write_pen_button(&mut source, &action.parse().unwrap(), false).unwrap_err();
+            let error =
+                super::write_pen_button(&mut source, &action.parse().unwrap(), false).unwrap_err();
             assert!(source.is_null());
             assert!(error.contains("TOML") || error.contains("collection"));
         }
@@ -1293,15 +1474,23 @@ mod native_binding_export_tests {
 
 fn unknown_binding_properties(store: &Value, path: &str) -> bool {
     let allowed: &[&str] = match path {
-        super::ADAPTIVE_BINDING => &["Binding"], super::MOUSE_BINDING => &["Button"],
-        super::KEY_BINDING => &["Key"], super::MULTI_KEY_BINDING => &["Keys"],
+        super::ADAPTIVE_BINDING => &["Binding"],
+        super::MOUSE_BINDING => &["Button"],
+        super::KEY_BINDING => &["Key"],
+        super::MULTI_KEY_BINDING => &["Keys"],
         super::MOUSE_SCROLL_BINDING => &["Direction", "Amount", "Interval"],
         _ => return true,
     };
-    store["Settings"].as_array().is_some_and(|settings| settings.iter().any(|setting| {
-        setting["Property"].as_str().is_none_or(|property| !allowed.contains(&property))
-            || setting.as_object().is_none_or(|fields| fields.keys().any(|key| key != "Property" && key != "Value"))
-    }))
+    store["Settings"].as_array().is_some_and(|settings| {
+        settings.iter().any(|setting| {
+            setting["Property"]
+                .as_str()
+                .is_none_or(|property| !allowed.contains(&property))
+                || setting.as_object().is_none_or(|fields| {
+                    fields.keys().any(|key| key != "Property" && key != "Value")
+                })
+        })
+    })
 }
 
 fn write_pen_button(
@@ -1320,8 +1509,11 @@ fn write_pen_button(
         ensure_object(store)?;
         set_field(store, "Path", json!(config.type_name))?;
         set_field(store, "Enable", json!(config.enabled))?;
-        let settings: serde_json::Map<String, Value> = serde_json::from_str(&config.settings_json).map_err(|error| error.to_string())?;
-        for (property, value) in settings { set_store_property(store, &property, value)?; }
+        let settings: serde_json::Map<String, Value> =
+            serde_json::from_str(&config.settings_json).map_err(|error| error.to_string())?;
+        for (property, value) in settings {
+            set_store_property(store, &property, value)?;
+        }
         return Ok(());
     }
     if !store.is_null() {
@@ -1344,14 +1536,23 @@ fn write_pen_button(
             set_field(store, "Path", json!(super::MOUSE_SCROLL_BINDING))?;
         }
         set_field(store, "Enable", json!(true))?;
-        set_store_property(store, "Direction", json!(match scroll.axis { crate::output::buttons::ScrollAxis::Vertical => "Vertical", crate::output::buttons::ScrollAxis::Horizontal => "Horizontal" }))?;
+        set_store_property(
+            store,
+            "Direction",
+            json!(match scroll.axis {
+                crate::output::buttons::ScrollAxis::Vertical => "Vertical",
+                crate::output::buttons::ScrollAxis::Horizontal => "Horizontal",
+            }),
+        )?;
         set_store_property(store, "Amount", json!(scroll.amount))?;
         set_store_property(store, "Interval", json!(scroll.interval_ms))?;
         return Ok(());
     }
     // Original Windows names are logical VKs. A native physical letter,
     // digit or OEM position has no layout-independent original store value.
-    if cfg!(windows) && matches!(action, ButtonAction::Keys(keys) if keys.iter().any(|key| matches!(key.usage(), 0x04..=0x27 | 0x2d..=0x38))) {
+    if cfg!(windows)
+        && matches!(action, ButtonAction::Keys(keys) if keys.iter().any(|key| matches!(key.usage(), 0x04..=0x27 | 0x2d..=0x38)))
+    {
         return Err("physical Windows letter/digit/OEM bindings cannot be represented as original logical keys; save TOML or select an original logical key binding".into());
     }
     let (path, property, value) = match action {
@@ -1531,75 +1732,128 @@ mod managed_export_tests {
             "Bindings":{},"Filters":filters}],"Tools":tools,"Future":null}).to_string()
     }
     fn plugin(name: &str, kind: PluginKind, settings: &str, enabled: bool) -> PluginConfig {
-        PluginConfig { path: PathBuf::from("E:/resolved/Original.dll"), kind,
-            type_name: name.into(), settings_json: settings.into(), enabled }
+        PluginConfig {
+            path: PathBuf::from("E:/resolved/Original.dll"),
+            kind,
+            type_name: name.into(),
+            settings_json: settings.into(),
+            enabled,
+        }
     }
     #[test]
     fn unchanged_managed_stores_preserve_exact_archive_and_missing_null_properties() {
-        let text = source(json!([{"Path":"Example.Filter","Extension":"keep","Settings":[
+        let text = source(
+            json!([{"Path":"Example.Filter","Extension":"keep","Settings":[
             {"Property":"Amount","Value":1,"Future":7},
-            {"Property":"Nullable","Value":null}, {"Property":"Missing"}]}]), Value::Null);
-        let mut profile = Profile::from_otd_text(&text,Path::new("original.json")).unwrap();
-        profile.plugins.push(plugin("Example.Filter",PluginKind::Dotnet,r#"{"Amount":1,"Nullable":null}"#,false));
-        assert_eq!(export_otd(&profile).unwrap(),text);
+            {"Property":"Nullable","Value":null}, {"Property":"Missing"}]}]),
+            Value::Null,
+        );
+        let mut profile = Profile::from_otd_text(&text, Path::new("original.json")).unwrap();
+        profile.plugins.push(plugin(
+            "Example.Filter",
+            PluginKind::Dotnet,
+            r#"{"Amount":1,"Nullable":null}"#,
+            false,
+        ));
+        assert_eq!(export_otd(&profile).unwrap(), text);
         profile.plugins[0].settings_json = r#"{"Amount":2,"Nullable":null,"Added":false}"#.into();
         let exported: Value = serde_json::from_str(&export_otd(&profile).unwrap()).unwrap();
         let store = &exported["Profiles"][0]["Filters"][0];
-        assert_eq!(store["Extension"],"keep");
+        assert_eq!(store["Extension"], "keep");
         assert!(store.get("Enable").is_none());
-        assert_eq!(store["Settings"][0],json!({"Property":"Amount","Value":2,"Future":7}));
-        assert_eq!(store["Settings"][1]["Value"],Value::Null);
+        assert_eq!(
+            store["Settings"][0],
+            json!({"Property":"Amount","Value":2,"Future":7})
+        );
+        assert_eq!(store["Settings"][1]["Value"], Value::Null);
         assert!(store["Settings"][2].get("Value").is_none());
         assert!(exported["Tools"].is_null());
         assert!(!exported.to_string().contains("resolved/Original"));
     }
     #[test]
     fn managed_radial_follow_owns_original_active_and_disabled_slots_without_native_duplication() {
-        let text = source(json!([
-            {"Path":crate::radial_follow::FILTER_PATH,"Enable":true,"Settings":[{"Property":"OuterRadius","Value":10}]},
-            {"Path":crate::radial_follow::FILTER_PATH,"Enable":false,"Settings":null},
-            {"Path":"Example.Filter","Enable":true,"Settings":[]}
-        ]),json!([{"Path":"Example.Tool","Enable":true,"Settings":[{"Property":"Nullable","Value":null}]}]));
-        let mut profile = Profile::from_otd_text(&text,Path::new("original.json")).unwrap();
+        let text = source(
+            json!([
+                {"Path":crate::radial_follow::FILTER_PATH,"Enable":true,"Settings":[{"Property":"OuterRadius","Value":10}]},
+                {"Path":crate::radial_follow::FILTER_PATH,"Enable":false,"Settings":null},
+                {"Path":"Example.Filter","Enable":true,"Settings":[]}
+            ]),
+            json!([{"Path":"Example.Tool","Enable":true,"Settings":[{"Property":"Nullable","Value":null}]}]),
+        );
+        let mut profile = Profile::from_otd_text(&text, Path::new("original.json")).unwrap();
         profile.radial_follow.clear();
         profile.plugins = vec![
-            plugin(crate::radial_follow::FILTER_PATH,PluginKind::Dotnet,r#"{"OuterRadius":10}"#,true),
-            plugin(crate::radial_follow::FILTER_PATH,PluginKind::Dotnet,"{}",false),
-            plugin("Example.Filter",PluginKind::Dotnet,"{}",true),
-            plugin("Example.Tool",PluginKind::DotnetTool,r#"{"Nullable":null}"#,true),
+            plugin(
+                crate::radial_follow::FILTER_PATH,
+                PluginKind::Dotnet,
+                r#"{"OuterRadius":10}"#,
+                true,
+            ),
+            plugin(
+                crate::radial_follow::FILTER_PATH,
+                PluginKind::Dotnet,
+                "{}",
+                false,
+            ),
+            plugin("Example.Filter", PluginKind::Dotnet, "{}", true),
+            plugin(
+                "Example.Tool",
+                PluginKind::DotnetTool,
+                r#"{"Nullable":null}"#,
+                true,
+            ),
         ];
-        assert_eq!(export_otd(&profile).unwrap(),text);
+        assert_eq!(export_otd(&profile).unwrap(), text);
         profile.plugins[0].enabled = false;
         profile.plugins[3].settings_json = r#"{"Nullable":3}"#.into();
-        let exported:Value = serde_json::from_str(&export_otd(&profile).unwrap()).unwrap();
-        assert_eq!(exported["Profiles"][0]["Filters"][0]["Enable"],false);
-        assert_eq!(exported["Tools"][0]["Settings"][0]["Value"],3);
+        let exported: Value = serde_json::from_str(&export_otd(&profile).unwrap()).unwrap();
+        assert_eq!(exported["Profiles"][0]["Filters"][0]["Enable"], false);
+        assert_eq!(exported["Tools"][0]["Settings"][0]["Value"], 3);
         assert!(profile.radial_follow.is_empty());
     }
     #[test]
     fn duplicate_ambiguity_reordered_chain_and_native_abi_are_rejected() {
-        let text = source(json!([
-            {"Path":"Example.A","Enable":true,"Settings":[]},
-            {"Path":"Example.B","Enable":true,"Settings":[]},
-            {"Path":"Example.A","Enable":false,"Settings":[]}
-        ]),json!([]));
-        let mut profile = Profile::from_otd_text(&text,Path::new("original.json")).unwrap();
-        profile.plugins = vec![plugin("Example.A",PluginKind::Dotnet,"{}",true),plugin("Example.B",PluginKind::Dotnet,"{}",true)];
-        assert!(export_otd(&profile).unwrap_err().contains("ambiguous count"));
-        profile.plugins.push(plugin("Example.A",PluginKind::Dotnet,"{}",false));
-        profile.plugins.swap(0,1);
+        let text = source(
+            json!([
+                {"Path":"Example.A","Enable":true,"Settings":[]},
+                {"Path":"Example.B","Enable":true,"Settings":[]},
+                {"Path":"Example.A","Enable":false,"Settings":[]}
+            ]),
+            json!([]),
+        );
+        let mut profile = Profile::from_otd_text(&text, Path::new("original.json")).unwrap();
+        profile.plugins = vec![
+            plugin("Example.A", PluginKind::Dotnet, "{}", true),
+            plugin("Example.B", PluginKind::Dotnet, "{}", true),
+        ];
+        assert!(
+            export_otd(&profile)
+                .unwrap_err()
+                .contains("ambiguous count")
+        );
+        profile
+            .plugins
+            .push(plugin("Example.A", PluginKind::Dotnet, "{}", false));
+        profile.plugins.swap(0, 1);
         assert!(export_otd(&profile).is_err());
-        profile.plugins.swap(0,1);
+        profile.plugins.swap(0, 1);
         profile.plugins[0].kind = PluginKind::Native;
         assert!(export_otd(&profile).unwrap_err().contains("Native ABI"));
     }
     #[test]
     fn disabled_null_settings_remain_null_but_activating_them_requires_representable_settings() {
-        let text = source(json!([{"Path":"Example.Filter","Enable":false,"Settings":null}]),json!([]));
-        let mut profile = Profile::from_otd_text(&text,Path::new("original.json")).unwrap();
-        profile.plugins = vec![plugin("Example.Filter",PluginKind::Dotnet,"{}",false)];
-        assert_eq!(export_otd(&profile).unwrap(),text);
+        let text = source(
+            json!([{"Path":"Example.Filter","Enable":false,"Settings":null}]),
+            json!([]),
+        );
+        let mut profile = Profile::from_otd_text(&text, Path::new("original.json")).unwrap();
+        profile.plugins = vec![plugin("Example.Filter", PluginKind::Dotnet, "{}", false)];
+        assert_eq!(export_otd(&profile).unwrap(), text);
         profile.plugins[0].enabled = true;
-        assert!(export_otd(&profile).unwrap_err().contains("missing/null Settings"));
+        assert!(
+            export_otd(&profile)
+                .unwrap_err()
+                .contains("missing/null Settings")
+        );
     }
 }

@@ -12,8 +12,7 @@
 
 use super::{
     AnalogKind, Buttons, RelativeAnalog, RelativeAnalogReport, ReportEnvelope, ReportError,
-    ReportKind, ReportMetadata, ReportValues, WheelButtons, parse_tablet,
-    xp_pen,
+    ReportKind, ReportMetadata, ReportValues, WheelButtons, parse_tablet, xp_pen,
 };
 
 type Parsed<'a> = Result<(ReportKind, ReportEnvelope<'a>), ReportError>;
@@ -263,17 +262,22 @@ pub fn parse_silvercrest(raw: &[u8], metadata: ReportMetadata) -> Parsed<'_> {
         0x02 => parse_genius_v2(raw, metadata),
         0x0a => {
             require_length(raw, 4)?;
-            data(raw, metadata, ReportValues {
-                aux_buttons: Some(buttons(raw[1], &[2, 3, 4])?),
-                relative_analog: Some(RelativeAnalogReport {
-                    kind: AnalogKind::Wheel,
-                    deltas: RelativeAnalog::from_slice(&[i32::from(raw[2] as i8)])?,
-                }),
-                wheel_buttons: Some(WheelButtons::from_slice(&[
-                    Buttons::from_bits(u64::from(raw[3] == 1), 1)?,
-                ])?),
-                ..ReportValues::default()
-            })
+            data(
+                raw,
+                metadata,
+                ReportValues {
+                    aux_buttons: Some(buttons(raw[1], &[2, 3, 4])?),
+                    relative_analog: Some(RelativeAnalogReport {
+                        kind: AnalogKind::Wheel,
+                        deltas: RelativeAnalog::from_slice(&[i32::from(raw[2] as i8)])?,
+                    }),
+                    wheel_buttons: Some(WheelButtons::from_slice(&[Buttons::from_bits(
+                        u64::from(raw[3] == 1),
+                        1,
+                    )?])?),
+                    ..ReportValues::default()
+                },
+            )
         }
         _ => data(raw, metadata, ReportValues::default()),
     }

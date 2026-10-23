@@ -47,26 +47,64 @@ impl KeyboardUsage {
 
     pub const fn is_modifier(self) -> bool {
         (self.0 >= 0xe0 && self.0 <= 0xe7)
-            || matches!(self.windows_virtual_code(), Some(0x10..=0x12 | 0x5b..=0x5c | 0xa0..=0xa5))
-            || matches!(self.macos_virtual_code(),Some(54..=56 | 58..=62))
-            || matches!(self.linux_event_code(),Some(29 | 42 | 54 | 56 | 97 | 100 | 125 | 126))
+            || matches!(
+                self.windows_virtual_code(),
+                Some(0x10..=0x12 | 0x5b..=0x5c | 0xa0..=0xa5)
+            )
+            || matches!(self.macos_virtual_code(), Some(54..=56 | 58..=62))
+            || matches!(
+                self.linux_event_code(),
+                Some(29 | 42 | 54 | 56 | 97 | 100 | 125 | 126)
+            )
     }
 
     /// Original Windows keys are logical virtual keys; native usages remain
     /// physical keys. This synthetic domain retains the u16 command ABI.
     pub const fn windows_virtual_key(code: u16) -> Option<Self> {
-        if code > 0 && code <= 255 { Some(Self(0x2000 | code)) } else { None }
+        if code > 0 && code <= 255 {
+            Some(Self(0x2000 | code))
+        } else {
+            None
+        }
     }
     pub const fn windows_virtual_code(self) -> Option<u16> {
-        if self.0 > 0x2000 && self.0 <= 0x20ff { Some(self.0 & 0xff) } else { None }
+        if self.0 > 0x2000 && self.0 <= 0x20ff {
+            Some(self.0 & 0xff)
+        } else {
+            None
+        }
     }
 
     /// CGKeyCode zero is the real A key; original None is handled as no-op
     /// by the name resolver and must never erase this encoded identity.
-    pub const fn macos_virtual_key(code:u16)->Option<Self>{if code<128{Some(Self(0x4000|code))}else{None}}
-    pub const fn macos_virtual_code(self)->Option<u16>{if self.0>=0x4000&&self.0<0x4080{Some(self.0&0x7f)}else{None}}
-    pub const fn linux_event_key(code:u16)->Option<Self>{if code>0&&code<768{Some(Self(0x8000|code))}else{None}}
-    pub const fn linux_event_code(self)->Option<u16>{if self.0>0x8000&&self.0<0x8300{Some(self.0&0x3ff)}else{None}}
+    pub const fn macos_virtual_key(code: u16) -> Option<Self> {
+        if code < 128 {
+            Some(Self(0x4000 | code))
+        } else {
+            None
+        }
+    }
+    pub const fn macos_virtual_code(self) -> Option<u16> {
+        if self.0 >= 0x4000 && self.0 < 0x4080 {
+            Some(self.0 & 0x7f)
+        } else {
+            None
+        }
+    }
+    pub const fn linux_event_key(code: u16) -> Option<Self> {
+        if code > 0 && code < 768 {
+            Some(Self(0x8000 | code))
+        } else {
+            None
+        }
+    }
+    pub const fn linux_event_code(self) -> Option<u16> {
+        if self.0 > 0x8000 && self.0 < 0x8300 {
+            Some(self.0 & 0x3ff)
+        } else {
+            None
+        }
+    }
 
     pub const fn consumer_key(self) -> Option<ConsumerKey> {
         match self.0 {
@@ -97,7 +135,9 @@ pub enum ConsumerKey {
     StopSong = 0xb7,
 }
 impl ConsumerKey {
-    pub const fn keyboard_usage(self) -> KeyboardUsage { KeyboardUsage(0x1000 | self as u16) }
+    pub const fn keyboard_usage(self) -> KeyboardUsage {
+        KeyboardUsage(0x1000 | self as u16)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

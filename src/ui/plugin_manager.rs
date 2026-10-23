@@ -6,15 +6,14 @@ use super::*;
 use crate::plugin_catalog::{self, PluginMetadata};
 use std::sync::mpsc::{self, Receiver, Sender};
 use windows_sys::Win32::UI::Controls::{
-    CDDS_ITEMPREPAINT, CDDS_POSTPAINT, CDRF_NOTIFYITEMDRAW, CDRF_NOTIFYPOSTPAINT,
-    EM_SETRECT, HDITEMW, HDI_TEXT, HDM_GETITEMCOUNT,
-    HDM_GETITEMRECT, HDM_GETITEMW, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW, LVIF_TEXT,
-    LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS, LVM_GETCOLUMNWIDTH,
-    LVM_GETHEADER, LVM_GETITEMSTATE, LVM_GETITEMTEXTW, LVM_GETNEXTITEM,
-    LVM_INSERTCOLUMNW, LVM_INSERTITEMW, LVM_SETBKCOLOR,
-    LVM_SETCOLUMNWIDTH, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETTEXTBKCOLOR, LVM_SETTEXTCOLOR,
-    LVM_SETITEMTEXTW, LVN_ITEMCHANGED, LVNI_SELECTED, LVS_EX_DOUBLEBUFFER, LVS_EX_FULLROWSELECT,
-    LVS_REPORT, LVS_SHOWSELALWAYS, LVS_SINGLESEL, NMHDR, NM_KILLFOCUS, NM_SETFOCUS,
+    CDDS_ITEMPREPAINT, CDDS_POSTPAINT, CDRF_NOTIFYITEMDRAW, CDRF_NOTIFYPOSTPAINT, EM_SETRECT,
+    HDI_TEXT, HDITEMW, HDM_GETITEMCOUNT, HDM_GETITEMRECT, HDM_GETITEMW, LVCF_TEXT, LVCF_WIDTH,
+    LVCOLUMNW, LVIF_TEXT, LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS, LVM_GETCOLUMNWIDTH,
+    LVM_GETHEADER, LVM_GETITEMSTATE, LVM_GETITEMTEXTW, LVM_GETNEXTITEM, LVM_INSERTCOLUMNW,
+    LVM_INSERTITEMW, LVM_SETBKCOLOR, LVM_SETCOLUMNWIDTH, LVM_SETEXTENDEDLISTVIEWSTYLE,
+    LVM_SETITEMTEXTW, LVM_SETTEXTBKCOLOR, LVM_SETTEXTCOLOR, LVN_ITEMCHANGED, LVNI_SELECTED,
+    LVS_EX_DOUBLEBUFFER, LVS_EX_FULLROWSELECT, LVS_REPORT, LVS_SHOWSELALWAYS, LVS_SINGLESEL,
+    NM_KILLFOCUS, NM_SETFOCUS, NMHDR,
 };
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 
@@ -207,12 +206,26 @@ pub(super) fn open() -> Result<(), String> {
         DETAILS,
         WS_VSCROLL | (ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL) as u32,
     );
-    let status = child("STATIC", "Loading the plugin catalog...", STATUS, SS_LEFT | SS_NOPREFIX);
+    let status = child(
+        "STATIC",
+        "Loading the plugin catalog...",
+        STATUS,
+        SS_LEFT | SS_NOPREFIX,
+    );
     let title = child("STATIC", "Plugins", TITLE, SS_LEFT | SS_NOPREFIX);
-    let details_title = child("STATIC", "Plugin details", DETAILS_TITLE, SS_LEFT | SS_NOPREFIX);
+    let details_title = child(
+        "STATIC",
+        "Plugin details",
+        DETAILS_TITLE,
+        SS_LEFT | SS_NOPREFIX,
+    );
     unsafe {
         for control in [status, title, details_title] {
-            SetWindowLongPtrW(control, GWL_STYLE, GetWindowLongPtrW(control, GWL_STYLE) & !(WS_TABSTOP as isize));
+            SetWindowLongPtrW(
+                control,
+                GWL_STYLE,
+                GetWindowLongPtrW(control, GWL_STYLE) & !(WS_TABSTOP as isize),
+            );
         }
         SendMessageW(title, WM_SETFONT, fonts.fonts.bold as usize, 0);
         SendMessageW(details_title, WM_SETFONT, fonts.fonts.bold as usize, 0);
@@ -272,7 +285,9 @@ fn with_manager<R>(f: impl FnOnce(&mut Manager) -> R) -> Option<R> {
             // The callback and its RefCell borrow have both ended. Destroying
             // now lets WM_DESTROY release Manager without a nested borrow.
             close();
-            MANAGER.with(|slot| { slot.borrow_mut().take(); });
+            MANAGER.with(|slot| {
+                slot.borrow_mut().take();
+            });
         } else if MANAGER_RESTART_PENDING.get() {
             // A native modal dialog may re-enable its owner when it returns.
             set_restart_pending(true);
@@ -285,13 +300,16 @@ fn with_manager<R>(f: impl FnOnce(&mut Manager) -> R) -> Option<R> {
 }
 
 fn actions_allowed(window: HWND) -> bool {
-    if MANAGER_CLOSE_PENDING.get() || MANAGER_RESTART_PENDING.get()
-        || MANAGER_WINDOW.get() != window || unsafe { IsWindow(window) } == 0
+    if MANAGER_CLOSE_PENDING.get()
+        || MANAGER_RESTART_PENDING.get()
+        || MANAGER_WINDOW.get() != window
+        || unsafe { IsWindow(window) } == 0
     {
         return false;
     }
     let owner = unsafe { GetWindow(window, GW_OWNER) };
-    !owner.is_null() && unsafe { IsWindow(owner) } != 0
+    !owner.is_null()
+        && unsafe { IsWindow(owner) } != 0
         && with_app(|app| app.hwnd == owner && !app.closing && !app.update_restart_pending)
             .unwrap_or(false)
 }
@@ -318,7 +336,13 @@ impl Manager {
         let details_height = s(120);
         let details_top = bottom - details_height - s(16);
         place(self.title, s(16), s(12), width - s(32), s(24));
-        place(self.details_title, s(16), details_top - s(27), width - s(32), s(21));
+        place(
+            self.details_title,
+            s(16),
+            details_top - s(27),
+            width - s(32),
+            s(21),
+        );
         place(
             self.list,
             s(17),
@@ -347,18 +371,14 @@ impl Manager {
             place(*button, x, bottom, s(118), button_height);
             x += s(124);
         }
-        place(
-            self.status,
-            s(16),
-            height - s(35),
-            width - s(32),
-            s(22),
-        );
+        place(self.status, s(16), height - s(35), width - s(32), s(22));
         unsafe { InvalidateRect(self.window, ptr::null(), 0) };
     }
 
     fn apply_theme(&self) {
-        let Some(palette) = with_look(|look| look.style.palette) else { return; };
+        let Some(palette) = with_look(|look| look.style.palette) else {
+            return;
+        };
         self.dark_mode.apply_title_bar(self.window, palette.dark);
         self.dark_mode.apply_control(self.list, palette.dark);
         self.dark_mode.apply_control(self.details, palette.dark);
@@ -368,23 +388,48 @@ impl Manager {
             unsafe { SendMessageW(header, WM_SETFONT, self._fonts.fonts.bold as usize, 0) };
         }
         unsafe {
-            SendMessageW(self.list, LVM_SETBKCOLOR, 0, palette.field.colorref() as isize);
-            SendMessageW(self.list, LVM_SETTEXTBKCOLOR, 0, palette.field.colorref() as isize);
-            SendMessageW(self.list, LVM_SETTEXTCOLOR, 0, palette.text.colorref() as isize);
-            RedrawWindow(self.window, ptr::null(), ptr::null_mut(), RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
+            SendMessageW(
+                self.list,
+                LVM_SETBKCOLOR,
+                0,
+                palette.field.colorref() as isize,
+            );
+            SendMessageW(
+                self.list,
+                LVM_SETTEXTBKCOLOR,
+                0,
+                palette.field.colorref() as isize,
+            );
+            SendMessageW(
+                self.list,
+                LVM_SETTEXTCOLOR,
+                0,
+                palette.text.colorref() as isize,
+            );
+            RedrawWindow(
+                self.window,
+                ptr::null(),
+                ptr::null_mut(),
+                RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN,
+            );
         }
     }
 
     fn set_icons(&mut self) {
         for (index, (kind, metric)) in [(ICON_BIG, SM_CXICON), (ICON_SMALL, SM_CXSMICON)]
-            .into_iter().enumerate()
+            .into_iter()
+            .enumerate()
         {
             let size = unsafe { GetSystemMetricsForDpi(metric, self.dpi) }.max(16);
             let icon = canvas::app_icon(size);
-            if icon.is_null() { continue; }
+            if icon.is_null() {
+                continue;
+            }
             unsafe { SendMessageW(self.window, WM_SETICON, kind as usize, icon as isize) };
             let previous = std::mem::replace(&mut self.icons[index], icon);
-            if !previous.is_null() { unsafe { DestroyIcon(previous) }; }
+            if !previous.is_null() {
+                unsafe { DestroyIcon(previous) };
+            }
         }
     }
 
@@ -393,7 +438,9 @@ impl Manager {
         let dc = unsafe { BeginPaint(self.window, &mut paint) };
         with_look(|look| {
             let client = client_rect(self.window);
-            let Some(mut canvas) = canvas::Canvas::new(dc, client) else { return; };
+            let Some(mut canvas) = canvas::Canvas::new(dc, client) else {
+                return;
+            };
             let mut style = look.style;
             style.fonts = self._fonts.fonts;
             style.scale = unsafe { GetDpiForWindow(self.window) }.max(96) as f32 / 96.0;
@@ -402,9 +449,21 @@ impl Manager {
                 let mut bounds = RECT::default();
                 unsafe {
                     GetWindowRect(control, &mut bounds);
-                    MapWindowPoints(ptr::null_mut(), self.window, (&mut bounds as *mut RECT).cast(), 2);
+                    MapWindowPoints(
+                        ptr::null_mut(),
+                        self.window,
+                        (&mut bounds as *mut RECT).cast(),
+                        2,
+                    );
                 }
-                draw::field_frame(&mut canvas, draw::inset(bounds, -1, -1), &style, unsafe { GetFocus() } == control, false, false);
+                draw::field_frame(
+                    &mut canvas,
+                    draw::inset(bounds, -1, -1),
+                    &style,
+                    unsafe { GetFocus() } == control,
+                    false,
+                    false,
+                );
             }
             canvas.present(dc);
         });
@@ -414,7 +473,10 @@ impl Manager {
     fn set_dpi(&mut self, dpi: u32) {
         let dpi = dpi.max(96);
         let fonts = FontSet::new(dpi);
-        for control in [self.list, self.details, self.status].into_iter().chain(self.buttons.iter().copied()) {
+        for control in [self.list, self.details, self.status]
+            .into_iter()
+            .chain(self.buttons.iter().copied())
+        {
             unsafe { SendMessageW(control, WM_SETFONT, fonts.fonts.ui as usize, 1) };
         }
         for control in [self.title, self.details_title] {
@@ -424,7 +486,8 @@ impl Manager {
         let columns = unsafe { SendMessageW(header, HDM_GETITEMCOUNT, 0, 0) }.max(0) as usize;
         for column in 0..columns {
             let width = unsafe { SendMessageW(self.list, LVM_GETCOLUMNWIDTH, column, 0) };
-            let scaled = (width as i64 * i64::from(dpi) + i64::from(self.dpi) / 2) / i64::from(self.dpi);
+            let scaled =
+                (width as i64 * i64::from(dpi) + i64::from(self.dpi) / 2) / i64::from(self.dpi);
             unsafe { SendMessageW(self.list, LVM_SETCOLUMNWIDTH, column, scaled as isize) };
         }
         unsafe { SendMessageW(header, WM_SETFONT, fonts.fonts.bold as usize, 0) };
@@ -446,12 +509,18 @@ impl Manager {
         self.set_status(label);
         self.update_buttons();
         let (sender, window) = (self.sender.clone(), self.window as isize);
-        if let Err(error) = std::thread::Builder::new().name("plugin-manager".into()).spawn(move || {
-            let done = work();
-            let installed = plugin_catalog::installed();
-            let _ = sender.send(Completion { result: done, installed });
-            unsafe { PostMessageW(window as HWND, WM_PLUGINS, 0, 0) };
-        }) {
+        if let Err(error) = std::thread::Builder::new()
+            .name("plugin-manager".into())
+            .spawn(move || {
+                let done = work();
+                let installed = plugin_catalog::installed();
+                let _ = sender.send(Completion {
+                    result: done,
+                    installed,
+                });
+                unsafe { PostMessageW(window as HWND, WM_PLUGINS, 0, 0) };
+            })
+        {
             self.busy = false;
             self.set_status(&format!("Could not start plugin work: {error}"));
             self.update_buttons();
@@ -480,10 +549,7 @@ impl Manager {
             })
             .collect();
         for (folder, local) in installed {
-            if !rows
-                .iter()
-                .any(|row| row.plugin.same_identity(local))
-            {
+            if !rows.iter().any(|row| row.plugin.same_identity(local)) {
                 rows.push(Row {
                     installed: Some((folder.clone(), local.plugin_version.clone())),
                     plugin: local.clone(),
@@ -491,9 +557,7 @@ impl Manager {
                 });
             }
         }
-        let selected = self
-            .selected()
-            .map(|row| row.plugin.clone());
+        let selected = self.selected().map(|row| row.plugin.clone());
         self.rows = rows;
         unsafe { SendMessageW(self.list, LVM_DELETEALLITEMS, 0, 0) };
         for (index, row) in self.rows.iter().enumerate() {
@@ -571,21 +635,24 @@ impl Manager {
     }
 
     fn selection_changed(&self) {
-        let text = self.selected().map_or_else(|| "Select a plugin to see its details.".into(), |row| {
-            let plugin = &row.plugin;
-            let mut text = format!(
-                "{} {} by {}\r\n\r\n",
-                plugin.name, plugin.plugin_version, plugin.owner
-            );
-            text.push_str(&plugin.description.replace('\n', "\r\n"));
-            if let Some(url) = &plugin.repository_url {
-                text.push_str(&format!("\r\n\r\nSource: {url}"));
-            }
-            if let Some((folder, version)) = &row.installed {
-                text.push_str(&format!("\r\nInstalled {version} in {}", folder.display()));
-            }
-            text
-        });
+        let text = self.selected().map_or_else(
+            || "Select a plugin to see its details.".into(),
+            |row| {
+                let plugin = &row.plugin;
+                let mut text = format!(
+                    "{} {} by {}\r\n\r\n",
+                    plugin.name, plugin.plugin_version, plugin.owner
+                );
+                text.push_str(&plugin.description.replace('\n', "\r\n"));
+                if let Some(url) = &plugin.repository_url {
+                    text.push_str(&format!("\r\n\r\nSource: {url}"));
+                }
+                if let Some((folder, version)) = &row.installed {
+                    text.push_str(&format!("\r\nInstalled {version} in {}", folder.display()));
+                }
+                text
+            },
+        );
         unsafe { SetWindowTextW(self.details, wide(&text).as_ptr()) };
         self.update_buttons();
     }
@@ -731,10 +798,17 @@ impl Manager {
     }
 
     fn finished(&mut self) {
-        while let Ok(Completion { result: done, installed }) = self.results.try_recv() {
+        while let Ok(Completion {
+            result: done,
+            installed,
+        }) = self.results.try_recv()
+        {
             self.busy = false;
             let inventory_error = match installed {
-                Ok(installed) => { self.installed = installed; None },
+                Ok(installed) => {
+                    self.installed = installed;
+                    None
+                }
                 Err(error) => Some(error),
             };
             match done {
@@ -776,8 +850,13 @@ impl Manager {
                 }
             }
             if let Some(error) = inventory_error {
-                self.set_status(&format!("Could not refresh installed plugins: {error}. The previous list was kept."));
-                log(Level::Warning, format!("Could not refresh installed plugins: {error}"));
+                self.set_status(&format!(
+                    "Could not refresh installed plugins: {error}. The previous list was kept."
+                ));
+                log(
+                    Level::Warning,
+                    format!("Could not refresh installed plugins: {error}"),
+                );
             }
         }
         self.rebuild();
@@ -788,7 +867,9 @@ pub(super) fn set_restart_pending(pending: bool) {
     MANAGER_RESTART_PENDING.set(pending);
     let window = MANAGER_WINDOW.get();
     if !window.is_null() && unsafe { IsWindow(window) } != 0 {
-        unsafe { EnableWindow(window, i32::from(!pending && !MANAGER_CLOSE_PENDING.get())); }
+        unsafe {
+            EnableWindow(window, i32::from(!pending && !MANAGER_CLOSE_PENDING.get()));
+        }
     }
 }
 
@@ -832,7 +913,11 @@ fn draw_button(custom: &NMCUSTOMDRAW) -> LRESULT {
         let style = control_style(control, look);
         let flags = custom.uItemState;
         draw::button(
-            &mut canvas, bounds, &text(control), &style, style.palette.window,
+            &mut canvas,
+            bounds,
+            &text(control),
+            &style,
+            style.palette.window,
             State {
                 hot: flags & CDIS_HOT != 0,
                 pressed: flags & CDIS_SELECTED != 0,
@@ -844,7 +929,8 @@ fn draw_button(custom: &NMCUSTOMDRAW) -> LRESULT {
         );
         canvas.present(custom.hdc);
         CDRF_SKIPDEFAULT as LRESULT
-    }).unwrap_or(CDRF_DODEFAULT as LRESULT)
+    })
+    .unwrap_or(CDRF_DODEFAULT as LRESULT)
 }
 
 fn draw_catalog_row(custom: &NMCUSTOMDRAW) -> LRESULT {
@@ -858,20 +944,45 @@ fn draw_catalog_row(custom: &NMCUSTOMDRAW) -> LRESULT {
         let list = custom.hdr.hwndFrom;
         let style = control_style(list, look);
         let p = style.palette;
-        let selected = unsafe { SendMessageW(list, LVM_GETITEMSTATE, custom.dwItemSpec, LVIS_SELECTED as isize) } != 0;
+        let selected = unsafe {
+            SendMessageW(
+                list,
+                LVM_GETITEMSTATE,
+                custom.dwItemSpec,
+                LVIS_SELECTED as isize,
+            )
+        } != 0;
         let client = client_rect(list);
-        let bounds = RECT { left: 0, right: client.right, ..custom.rc };
+        let bounds = RECT {
+            left: 0,
+            right: client.right,
+            ..custom.rc
+        };
         let Some(mut canvas) = canvas::Canvas::new(custom.hdc, bounds) else {
             return CDRF_DODEFAULT as LRESULT;
         };
         let enabled = unsafe { IsWindowEnabled(list) } != 0;
-        let foreground = if selected { p.selection_text() } else if enabled { p.text } else { p.disabled };
+        let foreground = if selected {
+            p.selection_text()
+        } else if enabled {
+            p.text
+        } else {
+            p.disabled
+        };
         canvas.fill(bounds, if selected { p.selection } else { p.field });
         let header = unsafe { SendMessageW(list, LVM_GETHEADER, 0, 0) } as HWND;
         let columns = unsafe { SendMessageW(header, HDM_GETITEMCOUNT, 0, 0) }.max(0) as usize;
         for column in 0..columns {
             let mut cell = RECT::default();
-            if unsafe { SendMessageW(header, HDM_GETITEMRECT, column, &mut cell as *mut RECT as isize) } == 0 {
+            if unsafe {
+                SendMessageW(
+                    header,
+                    HDM_GETITEMRECT,
+                    column,
+                    &mut cell as *mut RECT as isize,
+                )
+            } == 0
+            {
                 continue;
             }
             // Header bounds preserve alignment during scrolling and resizing.
@@ -888,16 +999,35 @@ fn draw_catalog_row(custom: &NMCUSTOMDRAW) -> LRESULT {
                 cchTextMax: buffer.len() as i32,
                 ..Default::default()
             };
-            let length = unsafe { SendMessageW(list, LVM_GETITEMTEXTW, custom.dwItemSpec, &mut item as *mut LVITEMW as isize) };
+            let length = unsafe {
+                SendMessageW(
+                    list,
+                    LVM_GETITEMTEXTW,
+                    custom.dwItemSpec,
+                    &mut item as *mut LVITEMW as isize,
+                )
+            };
             let length = (length.max(0) as usize).min(buffer.len() - 1);
-            canvas.text(draw::inset(cell, style.ipx(8.0), 0), &String::from_utf16_lossy(&buffer[..length]), style.fonts.ui, foreground, draw::TEXT_LEFT | DT_NOPREFIX);
+            canvas.text(
+                draw::inset(cell, style.ipx(8.0), 0),
+                &String::from_utf16_lossy(&buffer[..length]),
+                style.fonts.ui,
+                foreground,
+                draw::TEXT_LEFT | DT_NOPREFIX,
+            );
         }
         if selected && custom.uItemState & CDIS_FOCUS != 0 && unsafe { GetFocus() } == list {
-            canvas.round_rect(draw::inset(bounds, 1, 1), [0.0; 4], None, Some((p.accent, 1.0)));
+            canvas.round_rect(
+                draw::inset(bounds, 1, 1),
+                [0.0; 4],
+                None,
+                Some((p.accent, 1.0)),
+            );
         }
         canvas.present(custom.hdc);
         CDRF_SKIPDEFAULT as LRESULT
-    }).unwrap_or(CDRF_DODEFAULT as LRESULT)
+    })
+    .unwrap_or(CDRF_DODEFAULT as LRESULT)
 }
 
 fn draw_catalog_header(custom: &NMCUSTOMDRAW) -> LRESULT {
@@ -922,7 +1052,15 @@ fn draw_catalog_header(custom: &NMCUSTOMDRAW) -> LRESULT {
         let count = unsafe { SendMessageW(header, HDM_GETITEMCOUNT, 0, 0) }.max(0) as usize;
         for column in 0..count {
             let mut cell = RECT::default();
-            if unsafe { SendMessageW(header, HDM_GETITEMRECT, column, &mut cell as *mut RECT as isize) } == 0 {
+            if unsafe {
+                SendMessageW(
+                    header,
+                    HDM_GETITEMRECT,
+                    column,
+                    &mut cell as *mut RECT as isize,
+                )
+            } == 0
+            {
                 continue;
             }
             let mut buffer = [0u16; 256];
@@ -932,21 +1070,53 @@ fn draw_catalog_header(custom: &NMCUSTOMDRAW) -> LRESULT {
                 cchTextMax: buffer.len() as i32,
                 ..Default::default()
             };
-            unsafe { SendMessageW(header, HDM_GETITEMW, column, &mut item as *mut HDITEMW as isize) };
+            unsafe {
+                SendMessageW(
+                    header,
+                    HDM_GETITEMW,
+                    column,
+                    &mut item as *mut HDITEMW as isize,
+                )
+            };
             let length = buffer.iter().position(|c| *c == 0).unwrap_or(buffer.len());
-            canvas.text(draw::inset(cell, style.ipx(8.0), 0), &String::from_utf16_lossy(&buffer[..length]), style.fonts.ui, p.text, draw::TEXT_LEFT | DT_NOPREFIX);
-            canvas.fill(RECT { left: cell.right - 1, top: cell.top + style.ipx(5.0), bottom: cell.bottom - style.ipx(5.0), ..cell }, p.border);
+            canvas.text(
+                draw::inset(cell, style.ipx(8.0), 0),
+                &String::from_utf16_lossy(&buffer[..length]),
+                style.fonts.ui,
+                p.text,
+                draw::TEXT_LEFT | DT_NOPREFIX,
+            );
+            canvas.fill(
+                RECT {
+                    left: cell.right - 1,
+                    top: cell.top + style.ipx(5.0),
+                    bottom: cell.bottom - style.ipx(5.0),
+                    ..cell
+                },
+                p.border,
+            );
         }
-        canvas.fill(RECT { top: bounds.bottom - 1, ..bounds }, p.border);
+        canvas.fill(
+            RECT {
+                top: bounds.bottom - 1,
+                ..bounds
+            },
+            p.border,
+        );
         canvas.present(custom.hdc);
         CDRF_DODEFAULT as LRESULT
-    }).unwrap_or(CDRF_DODEFAULT as LRESULT)
+    })
+    .unwrap_or(CDRF_DODEFAULT as LRESULT)
 }
 
 /// Header notifications are sent to the ListView, not to the manager window.
 unsafe extern "system" fn list_proc(
-    window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM,
-    subclass: usize, _data: usize,
+    window: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    subclass: usize,
+    _data: usize,
 ) -> LRESULT {
     if message == WM_NOTIFY && lparam != 0 {
         let notification = unsafe { &*(lparam as *const NMHDR) };
@@ -980,15 +1150,19 @@ unsafe extern "system" fn window_proc(
 ) -> LRESULT {
     match message {
         WM_ERASEBKGND => {
-            with_look(|look| unsafe { FillRect(wparam as HDC, &client_rect(window), look.brush(look.style.palette.window)) });
+            with_look(|look| unsafe {
+                FillRect(
+                    wparam as HDC,
+                    &client_rect(window),
+                    look.brush(look.style.palette.window),
+                )
+            });
             1
         }
-        WM_PAINT => {
-            with_manager(|manager| manager.paint()).map_or_else(
-                || unsafe { DefWindowProcW(window, message, wparam, lparam) },
-                |()| 0,
-            )
-        }
+        WM_PAINT => with_manager(|manager| manager.paint()).map_or_else(
+            || unsafe { DefWindowProcW(window, message, wparam, lparam) },
+            |()| 0,
+        ),
         WM_SIZE => {
             with_manager(|manager| manager.layout());
             0
@@ -1003,7 +1177,17 @@ unsafe extern "system" fn window_proc(
         WM_DPICHANGED => {
             with_manager(|manager| manager.set_dpi((wparam & 0xFFFF) as u32));
             let bounds = unsafe { &*(lparam as *const RECT) };
-            unsafe { SetWindowPos(window, ptr::null_mut(), bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top, SWP_NOZORDER | SWP_NOACTIVATE) };
+            unsafe {
+                SetWindowPos(
+                    window,
+                    ptr::null_mut(),
+                    bounds.left,
+                    bounds.top,
+                    bounds.right - bounds.left,
+                    bounds.bottom - bounds.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+            };
             with_manager(|manager| manager.layout());
             0
         }
@@ -1011,24 +1195,31 @@ unsafe extern "system" fn window_proc(
             apply_theme();
             unsafe { DefWindowProcW(window, message, wparam, lparam) }
         }
-        WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT => {
-            with_look(|look| {
-                let control = lparam as HWND;
-                let p = look.style.palette;
-                let id = unsafe { GetDlgCtrlID(control) } as u16;
-                let background = if id == DETAILS { p.field } else { p.window };
-                let color = if unsafe { IsWindowEnabled(control) } == 0 { p.disabled } else if id == STATUS { p.muted } else { p.text };
-                unsafe {
-                    SetTextColor(wparam as HDC, color.colorref());
-                    SetBkColor(wparam as HDC, background.colorref());
-                }
-                look.brush(background) as LRESULT
-            }).unwrap_or_else(|| unsafe { DefWindowProcW(window, message, wparam, lparam) })
-        }
+        WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT => with_look(|look| {
+            let control = lparam as HWND;
+            let p = look.style.palette;
+            let id = unsafe { GetDlgCtrlID(control) } as u16;
+            let background = if id == DETAILS { p.field } else { p.window };
+            let color = if unsafe { IsWindowEnabled(control) } == 0 {
+                p.disabled
+            } else if id == STATUS {
+                p.muted
+            } else {
+                p.text
+            };
+            unsafe {
+                SetTextColor(wparam as HDC, color.colorref());
+                SetBkColor(wparam as HDC, background.colorref());
+            }
+            look.brush(background) as LRESULT
+        })
+        .unwrap_or_else(|| unsafe { DefWindowProcW(window, message, wparam, lparam) }),
         WM_COMMAND => {
             let id = wparam as u16;
             let notification = (wparam >> 16) as u16;
-            if id == DETAILS && (notification == EN_SETFOCUS as u16 || notification == EN_KILLFOCUS as u16) {
+            if id == DETAILS
+                && (notification == EN_SETFOCUS as u16 || notification == EN_KILLFOCUS as u16)
+            {
                 unsafe { InvalidateRect(window, ptr::null(), 0) };
                 return 0;
             }
@@ -1036,9 +1227,13 @@ unsafe extern "system" fn window_proc(
             0
         }
         WM_NOTIFY => {
-            if lparam == 0 { return 0; }
+            if lparam == 0 {
+                return 0;
+            }
             let header = unsafe { &*(lparam as *const NMHDR) };
-            if header.idFrom == LIST as usize && (header.code == NM_SETFOCUS || header.code == NM_KILLFOCUS) {
+            if header.idFrom == LIST as usize
+                && (header.code == NM_SETFOCUS || header.code == NM_KILLFOCUS)
+            {
                 unsafe { InvalidateRect(window, ptr::null(), 0) };
             }
             if header.code == NM_CUSTOMDRAW {

@@ -435,7 +435,9 @@ impl TabletConfiguration {
                         if let (Some(min), Some(max)) = (pen.min_rotation, pen.max_rotation)
                             && i64::from(max) <= i64::from(min)
                         {
-                            check.error("Specifications.Pen: MaxRotation must exceed MinRotation".into());
+                            check.error(
+                                "Specifications.Pen: MaxRotation must exceed MinRotation".into(),
+                            );
                         }
                         match (pen.button_count, &pen.legacy_buttons) {
                             (None, None) => check.count("Specifications.Pen", None),

@@ -10,7 +10,10 @@ pub(super) fn parse(text: &str, metadata: &PropertyMetadata) -> Result<Value, St
     }
     // Strings are literal editor text, including "null". The separate default
     // action writes the null sentinel without making string values ambiguous.
-    if matches!(metadata.property_type.as_str(), "System.String" | "System.DateTime" | "System.TimeSpan") {
+    if matches!(
+        metadata.property_type.as_str(),
+        "System.String" | "System.DateTime" | "System.TimeSpan"
+    ) {
         return Ok(Value::String(text.to_owned()));
     }
     let trimmed = text.trim();

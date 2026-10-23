@@ -647,7 +647,11 @@ mod tests {
             let text = toml::to_string_pretty(&prefs).unwrap();
             assert_eq!(toml::from_str::<UiPrefs>(&text).unwrap(), prefs, "{text}");
         }
-        assert!(toml::to_string_pretty(&UiPrefs::default()).unwrap().contains("accent = \"blue\""));
+        assert!(
+            toml::to_string_pretty(&UiPrefs::default())
+                .unwrap()
+                .contains("accent = \"blue\"")
+        );
         let odd: UiPrefs = toml::from_str("theme = 'dark'\naccent = 'chartreuse'").unwrap();
         assert_eq!((odd.theme, odd.accent), (ThemeMode::Dark, Accent::Blue));
         assert_eq!(toml::from_str::<UiPrefs>("").unwrap().accent, Accent::Blue);
@@ -674,8 +678,15 @@ mod tests {
             // accents keep its relationships.
             let derived = palette.with_accent(Accent::Custom(Accent::Blue.base()));
             for (made, original) in fields(&derived).iter().zip(fields(&palette)) {
-                let distance = [made.0.abs_diff(original.0), made.1.abs_diff(original.1), made.2.abs_diff(original.2)];
-                assert!(distance.iter().all(|d| *d <= 20), "{made:?} vs {original:?}");
+                let distance = [
+                    made.0.abs_diff(original.0),
+                    made.1.abs_diff(original.1),
+                    made.2.abs_diff(original.2),
+                ];
+                assert!(
+                    distance.iter().all(|d| *d <= 20),
+                    "{made:?} vs {original:?}"
+                );
             }
             for (accent, name) in Accent::PRESETS.iter().skip(1) {
                 let themed = palette.with_accent(*accent);
@@ -689,16 +700,29 @@ mod tests {
                 }
                 // Accent text stays readable: WCAG contrast at least 3:1.
                 let contrast = |a: Rgb, b: Rgb| {
-                    let (l1, l2) = (a.luminance().max(b.luminance()), a.luminance().min(b.luminance()));
+                    let (l1, l2) = (
+                        a.luminance().max(b.luminance()),
+                        a.luminance().min(b.luminance()),
+                    );
                     (l1 + 0.05) / (l2 + 0.05)
                 };
-                assert!(contrast(themed.accent, themed.accent_text) >= 3.0, "{name} accent text");
+                assert!(
+                    contrast(themed.accent, themed.accent_text) >= 3.0,
+                    "{name} accent text"
+                );
                 // Everything that is not an accent is unchanged.
-                assert_eq!((themed.window, themed.text, themed.error), (palette.window, palette.text, palette.error));
+                assert_eq!(
+                    (themed.window, themed.text, themed.error),
+                    (palette.window, palette.text, palette.error)
+                );
             }
         }
         let contrast = Palette::high_contrast();
-        assert_eq!(contrast.with_accent(Accent::Red).accent, contrast.accent, "system colors win");
+        assert_eq!(
+            contrast.with_accent(Accent::Red).accent,
+            contrast.accent,
+            "system colors win"
+        );
     }
 
     #[test]

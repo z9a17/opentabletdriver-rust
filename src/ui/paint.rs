@@ -85,7 +85,11 @@ impl App {
                         backgrounds: &backgrounds,
                         area: which.area(&mapping),
                         unit,
-                        unavailable_text: if *which == AreaKind::Tablet { "" } else { error },
+                        unavailable_text: if *which == AreaKind::Tablet {
+                            ""
+                        } else {
+                            error
+                        },
                         invalid_text: error,
                     };
                     area::paint(canvas, &scene, &fonts, &p);
@@ -191,7 +195,9 @@ pub(super) fn custom_draw(draw: &mut NMCUSTOMDRAW) -> LRESULT {
         // Secondary windows can be on another monitor and own their fonts.
         style.scale = unsafe { GetDpiForWindow(hwnd) }.max(96) as f32 / 96.0;
         let font = unsafe { SendMessageW(hwnd, WM_GETFONT, 0, 0) } as HFONT;
-        if !font.is_null() { style.fonts.ui = font; }
+        if !font.is_null() {
+            style.fonts.ui = font;
+        }
         let surface = look.surface(info.surface);
         let flags = draw.uItemState;
         let mut state = State {
@@ -262,14 +268,9 @@ pub(super) fn custom_draw(draw: &mut NMCUSTOMDRAW) -> LRESULT {
                             == BST_CHECKED as isize;
                         draw::checkbox(&mut canvas, client, &label, &style, surface, state);
                     }
-                    Kind::Button => draw::button(
-                        &mut canvas,
-                        client,
-                        &label,
-                        &style,
-                        surface,
-                        state,
-                    ),
+                    Kind::Button => {
+                        draw::button(&mut canvas, client, &label, &style, surface, state)
+                    }
                     _ => return Some(CDRF_DODEFAULT as LRESULT),
                 }
             }

@@ -27,8 +27,8 @@ use otd_core::spec::TabletSpec;
 pub const TABLET_WIDTH_MM: f64 = WIDTH_MM;
 
 pub use otd_core::areas::{
-    Align, AspectSource, Bounds, align, constrain, flip_handedness, flip_horizontal,
-    flip_vertical, lock_aspect,
+    Align, AspectSource, Bounds, align, constrain, flip_handedness, flip_horizontal, flip_vertical,
+    lock_aspect,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,7 +118,11 @@ impl PropertyValue {
     pub fn display_text(&self) -> String {
         if let Self::Typed { saved, metadata } = self {
             if saved.is_none() {
-                return if self.choices().is_empty() { String::new() } else { "Constructor value".into() };
+                return if self.choices().is_empty() {
+                    String::new()
+                } else {
+                    "Constructor value".into()
+                };
             }
             if saved.as_ref().is_some_and(serde_json::Value::is_null) {
                 return if metadata.default_is_attribute {
@@ -187,13 +191,28 @@ impl PropertyValue {
     pub fn field_writable(&self) -> bool {
         match self {
             Self::JsonScalar | Self::Json(_) => false,
-            Self::Typed { metadata, .. } => metadata.writable
-                && (metadata.enum_underlying_type.is_some() || !metadata.enum_choices.is_empty()
-                    || matches!(metadata.property_type.as_str(),
-                        "System.String" | "System.Boolean" | "System.TimeSpan" | "System.DateTime"
-                        | "System.SByte" | "System.Byte" | "System.Int16" | "System.UInt16"
-                        | "System.Int32" | "System.UInt32" | "System.Int64" | "System.UInt64"
-                        | "System.Single" | "System.Double")),
+            Self::Typed { metadata, .. } => {
+                metadata.writable
+                    && (metadata.enum_underlying_type.is_some()
+                        || !metadata.enum_choices.is_empty()
+                        || matches!(
+                            metadata.property_type.as_str(),
+                            "System.String"
+                                | "System.Boolean"
+                                | "System.TimeSpan"
+                                | "System.DateTime"
+                                | "System.SByte"
+                                | "System.Byte"
+                                | "System.Int16"
+                                | "System.UInt16"
+                                | "System.Int32"
+                                | "System.UInt32"
+                                | "System.Int64"
+                                | "System.UInt64"
+                                | "System.Single"
+                                | "System.Double"
+                        ))
+            }
             _ => true,
         }
     }
@@ -210,7 +229,10 @@ impl PropertyValue {
 
     pub fn reset_value(&self) -> serde_json::Value {
         match self {
-            Self::Typed { metadata, .. } => metadata.default_value.clone().unwrap_or(serde_json::Value::Null),
+            Self::Typed { metadata, .. } => metadata
+                .default_value
+                .clone()
+                .unwrap_or(serde_json::Value::Null),
             _ => serde_json::Value::Null,
         }
     }
@@ -228,8 +250,15 @@ impl PropertyValue {
     pub fn default_cue(&self) -> String {
         match self {
             Self::Typed { saved: None, .. } => "Constructor value".into(),
-            Self::Typed { saved: Some(value), metadata } if value.is_null() => {
-                if metadata.default_is_attribute { self.default_label() } else { "Constructor value".into() }
+            Self::Typed {
+                saved: Some(value),
+                metadata,
+            } if value.is_null() => {
+                if metadata.default_is_attribute {
+                    self.default_label()
+                } else {
+                    "Constructor value".into()
+                }
             }
             _ => String::new(),
         }
@@ -459,7 +488,9 @@ impl Editor {
         let name = match target.as_deref() {
             Some(target) => connected.iter().find(|name| name.as_str() == target)?,
             None => {
-                let [name] = connected else { return None; };
+                let [name] = connected else {
+                    return None;
+                };
                 name
             }
         };
@@ -474,7 +505,9 @@ impl Editor {
         let name = match target.as_deref() {
             Some(target) => connected.iter().find(|name| name.as_str() == target)?,
             None => {
-                let [name] = connected else { return None; };
+                let [name] = connected else {
+                    return None;
+                };
                 name
             }
         };
@@ -486,7 +519,9 @@ impl Editor {
         if self.profile.tablet_name()?.is_some() {
             return Ok(false);
         }
-        let [name] = connected else { return Ok(false); };
+        let [name] = connected else {
+            return Ok(false);
+        };
         let spec = otd_core::config::spec_for_tablet(name)?;
         if self.profile.tablet == spec {
             return Ok(false);
@@ -500,7 +535,9 @@ impl Editor {
     pub fn set_tablet(&mut self, name: Option<String>) -> Result<(), String> {
         let spec = name
             .as_deref()
-            .map(otd_core::config::spec_for_tablet).transpose()?.unwrap_or(self.profile.tablet);
+            .map(otd_core::config::spec_for_tablet)
+            .transpose()?
+            .unwrap_or(self.profile.tablet);
         self.profile.target_tablet = Some(name.unwrap_or_else(|| "*".into()));
         if spec == self.profile.tablet {
             return Ok(());
@@ -555,7 +592,11 @@ impl Editor {
     }
 
     fn plugin_items(&self, tools: bool) -> Vec<FilterItem> {
-        let mut items = if tools { Vec::new() } else { self.radial_filters() };
+        let mut items = if tools {
+            Vec::new()
+        } else {
+            self.radial_filters()
+        };
         let anchor = self
             .profile
             .plugins
@@ -579,8 +620,14 @@ impl Editor {
             })
             .collect();
         let mut plugins = plugins.into_iter();
-        let before = if tools { 0 } else { self.profile.plugins[..anchor]
-            .iter().filter(|plugin| plugin.kind != PluginKind::DotnetTool).count() };
+        let before = if tools {
+            0
+        } else {
+            self.profile.plugins[..anchor]
+                .iter()
+                .filter(|plugin| plugin.kind != PluginKind::DotnetTool)
+                .count()
+        };
         let mut ordered: Vec<FilterItem> = plugins.by_ref().take(before).collect();
         ordered.append(&mut items);
         ordered.extend(plugins);
@@ -694,7 +741,10 @@ impl Editor {
             FilterRef::Radial(index) => {
                 if enabled && self.profile.radial_follow.is_empty() {
                     self.profile.radial_follow.push(
-                        self.profile.disabled_radial_follow.take().unwrap_or_default(),
+                        self.profile
+                            .disabled_radial_follow
+                            .take()
+                            .unwrap_or_default(),
                     );
                 } else if !enabled && index < self.profile.radial_follow.len() {
                     self.profile.disabled_radial_follow =
@@ -747,7 +797,10 @@ fn property_tooltip(descriptor: &PropertyMetadata) -> Option<String> {
     let parts: Vec<String> = [
         descriptor.tooltip.clone(),
         descriptor.description.clone(),
-        descriptor.default_value.as_ref().map(|value| format!("Default: {}", scalar_text(value))),
+        descriptor
+            .default_value
+            .as_ref()
+            .map(|value| format!("Default: {}", scalar_text(value))),
         descriptor
             .slider
             .as_ref()
@@ -1006,19 +1059,33 @@ mod tests {
         let mut editor = Editor::new(Profile::default());
         assert_eq!(editor.profile.tablet, TabletSpec::PTH_660);
         let ptk = vec!["Wacom PTK-470".to_owned()];
-        let expected = Some(Bounds { left: 0.0, top: 0.0, right: 187.0, bottom: 105.0 });
+        let expected = Some(Bounds {
+            left: 0.0,
+            top: 0.0,
+            right: 187.0,
+            bottom: 105.0,
+        });
         let saved = editor.profile.to_toml().unwrap();
         assert_eq!(editor.detected_tablet_bounds(&ptk), expected);
         assert_eq!(editor.profile.to_toml().unwrap(), saved);
         assert_eq!(editor.profile.tablet, TabletSpec::PTH_660);
         let both = vec!["Wacom PTK-470".to_owned(), "Wacom PTH-660".to_owned()];
         assert_eq!(editor.detected_tablet_bounds(&both), None);
-        assert_eq!(editor.detected_tablet_bounds(&["Unrecognized model".into()]), None);
+        assert_eq!(
+            editor.detected_tablet_bounds(&["Unrecognized model".into()]),
+            None
+        );
         editor.profile.target_tablet = Some("Wacom PTH-660".into());
         assert_eq!(editor.detected_tablet_bounds(&ptk), None);
-        assert_eq!(editor.detected_tablet_bounds(&both), Some(Bounds {
-            left: 0.0, top: 0.0, right: 224.0, bottom: 148.0,
-        }));
+        assert_eq!(
+            editor.detected_tablet_bounds(&both),
+            Some(Bounds {
+                left: 0.0,
+                top: 0.0,
+                right: 224.0,
+                bottom: 148.0,
+            })
+        );
         editor.profile.target_tablet = Some("Wacom PTK-470".into());
         assert_eq!(editor.detected_tablet_bounds(&both), expected);
         assert_eq!(editor.detected_tablet_bounds(&[]), None);
@@ -1079,7 +1146,10 @@ Minimum: 0, Maximum: 2"
         editor.set_threshold_percent(false, Some(50.0)).unwrap();
         editor.set_tablet(Some("Wacom CTL-4100".into())).unwrap();
         let spec = editor.profile.tablet;
-        assert_eq!(spec, otd_core::config::spec_for_tablet("Wacom CTL-4100").unwrap());
+        assert_eq!(
+            spec,
+            otd_core::config::spec_for_tablet("Wacom CTL-4100").unwrap()
+        );
         assert!(spec.width_mm < 200.0);
         let area = editor.profile.otd_mapping.unwrap().tablet;
         assert!(area.width <= spec.width_mm, "{area:?}");
@@ -1557,7 +1627,10 @@ Minimum: 0, Maximum: 2"
         assert_eq!(area.x, 40.0);
         flip_handedness(&mut area, bounds);
         assert_eq!((area.x, area.y, area.rotation), (184.0, 128.0, 180.0));
-        assert_eq!(otd_core::areas::fit_aspect(bounds, 16.0 / 9.0), (224.0, 126.0));
+        assert_eq!(
+            otd_core::areas::fit_aspect(bounds, 16.0 / 9.0),
+            (224.0, 126.0)
+        );
         let mut mapping = simple_mapping(&Profile::default(), &displays());
         mapping.display.width = 2560.0;
         mapping.display.height = 1440.0;
@@ -1565,11 +1638,7 @@ Minimum: 0, Maximum: 2"
         lock_aspect(&mut mapping, AspectSource::TabletWidth, bounds);
         assert_eq!(mapping.tablet.height, 90.0);
         mapping.display.width = 1280.0;
-        lock_aspect(
-            &mut mapping,
-            AspectSource::DisplayWidth,
-            bounds,
-        );
+        lock_aspect(&mut mapping, AspectSource::DisplayWidth, bounds);
         assert_eq!(mapping.tablet.width, 80.0);
     }
 

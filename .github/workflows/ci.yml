@@ -1,0 +1,113 @@
+# Format, lint and test on every pull request and on main.
+# Standard GitHub-hosted runners are free for public repositories.
+# The root package (native Windows driver and panel) builds only on Windows;
+# Linux and macOS test the portable core and their own platform crates.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
+        with:
+          toolchain: stable
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # Clippy warnings are reported but not yet denied; errors fail the job.
+      # Later steps still run after a failure so every result is reported.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked
+      - name: Test
+        if: ${{ !cancelled() }}
+        run: cargo test --workspace --locked
+      - name: Native plugin DLL round trip
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          cargo build --locked --release -p otd-ema-filter
+          $env:OTD_TEST_PLUGIN = (Resolve-Path target/release/otd_ema_filter.dll).Path
+          cargo test --locked -p opentabletdriver-rust native_plugin_round_trip -- --ignored
+
+  linux:
+    name: Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -p otd-core -p otd-platform -p otd-plugin-api -p otd-ema-filter -p otd-linux
+      - name: Test
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p otd-core -p otd-platform -p otd-plugin-api -p otd-ema-filter -p otd-linux
+      - name: Parity evidence checks
+        if: ${{ !cancelled() }}
+        run: |
+          python3 -I scripts/parity-evidence.py validate
+          python3 -m unittest discover -s scripts/tests -p 'test_parity_*.py'
+
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
+        with:
+          toolchain: stable
+          components: clippy
+          targets: x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -p otd-core -p otd-platform -p otd-plugin-api -p otd-ema-filter -p otd-macos
+      - name: Test (Apple Silicon)
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p otd-core -p otd-platform -p otd-plugin-api -p otd-ema-filter -p otd-macos
+      - name: Check (Intel)
+        if: ${{ !cancelled() }}
+        run: cargo check --locked --all-targets --target x86_64-apple-darwin -p otd-macos

@@ -124,7 +124,9 @@ impl PenOutput {
         } else {
             0.0
         };
-        let rotation = sample.rotation.filter(|value| value.is_finite())
+        let rotation = sample
+            .rotation
+            .filter(|value| value.is_finite())
             .map(|value| value.clamp(0.0, 1.0))
             .or_else(|| self.last.and_then(|last| last.rotation));
         let packet = |phase| PenPacket {
@@ -287,18 +289,35 @@ mod tests {
     fn rotation_output_emits_orientation_changes_once_and_retains_absent_values() {
         let (mut pen, packets) = output();
         pen.sample(at(7.0, 0, false)).unwrap();
-        assert!(pen.sample(PenSample {
-            rotation: Some(0.25),
-            ..at(7.0, 0, false)
-        }).unwrap());
-        assert!(pen.contact_with_rotation(false, None, 0, Some(0.75)).unwrap());
-        assert!(!pen.contact_with_rotation(false, None, 0, Some(0.75)).unwrap());
+        assert!(
+            pen.sample(PenSample {
+                rotation: Some(0.25),
+                ..at(7.0, 0, false)
+            })
+            .unwrap()
+        );
+        assert!(
+            pen.contact_with_rotation(false, None, 0, Some(0.75))
+                .unwrap()
+        );
+        assert!(
+            !pen.contact_with_rotation(false, None, 0, Some(0.75))
+                .unwrap()
+        );
         assert!(!pen.contact(false, None, 0).unwrap());
         assert!(!pen.sample(at(7.0, 0, false)).unwrap());
         let sent = packets.borrow();
         assert_eq!(sent.len(), 3);
-        assert_eq!(sent.iter().map(|packet| packet.rotation).collect::<Vec<_>>(), [None, Some(0.25), Some(0.75)]);
-        assert!(sent.iter().all(|packet| (packet.x, packet.y, packet.phase) == (7.0, 20.0, PenPhase::Hover)));
+        assert_eq!(
+            sent.iter()
+                .map(|packet| packet.rotation)
+                .collect::<Vec<_>>(),
+            [None, Some(0.25), Some(0.75)]
+        );
+        assert!(
+            sent.iter()
+                .all(|packet| (packet.x, packet.y, packet.phase) == (7.0, 20.0, PenPhase::Hover))
+        );
     }
 
     #[test]

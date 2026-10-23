@@ -75,7 +75,9 @@ pub enum Read<'a> {
 pub trait ReportSource {
     /// A hosted original OutputMode may take exclusive authority after native
     /// actions have been released. Sources wake next() when this changes.
-    fn native_output_enabled(&self) -> bool { true }
+    fn native_output_enabled(&self) -> bool {
+        true
+    }
     fn output_started(&self) {}
     fn output_acknowledged(&self, _enabled: bool) {}
     fn shared_output(&self) -> bool {
@@ -94,7 +96,9 @@ pub trait Displays {
     /// Called once a second while reports flow, so it must be cheap.
     fn fingerprint(&mut self) -> DisplayFingerprint;
     /// A backend may detect rectangle changes which preserve aggregate bounds.
-    fn topology_changed(&mut self) -> bool { false }
+    fn topology_changed(&mut self) -> bool {
+        false
+    }
     fn snapshot(&mut self) -> Result<DisplaySnapshot, String>;
 }
 
@@ -255,7 +259,9 @@ impl Layout {
                 self.mapper = None;
                 if !self.snapshot_failed {
                     if let Err(release_error) = pipeline.release_all(send) {
-                        eprintln!("could not release buttons after display failure: {release_error}");
+                        eprintln!(
+                            "could not release buttons after display failure: {release_error}"
+                        );
                     }
                     eprintln!("display mapping paused: {error}");
                 }
@@ -453,22 +459,32 @@ pub fn run_gated_with_endpoints(
         loop {
             let requested_output = source.native_output_enabled();
             if requested_output != native_output {
-                pipeline.release_all(&mut send).map_err(|error| io::Error::other(OutputCleanupError(error)))?;
+                pipeline
+                    .release_all(&mut send)
+                    .map_err(|error| io::Error::other(OutputCleanupError(error)))?;
                 filters.reset();
                 decoder.reset();
-                if let Some(decoder)=auxiliary.as_deref_mut() { decoder.reset(); }
-                native_output=requested_output;
+                if let Some(decoder) = auxiliary.as_deref_mut() {
+                    decoder.reset();
+                }
+                native_output = requested_output;
                 source.output_acknowledged(native_output);
             }
             // Timer-driven filters tick on this thread, between reads.
             let filter_tick = match mode {
-                Mode::Driver if native_output && (pipeline.is_relative() || layout.mapper.is_some()) => {
+                Mode::Driver
+                    if native_output && (pipeline.is_relative() || layout.mapper.is_some()) =>
+                {
                     filters.next_tick()
                 }
                 Mode::Driver => None,
                 Mode::Capture { .. } => None,
             };
-            let binding_tick = if native_output && matches!(mode, Mode::Driver) { pipeline.next_binding_tick(source.now()) } else { None };
+            let binding_tick = if native_output && matches!(mode, Mode::Driver) {
+                pipeline.next_binding_tick(source.now())
+            } else {
+                None
+            };
             let mut tick = filter_tick.into_iter().chain(binding_tick).min();
             if pipeline.needs_cleanup() || tick.is_some_and(|wait| wait.is_zero()) {
                 let mut output = |packet| {
@@ -481,12 +497,22 @@ pub fn run_gated_with_endpoints(
                 } else {
                     let now = source.now();
                     let filtered = if filter_tick.is_some_and(|wait| wait.is_zero()) {
-                        pipeline.process_tick(now, layout.mapper, filters, &mut output).map(|_| ())
-                    } else { Ok(()) };
+                        pipeline
+                            .process_tick(now, layout.mapper, filters, &mut output)
+                            .map(|_| ())
+                    } else {
+                        Ok(())
+                    };
                     filtered.and_then(|()| {
                         if binding_tick.is_some_and(|wait| wait.is_zero()) {
-                            pipeline.process_binding_tick_with_output(now, layout.mapper, &mut output)
-                        } else { Ok(()) }
+                            pipeline.process_binding_tick_with_output(
+                                now,
+                                layout.mapper,
+                                &mut output,
+                            )
+                        } else {
+                            Ok(())
+                        }
                     })
                 };
                 if let Some(name) = filters.take_failure() {
@@ -505,10 +531,18 @@ pub fn run_gated_with_endpoints(
                 // Always reach the input/stop poll after one tick, even if a
                 // slow or failed timer still reports an overdue deadline.
                 let filter_tick = match mode {
-                    Mode::Driver if native_output && (pipeline.is_relative() || layout.mapper.is_some()) => filters.next_tick(),
+                    Mode::Driver
+                        if native_output && (pipeline.is_relative() || layout.mapper.is_some()) =>
+                    {
+                        filters.next_tick()
+                    }
                     _ => None,
                 };
-                let binding_tick = if native_output && matches!(mode, Mode::Driver) { pipeline.next_binding_tick(source.now()) } else { None };
+                let binding_tick = if native_output && matches!(mode, Mode::Driver) {
+                    pipeline.next_binding_tick(source.now())
+                } else {
+                    None
+                };
                 tick = filter_tick.into_iter().chain(binding_tick).min();
             }
             let timeout = match mode {
@@ -570,7 +604,9 @@ pub fn run_gated_with_endpoints(
             }
             counters.read += 1;
             crate::debug::record_at(bytes, ready, from_auxiliary);
-            if !native_output && matches!(mode, Mode::Driver) { continue; }
+            if !native_output && matches!(mode, Mode::Driver) {
+                continue;
+            }
             let decoded = match auxiliary.as_deref_mut() {
                 Some(decoder) if from_auxiliary => decoder.decode_input(bytes),
                 _ => decoder.decode_input(bytes),
@@ -647,7 +683,9 @@ pub fn run_gated_with_endpoints(
             }
             if now >= next_refresh {
                 if layout.snapshot.is_some()
-                    && (layout.snapshot_failed || displays.fingerprint() != layout.fingerprint || displays.topology_changed())
+                    && (layout.snapshot_failed
+                        || displays.fingerprint() != layout.fingerprint
+                        || displays.topology_changed())
                 {
                     layout.refresh(displays, profile, &mut pipeline, &mut send);
                 }
@@ -941,35 +979,91 @@ mod tests {
             profile.aux_buttons = vec!["scroll:vertical:-120:10".parse().unwrap()];
             let clock = Rc::new(Cell::new(Instant::now()));
             let start = clock.get();
-            let mut displays = FakeDisplays { clock: clock.clone(), start, schedule: vec![(0, monitors(&[1920]))] };
-            let mut source = FakeSource::new(clock.clone(), vec![
-                (100, Event::Auxiliary(&KEY_DOWN)), (135, Event::Idle),
-                (145, Event::Idle), (150, Event::Auxiliary(&KEY_UP)), (190, Event::Idle),
-            ]);
+            let mut displays = FakeDisplays {
+                clock: clock.clone(),
+                start,
+                schedule: vec![(0, monitors(&[1920]))],
+            };
+            let mut source = FakeSource::new(
+                clock.clone(),
+                vec![
+                    (100, Event::Auxiliary(&KEY_DOWN)),
+                    (135, Event::Idle),
+                    (145, Event::Idle),
+                    (150, Event::Auxiliary(&KEY_UP)),
+                    (190, Event::Idle),
+                ],
+            );
             let pulses = Rc::new(RefCell::new(Vec::new()));
             let log = pulses.clone();
             let timing = clock.clone();
-            let sink = crate::output::buttons::LocalActions::new(|_| Ok(()), |_| true)
-                .with_scroll(move |pulse| { log.borrow_mut().push((timing.get(), pulse)); Ok(()) });
+            let sink = crate::output::buttons::LocalActions::new(|_| Ok(()), |_| true).with_scroll(
+                move |pulse| {
+                    log.borrow_mut().push((timing.get(), pulse));
+                    Ok(())
+                },
+            );
             let mut auxiliary = crate::decoders::TabletDecoder::for_parser(
-                "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV2.IntuosV2ReportParser", profile.tablet,
-            ).unwrap();
-            let mode = if capture { Mode::Capture { deadline: start + Duration::from_secs(1), limit: 10 } } else { Mode::Driver };
+                "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV2.IntuosV2ReportParser",
+                profile.tablet,
+            )
+            .unwrap();
+            let mode = if capture {
+                Mode::Capture {
+                    deadline: start + Duration::from_secs(1),
+                    limit: 10,
+                }
+            } else {
+                Mode::Driver
+            };
             run_gated_with_endpoints(
-                &mut source, &mut displays, &profile, mode,
-                &mut crate::decoders::TabletDecoder::pth_660(), Some(&mut auxiliary), &mut NoFilters,
-                |_| Ok(()), None, Some(Box::new(sink)), &|_: &str| {}, || Ok(activated),
-            ).unwrap();
+                &mut source,
+                &mut displays,
+                &profile,
+                mode,
+                &mut crate::decoders::TabletDecoder::pth_660(),
+                Some(&mut auxiliary),
+                &mut NoFilters,
+                |_| Ok(()),
+                None,
+                Some(Box::new(sink)),
+                &|_: &str| {},
+                || Ok(activated),
+            )
+            .unwrap();
             if !activated {
-                assert!(source.waits.is_empty(), "activation rejection never reads input");
+                assert!(
+                    source.waits.is_empty(),
+                    "activation rejection never reads input"
+                );
             }
             if capture || !activated {
-                assert!(pulses.borrow().is_empty(), "capture or activation rejection must not inject scroll");
+                assert!(
+                    pulses.borrow().is_empty(),
+                    "capture or activation rejection must not inject scroll"
+                );
             } else {
                 let pulses = pulses.borrow();
-                assert_eq!(pulses.iter().map(|(at, _)| at.duration_since(start).as_millis()).collect::<Vec<_>>(), [100, 135, 145]);
+                assert_eq!(
+                    pulses
+                        .iter()
+                        .map(|(at, _)| at.duration_since(start).as_millis())
+                        .collect::<Vec<_>>(),
+                    [100, 135, 145]
+                );
                 assert!(pulses.iter().all(|(_, pulse)| pulse.delta == 120));
-                assert_eq!(source.waits, [Duration::from_secs(1), Duration::from_millis(10), Duration::from_millis(10), Duration::from_millis(10), Duration::from_secs(1), Duration::from_secs(1)], "release restores idle polling and missed periods do not busy-loop");
+                assert_eq!(
+                    source.waits,
+                    [
+                        Duration::from_secs(1),
+                        Duration::from_millis(10),
+                        Duration::from_millis(10),
+                        Duration::from_millis(10),
+                        Duration::from_secs(1),
+                        Duration::from_secs(1)
+                    ],
+                    "release restores idle polling and missed periods do not busy-loop"
+                );
             }
         }
     }
@@ -999,7 +1093,8 @@ mod tests {
         let log = actions.clone();
         let sink = crate::output::buttons::LocalActions::new(
             move |transition: crate::actions::ActionTransition| {
-                log.borrow_mut().push((transition.action, transition.pressed));
+                log.borrow_mut()
+                    .push((transition.action, transition.pressed));
                 Ok(())
             },
             |_| true,
@@ -1031,7 +1126,11 @@ mod tests {
         .unwrap();
         let forward = Action::Mouse(MouseButton::Forward);
         assert_eq!(*actions.borrow(), [(forward, true), (forward, false)]);
-        assert_eq!(*packets.borrow(), 1, "the second hover at the same place moves nothing");
+        assert_eq!(
+            *packets.borrow(),
+            1,
+            "the second hover at the same place moves nothing"
+        );
         assert!(
             statuses
                 .borrow()

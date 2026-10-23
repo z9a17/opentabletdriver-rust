@@ -93,9 +93,19 @@ fn capacity(error: ReportError) -> io::Error {
 impl GraphReport {
     /// Operation 6 has a tagged service projection, rather than report shape.
     pub fn managed_command(&self) -> io::Result<otd_core::plugins::ManagedCommand> {
-        if self.version != 2 || self.size != std::mem::size_of::<Self>() as u32 || self.kind > 4 { return Err(invalid("invalid managed service command")); }
-        Ok(otd_core::plugins::ManagedCommand { kind: self.kind, owner: self.reserved, x: self.x, y: self.y,
-            value: self.pressure, flags: self.flags, tilt: [self.tilt_x, self.tilt_y], rotation: f32::from_bits(self.rotation as u32) })
+        if self.version != 2 || self.size != std::mem::size_of::<Self>() as u32 || self.kind > 4 {
+            return Err(invalid("invalid managed service command"));
+        }
+        Ok(otd_core::plugins::ManagedCommand {
+            kind: self.kind,
+            owner: self.reserved,
+            x: self.x,
+            y: self.y,
+            value: self.pressure,
+            flags: self.flags,
+            tilt: [self.tilt_x, self.tilt_y],
+            rotation: f32::from_bits(self.rotation as u32),
+        })
     }
     pub fn new(kind: ReportKind, values: &ReportValues, raw: &[u8]) -> io::Result<Self> {
         if raw.len() > usize::from(u16::MAX) {
@@ -213,7 +223,10 @@ impl GraphReport {
             frame.flags |= NATIVE_TIP;
             frame.tip_switch = u32::from(tip);
         }
-        if let Some(rotation) = values.rotation { frame.flags |= ROTATION; frame.rotation = rotation; }
+        if let Some(rotation) = values.rotation {
+            frame.flags |= ROTATION;
+            frame.rotation = rotation;
+        }
         Ok(frame)
     }
 
@@ -248,7 +261,9 @@ impl GraphReport {
         if has(TILT) {
             values.tilt = Some([self.tilt_x, self.tilt_y]);
         }
-        if has(ROTATION) { values.rotation = Some(self.rotation); }
+        if has(ROTATION) {
+            values.rotation = Some(self.rotation);
+        }
         if has(PROXIMITY) {
             values.near_proximity = Some(self.near != 0);
             values.hover_distance = Some(self.distance);
@@ -378,7 +393,9 @@ pub struct Graph {
     wake: Option<super::WakeTarget>,
 }
 impl Graph {
-    pub(super) fn context_handle(&self) -> *mut c_void { self.context }
+    pub(super) fn context_handle(&self) -> *mut c_void {
+        self.context
+    }
     pub fn new(nodes: &[GraphNode]) -> Result<Self, String> {
         if nodes.len() > 32 {
             return Err("The synchronous graph supports at most 32 filters".into());
@@ -403,14 +420,24 @@ impl Graph {
     }
 
     #[cfg(windows)]
-    pub(crate) fn set_wake(&mut self, target: std::sync::Arc<crate::shared_devices::OutputGate>) -> Result<(), String> {
-        let Some(set) = super::bridge()?.set_graph_wake else { return Ok(()); };
-        if let Some(previous) = self.wake.take() { previous.detach(self.context, set); }
+    pub(crate) fn set_wake(
+        &mut self,
+        target: std::sync::Arc<crate::shared_devices::OutputGate>,
+    ) -> Result<(), String> {
+        let Some(set) = super::bridge()?.set_graph_wake else {
+            return Ok(());
+        };
+        if let Some(previous) = self.wake.take() {
+            previous.detach(self.context, set);
+        }
         self.wake = Some(super::WakeTarget::install(self.context, set, target)?);
         Ok(())
     }
 
-    pub fn attach_output(&mut self, output: &super::endpoints::OutputSession) -> Result<(), String> {
+    pub fn attach_output(
+        &mut self,
+        output: &super::endpoints::OutputSession,
+    ) -> Result<(), String> {
         output.attach(self.context)?;
         self.timer_capability = true;
         Ok(())
@@ -473,7 +500,9 @@ impl Drop for Graph {
     fn drop(&mut self) {
         if let Ok(bridge) = super::bridge() {
             #[cfg(windows)]
-            if let (Some(wake), Some(set)) = (self.wake.take(), bridge.set_graph_wake) { wake.detach(self.context, set); }
+            if let (Some(wake), Some(set)) = (self.wake.take(), bridge.set_graph_wake) {
+                wake.detach(self.context, set);
+            }
             unsafe { (bridge.destroy_graph)(self.context) };
         }
     }

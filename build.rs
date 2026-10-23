@@ -10,15 +10,15 @@ fn resource_compiler() -> Result<PathBuf, Box<dyn Error>> {
             return Ok(candidate);
         }
     }
-    let sdk = match env::var_os("WindowsSdkDir") {
-        Some(path) => PathBuf::from(path),
-        None => PathBuf::from(env::var_os("ProgramFiles(x86)").ok_or(
-            "cannot find Windows SDK; set RC to the resource compiler's absolute path",
-        )?)
-        .join("Windows Kits/10"),
-    };
-    let mut versions = fs::read_dir(sdk.join("bin"))?
-        .collect::<Result<Vec<_>, _>>()?;
+    let sdk =
+        match env::var_os("WindowsSdkDir") {
+            Some(path) => PathBuf::from(path),
+            None => PathBuf::from(env::var_os("ProgramFiles(x86)").ok_or(
+                "cannot find Windows SDK; set RC to the resource compiler's absolute path",
+            )?)
+            .join("Windows Kits/10"),
+        };
+    let mut versions = fs::read_dir(sdk.join("bin"))?.collect::<Result<Vec<_>, _>>()?;
     versions.sort_by_key(|entry| entry.file_name());
     versions.reverse();
     versions
@@ -31,16 +31,35 @@ fn resource_compiler() -> Result<PathBuf, Box<dyn Error>> {
 fn main() -> Result<(), Box<dyn Error>> {
     // Source commit time is stable across packages compiled from one commit.
     // Release provenance records the actual compiler and binary hashes.
-    let date=Command::new("git").args(["show","-s","--format=%cI","HEAD"]).output()?;
-    if !date.status.success() { return Err("cannot determine build source date".into()); }
-    println!("cargo:rustc-env=OTD_BUILD_DATE={}",String::from_utf8(date.stdout)?.trim());
+    let date = Command::new("git")
+        .args(["show", "-s", "--format=%cI", "HEAD"])
+        .output()?;
+    if !date.status.success() {
+        return Err("cannot determine build source date".into());
+    }
+    println!(
+        "cargo:rustc-env=OTD_BUILD_DATE={}",
+        String::from_utf8(date.stdout)?.trim()
+    );
     let commit = Command::new("git").args(["rev-parse", "HEAD"]).output()?;
-    if !commit.status.success() { return Err("cannot determine build source commit".into()); }
-    println!("cargo:rustc-env=OTD_BUILD_COMMIT={}", String::from_utf8(commit.stdout)?.trim());
-    for name in ["HEAD","refs/heads"] {
-        let path=Command::new("git").args(["rev-parse","--git-path",name]).output()?;
-        if !path.status.success(){return Err("cannot determine source reference path".into());}
-        println!("cargo:rerun-if-changed={}",String::from_utf8(path.stdout)?.trim());
+    if !commit.status.success() {
+        return Err("cannot determine build source commit".into());
+    }
+    println!(
+        "cargo:rustc-env=OTD_BUILD_COMMIT={}",
+        String::from_utf8(commit.stdout)?.trim()
+    );
+    for name in ["HEAD", "refs/heads"] {
+        let path = Command::new("git")
+            .args(["rev-parse", "--git-path", name])
+            .output()?;
+        if !path.status.success() {
+            return Err("cannot determine source reference path".into());
+        }
+        println!(
+            "cargo:rerun-if-changed={}",
+            String::from_utf8(path.stdout)?.trim()
+        );
     }
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return Ok(());
@@ -72,7 +91,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             println!("cargo:rustc-link-arg-bins={}", compiled.display());
             println!("cargo:rustc-link-arg-bins=/MANIFEST:EMBED");
-            println!("cargo:rustc-link-arg-bins=/MANIFESTINPUT:{}", manifest.display());
+            println!(
+                "cargo:rustc-link-arg-bins=/MANIFESTINPUT:{}",
+                manifest.display()
+            );
         }
         Ok("gnu") => {
             let manifest_path = manifest.display().to_string().replace('\\', "/");

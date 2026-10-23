@@ -101,9 +101,24 @@ impl Deco03Parser {
     ) -> Result<(ReportKind, ReportEnvelope<'a>), ReportError> {
         require_length(raw, 2)?;
         if raw[1] != 0xf0 {
-            let kind = if raw[1] == 0xc0 { ReportKind::OutOfRange } else { ReportKind::Data };
-            let values = if kind == ReportKind::OutOfRange { ReportValues::default() } else { pen(raw, false, true)? };
-            return Ok((kind, ReportEnvelope { metadata, raw, values }));
+            let kind = if raw[1] == 0xc0 {
+                ReportKind::OutOfRange
+            } else {
+                ReportKind::Data
+            };
+            let values = if kind == ReportKind::OutOfRange {
+                ReportValues::default()
+            } else {
+                pen(raw, false, true)?
+            };
+            return Ok((
+                kind,
+                ReportEnvelope {
+                    metadata,
+                    raw,
+                    values,
+                },
+            ));
         }
         require_length(raw, 8)?;
         let wheel = raw[7];
