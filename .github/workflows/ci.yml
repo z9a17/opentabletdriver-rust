@@ -51,11 +51,14 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # Clippy warnings are reported but not yet denied; errors fail the job.
+      # Later steps still run after a failure so every result is reported.
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked
       - name: Test
+        if: ${{ !cancelled() }}
         run: cargo test --workspace --locked
       - name: Native plugin DLL round trip
+        if: ${{ !cancelled() }}
         shell: pwsh
         run: |
           cargo build --locked --release -p otd-ema-filter
@@ -78,8 +81,10 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --locked -p otd-core -p otd-platform -p otd-plugin-api -p otd-ema-filter -p otd-linux
       - name: Test
+        if: ${{ !cancelled() }}
         run: cargo test --locked -p otd-core -p otd-platform -p otd-plugin-api -p otd-ema-filter -p otd-linux
       - name: Parity evidence checks
+        if: ${{ !cancelled() }}
         run: |
           python3 -I scripts/parity-evidence.py validate
           python3 -m unittest discover -s scripts/tests -p 'test_parity_*.py'
@@ -101,6 +106,8 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --locked -p otd-core -p otd-platform -p otd-plugin-api -p otd-ema-filter -p otd-macos
       - name: Test (Apple Silicon)
+        if: ${{ !cancelled() }}
         run: cargo test --locked -p otd-core -p otd-platform -p otd-plugin-api -p otd-ema-filter -p otd-macos
       - name: Check (Intel)
+        if: ${{ !cancelled() }}
         run: cargo check --locked --all-targets --target x86_64-apple-darwin -p otd-macos
