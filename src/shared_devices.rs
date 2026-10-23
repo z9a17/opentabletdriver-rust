@@ -1,7 +1,9 @@
 //! Managed endpoint leases share the native physical reader and its owned
 //! handle. The report thread only copies into preallocated slots while a
 //! subscriber exists; all JSON, waits and hardware service calls stay cold.
+// The explicit path also resolves when otd-platform includes this file.
 #[cfg(windows)]
+#[path = "shared_devices/io.rs"]
 mod io;
 #[cfg(unix)]
 use crate::shared_device_io as io;
