@@ -164,7 +164,7 @@ mod tests {
                 let _ = std::fs::remove_dir_all(&self.0);
             }
         }
-        let root = Path::new("E:/AgentWork/tmp").join(format!(
+        let root = std::env::temp_dir().join(format!(
             "otd-physical-profile-fixture-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -229,7 +229,7 @@ mod tests {
             parent: parent.into(),
             fallback: false,
         };
-        let root = Path::new("E:/AgentWork/tmp/profile-path-fixture");
+        let root = &std::env::temp_dir().join("profile-path-fixture");
         let a = profile_path(root, &key("USB\\serial-a")).unwrap();
         assert_eq!(a, profile_path(root, &key("USB\\serial-a")).unwrap());
         assert_ne!(a, profile_path(root, &key("USB\\serial-b")).unwrap());

@@ -285,7 +285,7 @@ mod tests {
     }
     #[test]
     fn stale_idle_client_cannot_replace_a_newer_collection_or_its_disabled_stores() {
-        let source = PathBuf::from("E:/AgentWork/tmp/otd-rpc-collection-readonly-fixture.json");
+        let source = std::env::temp_dir().join("otd-rpc-collection-readonly-fixture.json");
         let mut state = Collection {
             document: empty(),
             cached: Arc::new(empty()),

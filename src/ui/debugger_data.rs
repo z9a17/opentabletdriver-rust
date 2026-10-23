@@ -238,7 +238,7 @@ mod tests {
     }
     #[test]
     fn recording_drains_on_stop_and_refuses_overwrite() {
-        let directory = std::path::PathBuf::from("E:/AgentWork/tmp").join(format!(
+        let directory = std::env::temp_dir().join(format!(
             "otd-recording-fixture-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()

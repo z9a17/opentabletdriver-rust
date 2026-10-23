@@ -675,11 +675,10 @@ fn run(
 #[cfg(test)]
 mod authored_profile_tests {
     use super::*;
-    use std::path::Path;
 
     #[test]
     fn native_filter_execution_preserves_saved_settings_and_reconnect_publication() {
-        let path = Path::new("E:/AgentWork/tmp/authored-profile-fixture.toml");
+        let path = &std::env::temp_dir().join("authored-profile-fixture.toml");
         let source = format!(
             "[[plugins]]\npath='radial.dll'\nkind='dotnet'\nenabled=true\ntype_name='{}'\nsettings_json='{{\"InnerRadius\":0.302,\"OuterRadius\":0.7039,\"SmoothingCoefficient\":0.302,\"SmoothingLeakCoefficient\":0.201,\"SoftKneeScale\":0.603}}'\n",
             otd_core::radial_follow::FILTER_PATH,

@@ -1264,11 +1264,9 @@ try {
 
     #[test]
     fn plugin_zip_validation_precedes_all_extraction() {
-        let root = crate::update::unique_directory(
-            Path::new("E:/AgentWork/tmp"),
-            "otd-plugin-zip-contract",
-        )
-        .unwrap();
+        let root =
+            crate::update::unique_directory(&std::env::temp_dir(), "otd-plugin-zip-contract")
+                .unwrap();
         let cases: &[&[&str]] = &[
             &["Filter.dll", "../outside.dll"],
             &["Filter.dll", "/absolute.dll"],
@@ -1314,11 +1312,9 @@ try {
 
     #[test]
     fn distinct_plugin_identities_cannot_replace_each_other() {
-        let root = crate::update::unique_directory(
-            Path::new("E:/AgentWork/tmp"),
-            "otd-plugin-identity-contract",
-        )
-        .unwrap();
+        let root =
+            crate::update::unique_directory(&std::env::temp_dir(), "otd-plugin-identity-contract")
+                .unwrap();
         let staged = root.join("source");
         let plugins = root.join("plugins");
         fs::create_dir_all(&staged).unwrap();

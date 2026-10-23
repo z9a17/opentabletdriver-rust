@@ -509,7 +509,7 @@ mod tests {
         stop_immediately: bool,
         transport: &mut impl FnMut(Command) -> Result<Reply, String>,
     ) -> (Result<(), String>, Vec<serde_json::Value>) {
-        let directory = std::path::PathBuf::from("E:/AgentWork/tmp").join(format!(
+        let directory = std::env::temp_dir().join(format!(
             "otd-capture-{name}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()

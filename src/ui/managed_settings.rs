@@ -1096,7 +1096,7 @@ mod tests {
     fn entry() -> crate::dotnet::InspectedFilter {
         crate::dotnet::InspectedFilter {
             config: PluginConfig {
-                path: PathBuf::from("E:/AgentWork/tmp/fixture.dll"),
+                path: std::env::temp_dir().join("fixture.dll"),
                 kind: PluginKind::Dotnet,
                 enabled: false,
                 type_name: "Fixture.Binding".into(),
