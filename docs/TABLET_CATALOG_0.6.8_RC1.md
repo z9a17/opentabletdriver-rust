@@ -69,3 +69,10 @@ sinks or pure platform packet structures and never create an input device.
 These fixtures have not been executed during this adoption work. No physical
 device, driver, UI, or platform behavior was exercised. Configuration/parser
 coverage does not certify hardware support or establish lower latency.
+
+The seeded parser corpus `tests/parsers/upstream.json` was later regenerated
+with `bench/upstream --parsers` against this RC: 10,800 packets for all 54
+parser types, decoded by the RC's own parser classes. It replaces the 0.6.7
+corpus, which still expected auxiliary reports for the XP-Pen status packets
+above and had to exclude 16 changed parser names; the Rust ports now match
+every packet. See the [parser check](parity/BEHAVIOR_CONTRACTS.md#other-tablets).

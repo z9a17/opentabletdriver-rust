@@ -1,5 +1,6 @@
 //! Literal cases transcribed from v0.6.8-rc1 parser source at 126f4828.
-//! These are separate from the unchanged-family 0.6.7 differential corpus.
+//! They complement the seeded corpus in tests/parsers/upstream.json, which
+//! the same revision's parser classes decoded.
 use otd_core::{config::Profile, decoders::ReportParser, reports::*};
 use std::{path::Path, time::Duration};
 

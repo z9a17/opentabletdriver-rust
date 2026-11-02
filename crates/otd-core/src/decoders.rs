@@ -766,7 +766,8 @@ mod tests {
     }
 
     /// Every parser decodes the fixture's seeded packets exactly as
-    /// OpenTabletDriver's own parser classes did (bench/upstream --parsers).
+    /// OpenTabletDriver's own parser classes did (bench/upstream --parsers),
+    /// at the v0.6.8-rc1 revision whose catalog the driver embeds.
     #[test]
     fn parsers_match_upstream_on_seeded_packets() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -777,32 +778,6 @@ mod tests {
         let mut compared = 0;
         for case in fixture["cases"].as_array().unwrap() {
             let name = case["parser"].as_str().unwrap();
-            // This corpus is pinned to 0.6.7. Current-catalog behavior changes
-            // have literal cases in tests/current_tablet_catalog.rs; do not
-            // compare their new contracts with old upstream expectations.
-            if matches!(
-                name.strip_prefix("OpenTabletDriver.Configurations.Parsers."),
-                Some(
-                    "Huion.GianoReportParser"
-                        | "UCLogic.UCLogicV1ReportParser"
-                        | "Veikk.VeikkTiltReportParser"
-                        | "XP_Pen.XP_PenGen2ReportParser"
-                        | "XP_Pen.XP_PenDeco03ReportParser"
-                        | "Wacom.Bamboo.BambooReportParser"
-                        | "Wacom.IntuosV1.IntuosV1ReportParser"
-                        | "Wacom.IntuosV1.WacomDriverIntuosV1ReportParser"
-                        | "Wacom.Intuos3.Intuos3ReportParser"
-                        | "Wacom.Intuos3.WacomDriverIntuos3ReportParser"
-                        | "Wacom.Intuos4.Intuos4ReportParser"
-                        | "Wacom.Intuos4.WacomDriverIntuos4ReportParser"
-                        | "Wacom.IntuosPro.IntuosProReportParser"
-                        | "Wacom.IntuosPro.WacomDriverIntuosProReportParser"
-                        | "Wacom.CintiqV1.CintiqV1ReportParser"
-                        | "Wacom.IntuosV3.IntuosV3ReportParser"
-                )
-            ) {
-                continue;
-            }
             let intuos_v2 = name.contains(".IntuosV2.");
             let touch = intuos_v2 || name.ends_with("Wacom64bAuxReportParser");
             let mut parser = ReportParser::for_type(name).unwrap();
