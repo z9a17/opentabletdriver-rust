@@ -86,7 +86,7 @@ jobs:
           dotnet-version: 10.0.x
       - name: Build plugin ZIP validator
         if: ${{ !cancelled() }}
-        run: dotnet build compat/ArchiveTools/OtdArchiveTools.csproj --locked-mode -c Release -o target/debug/deps
+        run: dotnet build compat/ArchiveTools/OtdArchiveTools.csproj -p:RestoreLockedMode=true -c Release -o target/debug/deps
       - name: Test
         if: ${{ !cancelled() }}
         run: cargo test --locked -p otd-core -p otd-platform -p otd-plugin-api -p otd-ema-filter -p otd-linux
@@ -118,7 +118,7 @@ jobs:
           dotnet-version: 10.0.x
       - name: Build plugin ZIP validator
         if: ${{ !cancelled() }}
-        run: dotnet build compat/ArchiveTools/OtdArchiveTools.csproj --locked-mode -c Release -o target/debug/deps
+        run: dotnet build compat/ArchiveTools/OtdArchiveTools.csproj -p:RestoreLockedMode=true -c Release -o target/debug/deps
       - name: Test (Apple Silicon)
         if: ${{ !cancelled() }}
         run: cargo test --locked -p otd-core -p otd-platform -p otd-plugin-api -p otd-ema-filter -p otd-macos
