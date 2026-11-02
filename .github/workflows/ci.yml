@@ -80,6 +80,13 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Clippy
         run: cargo clippy --all-targets --locked -p otd-core -p otd-platform -p otd-plugin-api -p otd-ema-filter -p otd-linux
+      # Plugin ZIP tests run the real validator, which sits beside the test binary.
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.x
+      - name: Build plugin ZIP validator
+        if: ${{ !cancelled() }}
+        run: dotnet build compat/ArchiveTools/OtdArchiveTools.csproj --locked-mode -c Release -o target/debug/deps
       - name: Test
         if: ${{ !cancelled() }}
         run: cargo test --locked -p otd-core -p otd-platform -p otd-plugin-api -p otd-ema-filter -p otd-linux
@@ -105,6 +112,13 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Clippy
         run: cargo clippy --all-targets --locked -p otd-core -p otd-platform -p otd-plugin-api -p otd-ema-filter -p otd-macos
+      # Plugin ZIP tests run the real validator, which sits beside the test binary.
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.x
+      - name: Build plugin ZIP validator
+        if: ${{ !cancelled() }}
+        run: dotnet build compat/ArchiveTools/OtdArchiveTools.csproj --locked-mode -c Release -o target/debug/deps
       - name: Test (Apple Silicon)
         if: ${{ !cancelled() }}
         run: cargo test --locked -p otd-core -p otd-platform -p otd-plugin-api -p otd-ema-filter -p otd-macos
