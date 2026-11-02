@@ -17,7 +17,7 @@ The release builder RID-publishes OtdCompat for every target with its full deps.
 
 The packager writes Unix archive permissions explicitly on every build host. Directories, drivers and Linux `setup/install.sh` and `setup/generate-rules.py` use 755; other files use 644. Linux setup text uses LF line endings even from a Windows checkout. The verifier checks executable permissions and rejects CRLF Linux setup files. Do not repair modes or rewrite checksums after packaging.
 
-There are no GitHub Actions runners. The owner requested manual testing after releases; do not run a separate fmt/Clippy/test/build-check suite. Building the actual release binaries and verifying their archive contents, architecture, version and checksums are required to produce the downloads. State the distinction in release notes. Do not claim macOS hardware support from a cross-build or live pen/cursor behavior from a device listing.
+[GitHub Actions CI](../.github/workflows/ci.yml) runs format, Clippy and test checks on Windows, Linux and macOS for every pull request and push to `main`. Publish only from a merged commit whose CI passed; the owner still tests every release by hand afterwards. CI does not build or publish release packages. Building the actual release binaries and verifying their archive contents, architecture, version and checksums are required to produce the downloads. State the distinction in release notes. Do not claim macOS hardware support from a cross-build or live pen/cursor behavior from a device listing.
 
 ## Pre-merge Windows test builds
 

@@ -45,7 +45,9 @@ fn bamboo_wheel(raw: &[u8]) -> Result<AbsoluteAnalogReport, ReportError> {
     require_length(raw, 9)?;
     Ok(AbsoluteAnalogReport {
         kind: AnalogKind::Wheel,
-        positions: AbsoluteAnalog::from_slice(&[(raw[8] & 0x80 != 0).then_some(u32::from(raw[8] & 0x7f))])?,
+        positions: AbsoluteAnalog::from_slice(&[
+            (raw[8] & 0x80 != 0).then_some(u32::from(raw[8] & 0x7f))
+        ])?,
     })
 }
 

@@ -50,14 +50,20 @@ pub fn parse_cpus(text: &str) -> Result<Vec<u16>, String> {
         if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
             return Err("Use logical CPU numbers, for example 0,2,4-7, or All.".into());
         }
-        value.parse::<u16>().ok().filter(|cpu| *cpu < 64)
+        value
+            .parse::<u16>()
+            .ok()
+            .filter(|cpu| *cpu < 64)
             .ok_or_else(|| "Logical CPU numbers must be between 0 and 63.".into())
     };
     let mut cpus = Vec::new();
     for item in text.split(',') {
         let (first, last) = match item.split_once('-') {
             Some((first, last)) => (number(first)?, number(last)?),
-            None => { let cpu = number(item)?; (cpu, cpu) }
+            None => {
+                let cpu = number(item)?;
+                (cpu, cpu)
+            }
         };
         if first > last {
             return Err("CPU ranges must run from a smaller number to a larger number.".into());
@@ -74,14 +80,23 @@ pub fn parse_cpus(text: &str) -> Result<Vec<u16>, String> {
 }
 
 pub fn format_cpus(cpus: &[u16]) -> String {
-    if cpus.is_empty() { "All".into() }
-    else { cpus.iter().map(u16::to_string).collect::<Vec<_>>().join(",") }
+    if cpus.is_empty() {
+        "All".into()
+    } else {
+        cpus.iter()
+            .map(u16::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    }
 }
 
 pub fn masks() -> Result<(usize, usize), String> {
     let (mut process, mut system) = (0, 0);
     if unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut process, &mut system) } == 0 {
-        return Err(format!("Cannot read CPU affinity: {}", std::io::Error::last_os_error()));
+        return Err(format!(
+            "Cannot read CPU affinity: {}",
+            std::io::Error::last_os_error()
+        ));
     }
     if process == 0 || system == 0 {
         return Err("CPU affinity is unavailable for a process spanning processor groups.".into());
@@ -90,13 +105,18 @@ pub fn masks() -> Result<(usize, usize), String> {
 }
 
 fn selected_mask(cpus: &[u16], available: usize) -> Result<usize, String> {
-    if cpus.is_empty() { return Ok(available); }
+    if cpus.is_empty() {
+        return Ok(available);
+    }
     let mut mask = 0;
     for &cpu in cpus {
-        let bit = 1usize.checked_shl(u32::from(cpu))
+        let bit = 1usize
+            .checked_shl(u32::from(cpu))
             .filter(|bit| available & bit != 0)
             .ok_or_else(|| format!("Logical CPU {cpu} is unavailable on this computer."))?;
-        if mask & bit != 0 { return Err(format!("Logical CPU {cpu} was selected more than once.")); }
+        if mask & bit != 0 {
+            return Err(format!("Logical CPU {cpu} was selected more than once."));
+        }
         mask |= bit;
     }
     Ok(mask)
@@ -118,15 +138,21 @@ pub fn validate(settings: &Settings) -> Result<(), String> {
 
 pub fn set_mask(mask: usize) -> Result<(), String> {
     if unsafe { SetProcessAffinityMask(GetCurrentProcess(), mask) } == 0 {
-        return Err(format!("Cannot apply CPU affinity: {}", std::io::Error::last_os_error()));
+        return Err(format!(
+            "Cannot apply CPU affinity: {}",
+            std::io::Error::last_os_error()
+        ));
     }
     Ok(())
 }
 
 pub fn apply(cpus: &[u16]) -> Result<(), String> {
     if unsafe { GetActiveProcessorGroupCount() } > 1 {
-        return if cpus.is_empty() { Ok(()) }
-        else { Err("CPU pinning requires a single Windows processor group.".into()) };
+        return if cpus.is_empty() {
+            Ok(())
+        } else {
+            Err("CPU pinning requires a single Windows processor group.".into())
+        };
     }
     let (_, system) = masks()?;
     set_mask(selected_mask(cpus, system)?)
@@ -138,11 +164,23 @@ pub fn save_driver_at(path: &Path, settings: &Settings) -> Result<(), String> {
     validate(settings)?;
     let snapshot = otd_core::storage::capture(path)?;
     let text = toml::to_string_pretty(settings).map_err(|error| error.to_string())?;
-    let previous = if unsafe { GetActiveProcessorGroupCount() } == 1 { Some(masks()?.0) } else { None };
+    let previous = if unsafe { GetActiveProcessorGroupCount() } == 1 {
+        Some(masks()?.0)
+    } else {
+        None
+    };
     apply(&settings.driver_cpus)?;
-    if let Err(error) = otd_core::storage::save(path, text.as_bytes(), otd_core::storage::SaveMode::Replace(&snapshot)) {
-        if let Some(previous) = previous && let Err(rollback) = set_mask(previous) {
-            return Err(format!("{error}; restoring the previous CPU affinity also failed: {rollback}"));
+    if let Err(error) = otd_core::storage::save(
+        path,
+        text.as_bytes(),
+        otd_core::storage::SaveMode::Replace(&snapshot),
+    ) {
+        if let Some(previous) = previous
+            && let Err(rollback) = set_mask(previous)
+        {
+            return Err(format!(
+                "{error}; restoring the previous CPU affinity also failed: {rollback}"
+            ));
         }
         return Err(error);
     }
@@ -153,13 +191,25 @@ pub fn save_driver_at(path: &Path, settings: &Settings) -> Result<(), String> {
 pub fn apply_saved(ui: bool) -> Result<(), String> {
     // A child daemon inherits its launching GUI's mask. Reset that inheritance
     // before reading its independent choice, including when the file is bad.
-    if !ui { apply(&[])?; }
+    if !ui {
+        apply(&[])?;
+    }
     let settings = load()?;
-    if !ui { DRIVER_MMCSS.store(settings.mmcss, Ordering::Relaxed); }
+    if !ui {
+        DRIVER_MMCSS.store(settings.mmcss, Ordering::Relaxed);
+    }
     // Default GUI settings retain external launcher affinity. An explicit All
     // in the dialog resets a prior app selection.
-    let cpus = if ui { &settings.ui_cpus } else { &settings.driver_cpus };
-    if ui && cpus.is_empty() { Ok(()) } else { apply(cpus) }
+    let cpus = if ui {
+        &settings.ui_cpus
+    } else {
+        &settings.driver_cpus
+    };
+    if ui && cpus.is_empty() {
+        Ok(())
+    } else {
+        apply(cpus)
+    }
 }
 
 #[cfg(test)]
@@ -170,24 +220,38 @@ mod tests {
     fn cpu_lists_accept_all_and_ranges_and_reject_invalid_selections() {
         assert_eq!(parse_cpus(" ALL ").unwrap(), Vec::<u16>::new());
         assert_eq!(parse_cpus("").unwrap(), Vec::<u16>::new());
-        assert_eq!(parse_cpus("7, 0,2-4").unwrap(), [0,2,3,4,7]);
+        assert_eq!(parse_cpus("7, 0,2-4").unwrap(), [0, 2, 3, 4, 7]);
         for invalid in ["0,0", "2-4,3", "4-2", "64", "-1", "0,", "1--3", "+1", "a"] {
             assert!(parse_cpus(invalid).is_err(), "{invalid}");
         }
-        assert_eq!(selected_mask(&[0,2], 0b111).unwrap(), 0b101);
+        assert_eq!(selected_mask(&[0, 2], 0b111).unwrap(), 0b101);
         assert_eq!(selected_mask(&[], 0b111).unwrap(), 0b111);
         assert!(selected_mask(&[3], 0b111).is_err());
         assert!(selected_mask(&[64], usize::MAX).is_err());
-        assert!(selected_mask(&[1,1], 0b111).is_err());
+        assert!(selected_mask(&[1, 1], 0b111).is_err());
     }
 
     #[test]
     fn settings_round_trip_and_reject_unknown_keys() {
-        let settings = Settings { ui_cpus: vec![0,2], driver_cpus: vec![1,3], mmcss: true };
-        assert_eq!(toml::from_str::<Settings>(&toml::to_string(&settings).unwrap()).unwrap(), settings);
+        let settings = Settings {
+            ui_cpus: vec![0, 2],
+            driver_cpus: vec![1, 3],
+            mmcss: true,
+        };
+        assert_eq!(
+            toml::from_str::<Settings>(&toml::to_string(&settings).unwrap()).unwrap(),
+            settings
+        );
         assert_eq!(toml::from_str::<Settings>("").unwrap(), Settings::default());
         let legacy = toml::from_str::<Settings>("ui_cpus = [0]\ndriver_cpus = [1]").unwrap();
-        assert_eq!(legacy, Settings { ui_cpus: vec![0], driver_cpus: vec![1], mmcss: false });
+        assert_eq!(
+            legacy,
+            Settings {
+                ui_cpus: vec![0],
+                driver_cpus: vec![1],
+                mmcss: false
+            }
+        );
         assert!(toml::from_str::<Settings>("driver_core = 1").is_err());
     }
 
@@ -198,25 +262,40 @@ mod tests {
     fn applies_persists_resets_and_rolls_back_on_save_failure() {
         let original = masks().unwrap().0;
         struct Restore(usize);
-        impl Drop for Restore { fn drop(&mut self) { let _ = set_mask(self.0); } }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let _ = set_mask(self.0);
+            }
+        }
         let _restore = Restore(original);
         let system = masks().unwrap().1;
         let cpu = system.trailing_zeros() as u16;
         let directory = std::env::temp_dir().join(format!("otd-affinity-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("experimental.toml");
-        let settings = Settings { ui_cpus: vec![cpu], driver_cpus: vec![cpu], mmcss: true };
+        let settings = Settings {
+            ui_cpus: vec![cpu],
+            driver_cpus: vec![cpu],
+            mmcss: true,
+        };
         save_driver_at(&path, &settings).unwrap();
         assert_eq!(masks().unwrap().0, 1usize << cpu);
         assert_eq!(load_at(&path).unwrap(), settings);
         assert!(mmcss_enabled());
         apply(&[]).unwrap();
         assert_eq!(masks().unwrap().0, system);
-        let invalid = Settings { ui_cpus: vec![64], driver_cpus: Vec::new(), mmcss: false };
+        let invalid = Settings {
+            ui_cpus: vec![64],
+            driver_cpus: Vec::new(),
+            mmcss: false,
+        };
         assert!(save_driver_at(&path, &invalid).is_err());
         assert_eq!(masks().unwrap().0, system);
         assert_eq!(load_at(&path).unwrap(), settings);
-        assert!(mmcss_enabled(), "a rejected save must retain the prior scheduling choice");
+        assert!(
+            mmcss_enabled(),
+            "a rejected save must retain the prior scheduling choice"
+        );
         let mut permissions = std::fs::metadata(&path).unwrap().permissions();
         permissions.set_readonly(true);
         std::fs::set_permissions(&path, permissions).unwrap();

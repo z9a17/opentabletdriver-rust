@@ -24,17 +24,17 @@ mod client;
 mod commands;
 mod conversion;
 mod debugger;
-mod debugger_data;
 mod debugger_capture;
+mod debugger_data;
 mod device_controls;
 mod draw;
 mod experimental;
 mod guide;
 mod layout;
-mod model;
 mod managed_settings;
-mod paint;
+mod model;
 mod original_settings;
+mod paint;
 mod plugin_manager;
 mod presets;
 mod property_validation;
@@ -73,10 +73,10 @@ use windows_sys::Win32::UI::Controls::{
     BST_CHECKED, CDDS_PREPAINT, CDIS_DISABLED, CDIS_FOCUS, CDIS_HOT, CDIS_SELECTED,
     CDIS_SHOWKEYBOARDCUES, CDRF_DODEFAULT, CDRF_SKIPDEFAULT, DRAWITEMSTRUCT, EM_SETCUEBANNER,
     EM_SETMARGINS, ICC_BAR_CLASSES, ICC_STANDARD_CLASSES, ICC_TAB_CLASSES, INITCOMMONCONTROLSEX,
-    InitCommonControlsEx, MEASUREITEMSTRUCT, NM_CUSTOMDRAW, NMCUSTOMDRAW, NMHDR, NMTTDISPINFOW, ODS_FOCUS,
-    ODS_SELECTED, ODT_LISTBOX, TBS_BOTH, TBS_HORZ, TBS_NOTICKS, TTF_IDISHWND, TTF_SUBCLASS,
-    TTM_ADDTOOLW, TTM_DELTOOLW, TTM_NEWTOOLRECTW, TTM_SETMAXTIPWIDTH, TTM_UPDATETIPTEXTW,
-    TTS_ALWAYSTIP, TTS_NOPREFIX, TTTOOLINFOW, TTN_GETDISPINFOW, TTM_UPDATE,
+    InitCommonControlsEx, MEASUREITEMSTRUCT, NM_CUSTOMDRAW, NMCUSTOMDRAW, NMHDR, NMTTDISPINFOW,
+    ODS_FOCUS, ODS_SELECTED, ODT_LISTBOX, TBS_BOTH, TBS_HORZ, TBS_NOTICKS, TTF_IDISHWND,
+    TTF_SUBCLASS, TTM_ADDTOOLW, TTM_DELTOOLW, TTM_NEWTOOLRECTW, TTM_SETMAXTIPWIDTH, TTM_UPDATE,
+    TTM_UPDATETIPTEXTW, TTN_GETDISPINFOW, TTS_ALWAYSTIP, TTS_NOPREFIX, TTTOOLINFOW,
 };
 use windows_sys::Win32::UI::HiDpi::{
     AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE,
@@ -162,7 +162,7 @@ const CMD_SAVE_LOG: u16 = 265;
 const CMD_EXPORT_DIAGNOSTICS: u16 = 266;
 const CMD_COPY_DIAGNOSTICS: u16 = 267;
 const CMD_DEVICE_STRINGS: u16 = 268;
-const CMD_GUIDE:u16=269;
+const CMD_GUIDE: u16 = 269;
 const CMD_CLEAR_LOG: u16 = 262;
 const CMD_AUTOSTART: u16 = 263;
 const CMD_SHOW: u16 = 270;
@@ -421,7 +421,8 @@ const TABS: [(Tab, &str); 8] = [
 
 // Keep page IDs stable, but only expose everyday tasks in the main tab row.
 const PRIMARY_TABS: [Tab; 4] = [Tab::Output, Tab::Filters, Tab::Pen, Tab::Aux];
-const BUTTON_SECTIONS: [(Tab, &str); 2] = [(Tab::Aux, "Tablet buttons"), (Tab::Mouse, "Mouse tool")];
+const BUTTON_SECTIONS: [(Tab, &str); 2] =
+    [(Tab::Aux, "Tablet buttons"), (Tab::Mouse, "Mouse tool")];
 
 impl Tab {
     fn primary(self) -> Option<Self> {
@@ -729,7 +730,10 @@ struct Controls {
 }
 
 enum BackgroundResult {
-    Managed { guard: managed_settings::Guard, result: Result<Vec<crate::dotnet::InspectedFilter>, String> },
+    Managed {
+        guard: managed_settings::Guard,
+        result: Result<Vec<crate::dotnet::InspectedFilter>, String>,
+    },
     Metadata {
         generation: u64,
         revision: u64,
@@ -751,7 +755,11 @@ enum BackgroundResult {
         errors: Vec<String>,
         aliases: Vec<(PathBuf, PathBuf)>,
     },
-    Original { generation:u64,revision:u64,result:Result<(String,Option<Box<Profile>>),String> },
+    Original {
+        generation: u64,
+        revision: u64,
+        result: Result<(String, Option<Box<Profile>>), String>,
+    },
     Import {
         generation: u64,
         edit_revision: u64,
@@ -759,7 +767,10 @@ enum BackgroundResult {
     },
     Presets(Result<Vec<String>, String>),
     Diagnostics(Result<DiagnosticExport, String>),
-    OriginalDiagnostics { token:u64, result:Result<DiagnosticExport,String> },
+    OriginalDiagnostics {
+        token: u64,
+        result: Result<DiagnosticExport, String>,
+    },
 }
 
 enum DiagnosticExport {
@@ -1091,7 +1102,11 @@ unsafe extern "system" fn window_proc(
         WM_NOTIFY => {
             let header = unsafe { &*(lp as *const NMHDR) };
             if header.code == TTN_GETDISPINFOW {
-                if !with_app(|app| header.hwndFrom == app.tooltip && header.idFrom == app.c.filter_list as usize).unwrap_or(false) {
+                if !with_app(|app| {
+                    header.hwndFrom == app.tooltip && header.idFrom == app.c.filter_list as usize
+                })
+                .unwrap_or(false)
+                {
                     return default();
                 }
                 let tip = unsafe { &mut *(lp as *mut NMTTDISPINFOW) };
@@ -1123,7 +1138,9 @@ unsafe extern "system" fn window_proc(
             1
         }
         WM_COMMAND => {
-            if with_app(|app| app.closing || app.update_restart_pending).unwrap_or(false) { return 0; }
+            if with_app(|app| app.closing || app.update_restart_pending).unwrap_or(false) {
+                return 0;
+            }
             on_command(
                 window,
                 (wp & 0xFFFF) as u16,
@@ -1132,13 +1149,17 @@ unsafe extern "system" fn window_proc(
             );
             with_app(|app| {
                 if app.metadata_refresh_deferred {
-                    unsafe { PostMessageW(window, WM_METADATA_REFRESH, 0, 0); }
+                    unsafe {
+                        PostMessageW(window, WM_METADATA_REFRESH, 0, 0);
+                    }
                 }
             });
             0
         }
         WM_HSCROLL => {
-            if with_app(|app| app.closing || app.update_restart_pending).unwrap_or(false) { return 0; }
+            if with_app(|app| app.closing || app.update_restart_pending).unwrap_or(false) {
+                return 0;
+            }
             let slider = lp as HWND;
             with_app(|app| app.slider_moved(slider));
             0
@@ -1225,7 +1246,10 @@ unsafe extern "system" fn window_proc(
             with_app(App::driver_status);
             0
         }
-        WM_MANAGED_SETTINGS => { managed_settings::open_ready(window); 0 }
+        WM_MANAGED_SETTINGS => {
+            managed_settings::open_ready(window);
+            0
+        }
         WM_BACKGROUND => {
             if let Some(text) = with_app(App::background_results).flatten() {
                 // Modal dialogs pump messages; release the App borrow first.
@@ -1235,8 +1259,13 @@ unsafe extern "system" fn window_proc(
         }
         WM_EXPERIMENTAL_APPLY => {
             with_app(|app| {
-                let settings = app.experimental.as_ref().and_then(experimental::Page::take_result);
-                if let Some(settings) = settings { app.apply_experimental(settings); }
+                let settings = app
+                    .experimental
+                    .as_ref()
+                    .and_then(experimental::Page::take_result);
+                if let Some(settings) = settings {
+                    app.apply_experimental(settings);
+                }
             });
             0
         }
@@ -1254,12 +1283,24 @@ unsafe extern "system" fn window_proc(
         }
         WM_AUTOSTART => {
             with_app(App::auto_start);
-            let first_setup=with_app(|app|!app.closing&&!app.update_restart_pending
-                &&app.profile_snapshot.as_ref().is_none_or(|snapshot|!snapshot.exists())
-                &&app.editor.profile.imported_otd.is_none()).unwrap_or(false);
-            if first_setup&&!START_IN_TRAY.load(std::sync::atomic::Ordering::Relaxed)
-                &&unsafe{IsWindowVisible(window)}!=0&&unsafe{IsIconic(window)}==0 {
-                unsafe{PostMessageW(window,WM_COMMAND,CMD_GUIDE as usize,0);}
+            let first_setup = with_app(|app| {
+                !app.closing
+                    && !app.update_restart_pending
+                    && app
+                        .profile_snapshot
+                        .as_ref()
+                        .is_none_or(|snapshot| !snapshot.exists())
+                    && app.editor.profile.imported_otd.is_none()
+            })
+            .unwrap_or(false);
+            if first_setup
+                && !START_IN_TRAY.load(std::sync::atomic::Ordering::Relaxed)
+                && unsafe { IsWindowVisible(window) } != 0
+                && unsafe { IsIconic(window) } == 0
+            {
+                unsafe {
+                    PostMessageW(window, WM_COMMAND, CMD_GUIDE as usize, 0);
+                }
             }
             0
         }
@@ -1291,7 +1332,9 @@ unsafe extern "system" fn window_proc(
                 // startup check held back. Posted, so it never runs here.
                 // Activation can occur inside a modal message loop. Keep
                 // deferred offers out of that reentrant window procedure.
-                unsafe { PostMessageW(window, updates::WM_OFFER_UPDATE, 0, 0); }
+                unsafe {
+                    PostMessageW(window, updates::WM_OFFER_UPDATE, 0, 0);
+                }
                 let focus = LAST_FOCUS.with(Cell::get) as HWND;
                 if !focus.is_null()
                     && unsafe { IsWindow(focus) } != 0
@@ -1305,16 +1348,29 @@ unsafe extern "system" fn window_proc(
         }
         WM_TIMER if wp == 0xD06 => {
             if !debugger::is_open() {
-                unsafe { KillTimer(window, 0xD06); }
-                if with_app(|app| std::mem::take(&mut app.recording_close_pending)).unwrap_or(false) {
-                    if with_app(App::begin_close).unwrap_or(true) { unsafe { DestroyWindow(window); } }
-                } else { unsafe { PostMessageW(window, WM_CLOSE, 0, 0); } }
+                unsafe {
+                    KillTimer(window, 0xD06);
+                }
+                if with_app(|app| std::mem::take(&mut app.recording_close_pending)).unwrap_or(false)
+                {
+                    if with_app(App::begin_close).unwrap_or(true) {
+                        unsafe {
+                            DestroyWindow(window);
+                        }
+                    }
+                } else {
+                    unsafe {
+                        PostMessageW(window, WM_CLOSE, 0, 0);
+                    }
+                }
             }
             0
         }
         WM_TIMER if wp == 0xD07 => {
             if !debugger::is_open() {
-                unsafe { KillTimer(window, 0xD07); }
+                unsafe {
+                    KillTimer(window, 0xD07);
+                }
                 updates::resume_restart(window);
             }
             0
@@ -1324,8 +1380,14 @@ unsafe extern "system" fn window_proc(
                 if with_app(|app| app.close_ready).unwrap_or(false) {
                     if debugger::is_open() {
                         debugger::close();
-                        unsafe { SetTimer(window, 0xD06, 33, None); }
-                    } else { unsafe { DestroyWindow(window); } }
+                        unsafe {
+                            SetTimer(window, 0xD06, 33, None);
+                        }
+                    } else {
+                        unsafe {
+                            DestroyWindow(window);
+                        }
+                    }
                 }
                 return 0;
             }
@@ -1337,7 +1399,9 @@ unsafe extern "system" fn window_proc(
                 return 0;
             }
             // Close from the tray asks about unsaved edits with the panel shown.
-            if !approved_restart && with_app(|app| app.dirty || !app.invalid.is_empty()).unwrap_or(false) && unsafe { IsWindowVisible(window) } == 0
+            if !approved_restart
+                && with_app(|app| app.dirty || !app.invalid.is_empty()).unwrap_or(false)
+                && unsafe { IsWindowVisible(window) } == 0
             {
                 tray::show_panel(window);
             }
@@ -1347,8 +1411,14 @@ unsafe extern "system" fn window_proc(
             if with_app(App::begin_close).unwrap_or(true) {
                 if debugger::is_open() {
                     debugger::close();
-                    unsafe { SetTimer(window, 0xD06, 33, None); }
-                } else { unsafe { DestroyWindow(window); } }
+                    unsafe {
+                        SetTimer(window, 0xD06, 33, None);
+                    }
+                } else {
+                    unsafe {
+                        DestroyWindow(window);
+                    }
+                }
             }
             0
         }
@@ -1479,7 +1549,11 @@ pub fn run() -> Result<(), String> {
         }
     };
     if let Some(error) = affinity_warning {
-        app.log(Level::Warning, "Experimental", format!("GUI CPU affinity was not applied: {error}"));
+        app.log(
+            Level::Warning,
+            "Experimental",
+            format!("GUI CPU affinity was not applied: {error}"),
+        );
     }
     let _device_notifications = match crate::hid::WindowNotification::register(window) {
         Ok(notification) => Some(notification),
@@ -1588,7 +1662,9 @@ pub fn run() -> Result<(), String> {
             if message.message == WM_MOUSEMOVE {
                 // Updating a live tooltip may ask the owner for its text, so
                 // finish borrowing App before calling the tooltip window.
-                if let Some(Some(tooltip)) = with_app(|app| app.filter_hover_changed(message.hwnd, message.lParam)) {
+                if let Some(Some(tooltip)) =
+                    with_app(|app| app.filter_hover_changed(message.hwnd, message.lParam))
+                {
                     SendMessageW(tooltip, TTM_UPDATE, 0, 0);
                 }
             }

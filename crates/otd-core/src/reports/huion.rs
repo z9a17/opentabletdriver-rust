@@ -100,17 +100,23 @@ pub fn parse_huion_kamvas_offset(
     }
     require_length(raw, 12)?;
     let x = u32::from(u16::from_le_bytes([raw[2], raw[3]])) | (u32::from(raw[4] & 1) << 16);
-    Ok((ReportKind::Data, ReportEnvelope {
-        metadata,
-        raw,
-        values: ReportValues {
-            position: Some([x as f32, f32::from(u16::from_le_bytes([raw[5], raw[6]]))]),
-            pressure: Some(u32::from(u16::from_le_bytes([raw[7], raw[8]]))),
-            tilt: Some([-f32::from(i16::from(raw[10] as i8)), -f32::from(i16::from(raw[11] as i8))]),
-            pen_buttons: Some(Buttons::from_bits(u64::from(raw[1] >> 1), 3)?),
-            ..ReportValues::default()
+    Ok((
+        ReportKind::Data,
+        ReportEnvelope {
+            metadata,
+            raw,
+            values: ReportValues {
+                position: Some([x as f32, f32::from(u16::from_le_bytes([raw[5], raw[6]]))]),
+                pressure: Some(u32::from(u16::from_le_bytes([raw[7], raw[8]]))),
+                tilt: Some([
+                    -f32::from(i16::from(raw[10] as i8)),
+                    -f32::from(i16::from(raw[11] as i8)),
+                ]),
+                pen_buttons: Some(Buttons::from_bits(u64::from(raw[1] >> 1), 3)?),
+                ..ReportValues::default()
+            },
         },
-    }))
+    ))
 }
 
 fn auxiliary_relative_wheels(raw: &[u8]) -> Result<ReportValues, ReportError> {

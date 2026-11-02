@@ -25,17 +25,30 @@ pub struct DispatchInput<'a> {
 pub trait PipelineRuntime {
     /// Runs once after synchronous Internal elements and before ordinary filters.
     /// Timer/late continuations must resume downstream without repeating this.
-    fn prepare_report(&mut self, _values: &mut ReportValues) -> io::Result<()> { Ok(()) }
+    fn prepare_report(&mut self, _values: &mut ReportValues) -> io::Result<()> {
+        Ok(())
+    }
     fn builtins(&mut self, values: &mut ReportValues) -> io::Result<()>;
     fn transform(&mut self, kind: ReportKind, values: &mut ReportValues) -> io::Result<bool>;
     fn output(&mut self, kind: ReportKind, values: &ReportValues, raw: &[u8]) -> io::Result<()>;
     /// Managed modes own mapping and pointer output; this continuation runs
     /// host bindings on the actual post-transform managed report only.
-    fn bindings(&mut self, _kind: ReportKind, _values: &mut ReportValues, _raw: &[u8]) -> io::Result<()> {
-        Err(io::Error::new(io::ErrorKind::Unsupported, "managed output bindings are unavailable"))
+    fn bindings(
+        &mut self,
+        _kind: ReportKind,
+        _values: &mut ReportValues,
+        _raw: &[u8],
+    ) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "managed output bindings are unavailable",
+        ))
     }
     fn managed_command(&mut self, _command: ManagedCommand) -> io::Result<()> {
-        Err(io::Error::new(io::ErrorKind::Unsupported, "managed pointer services are unavailable"))
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "managed pointer services are unavailable",
+        ))
     }
 }
 
@@ -43,8 +56,13 @@ pub trait PipelineRuntime {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ManagedCommand {
-    pub kind: u32, pub owner: u32, pub x: f32, pub y: f32,
-    pub value: u32, pub flags: u32, pub tilt: [f32; 2],
+    pub kind: u32,
+    pub owner: u32,
+    pub x: f32,
+    pub y: f32,
+    pub value: u32,
+    pub flags: u32,
+    pub tilt: [f32; 2],
     pub rotation: f32,
 }
 
@@ -115,7 +133,9 @@ impl PluginConfig {
 /// pipeline calls them. PreTransform filters receive report units; Pixels
 /// filters receive pixels after absolute mapping or deltas in relative mode.
 pub trait Filters {
-    fn owns_mapping(&self) -> bool { false }
+    fn owns_mapping(&self) -> bool {
+        false
+    }
     /// Managed graph callbacks expose upstream f32 positions. Native-only
     /// chains can retain the host mapper's f64 precision until final output.
     fn uses_managed_graph(&self) -> bool {

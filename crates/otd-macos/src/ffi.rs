@@ -6,20 +6,30 @@ use std::ffi::{c_char, c_void};
 
 pub type Ref = *const c_void;
 pub type Hid = *mut c_void;
-pub type ReportCallback = unsafe extern "C" fn(*mut c_void, i32, *mut c_void, u32, u32, *mut u8, isize);
+pub type ReportCallback =
+    unsafe extern "C" fn(*mut c_void, i32, *mut c_void, u32, u32, *mut u8, isize);
 pub type RemovalCallback = unsafe extern "C" fn(*mut c_void, i32, *mut c_void);
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
-pub struct Point { pub x: f64, pub y: f64 }
+pub struct Point {
+    pub x: f64,
+    pub y: f64,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
-pub struct Size { pub width: f64, pub height: f64 }
+pub struct Size {
+    pub width: f64,
+    pub height: f64,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
-pub struct Rect { pub origin: Point, pub size: Size }
+pub struct Rect {
+    pub origin: Point,
+    pub size: Size,
+}
 
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
@@ -45,18 +55,52 @@ unsafe extern "C" {
     pub fn IOIteratorNext(iterator: u32) -> u32;
     pub fn IOObjectRelease(object: u32) -> i32;
     pub fn IORegistryEntryGetRegistryEntryID(entry: u32, identifier: *mut u64) -> i32;
-    pub fn IORegistryEntryGetParentEntry(entry: u32, plane: *const c_char, parent: *mut u32) -> i32;
-    pub fn IORegistryEntryCreateCFProperty(entry: u32, key: Ref, allocator: Ref, options: u32) -> Ref;
+    pub fn IORegistryEntryGetParentEntry(entry: u32, plane: *const c_char, parent: *mut u32)
+    -> i32;
+    pub fn IORegistryEntryCreateCFProperty(
+        entry: u32,
+        key: Ref,
+        allocator: Ref,
+        options: u32,
+    ) -> Ref;
     pub fn IOHIDDeviceCreate(allocator: Ref, service: u32) -> Hid;
     pub fn IOHIDDeviceGetProperty(device: Hid, key: Ref) -> Ref;
     pub fn IOHIDDeviceOpen(device: Hid, options: u32) -> i32;
     pub fn IOHIDDeviceClose(device: Hid, options: u32) -> i32;
-    pub fn IOHIDDeviceRegisterInputReportCallback(device: Hid, report: *mut u8, length: isize, callback: Option<ReportCallback>, context: *mut c_void);
-    pub fn IOHIDDeviceRegisterRemovalCallback(device: Hid, callback: Option<RemovalCallback>, context: *mut c_void);
+    pub fn IOHIDDeviceRegisterInputReportCallback(
+        device: Hid,
+        report: *mut u8,
+        length: isize,
+        callback: Option<ReportCallback>,
+        context: *mut c_void,
+    );
+    pub fn IOHIDDeviceRegisterRemovalCallback(
+        device: Hid,
+        callback: Option<RemovalCallback>,
+        context: *mut c_void,
+    );
     pub fn IOHIDDeviceScheduleWithRunLoop(device: Hid, run_loop: Ref, mode: Ref);
     pub fn IOHIDDeviceUnscheduleFromRunLoop(device: Hid, run_loop: Ref, mode: Ref);
-    pub fn IOHIDDeviceSetReportWithCallback(device: Hid, kind: u32, id: isize, report: *const u8, length: isize, timeout: f64, callback: Option<ReportCallback>, context: *mut c_void) -> i32;
-    pub fn IOHIDDeviceGetReportWithCallback(device: Hid, kind: u32, id: isize, report: *mut u8, length: *mut isize, timeout: f64, callback: Option<ReportCallback>, context: *mut c_void) -> i32;
+    pub fn IOHIDDeviceSetReportWithCallback(
+        device: Hid,
+        kind: u32,
+        id: isize,
+        report: *const u8,
+        length: isize,
+        timeout: f64,
+        callback: Option<ReportCallback>,
+        context: *mut c_void,
+    ) -> i32;
+    pub fn IOHIDDeviceGetReportWithCallback(
+        device: Hid,
+        kind: u32,
+        id: isize,
+        report: *mut u8,
+        length: *mut isize,
+        timeout: f64,
+        callback: Option<ReportCallback>,
+        context: *mut c_void,
+    ) -> i32;
     pub fn IOHIDCheckAccess(request: u32) -> u32;
     pub fn IOHIDRequestAccess(request: u32) -> bool;
 }
@@ -75,7 +119,14 @@ unsafe extern "C" {
     pub fn CGEventCreate(source: Ref) -> Ref;
     pub fn CGEventCreateMouseEvent(source: Ref, kind: u32, position: Point, button: u32) -> Ref;
     pub fn CGEventCreateKeyboardEvent(source: Ref, key: u16, down: bool) -> Ref;
-    pub fn CGEventCreateScrollWheelEvent2(source: Ref, units: u32, wheels: u32, wheel1: i32, wheel2: i32, wheel3: i32) -> Ref;
+    pub fn CGEventCreateScrollWheelEvent2(
+        source: Ref,
+        units: u32,
+        wheels: u32,
+        wheel1: i32,
+        wheel2: i32,
+        wheel3: i32,
+    ) -> Ref;
     pub fn CGEventGetLocation(event: Ref) -> Point;
     pub fn CGEventSetLocation(event: Ref, position: Point);
     pub fn CGEventSetType(event: Ref, kind: u32);
@@ -92,19 +143,22 @@ unsafe extern "C" {
 unsafe extern "C" {}
 #[link(name = "objc")]
 unsafe extern "C" {
-    pub fn objc_autoreleasePoolPush()->*mut c_void;
-    pub fn objc_autoreleasePoolPop(pool:*mut c_void);
-    pub fn objc_getClass(name:*const c_char)->Ref;
-    pub fn sel_registerName(name:*const c_char)->Ref;
-    #[link_name="objc_msgSend"]
-    pub fn objc_msgSend_double(receiver:Ref,selector:Ref)->f64;
+    pub fn objc_autoreleasePoolPush() -> *mut c_void;
+    pub fn objc_autoreleasePoolPop(pool: *mut c_void);
+    pub fn objc_getClass(name: *const c_char) -> Ref;
+    pub fn sel_registerName(name: *const c_char) -> Ref;
+    #[link_name = "objc_msgSend"]
+    pub fn objc_msgSend_double(receiver: Ref, selector: Ref) -> f64;
 }
 
 /// Pinned OSX.CGEventPost surrounds posting with an autorelease pool. Native
 /// tablet threads do not have an AppKit application loop to drain one for them.
 /// # Safety
 /// The event must be a live CoreGraphics event for the duration of this call.
-pub unsafe fn post_event(event:Ref){
-    let pool=unsafe{objc_autoreleasePoolPush()};
-    unsafe{CGEventPost(0,event);objc_autoreleasePoolPop(pool);}
+pub unsafe fn post_event(event: Ref) {
+    let pool = unsafe { objc_autoreleasePoolPush() };
+    unsafe {
+        CGEventPost(0, event);
+        objc_autoreleasePoolPop(pool);
+    }
 }

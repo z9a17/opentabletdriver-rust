@@ -17,12 +17,23 @@ impl PresetName {
         if value.is_empty()
             || value.len() > MAX_PRESET_NAME_BYTES
             || value.trim() != value
-            || matches!(value, "." | "..") || value.ends_with('.')
-            || value.chars().any(|character| character.is_control() || matches!(character, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'))
+            || matches!(value, "." | "..")
+            || value.ends_with('.')
+            || value.chars().any(|character| {
+                character.is_control()
+                    || matches!(
+                        character,
+                        '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+                    )
+            })
         {
             return Err("preset names require 1-240 UTF-8 bytes in a safe filename stem; no control/path characters, leading/trailing spaces, or trailing period".into());
         }
-        let upper = value.split('.').next().unwrap_or(value).to_ascii_uppercase();
+        let upper = value
+            .split('.')
+            .next()
+            .unwrap_or(value)
+            .to_ascii_uppercase();
         if matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
             || ((upper.starts_with("COM") || upper.starts_with("LPT"))
                 && upper.len() == 4
@@ -292,4 +303,3 @@ impl PresetStore {
         )
     }
 }
-

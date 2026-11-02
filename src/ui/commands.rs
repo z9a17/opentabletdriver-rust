@@ -1,8 +1,8 @@
 //! Menus, dialogs and the `WM_COMMAND` dispatcher. Modal UI (menus, file
 //! dialogs, message boxes) runs here, outside any `App` borrow.
 use super::*;
-const CMD_EXPORT_ORIGINAL_DIAGNOSTICS:u16=6307;
-const CMD_COPY_ORIGINAL_DIAGNOSTICS:u16=6308;
+const CMD_EXPORT_ORIGINAL_DIAGNOSTICS: u16 = 6307;
+const CMD_COPY_ORIGINAL_DIAGNOSTICS: u16 = 6308;
 
 pub(super) fn checked(value: bool) -> u32 {
     if value { MF_CHECKED } else { MF_UNCHECKED }
@@ -15,7 +15,9 @@ pub(super) fn append(menu: HMENU, flags: u32, id: u16, label: &str) {
 /// A successful attachment transfers ownership to the parent menu.
 pub(super) fn append_submenu(menu: HMENU, submenu: HMENU, label: &str) {
     if unsafe { AppendMenuW(menu, MF_POPUP, submenu as usize, wide(label).as_ptr()) } == 0 {
-        unsafe { DestroyMenu(submenu); }
+        unsafe {
+            DestroyMenu(submenu);
+        }
     }
 }
 
@@ -39,8 +41,7 @@ pub(super) fn copy_to_clipboard(owner: HWND, value: &str) -> bool {
             GlobalFree(memory);
             return false;
         }
-        let copied = EmptyClipboard() != 0
-            && !SetClipboardData(CF_UNICODETEXT, memory).is_null();
+        let copied = EmptyClipboard() != 0 && !SetClipboardData(CF_UNICODETEXT, memory).is_null();
         if !copied {
             GlobalFree(memory);
         }
@@ -96,18 +97,23 @@ pub(super) fn file_dialog(
     let mut buffer = vec![0u16; 32_768];
     let (filter, extension) = match kind {
         FileKind::Profile => ("Rust profile (*.toml)\0*.toml\0All files\0*.*\0\0", "toml"),
-        FileKind::Original|FileKind::OriginalPreset => ("Original settings (*.json)\0*.json\0All files\0*.*\0\0", "json"),
+        FileKind::Original | FileKind::OriginalPreset => (
+            "Original settings (*.json)\0*.json\0All files\0*.*\0\0",
+            "json",
+        ),
         FileKind::Dll => ("Plugin DLL (*.dll)\0*.dll\0\0", "dll"),
         FileKind::Package => ("Plugin (*.zip;*.dll)\0*.zip;*.dll\0\0", "zip"),
         FileKind::Recording => ("Sampled reports (*.jsonl)\0*.jsonl\0\0", "jsonl"),
     };
     let (filter, extension) = (wide(filter), wide(extension));
     let title = wide(title);
-    let initial=if matches!(kind,FileKind::OriginalPreset){
-        let store=otd_core::presets::PresetStore::user()?;
-        std::fs::create_dir_all(store.directory()).map_err(|error|error.to_string())?;
+    let initial = if matches!(kind, FileKind::OriginalPreset) {
+        let store = otd_core::presets::PresetStore::user()?;
+        std::fs::create_dir_all(store.directory()).map_err(|error| error.to_string())?;
         Some(wide(&store.directory().to_string_lossy()))
-    }else{None};
+    } else {
+        None
+    };
     let mut dialog = OPENFILENAMEW {
         lStructSize: size_of::<OPENFILENAMEW>() as u32,
         hwndOwner: window,
@@ -116,7 +122,9 @@ pub(super) fn file_dialog(
         nMaxFile: buffer.len() as u32,
         lpstrDefExt: extension.as_ptr(),
         lpstrTitle: title.as_ptr(),
-        lpstrInitialDir:initial.as_ref().map_or(ptr::null(),|initial|initial.as_ptr()),
+        lpstrInitialDir: initial
+            .as_ref()
+            .map_or(ptr::null(), |initial| initial.as_ptr()),
         Flags: OFN_NOCHANGEDIR
             | OFN_PATHMUSTEXIST
             | if save {
@@ -216,8 +224,10 @@ unsafe extern "system" fn popup_input_filter(code: i32, wparam: WPARAM, lparam: 
             let mut bounds = RECT::default();
             if !anchor.is_null()
                 && unsafe { GetWindowRect(anchor, &mut bounds) } != 0
-                && message.pt.x >= bounds.left && message.pt.x < bounds.right
-                && message.pt.y >= bounds.top && message.pt.y < bounds.bottom
+                && message.pt.x >= bounds.left
+                && message.pt.x < bounds.right
+                && message.pt.y >= bounds.top
+                && message.pt.y < bounds.bottom
                 && unsafe { EndMenu() } != 0
             {
                 unsafe { SendMessageW(anchor, WM_CANCELMODE, 0, 0) };
@@ -241,13 +251,21 @@ pub(super) fn popup(window: HWND, menu: HMENU, anchor: HWND) -> u16 {
     let previous_anchor = POPUP_ANCHOR.replace(anchor);
     let hook = unsafe {
         SetWindowsHookExW(
-            WH_MSGFILTER, Some(popup_input_filter), ptr::null_mut(),
+            WH_MSGFILTER,
+            Some(popup_input_filter),
+            ptr::null_mut(),
             windows_sys::Win32::System::Threading::GetCurrentThreadId(),
         )
     };
     if hook.is_null() {
         let error = std::io::Error::last_os_error();
-        with_app(|app| app.log(Level::Warning, "UI", format!("Could not enable click-to-close menus: {error}")));
+        with_app(|app| {
+            app.log(
+                Level::Warning,
+                "UI",
+                format!("Could not enable click-to-close menus: {error}"),
+            )
+        });
     }
     let command = unsafe {
         TrackPopupMenuEx(
@@ -259,7 +277,9 @@ pub(super) fn popup(window: HWND, menu: HMENU, anchor: HWND) -> u16 {
             &params,
         )
     };
-    if !hook.is_null() { unsafe { UnhookWindowsHookEx(hook) }; }
+    if !hook.is_null() {
+        unsafe { UnhookWindowsHookEx(hook) };
+    }
     POPUP_ANCHOR.set(previous_anchor);
     update_look(|look| look.menu_open = previous_anchor as isize);
     unsafe {
@@ -292,24 +312,83 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                 unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null()) };
                 presets::append_menu(menu, app);
                 let transfer = unsafe { CreatePopupMenu() };
-                append(transfer, MF_STRING, CMD_IMPORT, "Import OpenTabletDriver settings...");
+                append(
+                    transfer,
+                    MF_STRING,
+                    CMD_IMPORT,
+                    "Import OpenTabletDriver settings...",
+                );
                 let original = unsafe { CreatePopupMenu() };
-                let original_ready = if app.original_pending || app.control_busy { MF_GRAYED } else { MF_STRING };
-                append(original, MF_STRING, original_settings::CMD_LOAD, "Load and apply collection...");
-                append(original, original_ready, original_settings::CMD_APPLY, "Apply collection...");
-                append(original, MF_STRING, original_settings::CMD_SAVE_AS, "Save and apply collection as...");
+                let original_ready = if app.original_pending || app.control_busy {
+                    MF_GRAYED
+                } else {
+                    MF_STRING
+                };
+                append(
+                    original,
+                    MF_STRING,
+                    original_settings::CMD_LOAD,
+                    "Load and apply collection...",
+                );
+                append(
+                    original,
+                    original_ready,
+                    original_settings::CMD_APPLY,
+                    "Apply collection...",
+                );
+                append(
+                    original,
+                    MF_STRING,
+                    original_settings::CMD_SAVE_AS,
+                    "Save and apply collection as...",
+                );
                 append(original, MF_SEPARATOR, 0, "");
-                append(original, MF_STRING, original_settings::CMD_EXPORT, "Export collection...");
-                append(original, original_ready, original_settings::CMD_SAVE_DEFAULT, "Save collection as default...");
-                append(original, MF_STRING, original_settings::CMD_SAVE_PRESET, "Save collection as preset...");
+                append(
+                    original,
+                    MF_STRING,
+                    original_settings::CMD_EXPORT,
+                    "Export collection...",
+                );
+                append(
+                    original,
+                    original_ready,
+                    original_settings::CMD_SAVE_DEFAULT,
+                    "Save collection as default...",
+                );
+                append(
+                    original,
+                    MF_STRING,
+                    original_settings::CMD_SAVE_PRESET,
+                    "Save collection as preset...",
+                );
                 append(original, MF_SEPARATOR, 0, "");
-                append(original, original_ready, original_settings::CMD_RESET, "Reset collection to defaults...");
+                append(
+                    original,
+                    original_ready,
+                    original_settings::CMD_RESET,
+                    "Reset collection to defaults...",
+                );
                 append_submenu(transfer, original, "Original settings collection");
                 append_submenu(menu, transfer, "Import && export");
                 let advanced = unsafe { CreatePopupMenu() };
-                append(advanced, MF_STRING, CMD_RECOVER_BACKUP, "Recover backup as unsaved settings...");
-                append(advanced, MF_STRING, CMD_RESET, "Reset settings to defaults...");
-                append(advanced, MF_STRING, CMD_OPEN_FOLDER, "Open settings folder...");
+                append(
+                    advanced,
+                    MF_STRING,
+                    CMD_RECOVER_BACKUP,
+                    "Recover backup as unsaved settings...",
+                );
+                append(
+                    advanced,
+                    MF_STRING,
+                    CMD_RESET,
+                    "Reset settings to defaults...",
+                );
+                append(
+                    advanced,
+                    MF_STRING,
+                    CMD_OPEN_FOLDER,
+                    "Open settings folder...",
+                );
                 append_submenu(menu, advanced, "Advanced");
                 unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null()) };
                 append(menu, MF_STRING, CMD_QUIT, "Quit\tCtrl+Q");
@@ -317,25 +396,58 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
             1 => {
                 append(menu, MF_STRING, CMD_DETECT, "Detect tablet\tCtrl+D");
                 let sessions = unsafe { CreatePopupMenu() };
-                app.device_choices = app.device_sessions.iter().take(usize::from(DEVICE_CHOICES))
-                    .map(|device| device.id.clone()).collect();
+                app.device_choices = app
+                    .device_sessions
+                    .iter()
+                    .take(usize::from(DEVICE_CHOICES))
+                    .map(|device| device.id.clone())
+                    .collect();
                 if app.device_choices.is_empty() {
                     append(sessions, MF_GRAYED, 0, "No device sessions");
                 }
                 for (index, id) in app.device_choices.iter().enumerate() {
-                    if let Some(device) = app.device_sessions.iter().find(|device| &device.id == id) {
-                        let disabled = app.control_busy || app.dirty || !app.invalid.is_empty()
-                            || device.pending_generation.is_some() || device.device_generation == 0;
-                        let flags = checked(app.selected_device.as_ref().is_some_and(|selected| selected.id == device.id))
-                            | if disabled { MF_GRAYED } else { MF_STRING };
-                        let duplicate = app.device_sessions.iter().filter(|other| other.tablet == device.tablet).count() > 1;
+                    if let Some(device) = app.device_sessions.iter().find(|device| &device.id == id)
+                    {
+                        let disabled = app.control_busy
+                            || app.dirty
+                            || !app.invalid.is_empty()
+                            || device.pending_generation.is_some()
+                            || device.device_generation == 0;
+                        let flags = checked(
+                            app.selected_device
+                                .as_ref()
+                                .is_some_and(|selected| selected.id == device.id),
+                        ) | if disabled { MF_GRAYED } else { MF_STRING };
+                        let duplicate = app
+                            .device_sessions
+                            .iter()
+                            .filter(|other| other.tablet == device.tablet)
+                            .count()
+                            > 1;
                         let name = if duplicate {
-                            format!("{} ({})", device.tablet, device.id.strip_prefix("device-").unwrap_or(&device.id))
-                        } else { device.tablet.clone() };
-                        append(sessions, flags, CMD_DEVICE_FIRST + index as u16,
-                            &format!("{name} — {:?}{}{}", device.state,
+                            format!(
+                                "{} ({})",
+                                device.tablet,
+                                device.id.strip_prefix("device-").unwrap_or(&device.id)
+                            )
+                        } else {
+                            device.tablet.clone()
+                        };
+                        append(
+                            sessions,
+                            flags,
+                            CMD_DEVICE_FIRST + index as u16,
+                            &format!(
+                                "{name} — {:?}{}{}",
+                                device.state,
                                 if device.primary { " · primary" } else { "" },
-                                if device.connected { "" } else { " · disconnected" }));
+                                if device.connected {
+                                    ""
+                                } else {
+                                    " · disconnected"
+                                }
+                            ),
+                        );
                     }
                 }
                 append_submenu(menu, sessions, "Tablet sessions");
@@ -386,14 +498,30 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                     "Convert tablet area from...",
                 );
                 let controls = unsafe { CreatePopupMenu() };
-                let ready = !app.control_busy && app.selected_device.as_ref().is_some_and(|device|
-                    device.pending_generation.is_none() && device.device_generation > 0);
-                append(controls, if ready { MF_STRING } else { MF_GRAYED }, CMD_DEVICE_START, "Start selected tablet");
-                append(controls, if ready { MF_STRING } else { MF_GRAYED }, CMD_DEVICE_STOP, "Stop selected tablet");
+                let ready = !app.control_busy
+                    && app.selected_device.as_ref().is_some_and(|device| {
+                        device.pending_generation.is_none() && device.device_generation > 0
+                    });
+                append(
+                    controls,
+                    if ready { MF_STRING } else { MF_GRAYED },
+                    CMD_DEVICE_START,
+                    "Start selected tablet",
+                );
+                append(
+                    controls,
+                    if ready { MF_STRING } else { MF_GRAYED },
+                    CMD_DEVICE_STOP,
+                    "Stop selected tablet",
+                );
                 append(controls, MF_SEPARATOR, 0, "");
                 append(
                     controls,
-                    if running || app.control_busy { MF_GRAYED } else { MF_STRING },
+                    if running || app.control_busy {
+                        MF_GRAYED
+                    } else {
+                        MF_STRING
+                    },
                     CMD_START_STOP,
                     "Start driver",
                 );
@@ -433,29 +561,66 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                 let colors = unsafe { CreatePopupMenu() };
                 let accent = app.prefs.accent;
                 for (index, (preset, name)) in Accent::PRESETS.iter().enumerate() {
-                    append(colors, MFT_RADIOCHECK | checked(accent == *preset), CMD_ACCENT_FIRST + index as u16, name);
+                    append(
+                        colors,
+                        MFT_RADIOCHECK | checked(accent == *preset),
+                        CMD_ACCENT_FIRST + index as u16,
+                        name,
+                    );
                 }
                 unsafe { AppendMenuW(colors, MF_SEPARATOR, 0, ptr::null()) };
-                append(colors, MFT_RADIOCHECK | checked(accent == Accent::Windows), CMD_ACCENT_WINDOWS, "Windows accent color");
+                append(
+                    colors,
+                    MFT_RADIOCHECK | checked(accent == Accent::Windows),
+                    CMD_ACCENT_WINDOWS,
+                    "Windows accent color",
+                );
                 let custom = match accent {
                     Accent::Custom(color) => format!("Custom ({})...", color.text()),
                     _ => "Custom...".to_owned(),
                 };
-                append(colors, MFT_RADIOCHECK | checked(matches!(accent, Accent::Custom(_))), CMD_ACCENT_CUSTOM, &custom);
+                append(
+                    colors,
+                    MFT_RADIOCHECK | checked(matches!(accent, Accent::Custom(_))),
+                    CMD_ACCENT_CUSTOM,
+                    &custom,
+                );
                 append_submenu(theme, colors, "Accent color");
                 append_submenu(menu, theme, "Theme");
                 let startup_menu = unsafe { CreatePopupMenu() };
-                append(startup_menu, checked(app.prefs.start_driver_on_launch), CMD_AUTOSTART,
-                    "Start driver when the panel opens");
-                append(startup_menu, checked(startup::enabled()), CMD_START_WITH_WINDOWS,
-                    "Start with Windows (in the tray)");
+                append(
+                    startup_menu,
+                    checked(app.prefs.start_driver_on_launch),
+                    CMD_AUTOSTART,
+                    "Start driver when the panel opens",
+                );
+                append(
+                    startup_menu,
+                    checked(startup::enabled()),
+                    CMD_START_WITH_WINDOWS,
+                    "Start with Windows (in the tray)",
+                );
                 append_submenu(menu, startup_menu, "Startup");
-                append(menu, MF_STRING, CMD_SHOW_EXPERIMENTAL, "Performance settings...");
+                append(
+                    menu,
+                    MF_STRING,
+                    CMD_SHOW_EXPERIMENTAL,
+                    "Performance settings...",
+                );
             }
             _ => {
                 append(menu, MF_STRING, CMD_DOCS, "Open documentation...");
                 append(menu, MF_STRING, CMD_GUIDE, "Show guide...");
-                append(menu, if app.updates.blocking() { MF_GRAYED } else { MF_STRING }, CMD_CHECK_UPDATES, "Check for updates...");
+                append(
+                    menu,
+                    if app.updates.blocking() {
+                        MF_GRAYED
+                    } else {
+                        MF_STRING
+                    },
+                    CMD_CHECK_UPDATES,
+                    "Check for updates...",
+                );
                 append(
                     menu,
                     checked(app.prefs.check_for_updates),
@@ -467,7 +632,12 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                 append(diagnostics, MF_STRING, CMD_SHOW_CONSOLE, "Console...");
                 append(diagnostics, MF_STRING, CMD_SAVE_LOG, "Save console log...");
                 append(diagnostics, MF_STRING, CMD_DEBUGGER, "Tablet debugger...");
-                append(diagnostics, MF_STRING, CMD_DEVICE_STRINGS, "Device string reader...");
+                append(
+                    diagnostics,
+                    MF_STRING,
+                    CMD_DEVICE_STRINGS,
+                    "Device string reader...",
+                );
                 append(diagnostics, MF_SEPARATOR, 0, "");
                 append(
                     diagnostics,
@@ -482,8 +652,18 @@ pub(super) fn menu_bar_popup(window: HWND, index: usize) {
                     "Copy redacted native diagnostics",
                 );
                 append(diagnostics, MF_SEPARATOR, 0, "");
-                append(diagnostics, MF_STRING, CMD_EXPORT_ORIGINAL_DIAGNOSTICS, "Export original diagnostics (includes environment/logs)...");
-                append(diagnostics, MF_STRING, CMD_COPY_ORIGINAL_DIAGNOSTICS, "Copy original diagnostics (includes environment/logs)");
+                append(
+                    diagnostics,
+                    MF_STRING,
+                    CMD_EXPORT_ORIGINAL_DIAGNOSTICS,
+                    "Export original diagnostics (includes environment/logs)...",
+                );
+                append(
+                    diagnostics,
+                    MF_STRING,
+                    CMD_COPY_ORIGINAL_DIAGNOSTICS,
+                    "Copy original diagnostics (includes environment/logs)",
+                );
                 append_submenu(menu, diagnostics, "Diagnostics");
                 append(menu, MF_STRING, CMD_ABOUT, "About...\tF1");
             }
@@ -512,8 +692,14 @@ pub(super) fn about(window: HWND) {
 }
 
 pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
-    if matches!(id, CMD_SAVE | CMD_APPLY) && with_app(|app| app.tab == Tab::Experimental) == Some(true) {
-        with_app(|app| { if let Some(page) = &app.experimental { page.accept(); } });
+    if matches!(id, CMD_SAVE | CMD_APPLY)
+        && with_app(|app| app.tab == Tab::Experimental) == Some(true)
+    {
+        with_app(|app| {
+            if let Some(page) = &app.experimental {
+                page.accept();
+            }
+        });
         return;
     }
     if !control.is_null() {
@@ -550,13 +736,17 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         id if (ID_MENU..ID_MENU + MENUS.len() as u16).contains(&id) => {
             menu_bar_popup(window, (id - ID_MENU) as usize);
         }
-        id if (bindings::ID_BINDING..bindings::ID_BINDING + bindings::MAX_BINDING_ROWS).contains(&id) => {
+        id if (bindings::ID_BINDING..bindings::ID_BINDING + bindings::MAX_BINDING_ROWS)
+            .contains(&id) =>
+        {
             bindings::choose(window, control);
         }
         id if (ID_TAB..ID_TAB + TABS.len() as u16).contains(&id) => {
             with_app(|app| app.select_primary_tab(TABS[(id - ID_TAB) as usize].0));
         }
-        id if (ID_BUTTON_SECTION..ID_BUTTON_SECTION + BUTTON_SECTIONS.len() as u16).contains(&id) => {
+        id if (ID_BUTTON_SECTION..ID_BUTTON_SECTION + BUTTON_SECTIONS.len() as u16)
+            .contains(&id) =>
+        {
             with_app(|app| app.select_tab(BUTTON_SECTIONS[(id - ID_BUTTON_SECTION) as usize].0));
         }
         CMD_SHOW_TOOLS => {
@@ -577,12 +767,24 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         CMD_PREV_TAB => {
             with_app(|app| app.cycle_tab(-1));
         }
-        original_settings::CMD_LOAD|original_settings::CMD_EXPORT|original_settings::CMD_APPLY|original_settings::CMD_SAVE_PRESET|original_settings::CMD_SAVE_DEFAULT|original_settings::CMD_RESET|original_settings::CMD_SAVE_AS=>original_settings::command(window,id),
+        original_settings::CMD_LOAD
+        | original_settings::CMD_EXPORT
+        | original_settings::CMD_APPLY
+        | original_settings::CMD_SAVE_PRESET
+        | original_settings::CMD_SAVE_DEFAULT
+        | original_settings::CMD_RESET
+        | original_settings::CMD_SAVE_AS => original_settings::command(window, id),
         CMD_LOAD => {
             if confirm_discard(window) {
                 match file_dialog(window, false, FileKind::Profile, "Load settings") {
                     Ok(Some(path)) => {
-                        if path.extension().is_some_and(|extension|extension.eq_ignore_ascii_case("json")){with_app(|app|original_settings::load(app,path));return;}
+                        if path
+                            .extension()
+                            .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+                        {
+                            with_app(|app| original_settings::load(app, path));
+                            return;
+                        }
                         let loaded = with_app(|app| app.load_file(path.clone())).unwrap_or(false);
                         if !loaded
                             && otd_core::storage::backup_path(&path)
@@ -672,13 +874,21 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         }
         id if (CMD_DEVICE_FIRST..CMD_DEVICE_FIRST + DEVICE_CHOICES).contains(&id) => {
             with_app(|app| {
-                if let Some(id) = app.device_choices.get(usize::from(id - CMD_DEVICE_FIRST)).cloned() {
+                if let Some(id) = app
+                    .device_choices
+                    .get(usize::from(id - CMD_DEVICE_FIRST))
+                    .cloned()
+                {
                     app.choose_device(id);
                 }
             });
         }
-        CMD_DEVICE_START => { with_app(|app| app.device_lifecycle(true)); }
-        CMD_DEVICE_STOP => { with_app(|app| app.device_lifecycle(false)); }
+        CMD_DEVICE_START => {
+            with_app(|app| app.device_lifecycle(true));
+        }
+        CMD_DEVICE_STOP => {
+            with_app(|app| app.device_lifecycle(false));
+        }
         id if (CMD_TABLET_FIRST..CMD_TABLET_FIRST + TABLET_CHOICES).contains(&id) => {
             with_app(|app| {
                 let name = app
@@ -755,9 +965,13 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         CMD_ACCENT_CUSTOM => {
             let current = with_app(|app| app.prefs.accent.base()).unwrap_or(Accent::Blue.base());
             match accent::show(window, current) {
-                Ok(Some(color)) => { with_app(|app| app.set_accent(Accent::Custom(color))); }
+                Ok(Some(color)) => {
+                    with_app(|app| app.set_accent(Accent::Custom(color)));
+                }
                 Ok(None) => {}
-                Err(error) => { with_app(|app| app.log(Level::Error, "Theme", error)); }
+                Err(error) => {
+                    with_app(|app| app.log(Level::Error, "Theme", error));
+                }
             }
         }
         CMD_THEME_SYSTEM | CMD_THEME_LIGHT | CMD_THEME_DARK => {
@@ -768,7 +982,11 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
             };
             with_app(|app| app.set_theme(mode));
         }
-        CMD_GUIDE => {if let Err(error)=guide::show(window){with_app(|app|app.log(Level::Error,"Guide",error));}},
+        CMD_GUIDE => {
+            if let Err(error) = guide::show(window) {
+                with_app(|app| app.log(Level::Error, "Guide", error));
+            }
+        }
         CMD_DOCS => shell_open(window, DOCS_URL),
         CMD_ABOUT => about(window),
         CMD_START_STOP => {
@@ -785,26 +1003,51 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         CMD_CHECK_UPDATES => updates::check(window, true),
         presets::CMD_PRESET_SAVE => presets::save(window),
         presets::CMD_PRESET_FOLDER => presets::open_folder(window),
-        presets::CMD_PRESET_REFRESH => { with_app(App::refresh_presets); },
-        presets::CMD_PRESET_PREVIOUS=>{with_app(|app|app.preset_page=app.preset_page.saturating_sub(1));},
-        presets::CMD_PRESET_NEXT=>{with_app(|app|app.preset_page=app.preset_page.saturating_add(1));},
+        presets::CMD_PRESET_REFRESH => {
+            with_app(App::refresh_presets);
+        }
+        presets::CMD_PRESET_PREVIOUS => {
+            with_app(|app| app.preset_page = app.preset_page.saturating_sub(1));
+        }
+        presets::CMD_PRESET_NEXT => {
+            with_app(|app| app.preset_page = app.preset_page.saturating_add(1));
+        }
         id if (presets::CMD_PRESET_FIRST..presets::CMD_PRESET_FIRST + presets::PRESET_CHOICES)
             .contains(&id) =>
         {
             let index = usize::from(id - presets::CMD_PRESET_FIRST);
             let guard = with_app(|app| {
-                (!app.closing && !app.update_restart_pending && !app.control_busy
-                    && !app.original_pending && !app.import_pending)
-                    .then(|| (app.managed_token, app.edit_revision, app.metadata_generation,
-                        app.preset_choices.get(index).cloned()))
-            }).flatten();
+                (!app.closing
+                    && !app.update_restart_pending
+                    && !app.control_busy
+                    && !app.original_pending
+                    && !app.import_pending)
+                    .then(|| {
+                        (
+                            app.managed_token,
+                            app.edit_revision,
+                            app.metadata_generation,
+                            app.preset_choices.get(index).cloned(),
+                        )
+                    })
+            })
+            .flatten();
             if guard.is_some() && confirm_discard(window) {
                 with_app(|app| {
-                    let current = (app.managed_token, app.edit_revision, app.metadata_generation,
-                        app.preset_choices.get(index).cloned());
-                    if guard.as_ref() == Some(&current) && !app.closing && !app.update_restart_pending
-                        && !app.control_busy && !app.original_pending && !app.import_pending {
-                        presets::apply(app,index);
+                    let current = (
+                        app.managed_token,
+                        app.edit_revision,
+                        app.metadata_generation,
+                        app.preset_choices.get(index).cloned(),
+                    );
+                    if guard.as_ref() == Some(&current)
+                        && !app.closing
+                        && !app.update_restart_pending
+                        && !app.control_busy
+                        && !app.original_pending
+                        && !app.import_pending
+                    {
+                        presets::apply(app, index);
                     }
                 });
             }
@@ -870,8 +1113,7 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
                 "Export diagnostics",
                 "opentabletdriver-rust-diagnostics.json",
             ) {
-                Ok(Some(path)) => with_app(|app| app.export_diagnostics(Some(path)))
-                .unwrap_or(()),
+                Ok(Some(path)) => with_app(|app| app.export_diagnostics(Some(path))).unwrap_or(()),
                 Ok(None) => {}
                 Err(error) => {
                     with_app(|app| app.log(Level::Error, "UI", error));
@@ -882,23 +1124,45 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
             with_app(|app| app.export_diagnostics(None));
         }
         CMD_EXPORT_ORIGINAL_DIAGNOSTICS => {
-            let guard=with_app(|app|(app.managed_token,app.daemon_instance.clone()));
-            match text_save_dialog(window,"Export original daemon diagnostics to a new file","opentabletdriver-original-diagnostics.json") {
-                Ok(Some(path))=>{with_app(|app|{
-                    if guard==Some((app.managed_token,app.daemon_instance.clone())) && !app.closing && !app.update_restart_pending {
-                        app.export_original_diagnostics(Some(path));
-                    }
-                });},
-                Ok(None)=>{},
-                Err(error)=>{with_app(|app|app.log(Level::Error,"UI",error));},
+            let guard = with_app(|app| (app.managed_token, app.daemon_instance.clone()));
+            match text_save_dialog(
+                window,
+                "Export original daemon diagnostics to a new file",
+                "opentabletdriver-original-diagnostics.json",
+            ) {
+                Ok(Some(path)) => {
+                    with_app(|app| {
+                        if guard == Some((app.managed_token, app.daemon_instance.clone()))
+                            && !app.closing
+                            && !app.update_restart_pending
+                        {
+                            app.export_original_diagnostics(Some(path));
+                        }
+                    });
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    with_app(|app| app.log(Level::Error, "UI", error));
+                }
             }
         }
-        CMD_COPY_ORIGINAL_DIAGNOSTICS => { with_app(|app|app.export_original_diagnostics(None)); }
+        CMD_COPY_ORIGINAL_DIAGNOSTICS => {
+            with_app(|app| app.export_original_diagnostics(None));
+        }
         CMD_DEVICE_STRINGS => {
-            if let Err(error)=string_reader::show(window){with_app(|app|app.log(Level::Error,"Device strings",error));}
+            if let Err(error) = string_reader::show(window) {
+                with_app(|app| app.log(Level::Error, "Device strings", error));
+            }
         }
         ID_MODE => {
-            let mode = with_app(|app| app.editor.profile.managed_output.is_none().then(|| (app.editor.mode(), app.editor.pen()))).flatten();
+            let mode = with_app(|app| {
+                app.editor
+                    .profile
+                    .managed_output
+                    .is_none()
+                    .then(|| (app.editor.mode(), app.editor.pen()))
+            })
+            .flatten();
             let menu = unsafe { CreatePopupMenu() };
             append(
                 menu,
@@ -937,7 +1201,14 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         ID_TIP_BINDING | ID_ERASER_BINDING => {
             let eraser = id == ID_ERASER_BINDING;
             let enabled = with_app(|app| app.editor.binding_enabled(eraser)).unwrap_or(true);
-            let managed = with_app(|app| if eraser { app.editor.profile.managed_eraser_binding.is_some() } else { app.editor.profile.managed_tip_binding.is_some() }).unwrap_or(false);
+            let managed = with_app(|app| {
+                if eraser {
+                    app.editor.profile.managed_eraser_binding.is_some()
+                } else {
+                    app.editor.profile.managed_tip_binding.is_some()
+                }
+            })
+            .unwrap_or(false);
             let menu = unsafe { CreatePopupMenu() };
             append(
                 menu,
@@ -945,10 +1216,23 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
                 1,
                 if eraser { "Eraser" } else { "Tip" },
             );
-            append(menu, MFT_RADIOCHECK | checked(!enabled && !managed), 2, "None");
+            append(
+                menu,
+                MFT_RADIOCHECK | checked(!enabled && !managed),
+                2,
+                "None",
+            );
             append(menu, 0, 3, "Managed binding...");
             match popup(window, menu, control) {
-                3 => managed_settings::choose(window, control, if eraser { managed_settings::Target::Eraser } else { managed_settings::Target::Tip }),
+                3 => managed_settings::choose(
+                    window,
+                    control,
+                    if eraser {
+                        managed_settings::Target::Eraser
+                    } else {
+                        managed_settings::Target::Tip
+                    },
+                ),
                 1 => {
                     with_app(|app| app.set_binding(eraser, true));
                 }
@@ -1055,24 +1339,68 @@ mod tests {
             ($($id:path),* $(,)?) => { [$(($id, stringify!($id))),*] };
         }
         let fixed = commands![
-            CMD_LOAD, CMD_SAVE, CMD_SAVE_AS, CMD_RESET, CMD_APPLY, CMD_IMPORT,
-            CMD_OPEN_FOLDER, CMD_QUIT, CMD_RECOVER_BACKUP, CMD_DETECT, CMD_DEBUGGER,
-            CMD_CHECK_UPDATES, CMD_START_WITH_WINDOWS, CMD_UPDATE_ON_OPEN, CMD_TABLET_ANY,
-            CMD_DEVICE_START, CMD_DEVICE_STOP, CMD_ADD_DOTNET, CMD_ADD_NATIVE,
-            CMD_PLUGIN_MANAGER, CMD_REMOVE_FILTER, CMD_FILTER_DEFAULTS,
-            CMD_PROPERTY_PREV, CMD_PROPERTY_NEXT, CMD_THEME_SYSTEM, CMD_THEME_LIGHT,
-            CMD_THEME_DARK, CMD_ACCENT_WINDOWS, CMD_ACCENT_CUSTOM, CMD_DOCS, CMD_ABOUT,
-            CMD_NEXT_TAB, CMD_PREV_TAB, CMD_START_STOP, CMD_COPY_LOG, CMD_SAVE_LOG,
-            CMD_EXPORT_DIAGNOSTICS, CMD_COPY_DIAGNOSTICS, CMD_DEVICE_STRINGS, CMD_GUIDE,
-            CMD_CLEAR_LOG, CMD_AUTOSTART, CMD_SHOW, CMD_NAV_BACK, CMD_SHOW_TOOLS,
-            CMD_SHOW_EXPERIMENTAL, CMD_SHOW_CONSOLE, AREA_CONVERT,
-            original_settings::CMD_LOAD, original_settings::CMD_EXPORT,
-            original_settings::CMD_APPLY, original_settings::CMD_SAVE_PRESET,
-            original_settings::CMD_SAVE_DEFAULT, original_settings::CMD_RESET,
-            original_settings::CMD_SAVE_AS, CMD_EXPORT_ORIGINAL_DIAGNOSTICS,
-            CMD_COPY_ORIGINAL_DIAGNOSTICS, presets::CMD_PRESET_SAVE,
-            presets::CMD_PRESET_FOLDER, presets::CMD_PRESET_PREVIOUS,
-            presets::CMD_PRESET_NEXT, presets::CMD_PRESET_REFRESH,
+            CMD_LOAD,
+            CMD_SAVE,
+            CMD_SAVE_AS,
+            CMD_RESET,
+            CMD_APPLY,
+            CMD_IMPORT,
+            CMD_OPEN_FOLDER,
+            CMD_QUIT,
+            CMD_RECOVER_BACKUP,
+            CMD_DETECT,
+            CMD_DEBUGGER,
+            CMD_CHECK_UPDATES,
+            CMD_START_WITH_WINDOWS,
+            CMD_UPDATE_ON_OPEN,
+            CMD_TABLET_ANY,
+            CMD_DEVICE_START,
+            CMD_DEVICE_STOP,
+            CMD_ADD_DOTNET,
+            CMD_ADD_NATIVE,
+            CMD_PLUGIN_MANAGER,
+            CMD_REMOVE_FILTER,
+            CMD_FILTER_DEFAULTS,
+            CMD_PROPERTY_PREV,
+            CMD_PROPERTY_NEXT,
+            CMD_THEME_SYSTEM,
+            CMD_THEME_LIGHT,
+            CMD_THEME_DARK,
+            CMD_ACCENT_WINDOWS,
+            CMD_ACCENT_CUSTOM,
+            CMD_DOCS,
+            CMD_ABOUT,
+            CMD_NEXT_TAB,
+            CMD_PREV_TAB,
+            CMD_START_STOP,
+            CMD_COPY_LOG,
+            CMD_SAVE_LOG,
+            CMD_EXPORT_DIAGNOSTICS,
+            CMD_COPY_DIAGNOSTICS,
+            CMD_DEVICE_STRINGS,
+            CMD_GUIDE,
+            CMD_CLEAR_LOG,
+            CMD_AUTOSTART,
+            CMD_SHOW,
+            CMD_NAV_BACK,
+            CMD_SHOW_TOOLS,
+            CMD_SHOW_EXPERIMENTAL,
+            CMD_SHOW_CONSOLE,
+            AREA_CONVERT,
+            original_settings::CMD_LOAD,
+            original_settings::CMD_EXPORT,
+            original_settings::CMD_APPLY,
+            original_settings::CMD_SAVE_PRESET,
+            original_settings::CMD_SAVE_DEFAULT,
+            original_settings::CMD_RESET,
+            original_settings::CMD_SAVE_AS,
+            CMD_EXPORT_ORIGINAL_DIAGNOSTICS,
+            CMD_COPY_ORIGINAL_DIAGNOSTICS,
+            presets::CMD_PRESET_SAVE,
+            presets::CMD_PRESET_FOLDER,
+            presets::CMD_PRESET_PREVIOUS,
+            presets::CMD_PRESET_NEXT,
+            presets::CMD_PRESET_REFRESH,
         ];
         let mut used = std::collections::BTreeMap::new();
         let mut reserve = |id, name| {
@@ -1080,20 +1408,40 @@ mod tests {
                 panic!("Command ID {id} is shared by {previous} and {name}");
             }
         };
-        for (id, name) in fixed { reserve(id, name); }
+        for (id, name) in fixed {
+            reserve(id, name);
+        }
         for (first, count, name) in [
-            (CMD_ACCENT_FIRST, Accent::PRESETS.len() as u16, "accent presets"),
+            (
+                CMD_ACCENT_FIRST,
+                Accent::PRESETS.len() as u16,
+                "accent presets",
+            ),
             (CMD_TABLET_FIRST, TABLET_CHOICES, "tablet choices"),
             (CMD_DEVICE_FIRST, DEVICE_CHOICES, "device sessions"),
-            (presets::CMD_PRESET_FIRST, presets::PRESET_CHOICES, "profile presets"),
+            (
+                presets::CMD_PRESET_FIRST,
+                presets::PRESET_CHOICES,
+                "profile presets",
+            ),
             (ID_MENU, MENUS.len() as u16, "menu buttons"),
             (ID_TAB, TABS.len() as u16, "tabs"),
-            (ID_BUTTON_SECTION, BUTTON_SECTIONS.len() as u16, "button sections"),
-            (bindings::ID_BINDING, bindings::MAX_BINDING_ROWS, "binding rows"),
+            (
+                ID_BUTTON_SECTION,
+                BUTTON_SECTIONS.len() as u16,
+                "button sections",
+            ),
+            (
+                bindings::ID_BINDING,
+                bindings::MAX_BINDING_ROWS,
+                "binding rows",
+            ),
             (ID_PROPERTY, MAX_PROPERTY_ROWS, "plugin properties"),
             (ID_PEN_POLICY, 3, "pen policies"),
         ] {
-            for id in first..first + count { reserve(id, name); }
+            for id in first..first + count {
+                reserve(id, name);
+            }
         }
     }
 }

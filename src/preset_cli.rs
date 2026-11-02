@@ -31,7 +31,10 @@ enum Command {
     List,
     Show(PresetName),
     Apply(PresetName),
-    SaveActive { name: PresetName, replace: bool },
+    SaveActive {
+        name: PresetName,
+        replace: bool,
+    },
     Save {
         name: PresetName,
         config: PathBuf,
@@ -59,7 +62,10 @@ fn parse(args: Vec<String>) -> Result<Command, String> {
             Command::Help
         });
     }
-    if !matches!(command.as_str(), "show" | "save" | "export" | "apply" | "save-active") {
+    if !matches!(
+        command.as_str(),
+        "show" | "save" | "export" | "apply" | "save-active"
+    ) {
         return Err(format!("unknown preset command {command:?}\n{}", usage()));
     }
     let name = PresetName::parse(&args.next().ok_or("preset command needs a NAME")?)?;
@@ -68,7 +74,9 @@ fn parse(args: Vec<String>) -> Result<Command, String> {
     let mut replace = false;
     while let Some(flag) = args.next() {
         match flag.as_str() {
-            "--replace" if matches!(command.as_str(), "save" | "save-active") && !replace => replace = true,
+            "--replace" if matches!(command.as_str(), "save" | "save-active") && !replace => {
+                replace = true
+            }
             "--config" if command == "save" && config.is_none() => {
                 config = Some(PathBuf::from(value(&mut args, &flag)?));
             }
@@ -134,7 +142,9 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             let previous = replace.then(|| store.load(&name)).transpose()?;
             let profile = crate::daemon::active_profile()?;
             let preset = store.save(&name, &profile, previous.as_ref())?;
-            print(json!({"name": preset.name(), "path": preset.path(), "settings_revision": profile.settings_revision, "replaced": replace}))
+            print(
+                json!({"name": preset.name(), "path": preset.path(), "settings_revision": profile.settings_revision, "replaced": replace}),
+            )
         }
         Command::Save {
             name,

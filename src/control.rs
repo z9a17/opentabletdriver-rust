@@ -6,8 +6,8 @@
 //! IDs correlate replies; they are not deduplication tokens. After a connection
 //! failure a command may already have taken effect: query status before retrying.
 
-pub(crate) mod pipe;
 mod log_time;
+pub(crate) mod pipe;
 
 use serde::{Deserialize, Serialize};
 use std::io;
@@ -77,18 +77,38 @@ impl Request {
         match &self.command {
             Command::UpdateStatus { token } | Command::FinishUpdate { token, .. } => {
                 if token.is_empty() || token.len() > 256 || token.chars().any(char::is_control) {
-                    return Err(ControlError::new(ErrorCode::InvalidRequest, "invalid update reservation token"));
+                    return Err(ControlError::new(
+                        ErrorCode::InvalidRequest,
+                        "invalid update reservation token",
+                    ));
                 }
             }
             Command::WriteMessage { message } => {
                 if !log_time::valid(&message.time) {
-                    return Err(ControlError::new(ErrorCode::InvalidRequest, "log Time must be a valid ISO or Microsoft JSON DateTime"));
+                    return Err(ControlError::new(
+                        ErrorCode::InvalidRequest,
+                        "log Time must be a valid ISO or Microsoft JSON DateTime",
+                    ));
                 }
-                if message.message.as_ref().is_some_and(|value| value.len() > MAX_LOG_LINE_BYTES)
-                    || message.group.as_ref().is_some_and(|value| value.len() > 128)
-                    || message.time.len() > 64 || message.stack_trace.as_ref().is_some_and(|value| value.len() > 4096)
-                    || !(0..=4).contains(&message.level) {
-                    return Err(ControlError::new(ErrorCode::InvalidRequest, "log message exceeds limits or has an unknown level"));
+                if message
+                    .message
+                    .as_ref()
+                    .is_some_and(|value| value.len() > MAX_LOG_LINE_BYTES)
+                    || message
+                        .group
+                        .as_ref()
+                        .is_some_and(|value| value.len() > 128)
+                    || message.time.len() > 64
+                    || message
+                        .stack_trace
+                        .as_ref()
+                        .is_some_and(|value| value.len() > 4096)
+                    || !(0..=4).contains(&message.level)
+                {
+                    return Err(ControlError::new(
+                        ErrorCode::InvalidRequest,
+                        "log message exceeds limits or has an unknown level",
+                    ));
                 }
             }
             Command::SelectDeviceSession { id, .. }
@@ -100,25 +120,50 @@ impl Request {
             | Command::StopDevice { id, .. }
             | Command::StartDevice { id, .. } => {
                 if id.is_empty() || id.len() > 128 || id.chars().any(char::is_control) {
-                    return Err(ControlError::new(ErrorCode::InvalidRequest, "invalid device session ID"));
+                    return Err(ControlError::new(
+                        ErrorCode::InvalidRequest,
+                        "invalid device session ID",
+                    ));
                 }
             }
             Command::SetIdleOriginalSettings { settings_json, .. } => {
                 if settings_json.len() > MAX_PROFILE_BYTES {
-                    return Err(ControlError::new(ErrorCode::InvalidRequest, "original settings collection exceeds 128 KiB"));
+                    return Err(ControlError::new(
+                        ErrorCode::InvalidRequest,
+                        "original settings collection exceeds 128 KiB",
+                    ));
                 }
             }
-            Command::DebugCaptureStart { start_id, capacity_bytes, lease_ms, .. } => {
+            Command::DebugCaptureStart {
+                start_id,
+                capacity_bytes,
+                lease_ms,
+                ..
+            } => {
                 if *start_id == 0 {
-                    return Err(ControlError::new(ErrorCode::InvalidRequest, "start ID must be nonzero"));
+                    return Err(ControlError::new(
+                        ErrorCode::InvalidRequest,
+                        "start ID must be nonzero",
+                    ));
                 }
                 otd_core::debug::validate_capture_start(*capacity_bytes as usize, *lease_ms)
                     .map_err(ControlError::from)?;
             }
-            Command::DebugCaptureRead { capture, after_sequence, limit, acknowledge_through, lease_ms } => {
+            Command::DebugCaptureRead {
+                capture,
+                after_sequence,
+                limit,
+                acknowledge_through,
+                lease_ms,
+            } => {
                 capture.validate()?;
-                otd_core::debug::validate_capture_read(*after_sequence, *limit as usize,
-                    *acknowledge_through, *lease_ms).map_err(ControlError::from)?;
+                otd_core::debug::validate_capture_read(
+                    *after_sequence,
+                    *limit as usize,
+                    *acknowledge_through,
+                    *lease_ms,
+                )
+                .map_err(ControlError::from)?;
             }
             Command::DebugCaptureStop { capture } | Command::DebugCaptureRelease { capture } => {
                 capture.validate()?;
@@ -137,25 +182,74 @@ pub enum Command {
     BuildInfo,
     ListDeviceSessions,
     DetectDeviceSessions,
-    BeginUpdate { expected: WorkerIdentity },
-    UpdateStatus { token: String },
-    FinishUpdate { token: String, success: bool },
-    SelectDeviceSession { expected: WorkerIdentity, id: String },
-    GetDeviceProfile { expected: WorkerIdentity, id: String, device_generation: u64 },
-    ApplyDeviceProfile { expected: WorkerIdentity, id: String, device_generation: u64, profile_toml: String },
-    ApplyDeviceProfileWithInhibit { expected: WorkerIdentity, id: String, device_generation: u64,
-        profile_toml: String, binding_inhibit: u32 },
-    ApplyOriginalDeviceProfile { expected: WorkerIdentity, id: String, device_generation: u64,
-        profile_toml: String, binding_inhibit: Option<u32> },
-    SaveDeviceProfile { expected: WorkerIdentity, id: String, device_generation: u64,
-        expected_revision: Option<u64>, expected_digest: Option<String>, profile_toml: String },
-    StopDevice { expected: WorkerIdentity, id: String, device_generation: u64 },
-    StartDevice { expected: WorkerIdentity, id: String, device_generation: u64 },
+    BeginUpdate {
+        expected: WorkerIdentity,
+    },
+    UpdateStatus {
+        token: String,
+    },
+    FinishUpdate {
+        token: String,
+        success: bool,
+    },
+    SelectDeviceSession {
+        expected: WorkerIdentity,
+        id: String,
+    },
+    GetDeviceProfile {
+        expected: WorkerIdentity,
+        id: String,
+        device_generation: u64,
+    },
+    ApplyDeviceProfile {
+        expected: WorkerIdentity,
+        id: String,
+        device_generation: u64,
+        profile_toml: String,
+    },
+    ApplyDeviceProfileWithInhibit {
+        expected: WorkerIdentity,
+        id: String,
+        device_generation: u64,
+        profile_toml: String,
+        binding_inhibit: u32,
+    },
+    ApplyOriginalDeviceProfile {
+        expected: WorkerIdentity,
+        id: String,
+        device_generation: u64,
+        profile_toml: String,
+        binding_inhibit: Option<u32>,
+    },
+    SaveDeviceProfile {
+        expected: WorkerIdentity,
+        id: String,
+        device_generation: u64,
+        expected_revision: Option<u64>,
+        expected_digest: Option<String>,
+        profile_toml: String,
+    },
+    StopDevice {
+        expected: WorkerIdentity,
+        id: String,
+        device_generation: u64,
+    },
+    StartDevice {
+        expected: WorkerIdentity,
+        id: String,
+        device_generation: u64,
+    },
     /// The supplied OTD log is validated at the RPC boundary. The daemon owner
     /// appends it to its actual recent log; no input thread handles RPC traffic.
-    WriteMessage { message: UpstreamLogMessage },
+    WriteMessage {
+        message: UpstreamLogMessage,
+    },
     GetUpstreamLog,
-    SetIdleOriginalSettings { expected: WorkerIdentity, expected_revision: u64, settings_json: String },
+    SetIdleOriginalSettings {
+        expected: WorkerIdentity,
+        expected_revision: u64,
+        settings_json: String,
+    },
     SetExperimental {
         expected: WorkerIdentity,
         settings: crate::experimental::Settings,
@@ -212,8 +306,12 @@ pub enum Command {
     },
     /// Freeze last_sequence. Drain until pending_reports is zero and the batch
     /// cursor reaches last_sequence, then release its bounded storage.
-    DebugCaptureStop { capture: DebugCaptureToken },
-    DebugCaptureRelease { capture: DebugCaptureToken },
+    DebugCaptureStop {
+        capture: DebugCaptureToken,
+    },
+    DebugCaptureRelease {
+        capture: DebugCaptureToken,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,16 +323,28 @@ pub struct DebugCaptureToken {
 }
 impl DebugCaptureToken {
     fn validate(&self) -> Result<(), ControlError> {
-        if self.instance.is_empty() || self.instance.len() > 512 ||
-            self.epoch == 0 || self.epoch > u64::from(u32::MAX) || self.session == 0 {
-            return Err(ControlError::new(ErrorCode::InvalidRequest, "invalid capture token"));
+        if self.instance.is_empty()
+            || self.instance.len() > 512
+            || self.epoch == 0
+            || self.epoch > u64::from(u32::MAX)
+            || self.session == 0
+        {
+            return Err(ControlError::new(
+                ErrorCode::InvalidRequest,
+                "invalid capture token",
+            ));
         }
         Ok(())
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum DebugCaptureStopReason { Requested, LeaseExpired, SessionEnded, SequenceLimit }
+pub enum DebugCaptureStopReason {
+    Requested,
+    LeaseExpired,
+    SessionEnded,
+    SequenceLimit,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DebugCaptureStatus {
@@ -303,19 +413,49 @@ pub struct Response {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Reply {
-    BuildInfo { instance: String, version: String, source_commit: String },
-    UpdateAccepted { token: String },
-    UpdateState { token: String, ready: bool, error: Option<String> },
+    BuildInfo {
+        instance: String,
+        version: String,
+        source_commit: String,
+    },
+    UpdateAccepted {
+        token: String,
+    },
+    UpdateState {
+        token: String,
+        ready: bool,
+        error: Option<String>,
+    },
     UpdateCancelled,
     ExperimentalSaved,
     MessageWritten,
-    OriginalSettingsCommitted { revision: u64 },
-    UpstreamLog { instance: String, sequence: u64, messages: Vec<UpstreamLogMessage> },
-    DeviceSessions { sessions: Vec<crate::device_sessions::SessionSnapshot>, selected_id: Option<String> },
-    DeviceSessionSelected { id: String },
-    DeviceProfile { identity: WorkerIdentity, id: String, device_generation: u64, profile_toml: String },
-    DeviceOperationAccepted { receipt: crate::device_sessions::SessionReceipt },
-    DeviceProfileSaved { saved: crate::device_sessions::SavedDeviceProfile },
+    OriginalSettingsCommitted {
+        revision: u64,
+    },
+    UpstreamLog {
+        instance: String,
+        sequence: u64,
+        messages: Vec<UpstreamLogMessage>,
+    },
+    DeviceSessions {
+        sessions: Vec<crate::device_sessions::SessionSnapshot>,
+        selected_id: Option<String>,
+    },
+    DeviceSessionSelected {
+        id: String,
+    },
+    DeviceProfile {
+        identity: WorkerIdentity,
+        id: String,
+        device_generation: u64,
+        profile_toml: String,
+    },
+    DeviceOperationAccepted {
+        receipt: crate::device_sessions::SessionReceipt,
+    },
+    DeviceProfileSaved {
+        saved: crate::device_sessions::SavedDeviceProfile,
+    },
     Status {
         status: ControlStatus,
     },
@@ -339,9 +479,15 @@ pub enum Reply {
     Debug {
         report: DebugReport,
     },
-    DebugCaptureStarted { capture: DebugCaptureStatus },
-    DebugCaptureRead { batch: DebugCaptureBatch },
-    DebugCaptureStopped { capture: DebugCaptureStatus },
+    DebugCaptureStarted {
+        capture: DebugCaptureStatus,
+    },
+    DebugCaptureRead {
+        batch: DebugCaptureBatch,
+    },
+    DebugCaptureStopped {
+        capture: DebugCaptureStatus,
+    },
     DebugCaptureReleased,
     Error {
         error: ControlError,
@@ -369,13 +515,21 @@ fn log_timestamp() -> String {
     use windows_sys::Win32::System::SystemInformation::GetSystemTime;
     let mut now = unsafe { std::mem::zeroed() };
     unsafe { GetSystemTime(&mut now) };
-    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z", now.wYear, now.wMonth,
-        now.wDay, now.wHour, now.wMinute, now.wSecond, now.wMilliseconds)
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond, now.wMilliseconds
+    )
 }
 impl UpstreamLogMessage {
     pub(crate) fn native(message: String) -> Self {
-        Self { time: log_timestamp(), group: Some("RustDaemon".into()), message: Some(message),
-            stack_trace: None, level: 1, notification: false }
+        Self {
+            time: log_timestamp(),
+            group: Some("RustDaemon".into()),
+            message: Some(message),
+            stack_trace: None,
+            level: 1,
+            notification: false,
+        }
     }
 }
 
@@ -431,8 +585,13 @@ impl From<otd_core::debug::CaptureError> for ControlError {
         use otd_core::debug::CaptureError;
         match error {
             CaptureError::Invalid(message) => Self::new(ErrorCode::InvalidRequest, message),
-            CaptureError::Busy => Self::new(ErrorCode::Busy, "capture is active, pending, or not released"),
-            CaptureError::Conflict => Self::new(ErrorCode::Conflict, "capture token is no longer current"),
+            CaptureError::Busy => Self::new(
+                ErrorCode::Busy,
+                "capture is active, pending, or not released",
+            ),
+            CaptureError::Conflict => {
+                Self::new(ErrorCode::Conflict, "capture token is no longer current")
+            }
         }
     }
 }
@@ -455,7 +614,9 @@ pub enum ErrorCode {
 /// schedule long-running work, then expose its state through `Status`.
 pub trait ControlHandler {
     /// Called once after this process owns the endpoint, before dispatch.
-    fn ready(&mut self) -> io::Result<()> { Ok(()) }
+    fn ready(&mut self) -> io::Result<()> {
+        Ok(())
+    }
     fn poll(&mut self) {}
     fn handle(&mut self, command: Command) -> Result<Reply, ControlError>;
 }
@@ -498,8 +659,14 @@ pub fn request(request: &Request, timeout: Duration) -> io::Result<Response> {
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.message))?;
     pipe::request(request, timeout)
 }
-pub(crate) fn request_owned(request: &Request, timeout: Duration, expected_process: u32) -> io::Result<Response> {
-    request.validate().map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.message))?;
+pub(crate) fn request_owned(
+    request: &Request,
+    timeout: Duration,
+    expected_process: u32,
+) -> io::Result<Response> {
+    request
+        .validate()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.message))?;
     pipe::request_owned(request, timeout, Some(expected_process))
 }
 
@@ -599,51 +766,125 @@ fn truncate(value: &mut String, max_bytes: usize) {
 mod capture_tests {
     use super::*;
     fn token() -> DebugCaptureToken {
-        DebugCaptureToken { instance: "offline-fixture".into(), epoch: 1, session: 7 }
+        DebugCaptureToken {
+            instance: "offline-fixture".into(),
+            epoch: 1,
+            session: 7,
+        }
     }
     #[test]
     fn capture_requests_reject_bad_limits_acknowledgments_and_tokens() {
-        for (limit, after_sequence, acknowledge_through, lease_ms) in
-            [(0, 0, 0, 1_000), (513, 0, 0, 1_000), (1, 0, 1, 1_000), (1, 0, 0, 999), (1, 0, 0, 30_001)] {
-            let request = Request::new(1, Command::DebugCaptureRead {
-                capture: token(), after_sequence, limit, acknowledge_through, lease_ms,
-            });
-            assert!(matches!(request.validate(), Err(ControlError { code: ErrorCode::InvalidRequest, .. })));
+        for (limit, after_sequence, acknowledge_through, lease_ms) in [
+            (0, 0, 0, 1_000),
+            (513, 0, 0, 1_000),
+            (1, 0, 1, 1_000),
+            (1, 0, 0, 999),
+            (1, 0, 0, 30_001),
+        ] {
+            let request = Request::new(
+                1,
+                Command::DebugCaptureRead {
+                    capture: token(),
+                    after_sequence,
+                    limit,
+                    acknowledge_through,
+                    lease_ms,
+                },
+            );
+            assert!(matches!(
+                request.validate(),
+                Err(ControlError {
+                    code: ErrorCode::InvalidRequest,
+                    ..
+                })
+            ));
         }
         let mut bad_token = token();
         bad_token.epoch = 0;
-        assert!(Request::new(1, Command::DebugCaptureStop { capture: bad_token }).validate().is_err());
-        let start = Request::new(1, Command::DebugCaptureStart {
-            expected: WorkerIdentity { instance: "offline-fixture".into(), generation: 1 },
-            start_id: 0, capacity_bytes: 65_536, lease_ms: 1_000,
-        });
+        assert!(
+            Request::new(1, Command::DebugCaptureStop { capture: bad_token })
+                .validate()
+                .is_err()
+        );
+        let start = Request::new(
+            1,
+            Command::DebugCaptureStart {
+                expected: WorkerIdentity {
+                    instance: "offline-fixture".into(),
+                    generation: 1,
+                },
+                start_id: 0,
+                capacity_bytes: 65_536,
+                lease_ms: 1_000,
+            },
+        );
         assert!(start.validate().is_err());
         assert!(serde_json::from_str::<Request>(r#"{"version":2,"id":1,"command":{"method":"debug_capture_stop","capture":{"instance":"fixture","epoch":1,"session":7},"ignored":true}}"#).is_err());
     }
     #[test]
     fn capture_read_wire_budget_includes_worst_case_escaped_metadata() {
         let capture = DebugCaptureStatus {
-            token: DebugCaptureToken { instance: "\u{1}".repeat(512), epoch: u64::from(u32::MAX), session: u64::MAX },
-            tablet: "\u{1}".repeat(512), parser: "\u{1}".repeat(512), auxiliary_parser: Some("\u{1}".repeat(512)),
-            report_length: u16::MAX as u32, capacity_reports: u32::MAX,
-            started_unix_ms: u64::MAX, active: false, last_sequence: u64::MAX,
-            resolved_reports: u64::MAX, pending_reports: u64::MAX, lost_tap: u64::MAX,
-            overflow: u64::MAX, oversized: u64::MAX, acknowledged_sequence: u64::MAX,
-            stop_reason: Some(DebugCaptureStopReason::SequenceLimit), lease_remaining_ms: u64::MAX,
+            token: DebugCaptureToken {
+                instance: "\u{1}".repeat(512),
+                epoch: u64::from(u32::MAX),
+                session: u64::MAX,
+            },
+            tablet: "\u{1}".repeat(512),
+            parser: "\u{1}".repeat(512),
+            auxiliary_parser: Some("\u{1}".repeat(512)),
+            report_length: u16::MAX as u32,
+            capacity_reports: u32::MAX,
+            started_unix_ms: u64::MAX,
+            active: false,
+            last_sequence: u64::MAX,
+            resolved_reports: u64::MAX,
+            pending_reports: u64::MAX,
+            lost_tap: u64::MAX,
+            overflow: u64::MAX,
+            oversized: u64::MAX,
+            acknowledged_sequence: u64::MAX,
+            stop_reason: Some(DebugCaptureStopReason::SequenceLimit),
+            lease_remaining_ms: u64::MAX,
         };
         // Max-limit small packets use nearly all of the core's packet budget.
         let count = otd_core::debug::MAX_CAPTURE_LIMIT;
         let hex_length = (otd_core::debug::CAPTURE_PACKET_JSON_BUDGET / count - 160) & !1;
-        let packets = (0..count).map(|_| DebugCapturePacket {
-            sequence: u64::MAX, elapsed_us: u64::MAX, auxiliary: false, raw_hex: "a".repeat(hex_length),
-        }).collect();
-        let response = Response { version: PROTOCOL_VERSION, id: u64::MAX,
-            reply: Reply::DebugCaptureRead { batch: DebugCaptureBatch { capture: capture.clone(), packets, next_sequence: u64::MAX } } };
+        let packets = (0..count)
+            .map(|_| DebugCapturePacket {
+                sequence: u64::MAX,
+                elapsed_us: u64::MAX,
+                auxiliary: false,
+                raw_hex: "a".repeat(hex_length),
+            })
+            .collect();
+        let response = Response {
+            version: PROTOCOL_VERSION,
+            id: u64::MAX,
+            reply: Reply::DebugCaptureRead {
+                batch: DebugCaptureBatch {
+                    capture: capture.clone(),
+                    packets,
+                    next_sequence: u64::MAX,
+                },
+            },
+        };
         assert!(serde_json::to_vec(&response).unwrap().len() <= MAX_FRAME_BYTES);
-        let response = Response { version: PROTOCOL_VERSION, id: u64::MAX,
-            reply: Reply::DebugCaptureRead { batch: DebugCaptureBatch { capture,
-                packets: vec![DebugCapturePacket { sequence: u64::MAX, elapsed_us: u64::MAX, auxiliary: false,
-                    raw_hex: "ab".repeat(otd_core::debug::MAX_BYTES) }], next_sequence: u64::MAX } } };
+        let response = Response {
+            version: PROTOCOL_VERSION,
+            id: u64::MAX,
+            reply: Reply::DebugCaptureRead {
+                batch: DebugCaptureBatch {
+                    capture,
+                    packets: vec![DebugCapturePacket {
+                        sequence: u64::MAX,
+                        elapsed_us: u64::MAX,
+                        auxiliary: false,
+                        raw_hex: "ab".repeat(otd_core::debug::MAX_BYTES),
+                    }],
+                    next_sequence: u64::MAX,
+                },
+            },
+        };
         assert!(serde_json::to_vec(&response).unwrap().len() <= MAX_FRAME_BYTES);
     }
 }

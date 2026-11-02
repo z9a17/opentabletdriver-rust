@@ -44,18 +44,46 @@ mod scheduling_tests {
     #[test]
     fn foreign_capture_commands_and_stopped_start_do_not_change_driver_lifecycle() {
         let mut daemon = Daemon::new(Arc::new(AtomicBool::new(false)));
-        let capture = control::DebugCaptureToken { instance: "other-daemon".into(), epoch: 1, session: 1 };
+        let capture = control::DebugCaptureToken {
+            instance: "other-daemon".into(),
+            epoch: 1,
+            session: 1,
+        };
         for command in [
-            Command::DebugCaptureRead { capture: capture.clone(), after_sequence: 0, limit: 1,
-                acknowledge_through: 0, lease_ms: 1_000 },
-            Command::DebugCaptureStop { capture: capture.clone() },
+            Command::DebugCaptureRead {
+                capture: capture.clone(),
+                after_sequence: 0,
+                limit: 1,
+                acknowledge_through: 0,
+                lease_ms: 1_000,
+            },
+            Command::DebugCaptureStop {
+                capture: capture.clone(),
+            },
             Command::DebugCaptureRelease { capture },
         ] {
-            assert!(matches!(daemon.handle(command), Err(ControlError { code: ErrorCode::Conflict, .. })));
+            assert!(matches!(
+                daemon.handle(command),
+                Err(ControlError {
+                    code: ErrorCode::Conflict,
+                    ..
+                })
+            ));
         }
         let expected = daemon.identity();
-        let start = Command::DebugCaptureStart { expected, start_id: 1, capacity_bytes: 65_536, lease_ms: 1_000 };
-        assert!(matches!(daemon.handle(start), Err(ControlError { code: ErrorCode::Busy, .. })));
+        let start = Command::DebugCaptureStart {
+            expected,
+            start_id: 1,
+            capacity_bytes: 65_536,
+            lease_ms: 1_000,
+        };
+        assert!(matches!(
+            daemon.handle(start),
+            Err(ControlError {
+                code: ErrorCode::Busy,
+                ..
+            })
+        ));
         assert_eq!(daemon.state, DriverState::Stopped);
         assert!(!daemon.stopping);
         assert!(daemon.worker.is_none());
@@ -63,9 +91,14 @@ mod scheduling_tests {
     #[test]
     fn stale_shutdown_does_not_stop_a_replacement_daemon() {
         let mut daemon = Daemon::new(Arc::new(AtomicBool::new(false)));
-        let error = daemon.handle(Command::ShutdownIf {
-            expected: WorkerIdentity { instance: "previous-daemon".into(), generation: 0 },
-        }).unwrap_err();
+        let error = daemon
+            .handle(Command::ShutdownIf {
+                expected: WorkerIdentity {
+                    instance: "previous-daemon".into(),
+                    generation: 0,
+                },
+            })
+            .unwrap_err();
         assert!(matches!(error.code, ErrorCode::Conflict));
         assert!(!daemon.stopping);
         assert_eq!(daemon.state, DriverState::Stopped);
@@ -75,14 +108,19 @@ mod scheduling_tests {
     fn stale_affinity_requests_do_not_change_driver_state_or_scheduling() {
         let mut daemon = Daemon::new(Arc::new(AtomicBool::new(false)));
         let before = crate::experimental::masks().unwrap().0;
-        let error = daemon.handle(Command::SetExperimental {
-            expected: WorkerIdentity { instance: "different-daemon".into(), generation: 0 },
-            settings: crate::experimental::Settings::default(),
-        }).unwrap_err();
+        let error = daemon
+            .handle(Command::SetExperimental {
+                expected: WorkerIdentity {
+                    instance: "different-daemon".into(),
+                    generation: 0,
+                },
+                settings: crate::experimental::Settings::default(),
+            })
+            .unwrap_err();
         assert!(matches!(error.code, ErrorCode::Conflict));
         assert_eq!(crate::experimental::masks().unwrap().0, before);
         assert_eq!(daemon.state, DriverState::Stopped);
-        assert_eq!(daemon.generation,0);
+        assert_eq!(daemon.generation, 0);
         assert!(daemon.worker.is_none());
     }
 }
@@ -127,8 +165,8 @@ pub(super) struct Daemon {
     tool_resume: Option<crate::tool_host::Completion>,
     next_update: u64,
     foreground_profile: Option<Profile>,
-    hosted_pipe:Option<String>,
-    hosted_rpc:Option<crate::dotnet::HostedRpc>,
+    hosted_pipe: Option<String>,
+    hosted_rpc: Option<crate::dotnet::HostedRpc>,
 }
 
 impl Daemon {
@@ -168,14 +206,16 @@ impl Daemon {
             tool_resume: None,
             next_update: 0,
             foreground_profile: None,
-            hosted_pipe:None,
-            hosted_rpc:None,
+            hosted_pipe: None,
+            hosted_rpc: None,
         }
     }
     fn log(&mut self, mut line: String) {
         if line.len() > control::MAX_LOG_LINE_BYTES {
             let mut end = control::MAX_LOG_LINE_BYTES;
-            while !line.is_char_boundary(end) { end -= 1; }
+            while !line.is_char_boundary(end) {
+                end -= 1;
+            }
             line.truncate(end);
         }
         let message = control::UpstreamLogMessage::native(line.clone());
@@ -194,145 +234,294 @@ impl Daemon {
             self.logs.pop_front();
         }
         self.logs.push_back(line);
-        let size = serde_json::to_vec(&message).map_or(control::MAX_UPSTREAM_LOG_BYTES,
-            |encoded| encoded.len() + 1);
+        let size = serde_json::to_vec(&message)
+            .map_or(control::MAX_UPSTREAM_LOG_BYTES, |encoded| encoded.len() + 1);
         while self.upstream_logs.len() >= control::MAX_LOG_LINES
-            || self.upstream_log_bytes.saturating_add(size) > control::MAX_UPSTREAM_LOG_BYTES {
-            let Some((_, removed)) = self.upstream_logs.pop_front() else { break; };
+            || self.upstream_log_bytes.saturating_add(size) > control::MAX_UPSTREAM_LOG_BYTES
+        {
+            let Some((_, removed)) = self.upstream_logs.pop_front() else {
+                break;
+            };
             self.upstream_log_bytes = self.upstream_log_bytes.saturating_sub(removed);
         }
         self.upstream_log_bytes += size;
         self.upstream_logs.push_back((message, size));
     }
     pub(super) fn scheduling_warning(&mut self, error: String) {
-        self.log(format!("Experimental driver CPU affinity was not applied: {error}"));
+        self.log(format!(
+            "Experimental driver CPU affinity was not applied: {error}"
+        ));
     }
     pub(super) fn foreground(&mut self, profile: Profile) {
-        self.foreground_profile=Some(profile);
+        self.foreground_profile = Some(profile);
     }
-    pub(super) fn host_rpc(&mut self,pipe:&str){self.hosted_pipe=Some(pipe.to_owned());}
-    pub(super) fn stop_hosted_rpc(&mut self)->Result<(),String>{
-        if let Some(rpc)=&mut self.hosted_rpc {rpc.stop()?;}
-        self.hosted_rpc=None;Ok(())
+    pub(super) fn host_rpc(&mut self, pipe: &str) {
+        self.hosted_pipe = Some(pipe.to_owned());
+    }
+    pub(super) fn stop_hosted_rpc(&mut self) -> Result<(), String> {
+        if let Some(rpc) = &mut self.hosted_rpc {
+            rpc.stop()?;
+        }
+        self.hosted_rpc = None;
+        Ok(())
     }
     pub(crate) fn device_sessions(&self) -> Option<crate::device_sessions::Handle> {
-        self.devices.as_ref().map(crate::companions::Supervisor::handle)
+        self.devices
+            .as_ref()
+            .map(crate::companions::Supervisor::handle)
     }
-    fn primary_device_guard(&self, id: &str, generation: u64) -> Result<crate::device_sessions::SessionSnapshot, ControlError> {
-        if self.stopping || self.cancelled.load(Ordering::Acquire) || self.pending.is_some() || self.retiring.is_some() {
-            return Err(ControlError::new(ErrorCode::Busy, "primary device is transitioning"));
+    fn primary_device_guard(
+        &self,
+        id: &str,
+        generation: u64,
+    ) -> Result<crate::device_sessions::SessionSnapshot, ControlError> {
+        if self.stopping
+            || self.cancelled.load(Ordering::Acquire)
+            || self.pending.is_some()
+            || self.retiring.is_some()
+        {
+            return Err(ControlError::new(
+                ErrorCode::Busy,
+                "primary device is transitioning",
+            ));
         }
-        let handle = self.device_sessions().ok_or_else(|| ControlError::new(ErrorCode::Busy, "device supervisor is unavailable"))?;
-        let snapshot = handle.snapshot().map_err(|error| ControlError::new(ErrorCode::Internal, error))?.sessions.into_iter()
+        let handle = self.device_sessions().ok_or_else(|| {
+            ControlError::new(ErrorCode::Busy, "device supervisor is unavailable")
+        })?;
+        let snapshot = handle
+            .snapshot()
+            .map_err(|error| ControlError::new(ErrorCode::Internal, error))?
+            .sessions
+            .into_iter()
             .find(|session| session.id == id && session.primary)
-            .ok_or_else(|| ControlError::new(ErrorCode::Conflict, "requested session is not the primary device"))?;
+            .ok_or_else(|| {
+                ControlError::new(
+                    ErrorCode::Conflict,
+                    "requested session is not the primary device",
+                )
+            })?;
         if snapshot.device_generation != generation || snapshot.pending_generation.is_some() {
-            return Err(ControlError::new(ErrorCode::Conflict, "device generation changed; refresh device sessions"));
+            return Err(ControlError::new(
+                ErrorCode::Conflict,
+                "device generation changed; refresh device sessions",
+            ));
         }
         Ok(snapshot)
     }
-    pub(crate) fn primary_stop(&mut self, id: &str, generation: u64) -> Result<crate::device_sessions::SessionReceipt, ControlError> {
+    pub(crate) fn primary_stop(
+        &mut self,
+        id: &str,
+        generation: u64,
+    ) -> Result<crate::device_sessions::SessionReceipt, ControlError> {
         self.primary_device_guard(id, generation)?;
-        let next = generation.checked_add(1).ok_or_else(|| ControlError::new(ErrorCode::Internal, "device generation exhausted"))?;
-        let worker = self.worker.take().ok_or_else(|| ControlError::new(ErrorCode::Busy, "primary device is already stopped"))?;
+        let next = generation
+            .checked_add(1)
+            .ok_or_else(|| ControlError::new(ErrorCode::Internal, "device generation exhausted"))?;
+        let worker = self.worker.take().ok_or_else(|| {
+            ControlError::new(ErrorCode::Busy, "primary device is already stopped")
+        })?;
         let signalled = worker.stop();
         self.retiring = Some(worker);
         self.primary_stop_generation = Some(next);
-        self.device_sessions().unwrap().primary_pending(next, crate::device_sessions::SessionState::Stopping);
+        self.device_sessions()
+            .unwrap()
+            .primary_pending(next, crate::device_sessions::SessionState::Stopping);
         signalled.map_err(|error| ControlError::new(ErrorCode::StopFailed, error))?;
-        Ok(crate::device_sessions::SessionReceipt { id: id.to_owned(), device_generation: generation,
-            target_generation: next, accepted_pending: true })
+        Ok(crate::device_sessions::SessionReceipt {
+            id: id.to_owned(),
+            device_generation: generation,
+            target_generation: next,
+            accepted_pending: true,
+        })
     }
-    pub(crate) fn primary_start(&mut self, id: &str, generation: u64) -> Result<crate::device_sessions::SessionReceipt, ControlError> {
+    pub(crate) fn primary_start(
+        &mut self,
+        id: &str,
+        generation: u64,
+    ) -> Result<crate::device_sessions::SessionReceipt, ControlError> {
         self.primary_device_guard(id, generation)?;
         if !self.primary_stopped || self.worker.is_some() || self.ownership.is_none() {
-            return Err(ControlError::new(ErrorCode::Busy, "primary device is already active or ownership is unavailable"));
+            return Err(ControlError::new(
+                ErrorCode::Busy,
+                "primary device is already active or ownership is unavailable",
+            ));
         }
-        let next = generation.checked_add(1).ok_or_else(|| ControlError::new(ErrorCode::Internal, "device generation exhausted"))?;
+        let next = generation
+            .checked_add(1)
+            .ok_or_else(|| ControlError::new(ErrorCode::Internal, "device generation exhausted"))?;
         let handle = self.device_sessions().unwrap();
-        let use_collection = handle.profile_uses_settings_collection(id, generation)
+        let use_collection = handle
+            .profile_uses_settings_collection(id, generation)
             .map_err(|error| ControlError::new(ErrorCode::Conflict, error))?;
-        let text = handle.profile(id, generation).map_err(|error| ControlError::new(ErrorCode::InvalidProfile, error))?;
+        let text = handle
+            .profile(id, generation)
+            .map_err(|error| ControlError::new(ErrorCode::InvalidProfile, error))?;
         let (mut profile, _) = Self::prepare(Some(text))?;
         profile.use_settings_collection = use_collection;
         if use_collection {
-            profile = handle.effective_profile(id, &profile, true)
+            profile = handle
+                .effective_profile(id, &profile, true)
                 .map_err(|error| ControlError::new(ErrorCode::InvalidProfile, error))?;
         }
-        let text = profile.to_toml().map_err(|error| ControlError::new(ErrorCode::InvalidProfile, error))?;
-        if text.len() > control::MAX_PROFILE_BYTES || serde_json::to_vec(&text)
-            .is_ok_and(|encoded| encoded.len() > control::MAX_FRAME_BYTES - 1024) {
-            return Err(ControlError::new(ErrorCode::InvalidProfile, "restarted profile exceeds control frame limits"));
+        let text = profile
+            .to_toml()
+            .map_err(|error| ControlError::new(ErrorCode::InvalidProfile, error))?;
+        if text.len() > control::MAX_PROFILE_BYTES
+            || serde_json::to_vec(&text)
+                .is_ok_and(|encoded| encoded.len() > control::MAX_FRAME_BYTES - 1024)
+        {
+            return Err(ControlError::new(
+                ErrorCode::InvalidProfile,
+                "restarted profile exceeds control frame limits",
+            ));
         }
         self.begin(profile, text, true)?;
-        self.device_sessions().unwrap().primary_pending(next, crate::device_sessions::SessionState::Preparing);
-        Ok(crate::device_sessions::SessionReceipt { id: id.to_owned(), device_generation: generation,
-            target_generation: next, accepted_pending: true })
+        self.device_sessions()
+            .unwrap()
+            .primary_pending(next, crate::device_sessions::SessionState::Preparing);
+        Ok(crate::device_sessions::SessionReceipt {
+            id: id.to_owned(),
+            device_generation: generation,
+            target_generation: next,
+            accepted_pending: true,
+        })
     }
-    pub(crate) fn primary_apply(&mut self, id: &str, generation: u64, profile_toml: String) -> Result<crate::device_sessions::SessionReceipt, ControlError> {
+    pub(crate) fn primary_apply(
+        &mut self,
+        id: &str,
+        generation: u64,
+        profile_toml: String,
+    ) -> Result<crate::device_sessions::SessionReceipt, ControlError> {
         self.primary_apply_with_inhibit(id, generation, profile_toml, None, false)
     }
-    fn primary_apply_with_inhibit(&mut self, id: &str, generation: u64, profile_toml: String,
-        inhibit: Option<u32>, use_collection: bool) -> Result<crate::device_sessions::SessionReceipt, ControlError> {
+    fn primary_apply_with_inhibit(
+        &mut self,
+        id: &str,
+        generation: u64,
+        profile_toml: String,
+        inhibit: Option<u32>,
+        use_collection: bool,
+    ) -> Result<crate::device_sessions::SessionReceipt, ControlError> {
         self.primary_device_guard(id, generation)?;
-        let next = generation.checked_add(1).ok_or_else(|| ControlError::new(ErrorCode::Internal, "device generation exhausted"))?;
+        let next = generation
+            .checked_add(1)
+            .ok_or_else(|| ControlError::new(ErrorCode::Internal, "device generation exhausted"))?;
         let (mut profile, text) = Self::prepare(Some(profile_toml))?;
         profile.binding_inhibit = inhibit;
         profile.use_settings_collection = use_collection;
-        self.device_sessions().unwrap().validate_profile(id, &profile).map_err(|error| ControlError::new(ErrorCode::InvalidProfile, error))?;
+        self.device_sessions()
+            .unwrap()
+            .validate_profile(id, &profile)
+            .map_err(|error| ControlError::new(ErrorCode::InvalidProfile, error))?;
         if self.worker.is_none() && self.primary_stopped {
             let handle = self.device_sessions().unwrap();
             self.profile = Some(profile.source.clone());
             self.configuration = Some(text);
             handle.commit_applied(id, next, profile);
             handle.primary_stopped(next, None);
-            return Ok(crate::device_sessions::SessionReceipt { id: id.to_owned(), device_generation: generation,
-                target_generation: next, accepted_pending: false });
+            return Ok(crate::device_sessions::SessionReceipt {
+                id: id.to_owned(),
+                device_generation: generation,
+                target_generation: next,
+                accepted_pending: false,
+            });
         }
-        if self.worker.is_none() { return Err(ControlError::new(ErrorCode::Busy, "primary device is unavailable")); }
+        if self.worker.is_none() {
+            return Err(ControlError::new(
+                ErrorCode::Busy,
+                "primary device is unavailable",
+            ));
+        }
         self.begin(profile, text, false)?;
-        self.device_sessions().unwrap().primary_pending(next, crate::device_sessions::SessionState::Running);
-        Ok(crate::device_sessions::SessionReceipt { id: id.to_owned(), device_generation: generation,
-            target_generation: next, accepted_pending: true })
+        self.device_sessions()
+            .unwrap()
+            .primary_pending(next, crate::device_sessions::SessionState::Running);
+        Ok(crate::device_sessions::SessionReceipt {
+            id: id.to_owned(),
+            device_generation: generation,
+            target_generation: next,
+            accepted_pending: true,
+        })
     }
-    fn apply_device_profile(&mut self, expected: WorkerIdentity, id: String, generation: u64,
-        profile_toml: String, inhibit: Option<u32>, use_collection: bool) -> Result<Reply, ControlError> {
+    fn apply_device_profile(
+        &mut self,
+        expected: WorkerIdentity,
+        id: String,
+        generation: u64,
+        profile_toml: String,
+        inhibit: Option<u32>,
+        use_collection: bool,
+    ) -> Result<Reply, ControlError> {
         self.check_identity(&expected)?;
-        let handle = self.device_sessions().ok_or_else(|| ControlError::new(ErrorCode::Busy,
-            "device supervisor is unavailable"))?;
-        let primary = handle.snapshot().map_err(|error| ControlError::new(ErrorCode::Internal, error))?
-            .sessions.iter().any(|session| session.id == id && session.primary);
-        let receipt = if primary { self.primary_apply_with_inhibit(&id, generation, profile_toml, inhibit, use_collection)? }
-            else {
-                let (mut profile, _) = Self::prepare(Some(profile_toml))?;
-                profile.binding_inhibit = inhibit;
-                profile.use_settings_collection = use_collection;
-                handle.apply(&id, generation, profile)
-                    .map_err(|error| ControlError::new(ErrorCode::Conflict, error))?
-            };
+        let handle = self.device_sessions().ok_or_else(|| {
+            ControlError::new(ErrorCode::Busy, "device supervisor is unavailable")
+        })?;
+        let primary = handle
+            .snapshot()
+            .map_err(|error| ControlError::new(ErrorCode::Internal, error))?
+            .sessions
+            .iter()
+            .any(|session| session.id == id && session.primary);
+        let receipt = if primary {
+            self.primary_apply_with_inhibit(&id, generation, profile_toml, inhibit, use_collection)?
+        } else {
+            let (mut profile, _) = Self::prepare(Some(profile_toml))?;
+            profile.binding_inhibit = inhibit;
+            profile.use_settings_collection = use_collection;
+            handle
+                .apply(&id, generation, profile)
+                .map_err(|error| ControlError::new(ErrorCode::Conflict, error))?
+        };
         Ok(Reply::DeviceOperationAccepted { receipt })
     }
-    fn device_lifecycle(&mut self, id: &str, generation: u64, start: bool)
-        -> Result<crate::device_sessions::SessionReceipt, ControlError> {
-        let handle = self.device_sessions().ok_or_else(|| ControlError::new(ErrorCode::Busy,
-            "device supervisor is unavailable"))?;
-        let primary = handle.snapshot().map_err(|error| ControlError::new(ErrorCode::Internal, error))?
-            .sessions.iter().any(|session| session.id == id && session.primary);
+    fn device_lifecycle(
+        &mut self,
+        id: &str,
+        generation: u64,
+        start: bool,
+    ) -> Result<crate::device_sessions::SessionReceipt, ControlError> {
+        let handle = self.device_sessions().ok_or_else(|| {
+            ControlError::new(ErrorCode::Busy, "device supervisor is unavailable")
+        })?;
+        let primary = handle
+            .snapshot()
+            .map_err(|error| ControlError::new(ErrorCode::Internal, error))?
+            .sessions
+            .iter()
+            .any(|session| session.id == id && session.primary);
         if primary {
-            if start { self.primary_start(id, generation) } else { self.primary_stop(id, generation) }
+            if start {
+                self.primary_start(id, generation)
+            } else {
+                self.primary_stop(id, generation)
+            }
         } else {
-            (if start { handle.start_device(id, generation) } else { handle.stop_device(id, generation) })
-                .map_err(|error| ControlError::new(ErrorCode::Conflict, error))
+            (if start {
+                handle.start_device(id, generation)
+            } else {
+                handle.stop_device(id, generation)
+            })
+            .map_err(|error| ControlError::new(ErrorCode::Conflict, error))
         }
     }
     fn update_ready(&self) -> bool {
-        !self.stopping && self.worker.is_none() && self.pending.is_none()
-            && self.retiring.is_none() && self.devices.is_none() && self.ownership.is_none()
-            && self.tool_drain.as_ref().is_some_and(|completion|matches!(completion.result(),Some(Ok(()))))
+        !self.stopping
+            && self.worker.is_none()
+            && self.pending.is_none()
+            && self.retiring.is_none()
+            && self.devices.is_none()
+            && self.ownership.is_none()
+            && self
+                .tool_drain
+                .as_ref()
+                .is_some_and(|completion| matches!(completion.result(), Some(Ok(()))))
     }
     fn check_update_token(&self, token: &str) -> Result<(), ControlError> {
         if self.update_reservation.as_deref() != Some(token) {
-            return Err(ControlError::new(ErrorCode::Conflict, "update reservation belongs to another request or daemon"));
+            return Err(ControlError::new(
+                ErrorCode::Conflict,
+                "update reservation belongs to another request or daemon",
+            ));
         }
         Ok(())
     }
@@ -351,9 +540,15 @@ impl Daemon {
         }
         Ok(())
     }
-    fn check_capture_instance(&self, capture: &control::DebugCaptureToken) -> Result<(), ControlError> {
+    fn check_capture_instance(
+        &self,
+        capture: &control::DebugCaptureToken,
+    ) -> Result<(), ControlError> {
         if capture.instance != self.instance {
-            return Err(ControlError::new(ErrorCode::Conflict, "capture belongs to a different daemon instance"));
+            return Err(ControlError::new(
+                ErrorCode::Conflict,
+                "capture belongs to a different daemon instance",
+            ));
         }
         Ok(())
     }
@@ -371,8 +566,19 @@ impl Daemon {
         }
     }
     fn publish_managed_state(&self) {
-        crate::managed_host::publish_native_state(self.identity(), self.device_sessions(), self.log_sequence,
-            || serde_json::json!(self.upstream_logs.iter().map(|(message, _)| message).collect::<Vec<_>>()));
+        crate::managed_host::publish_native_state(
+            self.identity(),
+            self.device_sessions(),
+            self.log_sequence,
+            || {
+                serde_json::json!(
+                    self.upstream_logs
+                        .iter()
+                        .map(|(message, _)| message)
+                        .collect::<Vec<_>>()
+                )
+            },
+        );
     }
     fn prepare(text: Option<String>) -> Result<(Profile, String), ControlError> {
         let profile = match text {
@@ -414,9 +620,15 @@ impl Daemon {
         text: String,
         initial: bool,
     ) -> Result<Reply, ControlError> {
-        self.begin_with_saved(profile,text,initial,true)
+        self.begin_with_saved(profile, text, initial, true)
     }
-    fn begin_with_saved(&mut self,profile:Profile,text:String,initial:bool,prefer_saved:bool)->Result<Reply,ControlError>{
+    fn begin_with_saved(
+        &mut self,
+        profile: Profile,
+        text: String,
+        initial: bool,
+        prefer_saved: bool,
+    ) -> Result<Reply, ControlError> {
         if self.cancelled.load(Ordering::Acquire)
             || self.stopping
             || self.pending.is_some()
@@ -427,7 +639,8 @@ impl Daemon {
                 "driver is transitioning or daemon is shutting down",
             ));
         }
-        if initial && (self.worker.is_some() || (self.ownership.is_some() && !self.primary_stopped)) {
+        if initial && (self.worker.is_some() || (self.ownership.is_some() && !self.primary_stopped))
+        {
             return Err(ControlError::new(
                 ErrorCode::Busy,
                 "driver is active or cleanup is incomplete",
@@ -441,15 +654,23 @@ impl Daemon {
                 .map_err(|error| ControlError::new(ErrorCode::StartFailed, error))?;
             crate::plugins::prepare_connected_parsers(database.as_ref())
                 .map_err(|error| ControlError::new(ErrorCode::StartFailed, error))?;
-            self.devices = Some(crate::companions::Supervisor::prepare(profile.clone())
-                .map_err(|error| ControlError::new(ErrorCode::StartFailed, error))?);
+            self.devices = Some(
+                crate::companions::Supervisor::prepare(profile.clone())
+                    .map_err(|error| ControlError::new(ErrorCode::StartFailed, error))?,
+            );
         }
         let device_handle = self.devices.as_ref().unwrap().handle();
-        let worker = match Worker::spawn(profile.clone(), device_handle, prefer_saved && initial && !device_start) {
+        let worker = match Worker::spawn(
+            profile.clone(),
+            device_handle,
+            prefer_saved && initial && !device_start,
+        ) {
             Ok(worker) => worker,
             Err(error) => {
                 if initial && !device_start {
-                    if let Some(mut devices) = self.devices.take() { let _ = devices.finish(); }
+                    if let Some(mut devices) = self.devices.take() {
+                        let _ = devices.finish();
+                    }
                 }
                 return Err(ControlError::new(ErrorCode::StartFailed, error));
             }
@@ -469,7 +690,14 @@ impl Daemon {
             if let Ok(list) = devices.handle().snapshot() {
                 if let Some(primary) = list.sessions.into_iter().find(|session| session.primary) {
                     if let Some(next) = primary.device_generation.checked_add(1) {
-                        devices.handle().primary_pending(next, if initial { crate::device_sessions::SessionState::Preparing } else { primary.state });
+                        devices.handle().primary_pending(
+                            next,
+                            if initial {
+                                crate::device_sessions::SessionState::Preparing
+                            } else {
+                                primary.state
+                            },
+                        );
                     }
                 }
             }
@@ -517,7 +745,11 @@ impl Daemon {
         self.stopping = true;
         self.state = DriverState::Stopping;
         let mut errors = Vec::new();
-        if let Some(devices) = &self.devices { if let Err(error) = devices.stop() { errors.push(error); } }
+        if let Some(devices) = &self.devices {
+            if let Err(error) = devices.stop() {
+                errors.push(error);
+            }
+        }
         for worker in [
             self.worker.as_ref(),
             self.pending
@@ -597,30 +829,47 @@ impl Daemon {
             Notice::PresetRequested(request) => {
                 // Only this active worker owns the request. Retired/candidate
                 // workers cannot replace a newer client's generation.
-                let result = if phase.is_some() || self.state != DriverState::Running || self.update_reservation.is_some() {
+                let result = if phase.is_some()
+                    || self.state != DriverState::Running
+                    || self.update_reservation.is_some()
+                {
                     Err("preset request is stale or the driver is transitioning".to_owned())
                 } else {
                     crate::binding_presets::load(request).and_then(|profile| {
-                        let source = self.device_sessions().ok_or("preset device owner is unavailable")?.snapshot()?
-                            .sessions.into_iter().find(|session| session.primary)
+                        let source = self
+                            .device_sessions()
+                            .ok_or("preset device owner is unavailable")?
+                            .snapshot()?
+                            .sessions
+                            .into_iter()
+                            .find(|session| session.primary)
                             .ok_or("preset primary device is unavailable")?;
-                        self.primary_apply_with_inhibit(&source.id, source.device_generation, profile.to_toml()?,
-                            profile.binding_inhibit, false).map(|_| ()).map_err(|error| error.message)
+                        self.primary_apply_with_inhibit(
+                            &source.id,
+                            source.device_generation,
+                            profile.to_toml()?,
+                            profile.binding_inhibit,
+                            false,
+                        )
+                        .map(|_| ())
+                        .map_err(|error| error.message)
                     })
                 };
                 match result { Ok(()) => self.log("Preset binding replacement accepted; waiting for guarded cleanup/activation.".into()),
                     Err(error) => self.log(format!("Preset binding was not applied: {error}")) }
             }
-            Notice::PreparedProfile(profile) if phase.is_none() => {
-                match profile.to_toml() {
-                    Ok(text) if text.len() <= control::MAX_PROFILE_BYTES && serde_json::to_vec(&text)
-                        .is_ok_and(|encoded| encoded.len() <= control::MAX_FRAME_BYTES - 1024) => {
-                            self.reconnect_profile = Some(*profile);
-                        }
-                    Ok(_) => self.fail_stop("reconnected profile exceeds control frame limits".into()),
-                    Err(error) => self.fail_stop(error),
+            Notice::PreparedProfile(profile) if phase.is_none() => match profile.to_toml() {
+                Ok(text)
+                    if text.len() <= control::MAX_PROFILE_BYTES
+                        && serde_json::to_vec(&text).is_ok_and(|encoded| {
+                            encoded.len() <= control::MAX_FRAME_BYTES - 1024
+                        }) =>
+                {
+                    self.reconnect_profile = Some(*profile);
                 }
-            }
+                Ok(_) => self.fail_stop("reconnected profile exceeds control frame limits".into()),
+                Err(error) => self.fail_stop(error),
+            },
             Notice::PreparedProfile(_) => {}
             Notice::Prepared => {
                 // A disconnect can race the queued quiesce. Do not enqueue a
@@ -642,18 +891,29 @@ impl Daemon {
                 let profile = self.reconnect_profile.take().unwrap();
                 let text = match profile.to_toml() {
                     Ok(text) => text,
-                    Err(error) => { self.fail_stop(error); return; }
+                    Err(error) => {
+                        self.fail_stop(error);
+                        return;
+                    }
                 };
                 let generation = if self.configuration.as_ref() != Some(&text) {
                     match self.next_generation() {
                         Ok(generation) => generation,
-                        Err(error) => { self.fail_stop(error.message); return; }
+                        Err(error) => {
+                            self.fail_stop(error.message);
+                            return;
+                        }
                     }
-                } else { self.generation };
-                if !self.send_active(Directive::Run) { return; }
+                } else {
+                    self.generation
+                };
+                if !self.send_active(Directive::Run) {
+                    return;
+                }
                 if let Some(devices) = &self.devices {
                     if let Err(error) = devices.handle().primary_commit(profile.clone()) {
-                        self.fail_stop(error); return;
+                        self.fail_stop(error);
+                        return;
                     }
                 }
                 self.generation = generation;
@@ -687,7 +947,11 @@ impl Daemon {
                     )
                 ) {
                     self.state = DriverState::Running;
-                    if let Some(devices) = &self.devices { devices.handle().primary_state(crate::device_sessions::SessionState::Running, None); }
+                    if let Some(devices) = &self.devices {
+                        devices
+                            .handle()
+                            .primary_state(crate::device_sessions::SessionState::Running, None);
+                    }
                 }
                 if self
                     .pending
@@ -696,7 +960,14 @@ impl Daemon {
                 {
                     if let Some(devices) = &self.devices {
                         let handle = devices.handle();
-                        if let Ok(Some(id)) = handle.primary_id() { handle.reject(&id, self.last_error.clone().unwrap_or_else(|| "replacement failed".into())); }
+                        if let Ok(Some(id)) = handle.primary_id() {
+                            handle.reject(
+                                &id,
+                                self.last_error
+                                    .clone()
+                                    .unwrap_or_else(|| "replacement failed".into()),
+                            );
+                        }
                     }
                     self.pending = None;
                     self.log("Replacement failed; previous profile resumed with fresh output/relative state. Retained plugins received reset/range-loss notification; their private state depends on their implementation. A physical disconnect recreates instances. Hardware initialization was reapplied, not undone.".into());
@@ -715,7 +986,11 @@ impl Daemon {
             }
             Notice::Waiting => {
                 self.state = DriverState::Starting;
-                if let Some(devices) = &self.devices { devices.handle().primary_state(crate::device_sessions::SessionState::Waiting, None); }
+                if let Some(devices) = &self.devices {
+                    devices
+                        .handle()
+                        .primary_state(crate::device_sessions::SessionState::Waiting, None);
+                }
                 if self
                     .pending
                     .as_ref()
@@ -747,13 +1022,21 @@ impl Daemon {
         match notice {
             Notice::PreparedProfile(profile) if phase == Phase::Preparing => {
                 match profile.to_toml() {
-                    Ok(text) if text.len() <= control::MAX_PROFILE_BYTES && serde_json::to_vec(&text).is_ok_and(|encoded| encoded.len() <= control::MAX_FRAME_BYTES - 1024) => {
+                    Ok(text)
+                        if text.len() <= control::MAX_PROFILE_BYTES
+                            && serde_json::to_vec(&text).is_ok_and(|encoded| {
+                                encoded.len() <= control::MAX_FRAME_BYTES - 1024
+                            }) =>
+                    {
                         let pending = self.pending.as_mut().unwrap();
                         pending.profile = profile.source.clone();
                         pending.text = text;
                         pending.applied_profile = *profile;
                     }
-                    Ok(_) => self.reject_candidate("effective physical profile exceeds control frame limits".into(), false),
+                    Ok(_) => self.reject_candidate(
+                        "effective physical profile exceeds control frame limits".into(),
+                        false,
+                    ),
                     Err(error) => self.reject_candidate(error, false),
                 }
             }
@@ -816,8 +1099,12 @@ impl Daemon {
                 self.profile = Some(pending.profile.clone());
                 self.configuration = Some(pending.text.clone());
                 if let Some(devices) = &self.devices {
-                    if let Err(error) = devices.handle().primary_commit_with_origin(pending.applied_profile.clone(), !pending.initial && !pending.device_start) {
-                        self.fail_stop(error); return;
+                    if let Err(error) = devices.handle().primary_commit_with_origin(
+                        pending.applied_profile.clone(),
+                        !pending.initial && !pending.device_start,
+                    ) {
+                        self.fail_stop(error);
+                        return;
                     }
                 }
                 self.last_error = None;
@@ -829,9 +1116,17 @@ impl Daemon {
                 self.state = DriverState::Running;
                 self.primary_stopped = false;
                 if let Some(devices) = &self.devices {
-                    devices.handle().primary_state(crate::device_sessions::SessionState::Running, None);
+                    devices
+                        .handle()
+                        .primary_state(crate::device_sessions::SessionState::Running, None);
                     if let Ok(Some(id)) = devices.handle().primary_id() {
-                        if devices.handle().snapshot().is_ok_and(|list| list.selected_id.as_ref() == Some(&id)) { let _ = devices.handle().select(&id); }
+                        if devices
+                            .handle()
+                            .snapshot()
+                            .is_ok_and(|list| list.selected_id.as_ref() == Some(&id))
+                        {
+                            let _ = devices.handle().select(&id);
+                        }
                     }
                     devices.enable();
                 }
@@ -853,23 +1148,41 @@ impl Daemon {
                     match Ownership::acquire() {
                         Ok(ownership) => {
                             self.ownership = Some(ownership);
-                            if let Some(devices) = &self.devices { devices.enable(); }
+                            if let Some(devices) = &self.devices {
+                                devices.enable();
+                            }
                         }
-                        Err(error) => { self.reject_candidate(error, false); return; }
+                        Err(error) => {
+                            self.reject_candidate(error, false);
+                            return;
+                        }
                     }
                 }
-                self.log("Replacement is waiting for its tablet; current generation remains unchanged.".into());
+                self.log(
+                    "Replacement is waiting for its tablet; current generation remains unchanged."
+                        .into(),
+                );
             }
             _ => self.fail_stop("Unexpected candidate lifecycle transition.".into()),
         }
     }
     fn reap(&mut self) {
-        if self.devices.as_ref().is_some_and(crate::companions::Supervisor::finished) {
+        if self
+            .devices
+            .as_ref()
+            .is_some_and(crate::companions::Supervisor::finished)
+        {
             let result = self.devices.as_mut().unwrap().finish();
             self.devices = None;
             if let Err(error) = result {
-                if self.stopping { self.remember_cleanup_error(error); } else { self.fail_stop(error); }
-            } else if !self.stopping { self.fail_stop("device supervisor ended unexpectedly".into()); }
+                if self.stopping {
+                    self.remember_cleanup_error(error);
+                } else {
+                    self.fail_stop(error);
+                }
+            } else if !self.stopping {
+                self.fail_stop("device supervisor ended unexpectedly".into());
+            }
         }
         if self.worker.as_ref().is_some_and(Worker::finished) {
             let result = self.worker.take().unwrap().join();
@@ -889,12 +1202,21 @@ impl Daemon {
             let result = self.retiring.take().unwrap().join();
             if let Some(generation) = self.primary_stop_generation.take() {
                 if self.stopping {
-                    if let Err(error) = result { self.remember_cleanup_error(error); }
+                    if let Err(error) = result {
+                        self.remember_cleanup_error(error);
+                    }
                 } else {
                     self.primary_stopped = true;
                     self.state = DriverState::Running;
-                    if let Some(devices) = &self.devices { devices.handle().primary_stopped(generation, result.as_ref().err().cloned()); }
-                    if let Err(error) = result { self.last_error = Some(error.clone()); self.log(error); }
+                    if let Some(devices) = &self.devices {
+                        devices
+                            .handle()
+                            .primary_stopped(generation, result.as_ref().err().cloned());
+                    }
+                    if let Err(error) = result {
+                        self.last_error = Some(error.clone());
+                        self.log(error);
+                    }
                     self.log("Primary tablet stopped; independently owned tablet sessions remain enabled.".into());
                 }
             } else if let Err(error) = result {
@@ -931,8 +1253,15 @@ impl Daemon {
                 self.log(format!("Replacement preparation rejected: {error}"));
                 if let Some(devices) = &self.devices {
                     let handle = devices.handle();
-                    if let Ok(Some(id)) = handle.primary_id() { handle.reject(&id, error.clone()); }
-                    if !initial { handle.primary_state(crate::device_sessions::SessionState::Running, Some(error.clone())); }
+                    if let Ok(Some(id)) = handle.primary_id() {
+                        handle.reject(&id, error.clone());
+                    }
+                    if !initial {
+                        handle.primary_state(
+                            crate::device_sessions::SessionState::Running,
+                            Some(error.clone()),
+                        );
+                    }
                 }
                 if initial && !device_start {
                     self.fail_stop(error);
@@ -941,8 +1270,13 @@ impl Daemon {
                     self.state = DriverState::Running;
                     if let Some(devices) = &self.devices {
                         let handle = devices.handle();
-                        if let Ok(Some(id)) = handle.primary_id() { handle.reject(&id, error.clone()); }
-                        handle.primary_state(crate::device_sessions::SessionState::Failed, Some(error));
+                        if let Ok(Some(id)) = handle.primary_id() {
+                            handle.reject(&id, error.clone());
+                        }
+                        handle.primary_state(
+                            crate::device_sessions::SessionState::Failed,
+                            Some(error),
+                        );
                     }
                 }
                 // A failed preparation has never owned output. Keep the old
@@ -1007,7 +1341,9 @@ impl Daemon {
         }
         self.pending = None;
         if let Some(mut devices) = self.devices.take() {
-            if let Err(error) = devices.finish() { self.remember_cleanup_error(error); }
+            if let Err(error) = devices.finish() {
+                self.remember_cleanup_error(error);
+            }
         }
         // The mutex remains owned through all worker joins above.
         self.ownership = None;
@@ -1025,23 +1361,38 @@ mod upstream_log_tests {
             "Time":"2026-10-07T09:08:07.654+02:00", "Group":null,
             "Message":"\u{0001}".repeat(control::MAX_LOG_LINE_BYTES),
             "StackTrace":"\u{0001}".repeat(4096), "Level":4,"Notification":true
-        })).unwrap();
+        }))
+        .unwrap();
         for _ in 0..control::MAX_LOG_LINES {
-            let request = control::Request::new(1, Command::WriteMessage { message: original.clone() });
+            let request = control::Request::new(
+                1,
+                Command::WriteMessage {
+                    message: original.clone(),
+                },
+            );
             request.validate().unwrap();
             daemon.handle(request.command).unwrap();
         }
         match daemon.handle(Command::GetUpstreamLog).unwrap() {
-            Reply::UpstreamLog { sequence, messages, .. } => {
+            Reply::UpstreamLog {
+                sequence, messages, ..
+            } => {
                 assert_eq!(sequence, control::MAX_LOG_LINES as u64);
                 assert!(messages.len() < control::MAX_LOG_LINES);
-                for message in messages { assert_eq!(serde_json::to_value(message).unwrap(),
-                    serde_json::to_value(&original).unwrap()); }
+                for message in messages {
+                    assert_eq!(
+                        serde_json::to_value(message).unwrap(),
+                        serde_json::to_value(&original).unwrap()
+                    );
+                }
             }
             _ => panic!("wrong retained log response"),
         }
-        let response = control::Response { version: control::PROTOCOL_VERSION, id: 2,
-            reply: daemon.handle(Command::GetUpstreamLog).unwrap() };
+        let response = control::Response {
+            version: control::PROTOCOL_VERSION,
+            id: 2,
+            reply: daemon.handle(Command::GetUpstreamLog).unwrap(),
+        };
         assert!(serde_json::to_vec(&response).unwrap().len() < control::MAX_FRAME_BYTES);
     }
     #[test]
@@ -1055,16 +1406,20 @@ mod upstream_log_tests {
 }
 
 impl ControlHandler for Daemon {
-    fn ready(&mut self)->std::io::Result<()>{
-        if let Some(pipe)=self.hosted_pipe.take(){
+    fn ready(&mut self) -> std::io::Result<()> {
+        if let Some(pipe) = self.hosted_pipe.take() {
             crate::original_driver::ensure_stopped()?;
-            self.hosted_rpc=Some(crate::dotnet::HostedRpc::start(&pipe).map_err(std::io::Error::other)?);
+            self.hosted_rpc =
+                Some(crate::dotnet::HostedRpc::start(&pipe).map_err(std::io::Error::other)?);
         }
-        if let Some(profile)=self.foreground_profile.take(){
+        if let Some(profile) = self.foreground_profile.take() {
             crate::plugins::validate_runtime_profile(&profile).map_err(std::io::Error::other)?;
-            profile.validate_filter_execution().map_err(std::io::Error::other)?;
-            let text=profile.to_toml().map_err(std::io::Error::other)?;
-            self.begin_with_saved(profile,text,true,false).map_err(|error|std::io::Error::other(error.message))?;
+            profile
+                .validate_filter_execution()
+                .map_err(std::io::Error::other)?;
+            let text = profile.to_toml().map_err(std::io::Error::other)?;
+            self.begin_with_saved(profile, text, true, false)
+                .map_err(|error| std::io::Error::other(error.message))?;
         }
         Ok(())
     }
@@ -1126,263 +1481,469 @@ impl ControlHandler for Daemon {
     }
     fn handle(&mut self, command: Command) -> Result<Reply, ControlError> {
         let result = (|| {
-        // Cancel before polling so an already queued Prepared/Ready notice
-        // cannot activate a replacement in response to a Stop request.
-        match &command {
-            Command::Stop | Command::Shutdown => self
-                .stop_all()
-                .map_err(|error| ControlError::new(ErrorCode::StopFailed, error))?,
-            Command::StopIf { expected } | Command::ShutdownIf { expected } => {
-                self.check_identity(expected)?;
-                self.stop_all()
-                    .map_err(|error| ControlError::new(ErrorCode::StopFailed, error))?;
-            }
-            _ => {}
-        }
-        self.poll();
-        if self.update_reservation.is_some() && matches!(&command,
-            Command::Start { .. } | Command::StartIf { .. } | Command::Restart { .. }
-            | Command::ApplyDeviceProfile { .. } | Command::ApplyDeviceProfileWithInhibit { .. }
-            | Command::ApplyOriginalDeviceProfile { .. }
-            | Command::SaveDeviceProfile { .. } | Command::StartDevice { .. }
-            | Command::SelectDeviceSession { .. } | Command::DetectDeviceSessions) {
-            return Err(ControlError::new(ErrorCode::Busy, "an update owns the stopped driver; wait for completion or cancel its reservation"));
-        }
-        match command {
-            Command::Status => Ok(self.status()),
-            Command::BuildInfo => Ok(Reply::BuildInfo {
-                instance: self.instance.clone(),
-                version: env!("CARGO_PKG_VERSION").into(),
-                source_commit: env!("OTD_BUILD_COMMIT").into(),
-            }),
-            Command::BeginUpdate { expected } => {
-                self.check_identity(&expected)?;
-                if self.update_reservation.is_some() { return Err(ControlError::new(ErrorCode::Busy, "another update is already reserved")); }
-                let plugin_update = crate::plugin_manager::reserve_update()
-                    .map_err(|error| ControlError::new(ErrorCode::Busy, error))?;
-                self.next_update = self.next_update.checked_add(1)
-                    .ok_or_else(|| ControlError::new(ErrorCode::Internal, "update reservation sequence exhausted"))?;
-                let token = format!("{}:update:{}", self.instance, self.next_update);
-                self.tool_drain=Some(crate::tool_host::suspend().map_err(|error|ControlError::new(ErrorCode::StopFailed,error))?);
-                self.update_reservation = Some(token.clone());
-                self.plugin_update = Some(plugin_update);
-                if let Err(error) = self.stop_all() {
-                    self.remember_cleanup_error(error);
+            // Cancel before polling so an already queued Prepared/Ready notice
+            // cannot activate a replacement in response to a Stop request.
+            match &command {
+                Command::Stop | Command::Shutdown => self
+                    .stop_all()
+                    .map_err(|error| ControlError::new(ErrorCode::StopFailed, error))?,
+                Command::StopIf { expected } | Command::ShutdownIf { expected } => {
+                    self.check_identity(expected)?;
+                    self.stop_all()
+                        .map_err(|error| ControlError::new(ErrorCode::StopFailed, error))?;
                 }
-                self.log("Update reserved; all tablet sessions and global tools are draining before installation.".into());
-                Ok(Reply::UpdateAccepted { token })
+                _ => {}
             }
-            Command::UpdateStatus { token } => {
-                self.check_update_token(&token)?;
-                let tool_error=self.tool_drain.as_ref().and_then(|completion|completion.result()).and_then(Result::err);
-                Ok(Reply::UpdateState { token, ready: self.update_ready() && self.cleanup_error.is_none(),
-                    error: self.cleanup_error.clone().or(tool_error) })
+            self.poll();
+            if self.update_reservation.is_some()
+                && matches!(
+                    &command,
+                    Command::Start { .. }
+                        | Command::StartIf { .. }
+                        | Command::Restart { .. }
+                        | Command::ApplyDeviceProfile { .. }
+                        | Command::ApplyDeviceProfileWithInhibit { .. }
+                        | Command::ApplyOriginalDeviceProfile { .. }
+                        | Command::SaveDeviceProfile { .. }
+                        | Command::StartDevice { .. }
+                        | Command::SelectDeviceSession { .. }
+                        | Command::DetectDeviceSessions
+                )
+            {
+                return Err(ControlError::new(
+                    ErrorCode::Busy,
+                    "an update owns the stopped driver; wait for completion or cancel its reservation",
+                ));
             }
-            Command::FinishUpdate { token, success } => {
-                self.check_update_token(&token)?;
-                if success {
-                    if !self.update_ready() || self.cleanup_error.is_some() {
-                        return Err(ControlError::new(ErrorCode::Busy, "update cannot exit before successful device cleanup"));
+            match command {
+                Command::Status => Ok(self.status()),
+                Command::BuildInfo => Ok(Reply::BuildInfo {
+                    instance: self.instance.clone(),
+                    version: env!("CARGO_PKG_VERSION").into(),
+                    source_commit: env!("OTD_BUILD_COMMIT").into(),
+                }),
+                Command::BeginUpdate { expected } => {
+                    self.check_identity(&expected)?;
+                    if self.update_reservation.is_some() {
+                        return Err(ControlError::new(
+                            ErrorCode::Busy,
+                            "another update is already reserved",
+                        ));
                     }
-                    self.log("Update staged and response delivered; shutting down the reserved daemon.".into());
-                    Ok(Reply::ShutdownAccepted)
-                } else {
-                    if self.tool_resume.is_none(){self.tool_resume=Some(crate::tool_host::resume_previous()
-                        .map_err(|error|ControlError::new(ErrorCode::StopFailed,error))?);}
-                    match self.tool_resume.as_ref().and_then(|completion|completion.result()) {
-                        None=>return Err(ControlError::new(ErrorCode::Busy,"Global tool restoration is pending; retry FinishUpdate with this token")),
-                        Some(Err(error))=>return Err(ControlError::new(ErrorCode::StopFailed,format!("Global tool restoration failed: {error}"))),
-                        Some(Ok(()))=>{}
+                    let plugin_update = crate::plugin_manager::reserve_update()
+                        .map_err(|error| ControlError::new(ErrorCode::Busy, error))?;
+                    self.next_update = self.next_update.checked_add(1).ok_or_else(|| {
+                        ControlError::new(
+                            ErrorCode::Internal,
+                            "update reservation sequence exhausted",
+                        )
+                    })?;
+                    let token = format!("{}:update:{}", self.instance, self.next_update);
+                    self.tool_drain = Some(
+                        crate::tool_host::suspend()
+                            .map_err(|error| ControlError::new(ErrorCode::StopFailed, error))?,
+                    );
+                    self.update_reservation = Some(token.clone());
+                    self.plugin_update = Some(plugin_update);
+                    if let Err(error) = self.stop_all() {
+                        self.remember_cleanup_error(error);
                     }
-                    self.update_reservation = None;
-                    self.plugin_update = None;
-                    self.tool_drain=None;
-                    self.tool_resume=None;
-                    self.log("Update cancelled. Tablet input remains stopped; Start driver explicitly resumes it.".into());
-                    Ok(Reply::UpdateCancelled)
+                    self.log("Update reserved; all tablet sessions and global tools are draining before installation.".into());
+                    Ok(Reply::UpdateAccepted { token })
                 }
-            }
-            Command::DetectDeviceSessions => {
-                let handle = self.device_sessions().ok_or_else(|| ControlError::new(ErrorCode::Busy,
-                    "no active device supervisor; Start driver enables discovery"))?;
-                let list = handle.refresh().map_err(|error| ControlError::new(ErrorCode::Internal, error))?;
-                Ok(Reply::DeviceSessions { sessions: list.sessions, selected_id: list.selected_id })
-            }
-            Command::ListDeviceSessions => {
-                let list = self.device_sessions().map(|handle| handle.snapshot()).transpose()
-                    .map_err(|error| ControlError::new(ErrorCode::Internal, error))?;
-                Ok(Reply::DeviceSessions { sessions: list.as_ref().map_or_else(Vec::new, |list| list.sessions.clone()),
-                    selected_id: list.and_then(|list| list.selected_id) })
-            }
-            Command::SelectDeviceSession { expected, id } => {
-                self.check_identity(&expected)?;
-                let handle = self.device_sessions().ok_or_else(|| ControlError::new(ErrorCode::Busy,
-                    "device supervisor is unavailable"))?;
-                handle.select(&id).map_err(|error| ControlError::new(ErrorCode::Busy, error))?;
-                Ok(Reply::DeviceSessionSelected { id })
-            }
-            Command::GetDeviceProfile { expected, id, device_generation } => {
-                self.check_identity(&expected)?;
-                let handle = self.device_sessions().ok_or_else(|| ControlError::new(ErrorCode::Busy,
-                    "device supervisor is unavailable"))?;
-                let profile_toml = handle.profile(&id, device_generation)
-                    .map_err(|error| ControlError::new(ErrorCode::Conflict, error))?;
-                Ok(Reply::DeviceProfile { identity: self.identity(), id, device_generation, profile_toml })
-            }
-            Command::ApplyDeviceProfile { expected, id, device_generation, profile_toml } => {
-                self.apply_device_profile(expected, id, device_generation, profile_toml, None, false)
-            }
-            Command::ApplyDeviceProfileWithInhibit { expected, id, device_generation, profile_toml, binding_inhibit } => {
-                self.apply_device_profile(expected, id, device_generation, profile_toml, Some(binding_inhibit), false)
-            }
-            Command::ApplyOriginalDeviceProfile { expected, id, device_generation, profile_toml, binding_inhibit } => {
-                self.apply_device_profile(expected, id, device_generation, profile_toml, binding_inhibit, true)
-            }
-            Command::StopDevice { expected, id, device_generation } => {
-                self.check_identity(&expected)?;
-                Ok(Reply::DeviceOperationAccepted { receipt: self.device_lifecycle(&id, device_generation, false)? })
-            }
-            Command::SaveDeviceProfile { expected, id, device_generation, expected_revision, expected_digest, profile_toml } => {
-                self.check_identity(&expected)?;
-                let handle = self.device_sessions().ok_or_else(|| ControlError::new(ErrorCode::Busy, "device supervisor is unavailable"))?;
-                let path = otd_core::storage::data_directory().map_err(|error| ControlError::new(ErrorCode::Internal, error))?.join("driver.toml");
-                let profile = Profile::from_toml_text(&profile_toml, &path).map_err(|error| ControlError::new(ErrorCode::InvalidProfile, error))?;
-                let saved = handle.save_profile(&id, device_generation, expected_revision, expected_digest.as_deref(), &profile)
-                    .map_err(|error| ControlError::new(ErrorCode::Conflict, error))?;
-                Ok(Reply::DeviceProfileSaved { saved })
-            }
-            Command::StartDevice { expected, id, device_generation } => {
-                self.check_identity(&expected)?;
-                Ok(Reply::DeviceOperationAccepted { receipt: self.device_lifecycle(&id, device_generation, true)? })
-            }
-            Command::WriteMessage { message } => {
-                let line = format!("[{}] {}", message.group.as_deref().unwrap_or(""),
-                    message.message.as_deref().unwrap_or(""));
-                self.append_log(line, message);
-                Ok(Reply::MessageWritten)
-            }
-            Command::SetIdleOriginalSettings { expected, expected_revision, settings_json } => {
-                self.check_identity(&expected)?;
-                if self.stopping || self.pending.is_some() || self.retiring.is_some()
-                    || self.update_reservation.is_some() || self.cleanup_error.is_some() {
-                    return Err(ControlError::new(ErrorCode::Busy, "native lifecycle is transitioning; idle settings were not replaced"));
+                Command::UpdateStatus { token } => {
+                    self.check_update_token(&token)?;
+                    let tool_error = self
+                        .tool_drain
+                        .as_ref()
+                        .and_then(|completion| completion.result())
+                        .and_then(Result::err);
+                    Ok(Reply::UpdateState {
+                        token,
+                        ready: self.update_ready() && self.cleanup_error.is_none(),
+                        error: self.cleanup_error.clone().or(tool_error),
+                    })
                 }
-                // Keep discovery admission excluded until the new cold collection
-                // is published. A snapshot followed by publication would let a
-                // newly connected worker start with the previous collection.
-                let handle = self.device_sessions();
-                let registry = handle.as_ref().map(|handle| handle.registry.lock())
-                    .transpose().map_err(|_| ControlError::new(ErrorCode::Internal, "device registry poisoned"))?;
-                if let Some(registry) = &registry {
-                    if registry.entries.values().any(|entry| entry.snapshot.connected || entry.snapshot.pending_generation.is_some()) {
-                        return Err(ControlError::new(ErrorCode::Conflict, "devices appeared or changed during idle settings admission; refresh before retrying"));
+                Command::FinishUpdate { token, success } => {
+                    self.check_update_token(&token)?;
+                    if success {
+                        if !self.update_ready() || self.cleanup_error.is_some() {
+                            return Err(ControlError::new(
+                                ErrorCode::Busy,
+                                "update cannot exit before successful device cleanup",
+                            ));
+                        }
+                        self.log("Update staged and response delivered; shutting down the reserved daemon.".into());
+                        Ok(Reply::ShutdownAccepted)
+                    } else {
+                        if self.tool_resume.is_none() {
+                            self.tool_resume =
+                                Some(crate::tool_host::resume_previous().map_err(|error| {
+                                    ControlError::new(ErrorCode::StopFailed, error)
+                                })?);
+                        }
+                        match self
+                            .tool_resume
+                            .as_ref()
+                            .and_then(|completion| completion.result())
+                        {
+                            None => {
+                                return Err(ControlError::new(
+                                    ErrorCode::Busy,
+                                    "Global tool restoration is pending; retry FinishUpdate with this token",
+                                ));
+                            }
+                            Some(Err(error)) => {
+                                return Err(ControlError::new(
+                                    ErrorCode::StopFailed,
+                                    format!("Global tool restoration failed: {error}"),
+                                ));
+                            }
+                            Some(Ok(())) => {}
+                        }
+                        self.update_reservation = None;
+                        self.plugin_update = None;
+                        self.tool_drain = None;
+                        self.tool_resume = None;
+                        self.log("Update cancelled. Tablet input remains stopped; Start driver explicitly resumes it.".into());
+                        Ok(Reply::UpdateCancelled)
                     }
                 }
-                if settings_json.len() > control::MAX_PROFILE_BYTES {
-                    return Err(ControlError::new(ErrorCode::InvalidRequest, "original settings collection exceeds 128 KiB"));
+                Command::DetectDeviceSessions => {
+                    let handle = self.device_sessions().ok_or_else(|| {
+                        ControlError::new(
+                            ErrorCode::Busy,
+                            "no active device supervisor; Start driver enables discovery",
+                        )
+                    })?;
+                    let list = handle
+                        .refresh()
+                        .map_err(|error| ControlError::new(ErrorCode::Internal, error))?;
+                    Ok(Reply::DeviceSessions {
+                        sessions: list.sessions,
+                        selected_id: list.selected_id,
+                    })
                 }
-                let settings = serde_json::from_str(&settings_json)
-                    .map_err(|error| ControlError::new(ErrorCode::InvalidRequest, error.to_string()))?;
-                let revision = crate::upstream_rpc::publish_idle_original_settings(settings, expected_revision)
+                Command::ListDeviceSessions => {
+                    let list = self
+                        .device_sessions()
+                        .map(|handle| handle.snapshot())
+                        .transpose()
+                        .map_err(|error| ControlError::new(ErrorCode::Internal, error))?;
+                    Ok(Reply::DeviceSessions {
+                        sessions: list
+                            .as_ref()
+                            .map_or_else(Vec::new, |list| list.sessions.clone()),
+                        selected_id: list.and_then(|list| list.selected_id),
+                    })
+                }
+                Command::SelectDeviceSession { expected, id } => {
+                    self.check_identity(&expected)?;
+                    let handle = self.device_sessions().ok_or_else(|| {
+                        ControlError::new(ErrorCode::Busy, "device supervisor is unavailable")
+                    })?;
+                    handle
+                        .select(&id)
+                        .map_err(|error| ControlError::new(ErrorCode::Busy, error))?;
+                    Ok(Reply::DeviceSessionSelected { id })
+                }
+                Command::GetDeviceProfile {
+                    expected,
+                    id,
+                    device_generation,
+                } => {
+                    self.check_identity(&expected)?;
+                    let handle = self.device_sessions().ok_or_else(|| {
+                        ControlError::new(ErrorCode::Busy, "device supervisor is unavailable")
+                    })?;
+                    let profile_toml = handle
+                        .profile(&id, device_generation)
+                        .map_err(|error| ControlError::new(ErrorCode::Conflict, error))?;
+                    Ok(Reply::DeviceProfile {
+                        identity: self.identity(),
+                        id,
+                        device_generation,
+                        profile_toml,
+                    })
+                }
+                Command::ApplyDeviceProfile {
+                    expected,
+                    id,
+                    device_generation,
+                    profile_toml,
+                } => self.apply_device_profile(
+                    expected,
+                    id,
+                    device_generation,
+                    profile_toml,
+                    None,
+                    false,
+                ),
+                Command::ApplyDeviceProfileWithInhibit {
+                    expected,
+                    id,
+                    device_generation,
+                    profile_toml,
+                    binding_inhibit,
+                } => self.apply_device_profile(
+                    expected,
+                    id,
+                    device_generation,
+                    profile_toml,
+                    Some(binding_inhibit),
+                    false,
+                ),
+                Command::ApplyOriginalDeviceProfile {
+                    expected,
+                    id,
+                    device_generation,
+                    profile_toml,
+                    binding_inhibit,
+                } => self.apply_device_profile(
+                    expected,
+                    id,
+                    device_generation,
+                    profile_toml,
+                    binding_inhibit,
+                    true,
+                ),
+                Command::StopDevice {
+                    expected,
+                    id,
+                    device_generation,
+                } => {
+                    self.check_identity(&expected)?;
+                    Ok(Reply::DeviceOperationAccepted {
+                        receipt: self.device_lifecycle(&id, device_generation, false)?,
+                    })
+                }
+                Command::SaveDeviceProfile {
+                    expected,
+                    id,
+                    device_generation,
+                    expected_revision,
+                    expected_digest,
+                    profile_toml,
+                } => {
+                    self.check_identity(&expected)?;
+                    let handle = self.device_sessions().ok_or_else(|| {
+                        ControlError::new(ErrorCode::Busy, "device supervisor is unavailable")
+                    })?;
+                    let path = otd_core::storage::data_directory()
+                        .map_err(|error| ControlError::new(ErrorCode::Internal, error))?
+                        .join("driver.toml");
+                    let profile = Profile::from_toml_text(&profile_toml, &path)
+                        .map_err(|error| ControlError::new(ErrorCode::InvalidProfile, error))?;
+                    let saved = handle
+                        .save_profile(
+                            &id,
+                            device_generation,
+                            expected_revision,
+                            expected_digest.as_deref(),
+                            &profile,
+                        )
+                        .map_err(|error| ControlError::new(ErrorCode::Conflict, error))?;
+                    Ok(Reply::DeviceProfileSaved { saved })
+                }
+                Command::StartDevice {
+                    expected,
+                    id,
+                    device_generation,
+                } => {
+                    self.check_identity(&expected)?;
+                    Ok(Reply::DeviceOperationAccepted {
+                        receipt: self.device_lifecycle(&id, device_generation, true)?,
+                    })
+                }
+                Command::WriteMessage { message } => {
+                    let line = format!(
+                        "[{}] {}",
+                        message.group.as_deref().unwrap_or(""),
+                        message.message.as_deref().unwrap_or("")
+                    );
+                    self.append_log(line, message);
+                    Ok(Reply::MessageWritten)
+                }
+                Command::SetIdleOriginalSettings {
+                    expected,
+                    expected_revision,
+                    settings_json,
+                } => {
+                    self.check_identity(&expected)?;
+                    if self.stopping
+                        || self.pending.is_some()
+                        || self.retiring.is_some()
+                        || self.update_reservation.is_some()
+                        || self.cleanup_error.is_some()
+                    {
+                        return Err(ControlError::new(
+                            ErrorCode::Busy,
+                            "native lifecycle is transitioning; idle settings were not replaced",
+                        ));
+                    }
+                    // Keep discovery admission excluded until the new cold collection
+                    // is published. A snapshot followed by publication would let a
+                    // newly connected worker start with the previous collection.
+                    let handle = self.device_sessions();
+                    let registry = handle
+                        .as_ref()
+                        .map(|handle| handle.registry.lock())
+                        .transpose()
+                        .map_err(|_| {
+                            ControlError::new(ErrorCode::Internal, "device registry poisoned")
+                        })?;
+                    if let Some(registry) = &registry {
+                        if registry.entries.values().any(|entry| {
+                            entry.snapshot.connected || entry.snapshot.pending_generation.is_some()
+                        }) {
+                            return Err(ControlError::new(
+                                ErrorCode::Conflict,
+                                "devices appeared or changed during idle settings admission; refresh before retrying",
+                            ));
+                        }
+                    }
+                    if settings_json.len() > control::MAX_PROFILE_BYTES {
+                        return Err(ControlError::new(
+                            ErrorCode::InvalidRequest,
+                            "original settings collection exceeds 128 KiB",
+                        ));
+                    }
+                    let settings = serde_json::from_str(&settings_json).map_err(|error| {
+                        ControlError::new(ErrorCode::InvalidRequest, error.to_string())
+                    })?;
+                    let revision = crate::upstream_rpc::publish_idle_original_settings(
+                        settings,
+                        expected_revision,
+                    )
                     .map_err(|error| ControlError::new(ErrorCode::Conflict, error))?;
-                Ok(Reply::OriginalSettingsCommitted { revision })
-            }
-            Command::GetUpstreamLog => Ok(Reply::UpstreamLog { instance: self.instance.clone(),
-                sequence: self.log_sequence, messages: self.upstream_logs.iter()
-                    .map(|(message, _)| message.clone()).collect() }),
-            Command::SetExperimental { expected, settings } => {
-                self.check_identity(&expected)?;
-                let path = crate::experimental::path()
-                    .map_err(|error| ControlError::new(ErrorCode::InvalidRequest, error))?;
-                crate::experimental::save_driver_at(&path, &settings)
-                    .map_err(|error| ControlError::new(ErrorCode::InvalidRequest, error))?;
-                self.log(format!("Experimental settings saved. GUI CPUs: {}; driver CPUs: {}; MMCSS Pro Audio: {} for the next tablet session.",
+                    Ok(Reply::OriginalSettingsCommitted { revision })
+                }
+                Command::GetUpstreamLog => Ok(Reply::UpstreamLog {
+                    instance: self.instance.clone(),
+                    sequence: self.log_sequence,
+                    messages: self
+                        .upstream_logs
+                        .iter()
+                        .map(|(message, _)| message.clone())
+                        .collect(),
+                }),
+                Command::SetExperimental { expected, settings } => {
+                    self.check_identity(&expected)?;
+                    let path = crate::experimental::path()
+                        .map_err(|error| ControlError::new(ErrorCode::InvalidRequest, error))?;
+                    crate::experimental::save_driver_at(&path, &settings)
+                        .map_err(|error| ControlError::new(ErrorCode::InvalidRequest, error))?;
+                    self.log(format!("Experimental settings saved. GUI CPUs: {}; driver CPUs: {}; MMCSS Pro Audio: {} for the next tablet session.",
                     crate::experimental::format_cpus(&settings.ui_cpus),
                     crate::experimental::format_cpus(&settings.driver_cpus),
                     if settings.mmcss { "enabled" } else { "disabled" }));
-                Ok(Reply::ExperimentalSaved)
-            }
-            Command::GetConfiguration { expected } => {
-                self.check_identity(&expected)?;
-                Ok(Reply::Configuration {
-                    identity: self.identity(),
-                    profile_toml: self.configuration.clone(),
-                })
-            }
-            Command::Start { profile_toml } => {
-                let (profile, text) = Self::prepare(profile_toml)?;
-                self.begin(profile, text, true)
-            }
-            Command::StartIf {
-                expected,
-                profile_toml,
-            } => {
-                self.check_identity(&expected)?;
-                let (profile, text) = Self::prepare(Some(profile_toml))?;
-                self.begin(profile, text, true)
-            }
-            Command::Restart {
-                expected,
-                profile_toml,
-            } => {
-                self.check_identity(&expected)?;
-                if self.worker.is_none() || self.state != DriverState::Running {
-                    return Err(ControlError::new(
-                        ErrorCode::Busy,
-                        "driver is not ready for apply",
-                    ));
+                    Ok(Reply::ExperimentalSaved)
                 }
-                let (profile, text) = Self::prepare(Some(profile_toml))?;
-                self.begin(profile, text, false)
-            }
-            Command::Stop | Command::StopIf { .. } => {
-                if self.state == DriverState::Stopped {
-                    Ok(Reply::Stopped {
-                        generation: self.generation,
+                Command::GetConfiguration { expected } => {
+                    self.check_identity(&expected)?;
+                    Ok(Reply::Configuration {
+                        identity: self.identity(),
+                        profile_toml: self.configuration.clone(),
                     })
-                } else {
-                    Ok(self.status())
+                }
+                Command::Start { profile_toml } => {
+                    let (profile, text) = Self::prepare(profile_toml)?;
+                    self.begin(profile, text, true)
+                }
+                Command::StartIf {
+                    expected,
+                    profile_toml,
+                } => {
+                    self.check_identity(&expected)?;
+                    let (profile, text) = Self::prepare(Some(profile_toml))?;
+                    self.begin(profile, text, true)
+                }
+                Command::Restart {
+                    expected,
+                    profile_toml,
+                } => {
+                    self.check_identity(&expected)?;
+                    if self.worker.is_none() || self.state != DriverState::Running {
+                        return Err(ControlError::new(
+                            ErrorCode::Busy,
+                            "driver is not ready for apply",
+                        ));
+                    }
+                    let (profile, text) = Self::prepare(Some(profile_toml))?;
+                    self.begin(profile, text, false)
+                }
+                Command::Stop | Command::StopIf { .. } => {
+                    if self.state == DriverState::Stopped {
+                        Ok(Reply::Stopped {
+                            generation: self.generation,
+                        })
+                    } else {
+                        Ok(self.status())
+                    }
+                }
+                Command::Shutdown | Command::ShutdownIf { .. } => Ok(Reply::ShutdownAccepted),
+                Command::Debug => Ok(Reply::Debug {
+                    report: crate::decode_cli::debug_report(),
+                }),
+                Command::DebugCaptureStart {
+                    expected,
+                    start_id,
+                    capacity_bytes,
+                    lease_ms,
+                } => {
+                    self.check_identity(&expected)?;
+                    if self.state != DriverState::Running
+                        || self.pending.is_some()
+                        || self.retiring.is_some()
+                    {
+                        return Err(ControlError::new(
+                            ErrorCode::Busy,
+                            "no stable running tablet session to capture",
+                        ));
+                    }
+                    let capture =
+                        otd_core::debug::capture_start(start_id, capacity_bytes as usize, lease_ms)
+                            .map_err(ControlError::from)?;
+                    Ok(Reply::DebugCaptureStarted {
+                        capture: crate::decode_cli::debug_capture_status(&self.instance, capture),
+                    })
+                }
+                Command::DebugCaptureRead {
+                    capture,
+                    after_sequence,
+                    limit,
+                    acknowledge_through,
+                    lease_ms,
+                } => {
+                    self.check_capture_instance(&capture)?;
+                    let batch = otd_core::debug::capture_read(
+                        capture.epoch,
+                        capture.session,
+                        after_sequence,
+                        limit as usize,
+                        acknowledge_through,
+                        lease_ms,
+                    )
+                    .map_err(ControlError::from)?;
+                    Ok(Reply::DebugCaptureRead {
+                        batch: crate::decode_cli::debug_capture_batch(&self.instance, batch),
+                    })
+                }
+                Command::DebugCaptureStop { capture } => {
+                    self.check_capture_instance(&capture)?;
+                    let capture = otd_core::debug::capture_stop(capture.epoch, capture.session)
+                        .map_err(ControlError::from)?;
+                    Ok(Reply::DebugCaptureStopped {
+                        capture: crate::decode_cli::debug_capture_status(&self.instance, capture),
+                    })
+                }
+                Command::DebugCaptureRelease { capture } => {
+                    self.check_capture_instance(&capture)?;
+                    otd_core::debug::capture_release(capture.epoch, capture.session)
+                        .map_err(ControlError::from)?;
+                    Ok(Reply::DebugCaptureReleased)
                 }
             }
-            Command::Shutdown | Command::ShutdownIf { .. } => Ok(Reply::ShutdownAccepted),
-            Command::Debug => Ok(Reply::Debug {
-                report: crate::decode_cli::debug_report(),
-            }),
-            Command::DebugCaptureStart { expected, start_id, capacity_bytes, lease_ms } => {
-                self.check_identity(&expected)?;
-                if self.state != DriverState::Running || self.pending.is_some() || self.retiring.is_some() {
-                    return Err(ControlError::new(ErrorCode::Busy, "no stable running tablet session to capture"));
-                }
-                let capture = otd_core::debug::capture_start(start_id, capacity_bytes as usize, lease_ms)
-                    .map_err(ControlError::from)?;
-                Ok(Reply::DebugCaptureStarted {
-                    capture: crate::decode_cli::debug_capture_status(&self.instance, capture),
-                })
-            }
-            Command::DebugCaptureRead { capture, after_sequence, limit, acknowledge_through, lease_ms } => {
-                self.check_capture_instance(&capture)?;
-                let batch = otd_core::debug::capture_read(capture.epoch, capture.session,
-                    after_sequence, limit as usize, acknowledge_through, lease_ms)
-                    .map_err(ControlError::from)?;
-                Ok(Reply::DebugCaptureRead {
-                    batch: crate::decode_cli::debug_capture_batch(&self.instance, batch),
-                })
-            }
-            Command::DebugCaptureStop { capture } => {
-                self.check_capture_instance(&capture)?;
-                let capture = otd_core::debug::capture_stop(capture.epoch, capture.session)
-                    .map_err(ControlError::from)?;
-                Ok(Reply::DebugCaptureStopped {
-                    capture: crate::decode_cli::debug_capture_status(&self.instance, capture),
-                })
-            }
-            Command::DebugCaptureRelease { capture } => {
-                self.check_capture_instance(&capture)?;
-                otd_core::debug::capture_release(capture.epoch, capture.session)
-                    .map_err(ControlError::from)?;
-                Ok(Reply::DebugCaptureReleased)
-            }
-        }
         })();
         // Publish failures/rollbacks too: a rejected request can still have
         // advanced cleanup, and the caller must observe that actual identity.

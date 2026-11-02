@@ -18,13 +18,14 @@ pub(crate) struct InstallLock {
     #[cfg(windows)]
     handle: crate::hid::OwnedHandle,
     #[cfg(unix)]
-    handle:File,
+    handle: File,
     _thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 impl InstallLock {
     pub fn acquire(root: &Path, name: &str) -> Result<Self, String> {
         fs::create_dir_all(root).map_err(|error| error.to_string())?;
-        Self::try_acquire(root, name)?.ok_or_else(|| "another process is updating or recovering this installation".into())
+        Self::try_acquire(root, name)?
+            .ok_or_else(|| "another process is updating or recovering this installation".into())
     }
 
     #[cfg(windows)]
@@ -48,23 +49,48 @@ impl InstallLock {
                 _thread_bound: std::marker::PhantomData,
             })),
             WAIT_TIMEOUT => Ok(None),
-            _ => Err(format!("cannot wait for installation lock: {}", std::io::Error::last_os_error())),
+            _ => Err(format!(
+                "cannot wait for installation lock: {}",
+                std::io::Error::last_os_error()
+            )),
         }
     }
 }
 #[cfg(unix)]
 impl InstallLock {
-    pub fn try_acquire(root:&Path,name:&str)->Result<Option<Self>,String>{
-        use std::os::{fd::AsRawFd,unix::fs::{OpenOptionsExt,MetadataExt}};
-        if name.is_empty()||name.contains(['/', '\\'])||name=="."||name==".."{return Err("Invalid transaction lock name".into());}
-        let root=root.canonicalize().map_err(|error|error.to_string())?;
-        let handle=OpenOptions::new().create(true).read(true).write(true).mode(0o600).custom_flags(libc::O_NOFOLLOW|libc::O_CLOEXEC)
-            .open(root.join(name)).map_err(|error|error.to_string())?;
-        let metadata=handle.metadata().map_err(|error|error.to_string())?;
-        if !metadata.is_file()||metadata.uid()!=unsafe{libc::geteuid()}{return Err("Installation lock must be owned by current user".into());}
-        if unsafe{libc::flock(handle.as_raw_fd(),libc::LOCK_EX|libc::LOCK_NB)}!=0{
-            let error=std::io::Error::last_os_error();return if error.kind()==std::io::ErrorKind::WouldBlock{Ok(None)}else{Err(error.to_string())};
-        }Ok(Some(Self{handle,_thread_bound:std::marker::PhantomData}))
+    pub fn try_acquire(root: &Path, name: &str) -> Result<Option<Self>, String> {
+        use std::os::{
+            fd::AsRawFd,
+            unix::fs::{MetadataExt, OpenOptionsExt},
+        };
+        if name.is_empty() || name.contains(['/', '\\']) || name == "." || name == ".." {
+            return Err("Invalid transaction lock name".into());
+        }
+        let root = root.canonicalize().map_err(|error| error.to_string())?;
+        let handle = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(root.join(name))
+            .map_err(|error| error.to_string())?;
+        let metadata = handle.metadata().map_err(|error| error.to_string())?;
+        if !metadata.is_file() || metadata.uid() != unsafe { libc::geteuid() } {
+            return Err("Installation lock must be owned by current user".into());
+        }
+        if unsafe { libc::flock(handle.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            let error = std::io::Error::last_os_error();
+            return if error.kind() == std::io::ErrorKind::WouldBlock {
+                Ok(None)
+            } else {
+                Err(error.to_string())
+            };
+        }
+        Ok(Some(Self {
+            handle,
+            _thread_bound: std::marker::PhantomData,
+        }))
     }
 }
 #[cfg(windows)]
@@ -77,7 +103,12 @@ impl Drop for InstallLock {
 }
 
 #[cfg(unix)]
-impl Drop for InstallLock {fn drop(&mut self){use std::os::fd::AsRawFd;let _=unsafe{libc::flock(self.handle.as_raw_fd(),libc::LOCK_UN)};}}
+impl Drop for InstallLock {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+        let _ = unsafe { libc::flock(self.handle.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 struct Entry {
@@ -92,19 +123,23 @@ struct Plan {
 
 fn valid(path: &Path) -> bool {
     !path.as_os_str().is_empty()
-        && path
-            .components()
-            .all(|part| match part {
-                Component::Normal(name) => {
-                    // Win32 strips trailing dots/spaces and interprets colons
-                    // as streams. Such aliases cannot own independent files.
-                    #[cfg(windows)]
-                    { let name = name.to_string_lossy(); !name.ends_with(['.', ' ']) && !name.contains(':') }
-                    #[cfg(not(windows))]
-                    { let _ = name; true }
+        && path.components().all(|part| match part {
+            Component::Normal(name) => {
+                // Win32 strips trailing dots/spaces and interprets colons
+                // as streams. Such aliases cannot own independent files.
+                #[cfg(windows)]
+                {
+                    let name = name.to_string_lossy();
+                    !name.ends_with(['.', ' ']) && !name.contains(':')
                 }
-                _ => false,
-            })
+                #[cfg(not(windows))]
+                {
+                    let _ = name;
+                    true
+                }
+            }
+            _ => false,
+        })
         && !path.components().next().is_some_and(|part| {
             part.as_os_str()
                 .to_string_lossy()
@@ -115,14 +150,24 @@ fn valid(path: &Path) -> bool {
 fn valid_paths<'a>(paths: impl IntoIterator<Item = &'a Path>) -> bool {
     let mut seen = std::collections::BTreeSet::new();
     for path in paths {
-        if !valid(path) { return false; }
+        if !valid(path) {
+            return false;
+        }
         // Normalize separators as well as case: Windows treats a/b and a\b
         // as the same file. A file entry may not also own another entry's parent.
-        let key = path.components().map(|part| part.as_os_str().to_string_lossy().to_lowercase())
-            .collect::<Vec<_>>().join("/");
-        if !seen.insert(key) { return false; }
+        let key = path
+            .components()
+            .map(|part| part.as_os_str().to_string_lossy().to_lowercase())
+            .collect::<Vec<_>>()
+            .join("/");
+        if !seen.insert(key) {
+            return false;
+        }
     }
-    seen.iter().all(|key| key.match_indices('/').all(|(index, _)| !seen.contains(&key[..index])))
+    seen.iter().all(|key| {
+        key.match_indices('/')
+            .all(|(index, _)| !seen.contains(&key[..index]))
+    })
 }
 /// Inspect relative parents without following links. The installation root may
 /// itself be a junction; only entries below the caller-selected root are owned.
@@ -131,7 +176,9 @@ fn relative_metadata(root: &Path, relative: &Path) -> Result<Option<fs::Metadata
     let mut current = root.to_path_buf();
     let mut parts = relative.components().peekable();
     while let Some(part) = parts.next() {
-        if !matches!(part, Component::Normal(_)) { return Err("invalid relative update entry".into()); }
+        if !matches!(part, Component::Normal(_)) {
+            return Err("invalid relative update entry".into());
+        }
         current.push(part);
         let metadata = match fs::symlink_metadata(&current) {
             Ok(metadata) => metadata,
@@ -141,28 +188,46 @@ fn relative_metadata(root: &Path, relative: &Path) -> Result<Option<fs::Metadata
         #[cfg(windows)]
         let reparse = {
             use std::os::windows::fs::MetadataExt;
-            metadata.file_attributes() & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT != 0
+            metadata.file_attributes()
+                & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+                != 0
         };
         #[cfg(not(windows))]
         let reparse = false;
         if metadata.file_type().is_symlink() || reparse {
-            return Err(format!("update entry is a link or reparse point; files preserved: {}", current.display()));
+            return Err(format!(
+                "update entry is a link or reparse point; files preserved: {}",
+                current.display()
+            ));
         }
-        if parts.peek().is_none() { return Ok(Some(metadata)); }
-        if !metadata.is_dir() { return Err(format!("update parent is not a directory: {}", current.display())); }
+        if parts.peek().is_none() {
+            return Ok(Some(metadata));
+        }
+        if !metadata.is_dir() {
+            return Err(format!(
+                "update parent is not a directory: {}",
+                current.display()
+            ));
+        }
     }
     Err("empty relative update entry".into())
 }
 fn regular_file_or_absent(root: &Path, relative: &Path) -> Result<bool, String> {
     match relative_metadata(root, relative)? {
-        Some(metadata) if !metadata.is_file() => Err(format!("cannot replace non-file installation entry {}", root.join(relative).display())),
+        Some(metadata) if !metadata.is_file() => Err(format!(
+            "cannot replace non-file installation entry {}",
+            root.join(relative).display()
+        )),
         Some(_) => Ok(true),
         None => Ok(false),
     }
 }
 fn directory_or_absent(root: &Path, relative: &Path) -> Result<bool, String> {
     match relative_metadata(root, relative)? {
-        Some(metadata) if !metadata.is_dir() => Err(format!("update journal entry is not a directory: {}", root.join(relative).display())),
+        Some(metadata) if !metadata.is_dir() => Err(format!(
+            "update journal entry is not a directory: {}",
+            root.join(relative).display()
+        )),
         Some(_) => Ok(true),
         None => Ok(false),
     }
@@ -210,8 +275,14 @@ pub(super) fn recover(install: &Path) -> Result<bool, String> {
     // with the terminal journal, nor may a linked backup parent escape it.
     for entry in &plan.entries {
         regular_file_or_absent(install, &entry.path)?;
-        regular_file_or_absent(install, &Path::new(JOURNAL).join("backup").join(&entry.path))?;
-        regular_file_or_absent(install, &Path::new(JOURNAL).join("discarded").join(&entry.path))?;
+        regular_file_or_absent(
+            install,
+            &Path::new(JOURNAL).join("backup").join(&entry.path),
+        )?;
+        regular_file_or_absent(
+            install,
+            &Path::new(JOURNAL).join("discarded").join(&entry.path),
+        )?;
     }
     let mut restored = false;
     for entry in plan.entries.iter().rev() {
@@ -353,7 +424,7 @@ pub(super) fn startup(install: &Path) -> Result<bool, String> {
     recover(install)
 }
 
-#[cfg(all(test,windows))]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
 
@@ -403,7 +474,11 @@ mod tests {
             if phase == 0 {
                 // Crash after moving the old file but before publishing the new one.
                 fs::create_dir_all(journal.join("backup")).unwrap();
-                fs::rename(install.join("driver.exe"), journal.join("backup/driver.exe")).unwrap();
+                fs::rename(
+                    install.join("driver.exe"),
+                    journal.join("backup/driver.exe"),
+                )
+                .unwrap();
             } else {
                 apply(&install, &plan.entries[0]).unwrap();
                 // Crash after setting the new file aside during rollback.
@@ -412,8 +487,11 @@ mod tests {
                     // A locked backup makes rollback fail. Its journal must survive
                     // for the next attempt rather than losing the only old copy.
                     use std::os::windows::fs::OpenOptionsExt;
-                    let locked = OpenOptions::new().read(true).share_mode(1)
-                        .open(journal.join("backup/driver.exe")).unwrap();
+                    let locked = OpenOptions::new()
+                        .read(true)
+                        .share_mode(1)
+                        .open(journal.join("backup/driver.exe"))
+                        .unwrap();
                     assert!(recover(&install).is_err());
                     assert!(journal.join("plan.json").exists());
                     assert!(!journal.join("rolled-back").exists());
@@ -436,20 +514,53 @@ mod tests {
         fs::create_dir_all(journal.join("backup")).unwrap();
         fs::write(root.join("driver.exe"), b"current").unwrap();
         fs::write(journal.join("backup/driver.exe"), b"old").unwrap();
-        for conflicting in ["driver.exe", "DRIVER.EXE", "driver.exe/child.dll", "../outside", "driver.exe.", "driver.exe ", "driver.exe:payload"] {
-            let plan = Plan { version: 1, entries: vec![
-                Entry { path: "driver.exe".into(), existed: false },
-                Entry { path: conflicting.into(), existed: true },
-            ] };
-            fs::write(journal.join("plan.json"), serde_json::to_vec(&plan).unwrap()).unwrap();
+        for conflicting in [
+            "driver.exe",
+            "DRIVER.EXE",
+            "driver.exe/child.dll",
+            "../outside",
+            "driver.exe.",
+            "driver.exe ",
+            "driver.exe:payload",
+        ] {
+            let plan = Plan {
+                version: 1,
+                entries: vec![
+                    Entry {
+                        path: "driver.exe".into(),
+                        existed: false,
+                    },
+                    Entry {
+                        path: conflicting.into(),
+                        existed: true,
+                    },
+                ],
+            };
+            fs::write(
+                journal.join("plan.json"),
+                serde_json::to_vec(&plan).unwrap(),
+            )
+            .unwrap();
             assert!(startup(&root).is_err());
             assert_eq!(fs::read(root.join("driver.exe")).unwrap(), b"current");
             assert_eq!(fs::read(journal.join("backup/driver.exe")).unwrap(), b"old");
             assert!(!journal.join("rolled-back").exists());
         }
-        assert!(!valid_paths([Path::new("lib/a.dll"), Path::new("lib\\a.dll")]));
-        for alias in ["driver.exe.", "driver.exe ", "lib./driver.exe", "lib /driver.exe", "driver.exe:payload"] {
-            assert!(!valid_paths([Path::new(alias)]), "Win32 alias accepted: {alias}");
+        assert!(!valid_paths([
+            Path::new("lib/a.dll"),
+            Path::new("lib\\a.dll")
+        ]));
+        for alias in [
+            "driver.exe.",
+            "driver.exe ",
+            "lib./driver.exe",
+            "lib /driver.exe",
+            "driver.exe:payload",
+        ] {
+            assert!(
+                !valid_paths([Path::new(alias)]),
+                "Win32 alias accepted: {alias}"
+            );
         }
         fs::remove_dir_all(root).unwrap();
     }
@@ -463,14 +574,34 @@ mod tests {
         fs::write(root.join("plugin.dll/local-settings.json"), b"local").unwrap();
         fs::write(root.join("driver.exe"), b"current").unwrap();
         fs::write(journal.join("backup/plugin.dll"), b"old").unwrap();
-        let plan = Plan { version: 1, entries: vec![
-            Entry { path: "plugin.dll".into(), existed: true },
-            Entry { path: "driver.exe".into(), existed: false },
-        ] };
-        fs::write(journal.join("plan.json"), serde_json::to_vec(&plan).unwrap()).unwrap();
-        assert!(startup(&root).unwrap_err().contains("non-file installation entry"));
+        let plan = Plan {
+            version: 1,
+            entries: vec![
+                Entry {
+                    path: "plugin.dll".into(),
+                    existed: true,
+                },
+                Entry {
+                    path: "driver.exe".into(),
+                    existed: false,
+                },
+            ],
+        };
+        fs::write(
+            journal.join("plan.json"),
+            serde_json::to_vec(&plan).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            startup(&root)
+                .unwrap_err()
+                .contains("non-file installation entry")
+        );
         assert_eq!(fs::read(root.join("driver.exe")).unwrap(), b"current");
-        assert_eq!(fs::read(root.join("plugin.dll/local-settings.json")).unwrap(), b"local");
+        assert_eq!(
+            fs::read(root.join("plugin.dll/local-settings.json")).unwrap(),
+            b"local"
+        );
         assert_eq!(fs::read(journal.join("backup/plugin.dll")).unwrap(), b"old");
         assert!(!journal.join("discarded").exists());
         // A malformed non-file backup must also leave the current target and
@@ -479,11 +610,21 @@ mod tests {
         fs::write(root.join("plugin.dll"), b"current plugin").unwrap();
         fs::remove_file(journal.join("backup/plugin.dll")).unwrap();
         fs::create_dir(journal.join("backup/plugin.dll")).unwrap();
-        fs::write(journal.join("backup/plugin.dll/local.json"), b"backup local").unwrap();
+        fs::write(
+            journal.join("backup/plugin.dll/local.json"),
+            b"backup local",
+        )
+        .unwrap();
         assert!(startup(&root).is_err());
         assert_eq!(fs::read(root.join("driver.exe")).unwrap(), b"current");
-        assert_eq!(fs::read(root.join("plugin.dll")).unwrap(), b"current plugin");
-        assert_eq!(fs::read(journal.join("backup/plugin.dll/local.json")).unwrap(), b"backup local");
+        assert_eq!(
+            fs::read(root.join("plugin.dll")).unwrap(),
+            b"current plugin"
+        );
+        assert_eq!(
+            fs::read(journal.join("backup/plugin.dll/local.json")).unwrap(),
+            b"backup local"
+        );
         assert!(journal.join("plan.json").exists());
         assert!(!journal.join("rolled-back").exists());
         fs::remove_dir_all(root).unwrap();
@@ -492,15 +633,39 @@ mod tests {
     // Junction creation needs no symbolic-link privilege. Run the built-in in
     // a hidden, noninteractive child; remove only the temporary junction itself.
     fn junction(link: &Path, target: &Path) {
-        use std::{ffi::OsString, os::windows::{ffi::{OsStrExt, OsStringExt}, process::CommandExt}};
+        use std::{
+            ffi::OsString,
+            os::windows::{
+                ffi::{OsStrExt, OsStringExt},
+                process::CommandExt,
+            },
+        };
         let windows_path = |path: &Path| {
-            let units: Vec<_> = path.as_os_str().encode_wide().map(|unit| if unit == b'/' as u16 { b'\\' as u16 } else { unit }).collect();
+            let units: Vec<_> = path
+                .as_os_str()
+                .encode_wide()
+                .map(|unit| {
+                    if unit == b'/' as u16 {
+                        b'\\' as u16
+                    } else {
+                        unit
+                    }
+                })
+                .collect();
             OsString::from_wide(&units)
         };
-        let output = std::process::Command::new("cmd.exe").args(["/d", "/c", "mklink", "/J"])
-            .arg(windows_path(link)).arg(windows_path(target)).creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
-            .output().unwrap();
-        assert!(output.status.success(), "junction fixture failed: {}", String::from_utf8_lossy(&output.stderr));
+        let output = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(windows_path(link))
+            .arg(windows_path(target))
+            .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "junction fixture failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
@@ -516,26 +681,49 @@ mod tests {
         fs::write(external.join("plugin.dll"), b"local external").unwrap();
         let paths = [PathBuf::from("lib/plugin.dll")];
         junction(&install.join("lib"), &external);
-        assert!(replace(&source, &install, &paths).unwrap_err().contains("reparse point"));
-        assert_eq!(fs::read(external.join("plugin.dll")).unwrap(), b"local external");
+        assert!(
+            replace(&source, &install, &paths)
+                .unwrap_err()
+                .contains("reparse point")
+        );
+        assert_eq!(
+            fs::read(external.join("plugin.dll")).unwrap(),
+            b"local external"
+        );
         assert!(!install.join(JOURNAL).exists());
         fs::remove_dir(install.join("lib")).unwrap();
         // The journal itself is relative to the install root and cannot be a
         // junction either, including an empty/uncommitted journal.
         junction(&install.join(JOURNAL), &external);
         assert!(startup(&install).unwrap_err().contains("reparse point"));
-        assert_eq!(fs::read(external.join("plugin.dll")).unwrap(), b"local external");
+        assert_eq!(
+            fs::read(external.join("plugin.dll")).unwrap(),
+            b"local external"
+        );
         fs::remove_dir(install.join(JOURNAL)).unwrap();
         let journal = install.join(JOURNAL);
         fs::create_dir_all(journal.join("backup")).unwrap();
         fs::create_dir_all(install.join("lib")).unwrap();
         fs::write(install.join(&paths[0]), b"current").unwrap();
         junction(&journal.join("backup/lib"), &external);
-        let plan = Plan { version: 1, entries: vec![Entry { path: paths[0].clone(), existed: true }] };
-        fs::write(journal.join("plan.json"), serde_json::to_vec(&plan).unwrap()).unwrap();
+        let plan = Plan {
+            version: 1,
+            entries: vec![Entry {
+                path: paths[0].clone(),
+                existed: true,
+            }],
+        };
+        fs::write(
+            journal.join("plan.json"),
+            serde_json::to_vec(&plan).unwrap(),
+        )
+        .unwrap();
         assert!(startup(&install).unwrap_err().contains("reparse point"));
         assert_eq!(fs::read(install.join(&paths[0])).unwrap(), b"current");
-        assert_eq!(fs::read(external.join("plugin.dll")).unwrap(), b"local external");
+        assert_eq!(
+            fs::read(external.join("plugin.dll")).unwrap(),
+            b"local external"
+        );
         assert!(journal.join("plan.json").exists());
         fs::remove_dir(journal.join("backup/lib")).unwrap();
         fs::remove_dir_all(&journal).unwrap();
@@ -559,9 +747,15 @@ mod tests {
         fs::create_dir_all(install.join("plugin.dll")).unwrap();
         fs::write(source.join("plugin.dll"), b"package").unwrap();
         fs::write(install.join("plugin.dll/local-settings.json"), b"preserve").unwrap();
-        assert!(replace(&source, &install, &[PathBuf::from("plugin.dll")]).unwrap_err()
-            .contains("non-file installation entry"));
-        assert_eq!(fs::read(install.join("plugin.dll/local-settings.json")).unwrap(), b"preserve");
+        assert!(
+            replace(&source, &install, &[PathBuf::from("plugin.dll")])
+                .unwrap_err()
+                .contains("non-file installation entry")
+        );
+        assert_eq!(
+            fs::read(install.join("plugin.dll/local-settings.json")).unwrap(),
+            b"preserve"
+        );
         assert!(!install.join(JOURNAL).exists());
         fs::remove_dir_all(root).unwrap();
     }

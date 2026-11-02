@@ -144,7 +144,9 @@ fn pen_info(
         y: packet.y.round() as i32,
     });
     let tilt = packet.and_then(|packet| packet.tilt);
-    let rotation = packet.and_then(|packet| packet.rotation).filter(|value| value.is_finite());
+    let rotation = packet
+        .and_then(|packet| packet.rotation)
+        .filter(|value| value.is_finite());
     POINTER_TYPE_INFO {
         r#type: PT_PEN,
         Anonymous: POINTER_TYPE_INFO_0 {
@@ -165,10 +167,15 @@ fn pen_info(
                     } else {
                         0
                     }
-                    | if rotation.is_some() { PEN_MASK_ROTATION } else { 0 },
+                    | if rotation.is_some() {
+                        PEN_MASK_ROTATION
+                    } else {
+                        0
+                    },
                 pressure: 0,
                 // POINTER_PEN_INFO represents clockwise twist in integer degrees 0..359.
-                rotation: rotation.map_or(0, |value| (value.clamp(0.0, 1.0) * 359.0).round() as u32),
+                rotation: rotation
+                    .map_or(0, |value| (value.clamp(0.0, 1.0) * 359.0).round() as u32),
                 tiltX: tilt.map_or(0, |tilt| tilt[0].round() as i32),
                 tiltY: tilt.map_or(0, |tilt| tilt[1].round() as i32),
             },

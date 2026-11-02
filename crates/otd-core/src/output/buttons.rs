@@ -25,7 +25,10 @@ use crate::reports::Buttons;
 
 /// The axes accepted by upstream IMouseScrollHandler.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ScrollAxis { Vertical, Horizontal }
+pub enum ScrollAxis {
+    Vertical,
+    Horizontal,
+}
 
 /// One native MouseScrollBinding. Amount and interval use the upstream
 /// properties: Scroll() sends -Amount, once on press and at every interval.
@@ -39,19 +42,27 @@ pub struct ScrollAction {
 impl ScrollAction {
     pub fn validate(self) -> Result<Self, String> {
         if self.amount == 0 || self.interval_ms == 0 || self.interval_ms > i32::MAX as u32 {
-            return Err("scroll amount must be nonzero and interval 1..2147483647 milliseconds".into());
+            return Err(
+                "scroll amount must be nonzero and interval 1..2147483647 milliseconds".into(),
+            );
         }
         Ok(self)
     }
     pub fn pulse(self) -> ScrollPulse {
-        ScrollPulse { axis: self.axis, delta: self.amount.wrapping_neg() }
+        ScrollPulse {
+            axis: self.axis,
+            delta: self.amount.wrapping_neg(),
+        }
     }
 }
 
 /// A pointer scroll call, in the upstream pointer's units. Windows treats 120
 /// units as a wheel detent. Platform adapters perform their own unit conversion.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ScrollPulse { pub axis: ScrollAxis, pub delta: i32 }
+pub struct ScrollPulse {
+    pub axis: ScrollAxis,
+    pub delta: i32,
+}
 
 /// What one pen button does.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -160,14 +171,21 @@ impl FromStr for ButtonAction {
         let value = value.trim();
         match kind.trim().to_ascii_lowercase().as_str() {
             "dotnet" => {
-                let config: crate::plugins::PluginConfig = serde_json::from_str(value).map_err(|error| format!("invalid managed binding: {error}"))?;
+                let config: crate::plugins::PluginConfig = serde_json::from_str(value)
+                    .map_err(|error| format!("invalid managed binding: {error}"))?;
                 config.validate()?;
-                if config.kind != crate::plugins::PluginKind::Dotnet { return Err("managed bindings require kind = dotnet".into()); }
+                if config.kind != crate::plugins::PluginKind::Dotnet {
+                    return Err("managed bindings require kind = dotnet".into());
+                }
                 Ok(Self::Managed(config))
             }
             "preset" => crate::presets::PresetName::parse(value).map(Self::Preset),
             "toggle" => {
-                if !value.split_once(':').is_some_and(|(kind, _)| ["keys", "key", "mouse", "barrel"].iter().any(|valid| kind.eq_ignore_ascii_case(valid))) {
+                if !value.split_once(':').is_some_and(|(kind, _)| {
+                    ["keys", "key", "mouse", "barrel"]
+                        .iter()
+                        .any(|valid| kind.eq_ignore_ascii_case(valid))
+                }) {
                     return Err("toggle requires a native key/chord, mouse or barrel action".into());
                 }
                 let action = value.parse::<Self>()?;
@@ -206,14 +224,34 @@ impl FromStr for ButtonAction {
                     "right" => (ScrollAxis::Horizontal, -120, 300),
                     _ => {
                         let fields = value.split(':').collect::<Vec<_>>();
-                        if fields.len() != 2 && fields.len() != 3 { return Err("scroll requires up/down/left/right or vertical|horizontal:AMOUNT[:INTERVAL_MS]".into()); }
-                        let axis = match fields[0] { "vertical" => ScrollAxis::Vertical, "horizontal" => ScrollAxis::Horizontal, _ => return Err("scroll axis must be vertical or horizontal".into()) };
-                        let amount = fields[1].parse::<i32>().map_err(|_| "scroll amount must be a signed 32-bit integer")?;
-                        let interval_ms = if fields.len() == 3 { fields[2].parse::<u32>().map_err(|_| "scroll interval must be a positive millisecond integer")? } else { 300 };
+                        if fields.len() != 2 && fields.len() != 3 {
+                            return Err("scroll requires up/down/left/right or vertical|horizontal:AMOUNT[:INTERVAL_MS]".into());
+                        }
+                        let axis = match fields[0] {
+                            "vertical" => ScrollAxis::Vertical,
+                            "horizontal" => ScrollAxis::Horizontal,
+                            _ => return Err("scroll axis must be vertical or horizontal".into()),
+                        };
+                        let amount = fields[1]
+                            .parse::<i32>()
+                            .map_err(|_| "scroll amount must be a signed 32-bit integer")?;
+                        let interval_ms = if fields.len() == 3 {
+                            fields[2].parse::<u32>().map_err(
+                                |_| "scroll interval must be a positive millisecond integer",
+                            )?
+                        } else {
+                            300
+                        };
                         (axis, amount, interval_ms)
                     }
                 };
-                ScrollAction { axis, amount, interval_ms }.validate().map(Self::Scroll)
+                ScrollAction {
+                    axis,
+                    amount,
+                    interval_ms,
+                }
+                .validate()
+                .map(Self::Scroll)
             }
             other => Err(format!("unknown button action kind {other:?}")),
         }
@@ -227,10 +265,23 @@ impl fmt::Display for ButtonAction {
             Self::Barrel(number) => write!(f, "barrel:{number}"),
             Self::Mouse(button) => write!(f, "mouse:{}", mouse_name(*button)),
             Self::Keys(keys) => write!(f, "keys:{}", keys::native_chord_text(keys)),
-            Self::Scroll(action) => write!(f, "scroll:{}:{}:{}", match action.axis { ScrollAxis::Vertical => "vertical", ScrollAxis::Horizontal => "horizontal" }, action.amount, action.interval_ms),
+            Self::Scroll(action) => write!(
+                f,
+                "scroll:{}:{}:{}",
+                match action.axis {
+                    ScrollAxis::Vertical => "vertical",
+                    ScrollAxis::Horizontal => "horizontal",
+                },
+                action.amount,
+                action.interval_ms
+            ),
             Self::Toggle(action) => write!(f, "toggle:{action}"),
             Self::Preset(name) => write!(f, "preset:{}", name.as_str()),
-            Self::Managed(config) => write!(f, "dotnet:{}", serde_json::to_string(config).map_err(|_| fmt::Error)?),
+            Self::Managed(config) => write!(
+                f,
+                "dotnet:{}",
+                serde_json::to_string(config).map_err(|_| fmt::Error)?
+            ),
         }
     }
 }
@@ -238,29 +289,73 @@ impl fmt::Display for ButtonAction {
 /// Where held actions become operating-system input. One sink serves one
 /// tablet session; the platform decides whether sessions share ownership.
 pub trait ActionSink {
-    fn pointer_attributes(&mut self, _attributes: crate::output::MouseAttributes) -> io::Result<()> { Ok(()) }
-    fn flush_pointer(&mut self) -> io::Result<()> { Ok(()) }
-    fn inhibited_binding(&self) -> Option<u32> { None }
-    fn supports_presets(&self) -> bool { false }
-    fn preset(&mut self, _owner: u32, _name: &crate::presets::PresetName) -> io::Result<()> {
-        Err(io::Error::new(io::ErrorKind::Unsupported, "preset bindings require a guarded driver control owner"))
+    fn pointer_attributes(
+        &mut self,
+        _attributes: crate::output::MouseAttributes,
+    ) -> io::Result<()> {
+        Ok(())
     }
-    fn has_managed(&self) -> bool { false }
-    fn managed_next_tick(&self) -> Option<Duration> { None }
-    fn managed_tick(&mut self) -> io::Result<()> { Ok(()) }
-    fn supports_managed(&self, _config: &crate::plugins::PluginConfig) -> bool { false }
-    fn set_report(&mut self, _kind: crate::reports::ReportKind, _values: &crate::reports::ReportValues, _raw: &[u8]) -> io::Result<()> { Ok(()) }
-    fn managed_binding(&mut self, _owner: u32, _config: &crate::plugins::PluginConfig, _pressed: bool) -> io::Result<()> {
-        Err(io::Error::new(io::ErrorKind::Unsupported, "unchanged managed bindings are unavailable"))
+    fn flush_pointer(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+    fn inhibited_binding(&self) -> Option<u32> {
+        None
+    }
+    fn supports_presets(&self) -> bool {
+        false
+    }
+    fn preset(&mut self, _owner: u32, _name: &crate::presets::PresetName) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "preset bindings require a guarded driver control owner",
+        ))
+    }
+    fn has_managed(&self) -> bool {
+        false
+    }
+    fn managed_next_tick(&self) -> Option<Duration> {
+        None
+    }
+    fn managed_tick(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+    fn supports_managed(&self, _config: &crate::plugins::PluginConfig) -> bool {
+        false
+    }
+    fn set_report(
+        &mut self,
+        _kind: crate::reports::ReportKind,
+        _values: &crate::reports::ReportValues,
+        _raw: &[u8],
+    ) -> io::Result<()> {
+        Ok(())
+    }
+    fn managed_binding(
+        &mut self,
+        _owner: u32,
+        _config: &crate::plugins::PluginConfig,
+        _pressed: bool,
+    ) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "unchanged managed bindings are unavailable",
+        ))
     }
     /// Whether the platform can inject this action.
     fn supports(&self, action: Action) -> bool;
-    fn supports_scroll(&self) -> bool { false }
+    fn supports_scroll(&self) -> bool {
+        false
+    }
     /// Emit a pulse; it has no held OS state and bypasses key/button ownership.
     fn scroll(&mut self, _pulse: ScrollPulse) -> io::Result<()> {
-        Err(io::Error::new(io::ErrorKind::Unsupported, "pointer scroll output is unavailable"))
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "pointer scroll output is unavailable",
+        ))
     }
-    fn next_managed_command(&mut self) -> Option<crate::plugins::ManagedCommand> { None }
+    fn next_managed_command(&mut self) -> Option<crate::plugins::ManagedCommand> {
+        None
+    }
     /// Records that `binding` (a pen button index) wants `action` held or not.
     /// Nothing is sent until `flush`.
     fn hold(&mut self, binding: u32, action: Action, held: bool) -> io::Result<()>;
@@ -283,13 +378,24 @@ pub struct LocalActions<F> {
 }
 
 impl<F: FnMut(ActionTransition) -> io::Result<()>> LocalActions<F> {
-    pub fn with_pointer_attributes(mut self, callback: impl FnMut(crate::output::MouseAttributes) -> io::Result<()> + 'static) -> Self {
-        self.pointer_attributes = Some(Box::new(callback)); self
+    pub fn with_pointer_attributes(
+        mut self,
+        callback: impl FnMut(crate::output::MouseAttributes) -> io::Result<()> + 'static,
+    ) -> Self {
+        self.pointer_attributes = Some(Box::new(callback));
+        self
     }
-    pub fn with_pointer_flush(mut self, callback: impl FnMut() -> io::Result<()> + 'static) -> Self {
-        self.pointer_flush = Some(Box::new(callback)); self
+    pub fn with_pointer_flush(
+        mut self,
+        callback: impl FnMut() -> io::Result<()> + 'static,
+    ) -> Self {
+        self.pointer_flush = Some(Box::new(callback));
+        self
     }
-    pub fn with_scroll(mut self, scroll: impl FnMut(ScrollPulse) -> io::Result<()> + 'static) -> Self {
+    pub fn with_scroll(
+        mut self,
+        scroll: impl FnMut(ScrollPulse) -> io::Result<()> + 'static,
+    ) -> Self {
         self.scroll = Some(Box::new(scroll));
         self
     }
@@ -307,20 +413,29 @@ impl<F: FnMut(ActionTransition) -> io::Result<()>> LocalActions<F> {
 
 impl<F: FnMut(ActionTransition) -> io::Result<()>> ActionSink for LocalActions<F> {
     fn pointer_attributes(&mut self, attributes: crate::output::MouseAttributes) -> io::Result<()> {
-        self.pointer_attributes.as_mut().map_or(Ok(()), |callback| callback(attributes))
+        self.pointer_attributes
+            .as_mut()
+            .map_or(Ok(()), |callback| callback(attributes))
     }
     fn flush_pointer(&mut self) -> io::Result<()> {
-        self.pointer_flush.as_mut().map_or(Ok(()), |callback| callback())
+        self.pointer_flush
+            .as_mut()
+            .map_or(Ok(()), |callback| callback())
     }
     fn supports(&self, action: Action) -> bool {
         (self.supports)(action)
     }
 
-    fn supports_scroll(&self) -> bool { self.scroll.is_some() }
+    fn supports_scroll(&self) -> bool {
+        self.scroll.is_some()
+    }
     fn scroll(&mut self, pulse: ScrollPulse) -> io::Result<()> {
         match &mut self.scroll {
             Some(scroll) => scroll(pulse),
-            None => Err(io::Error::new(io::ErrorKind::Unsupported, "pointer scroll output is unavailable")),
+            None => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "pointer scroll output is unavailable",
+            )),
         }
     }
 
@@ -438,25 +553,49 @@ fn resolve(
 ) -> Box<[Action]> {
     let actions: Vec<Action> = match binding {
         ButtonAction::Toggle(action) => {
-            if matches!(action.as_ref(), ButtonAction::Keys(_) | ButtonAction::Mouse(_) | ButtonAction::Barrel(1..=3)) {
+            if matches!(
+                action.as_ref(),
+                ButtonAction::Keys(_) | ButtonAction::Mouse(_) | ButtonAction::Barrel(1..=3)
+            ) {
                 return resolve(action, pen, barrel, sink, what, rejected, scroll);
             }
-            rejected.push(format!("{}: toggle requires a native key/chord, mouse or barrel action", what()));
+            rejected.push(format!(
+                "{}: toggle requires a native key/chord, mouse or barrel action",
+                what()
+            ));
             Vec::new()
         }
         ButtonAction::Preset(_) => {
-            if !sink.supports_presets() { rejected.push(format!("{}: preset bindings require a guarded driver control owner", what())); }
+            if !sink.supports_presets() {
+                rejected.push(format!(
+                    "{}: preset bindings require a guarded driver control owner",
+                    what()
+                ));
+            }
             Vec::new()
         }
         ButtonAction::None => Vec::new(),
         ButtonAction::Managed(config) => {
-            if config.enabled && !sink.supports_managed(config) { rejected.push(format!("{}: unchanged managed binding {} is unavailable", what(), config.type_name)); }
+            if config.enabled && !sink.supports_managed(config) {
+                rejected.push(format!(
+                    "{}: unchanged managed binding {} is unavailable",
+                    what(),
+                    config.type_name
+                ));
+            }
             Vec::new()
         }
         ButtonAction::Scroll(action) => {
-            if let Err(error) = action.validate() { rejected.push(format!("{} ({binding}): {error}", what())); }
-            else if sink.supports_scroll() { *scroll = Some(*action); }
-            else { rejected.push(format!("{} ({binding}): pointer scroll output is unavailable", what())); }
+            if let Err(error) = action.validate() {
+                rejected.push(format!("{} ({binding}): {error}", what()));
+            } else if sink.supports_scroll() {
+                *scroll = Some(*action);
+            } else {
+                rejected.push(format!(
+                    "{} ({binding}): pointer scroll output is unavailable",
+                    what()
+                ));
+            }
             Vec::new()
         }
         ButtonAction::Barrel(number @ 1..=MAX_BARREL) if pen => {
@@ -497,12 +636,38 @@ fn group(
         .map(|(index, binding)| {
             let mut barrel = 0;
             let mut scroll = None;
-            let actions = resolve(binding, pen, &mut barrel, sink, &|| name(index), rejected, &mut scroll);
-            Slot { actions, barrel, scroll, next_scroll: None,
-                toggle: matches!(binding, ButtonAction::Toggle(_)), active: false,
-                preset: match binding { ButtonAction::Preset(name) if sink.supports_presets() => Some(name.clone()), _ => None },
-                blocked: std::cell::Cell::new(sink.inhibited_binding() == Some(owners + index as u32)),
-                managed: match binding { ButtonAction::Managed(config) if config.enabled && sink.supports_managed(config) => Some(config.clone()), _ => None } }
+            let actions = resolve(
+                binding,
+                pen,
+                &mut barrel,
+                sink,
+                &|| name(index),
+                rejected,
+                &mut scroll,
+            );
+            Slot {
+                actions,
+                barrel,
+                scroll,
+                next_scroll: None,
+                toggle: matches!(binding, ButtonAction::Toggle(_)),
+                active: false,
+                preset: match binding {
+                    ButtonAction::Preset(name) if sink.supports_presets() => Some(name.clone()),
+                    _ => None,
+                },
+                blocked: std::cell::Cell::new(
+                    sink.inhibited_binding() == Some(owners + index as u32),
+                ),
+                managed: match binding {
+                    ButtonAction::Managed(config)
+                        if config.enabled && sink.supports_managed(config) =>
+                    {
+                        Some(config.clone())
+                    }
+                    _ => None,
+                },
+            }
         })
         .collect();
     Group {
@@ -516,48 +681,64 @@ impl Group {
     fn observe_buttons(&self, buttons: Option<Buttons>) {
         if let Some(buttons) = buttons {
             for (index, slot) in self.slots.iter().enumerate().take(buttons.len()) {
-                if buttons.get(index) == Some(false) { slot.blocked.set(false); }
+                if buttons.get(index) == Some(false) {
+                    slot.blocked.set(false);
+                }
             }
         }
     }
-    fn active(&self) -> bool { self.held != 0 || self.slots.iter().any(|slot| slot.active) }
+    fn active(&self) -> bool {
+        self.held != 0 || self.slots.iter().any(|slot| slot.active)
+    }
     /// Cleanup releases latched holds too, even when their physical key is up.
     fn release(&mut self, sink: &mut dyn ActionSink, now: Instant) -> io::Result<()> {
         let result = self.hold(sink, 0, now);
         for (index, slot) in self.slots.iter_mut().enumerate() {
             if slot.toggle && slot.active {
-                for action in slot.actions.iter() { sink.hold(self.owners + index as u32, *action, false)?; }
+                for action in slot.actions.iter() {
+                    sink.hold(self.owners + index as u32, *action, false)?;
+                }
                 slot.active = false;
             }
         }
         result
     }
     fn next_tick(&self, now: Instant) -> Option<Duration> {
-        self.slots.iter().filter_map(|slot| slot.next_scroll)
-            .map(|deadline| deadline.saturating_duration_since(now)).min()
+        self.slots
+            .iter()
+            .filter_map(|slot| slot.next_scroll)
+            .map(|deadline| deadline.saturating_duration_since(now))
+            .min()
     }
     fn tick(&mut self, sink: &mut dyn ActionSink, now: Instant) -> io::Result<()> {
         for slot in &mut self.slots {
             if slot.next_scroll.is_some_and(|deadline| deadline <= now) {
-                let scroll = slot.scroll.expect("a scroll deadline belongs to a scroll action");
+                let scroll = slot
+                    .scroll
+                    .expect("a scroll deadline belongs to a scroll action");
                 // One pulse, then schedule from now: missed intervals never
                 // flood the pointer or starve the input/stop poll.
                 slot.next_scroll = None;
                 sink.scroll(scroll.pulse())?;
-                slot.next_scroll = now.checked_add(Duration::from_millis(u64::from(scroll.interval_ms)));
+                slot.next_scroll =
+                    now.checked_add(Duration::from_millis(u64::from(scroll.interval_ms)));
             }
         }
         Ok(())
     }
     fn clear_timers(&mut self) {
-        for slot in &mut self.slots { slot.next_scroll = None; }
+        for slot in &mut self.slots {
+            slot.next_scroll = None;
+        }
     }
 
     fn wanted(&self, buttons: Buttons) -> u64 {
         let mut wanted = 0;
         for index in 0..self.slots.len().min(buttons.len()) {
             if buttons.get(index) == Some(true) {
-                if !self.slots[index].blocked.get() { wanted |= 1 << index; }
+                if !self.slots[index].blocked.get() {
+                    wanted |= 1 << index;
+                }
             }
         }
         wanted
@@ -573,8 +754,15 @@ impl Group {
             }
             let down = wanted & bit != 0;
             let slot = &mut self.slots[index];
-            if let Some(name) = &slot.preset { if down { sink.preset(self.owners + index as u32, name)?; } }
-            if slot.toggle && !down { self.held &= !bit; continue; }
+            if let Some(name) = &slot.preset {
+                if down {
+                    sink.preset(self.owners + index as u32, name)?;
+                }
+            }
+            if slot.toggle && !down {
+                self.held &= !bit;
+                continue;
+            }
             let output_down = if slot.toggle { !slot.active } else { down };
             if let Some(config) = &self.slots[index].managed {
                 sink.managed_binding(self.owners + index as u32, config, down)?;
@@ -587,8 +775,11 @@ impl Group {
                 if down {
                     sink.flush()?;
                     sink.scroll(scroll.pulse())?;
-                    self.slots[index].next_scroll = now.checked_add(Duration::from_millis(u64::from(scroll.interval_ms)));
-                } else { self.slots[index].next_scroll = None; }
+                    self.slots[index].next_scroll =
+                        now.checked_add(Duration::from_millis(u64::from(scroll.interval_ms)));
+                } else {
+                    self.slots[index].next_scroll = None;
+                }
             }
             self.held = (self.held & !bit) | (wanted & bit);
         }
@@ -598,19 +789,60 @@ impl Group {
 
 impl ButtonOutput {
     /// Stable per-slot identities used by the managed host before input begins.
-    pub fn managed_slots(profile: &crate::config::Profile) -> Vec<(u32, crate::plugins::PluginConfig)> {
+    pub fn managed_slots(
+        profile: &crate::config::Profile,
+    ) -> Vec<(u32, crate::plugins::PluginConfig)> {
         let mut slots = Vec::new();
-        for (owner, config) in [(1024, &profile.managed_tip_binding), (1025, &profile.managed_eraser_binding)] { if let Some(config) = config.as_ref().filter(|config| config.enabled) { slots.push((owner, config.clone())); } }
-        let mut add = |owner, action: &ButtonAction| { if let ButtonAction::Managed(config) = action { if config.enabled { slots.push((owner, config.clone())); } } };
-        for (base, actions) in [(0, profile.pen_buttons.as_slice()), (AUX_OWNERS, profile.aux_buttons.as_slice()), (WHEEL_ROTATION_OWNERS + 2 * crate::reports::MAX_WHEELS as u32, profile.mouse_buttons.as_slice())] {
-            for (index, action) in actions.iter().take(64).enumerate() { add(base + index as u32, action); }
+        for (owner, config) in [
+            (1024, &profile.managed_tip_binding),
+            (1025, &profile.managed_eraser_binding),
+        ] {
+            if let Some(config) = config.as_ref().filter(|config| config.enabled) {
+                slots.push((owner, config.clone()));
+            }
+        }
+        let mut add = |owner, action: &ButtonAction| {
+            if let ButtonAction::Managed(config) = action {
+                if config.enabled {
+                    slots.push((owner, config.clone()));
+                }
+            }
+        };
+        for (base, actions) in [
+            (0, profile.pen_buttons.as_slice()),
+            (AUX_OWNERS, profile.aux_buttons.as_slice()),
+            (
+                WHEEL_ROTATION_OWNERS + 2 * crate::reports::MAX_WHEELS as u32,
+                profile.mouse_buttons.as_slice(),
+            ),
+        ] {
+            for (index, action) in actions.iter().take(64).enumerate() {
+                add(base + index as u32, action);
+            }
         }
         let scroll = WHEEL_ROTATION_OWNERS + 2 * crate::reports::MAX_WHEELS as u32 + 64;
-        add(scroll, &profile.mouse_scroll_down); add(scroll + 1, &profile.mouse_scroll_up);
-        for (wheel, bindings) in profile.wheels.iter().take(crate::reports::MAX_WHEELS).enumerate() {
-            for (index, action) in bindings.buttons.iter().take(64).enumerate() { add(WHEEL_BUTTON_OWNERS + 64 * wheel as u32 + index as u32, action); }
-            add(WHEEL_ROTATION_OWNERS + 2 * wheel as u32, &bindings.clockwise);
-            add(WHEEL_ROTATION_OWNERS + 2 * wheel as u32 + 1, &bindings.counter_clockwise);
+        add(scroll, &profile.mouse_scroll_down);
+        add(scroll + 1, &profile.mouse_scroll_up);
+        for (wheel, bindings) in profile
+            .wheels
+            .iter()
+            .take(crate::reports::MAX_WHEELS)
+            .enumerate()
+        {
+            for (index, action) in bindings.buttons.iter().take(64).enumerate() {
+                add(
+                    WHEEL_BUTTON_OWNERS + 64 * wheel as u32 + index as u32,
+                    action,
+                );
+            }
+            add(
+                WHEEL_ROTATION_OWNERS + 2 * wheel as u32,
+                &bindings.clockwise,
+            );
+            add(
+                WHEEL_ROTATION_OWNERS + 2 * wheel as u32 + 1,
+                &bindings.counter_clockwise,
+            );
         }
         slots
     }
@@ -683,18 +915,48 @@ impl ButtonOutput {
             let mut ignored = 0;
             let mut actions = |action, direction| {
                 let mut scroll = None;
-                let actions = resolve(action, false, &mut ignored, sink,
-                    &|| format!("wheel {} {direction}", wheel + 1), &mut rejected, &mut scroll);
-                Slot { actions, barrel: 0, scroll, next_scroll: None,
-                    toggle: matches!(action, ButtonAction::Toggle(_)), active: false,
-                    preset: match action { ButtonAction::Preset(name) if sink.supports_presets() => Some(name.clone()), _ => None },
+                let actions = resolve(
+                    action,
+                    false,
+                    &mut ignored,
+                    sink,
+                    &|| format!("wheel {} {direction}", wheel + 1),
+                    &mut rejected,
+                    &mut scroll,
+                );
+                Slot {
+                    actions,
+                    barrel: 0,
+                    scroll,
+                    next_scroll: None,
+                    toggle: matches!(action, ButtonAction::Toggle(_)),
+                    active: false,
+                    preset: match action {
+                        ButtonAction::Preset(name) if sink.supports_presets() => Some(name.clone()),
+                        _ => None,
+                    },
                     blocked: std::cell::Cell::new(false),
-                    managed: match action { ButtonAction::Managed(config) if config.enabled && sink.supports_managed(config) => Some(config.clone()), _ => None } }
+                    managed: match action {
+                        ButtonAction::Managed(config)
+                            if config.enabled && sink.supports_managed(config) =>
+                        {
+                            Some(config.clone())
+                        }
+                        _ => None,
+                    },
+                }
             };
             let clockwise = actions(&binding.clockwise, "clockwise");
             let counter_clockwise = actions(&binding.counter_clockwise, "counter-clockwise");
             let degrees_per_step = spec.degrees_per_step().unwrap_or(0.0);
-            if degrees_per_step == 0.0 && !(clockwise.actions.is_empty() && counter_clockwise.actions.is_empty() && clockwise.scroll.is_none() && counter_clockwise.scroll.is_none() && clockwise.preset.is_none() && counter_clockwise.preset.is_none()) {
+            if degrees_per_step == 0.0
+                && !(clockwise.actions.is_empty()
+                    && counter_clockwise.actions.is_empty()
+                    && clockwise.scroll.is_none()
+                    && counter_clockwise.scroll.is_none()
+                    && clockwise.preset.is_none()
+                    && counter_clockwise.preset.is_none())
+            {
                 rejected.push(format!(
                     "wheel {}: the tablet configuration has no step count, so its rotation does nothing",
                     wheel + 1
@@ -720,75 +982,185 @@ impl ButtonOutput {
 
     /// The pen buttons wanted down after a report. A report without a button
     /// reading leaves them as they are; a pen out of range holds none.
-    pub fn wanted_with_pressure(&self, buttons: Option<Buttons>, present: bool, pressure: Option<u32>, drag_only: bool) -> u64 {
+    pub fn wanted_with_pressure(
+        &self,
+        buttons: Option<Buttons>,
+        present: bool,
+        pressure: Option<u32>,
+        drag_only: bool,
+    ) -> u64 {
         let wanted = self.wanted(buttons, present);
         if drag_only && !pressure.is_some_and(|pressure| pressure > 0) {
             // BindingState retains a press when pressure drops: only gate rising edges.
             wanted & self.pen.held
-        } else { wanted }
+        } else {
+            wanted
+        }
     }
 
-    pub fn set_contact_bindings(&mut self, tip: Option<&crate::plugins::PluginConfig>, eraser: Option<&crate::plugins::PluginConfig>) -> Vec<String> {
+    pub fn set_contact_bindings(
+        &mut self,
+        tip: Option<&crate::plugins::PluginConfig>,
+        eraser: Option<&crate::plugins::PluginConfig>,
+    ) -> Vec<String> {
         let mut rejected = Vec::new();
-        let actions = [tip.map_or(ButtonAction::None, |config| ButtonAction::Managed(config.clone())), eraser.map_or(ButtonAction::None, |config| ButtonAction::Managed(config.clone()))];
-        self.contact = group(&actions, false, 1024, self.sink.as_ref(), &|index| if index == 0 { "tip binding".into() } else { "eraser binding".into() }, &mut rejected);
+        let actions = [
+            tip.map_or(ButtonAction::None, |config| {
+                ButtonAction::Managed(config.clone())
+            }),
+            eraser.map_or(ButtonAction::None, |config| {
+                ButtonAction::Managed(config.clone())
+            }),
+        ];
+        self.contact = group(
+            &actions,
+            false,
+            1024,
+            self.sink.as_ref(),
+            &|index| {
+                if index == 0 {
+                    "tip binding".into()
+                } else {
+                    "eraser binding".into()
+                }
+            },
+            &mut rejected,
+        );
         rejected
     }
     pub fn apply_contact(&mut self, eraser: bool, pressed: bool) -> io::Result<()> {
-        if self.contact.slots.is_empty() { return Ok(()); }
-        if self.contact.slots[usize::from(eraser)].blocked.get() { return Ok(()); }
+        if self.contact.slots.is_empty() {
+            return Ok(());
+        }
+        if self.contact.slots[usize::from(eraser)].blocked.get() {
+            return Ok(());
+        }
         let bit = 1u64 << u32::from(eraser);
         let wanted = (self.contact.held & !bit) | if pressed { bit } else { 0 };
-        if wanted == self.contact.held && !self.unsettled { return Ok(()); }
-        self.unsettled = true; self.contact.hold(self.sink.as_mut(), wanted, self.now)?; self.flush()
+        if wanted == self.contact.held && !self.unsettled {
+            return Ok(());
+        }
+        self.unsettled = true;
+        self.contact.hold(self.sink.as_mut(), wanted, self.now)?;
+        self.flush()
     }
-    pub fn set_time(&mut self, now: Instant) { self.now = now; }
+    pub fn set_time(&mut self, now: Instant) {
+        self.now = now;
+    }
     /// Observe untouched source capabilities before any filter/remap. A changed
     /// threshold or a filter changing buttons must not arm a still-held source.
     pub fn observe_source(&self, values: &crate::reports::ReportValues) {
-        if !self.inhibition_active.get() { return; }
+        if !self.inhibition_active.get() {
+            return;
+        }
         self.pen.observe_buttons(values.pen_buttons);
         self.aux.observe_buttons(values.aux_buttons);
         self.mouse.observe_buttons(values.mouse_buttons);
         if let Some([_, y]) = values.mouse_scroll {
             let bits = u64::from(y < 0.0) | (u64::from(y > 0.0) << 1);
-            if let Ok(buttons) = Buttons::from_bits(bits, 2) { self.mouse_scroll.observe_buttons(Some(buttons)); }
+            if let Ok(buttons) = Buttons::from_bits(bits, 2) {
+                self.mouse_scroll.observe_buttons(Some(buttons));
+            }
         }
         if let Some(wheels) = values.wheel_buttons {
-            for (group, buttons) in self.wheel_buttons.iter().zip(wheels.as_slice()) { group.observe_buttons(Some(*buttons)); }
+            for (group, buttons) in self.wheel_buttons.iter().zip(wheels.as_slice()) {
+                group.observe_buttons(Some(*buttons));
+            }
         }
         if values.pressure == Some(0) {
-            for slot in &self.contact.slots { slot.blocked.set(false); }
+            for slot in &self.contact.slots {
+                slot.blocked.set(false);
+            }
         }
-        let remaining = [&self.pen, &self.contact, &self.aux, &self.mouse, &self.mouse_scroll].into_iter()
-            .chain(self.wheel_buttons.iter()).any(|group| group.slots.iter().any(|slot| slot.blocked.get()));
+        let remaining = [
+            &self.pen,
+            &self.contact,
+            &self.aux,
+            &self.mouse,
+            &self.mouse_scroll,
+        ]
+        .into_iter()
+        .chain(self.wheel_buttons.iter())
+        .any(|group| group.slots.iter().any(|slot| slot.blocked.get()));
         self.inhibition_active.set(remaining);
     }
-    pub fn set_report(&mut self, kind: crate::reports::ReportKind, values: &crate::reports::ReportValues, raw: &[u8]) -> io::Result<()> { self.sink.set_report(kind, values, raw) }
-    pub fn pointer_attributes(&mut self, attributes: crate::output::MouseAttributes) -> io::Result<()> { self.sink.pointer_attributes(attributes) }
-    pub fn flush_pointer(&mut self) -> io::Result<()> { self.sink.flush_pointer() }
-    pub fn next_managed_command(&mut self) -> Option<crate::plugins::ManagedCommand> { self.sink.next_managed_command() }
-    pub fn managed_hold(&mut self, owner: u32, action: Action, held: bool) -> io::Result<()> { self.sink.hold(owner, action, held) }
-    pub fn managed_scroll(&mut self, pulse: ScrollPulse) -> io::Result<()> { self.sink.scroll(pulse) }
-    pub fn managed_flush(&mut self) -> io::Result<usize> { self.sink.flush() }
+    pub fn set_report(
+        &mut self,
+        kind: crate::reports::ReportKind,
+        values: &crate::reports::ReportValues,
+        raw: &[u8],
+    ) -> io::Result<()> {
+        self.sink.set_report(kind, values, raw)
+    }
+    pub fn pointer_attributes(
+        &mut self,
+        attributes: crate::output::MouseAttributes,
+    ) -> io::Result<()> {
+        self.sink.pointer_attributes(attributes)
+    }
+    pub fn flush_pointer(&mut self) -> io::Result<()> {
+        self.sink.flush_pointer()
+    }
+    pub fn next_managed_command(&mut self) -> Option<crate::plugins::ManagedCommand> {
+        self.sink.next_managed_command()
+    }
+    pub fn managed_hold(&mut self, owner: u32, action: Action, held: bool) -> io::Result<()> {
+        self.sink.hold(owner, action, held)
+    }
+    pub fn managed_scroll(&mut self, pulse: ScrollPulse) -> io::Result<()> {
+        self.sink.scroll(pulse)
+    }
+    pub fn managed_flush(&mut self) -> io::Result<usize> {
+        self.sink.flush()
+    }
 
     pub fn set_mouse_scroll(&mut self, up: &ButtonAction, down: &ButtonAction) -> Vec<String> {
         let mut rejected = Vec::new();
-        self.mouse_scroll = group(&[down.clone(), up.clone()], false,
+        self.mouse_scroll = group(
+            &[down.clone(), up.clone()],
+            false,
             WHEEL_ROTATION_OWNERS + 2 * crate::reports::MAX_WHEELS as u32 + 64,
-            self.sink.as_ref(), &|index| if index == 0 { "mouse scroll down".into() } else { "mouse scroll up".into() }, &mut rejected);
+            self.sink.as_ref(),
+            &|index| {
+                if index == 0 {
+                    "mouse scroll down".into()
+                } else {
+                    "mouse scroll up".into()
+                }
+            },
+            &mut rejected,
+        );
         rejected
     }
 
     pub fn next_tick(&self, now: Instant) -> Option<Duration> {
-        [&self.pen, &self.contact, &self.aux, &self.mouse, &self.mouse_scroll].into_iter()
-            .chain(self.wheel_buttons.iter()).filter_map(|group| group.next_tick(now)).chain(self.sink.managed_next_tick()).min()
+        [
+            &self.pen,
+            &self.contact,
+            &self.aux,
+            &self.mouse,
+            &self.mouse_scroll,
+        ]
+        .into_iter()
+        .chain(self.wheel_buttons.iter())
+        .filter_map(|group| group.next_tick(now))
+        .chain(self.sink.managed_next_tick())
+        .min()
     }
 
     pub fn tick(&mut self, now: Instant) -> io::Result<()> {
         self.now = now;
         self.sink.managed_tick()?;
-        for group in [&mut self.pen, &mut self.contact, &mut self.aux, &mut self.mouse, &mut self.mouse_scroll].into_iter().chain(self.wheel_buttons.iter_mut()) {
+        for group in [
+            &mut self.pen,
+            &mut self.contact,
+            &mut self.aux,
+            &mut self.mouse,
+            &mut self.mouse_scroll,
+        ]
+        .into_iter()
+        .chain(self.wheel_buttons.iter_mut())
+        {
             group.tick(self.sink.as_mut(), now)?;
         }
         Ok(())
@@ -796,7 +1168,14 @@ impl ButtonOutput {
 
     pub fn set_mouse(&mut self, bindings: &[ButtonAction]) -> Vec<String> {
         let mut rejected = Vec::new();
-        self.mouse = group(bindings, false, WHEEL_ROTATION_OWNERS + 2 * crate::reports::MAX_WHEELS as u32, self.sink.as_ref(), &|index| format!("mouse button {}", index + 1), &mut rejected);
+        self.mouse = group(
+            bindings,
+            false,
+            WHEEL_ROTATION_OWNERS + 2 * crate::reports::MAX_WHEELS as u32,
+            self.sink.as_ref(),
+            &|index| format!("mouse button {}", index + 1),
+            &mut rejected,
+        );
         rejected
     }
 
@@ -816,9 +1195,17 @@ impl ButtonOutput {
             .slots
             .iter()
             .enumerate()
-            .filter(|(index, slot)| if slot.toggle {
-                if wanted & (1 << index) != 0 && self.pen.held & (1 << index) == 0 { !slot.active } else { slot.active }
-            } else { wanted & (1 << index) != 0 })
+            .filter(|(index, slot)| {
+                if slot.toggle {
+                    if wanted & (1 << index) != 0 && self.pen.held & (1 << index) == 0 {
+                        !slot.active
+                    } else {
+                        slot.active
+                    }
+                } else {
+                    wanted & (1 << index) != 0
+                }
+            })
             .fold(0, |barrel, (_, slot)| barrel | slot.barrel)
     }
 
@@ -863,7 +1250,8 @@ impl ButtonOutput {
             if wanted != self.mouse_scroll.held {
                 self.unsettled = true;
                 changed = true;
-                self.mouse_scroll.hold(self.sink.as_mut(), wanted, self.now)?;
+                self.mouse_scroll
+                    .hold(self.sink.as_mut(), wanted, self.now)?;
             }
         }
         if let Some(buttons) = values.aux_buttons {
@@ -961,12 +1349,20 @@ impl ButtonOutput {
     /// released in the wanted state, so later reconciliation lets it go.
     fn tap(&mut self, wheel: usize, clockwise: bool, owner: u32) -> io::Result<()> {
         let rotation = &mut self.rotations[wheel];
-        let slot = if clockwise { &mut rotation.clockwise } else { &mut rotation.counter_clockwise };
-        if let Some(name) = &slot.preset { self.sink.preset(owner, name)?; }
+        let slot = if clockwise {
+            &mut rotation.clockwise
+        } else {
+            &mut rotation.counter_clockwise
+        };
+        if let Some(name) = &slot.preset {
+            self.sink.preset(owner, name)?;
+        }
         if slot.toggle {
             self.unsettled = true;
             let down = !slot.active;
-            for action in slot.actions.iter() { self.sink.hold(owner, *action, down)?; }
+            for action in slot.actions.iter() {
+                self.sink.hold(owner, *action, down)?;
+            }
             slot.active = down;
             return self.flush();
         }
@@ -978,7 +1374,8 @@ impl ButtonOutput {
             self.unsettled = true;
             let pressed = self.sink.managed_binding(owner, config, true);
             let released = self.sink.managed_binding(owner, config, false);
-            pressed?; released?;
+            pressed?;
+            released?;
         }
         let actions = &slot.actions;
         if actions.is_empty() {
@@ -1004,8 +1401,12 @@ impl ButtonOutput {
         for rotation in &mut self.rotations {
             rotation.reset();
         }
-        let held = self.aux.active() || self.wheel_buttons.iter().any(Group::active)
-            || self.rotations.iter().any(|rotation| rotation.clockwise.active || rotation.counter_clockwise.active);
+        let held = self.aux.active()
+            || self.wheel_buttons.iter().any(Group::active)
+            || self
+                .rotations
+                .iter()
+                .any(|rotation| rotation.clockwise.active || rotation.counter_clockwise.active);
         if !held && !self.unsettled {
             return Ok(false);
         }
@@ -1015,8 +1416,17 @@ impl ButtonOutput {
             group.release(self.sink.as_mut(), self.now)?;
         }
         for (wheel, rotation) in self.rotations.iter_mut().enumerate() {
-            for (direction, slot) in [&mut rotation.clockwise, &mut rotation.counter_clockwise].into_iter().enumerate() {
-                for action in slot.actions.iter() { self.sink.hold(WHEEL_ROTATION_OWNERS + 2 * wheel as u32 + direction as u32, *action, false)?; }
+            for (direction, slot) in [&mut rotation.clockwise, &mut rotation.counter_clockwise]
+                .into_iter()
+                .enumerate()
+            {
+                for action in slot.actions.iter() {
+                    self.sink.hold(
+                        WHEEL_ROTATION_OWNERS + 2 * wheel as u32 + direction as u32,
+                        *action,
+                        false,
+                    )?;
+                }
                 slot.active = false;
             }
         }
@@ -1031,18 +1441,53 @@ impl ButtonOutput {
         for rotation in &mut self.rotations {
             rotation.reset();
         }
-        for group in [&mut self.pen, &mut self.contact, &mut self.aux, &mut self.mouse, &mut self.mouse_scroll].into_iter().chain(self.wheel_buttons.iter_mut()) { group.clear_timers(); }
-        let held = [&self.contact, &self.mouse_scroll, &self.mouse, &self.pen, &self.aux].into_iter().any(|group| group.active())
+        for group in [
+            &mut self.pen,
+            &mut self.contact,
+            &mut self.aux,
+            &mut self.mouse,
+            &mut self.mouse_scroll,
+        ]
+        .into_iter()
+        .chain(self.wheel_buttons.iter_mut())
+        {
+            group.clear_timers();
+        }
+        let held = [
+            &self.contact,
+            &self.mouse_scroll,
+            &self.mouse,
+            &self.pen,
+            &self.aux,
+        ]
+        .into_iter()
+        .any(|group| group.active())
             || self.wheel_buttons.iter().any(Group::active)
-            || self.rotations.iter().any(|rotation| rotation.clockwise.active || rotation.counter_clockwise.active);
+            || self
+                .rotations
+                .iter()
+                .any(|rotation| rotation.clockwise.active || rotation.counter_clockwise.active);
         if !held && !self.unsettled && !self.sink.has_managed() {
             return Ok(false);
         }
         // Plugin Release must run before host-wide input ownership is dropped.
         // Continue native cleanup even if a managed release throws.
         let mut binding_error = None;
-        for group in [&mut self.pen, &mut self.contact, &mut self.aux, &mut self.mouse, &mut self.mouse_scroll].into_iter().chain(self.wheel_buttons.iter_mut()) {
-            if let Err(error) = group.release(self.sink.as_mut(), self.now) { if binding_error.is_none() { binding_error = Some(error); } }
+        for group in [
+            &mut self.pen,
+            &mut self.contact,
+            &mut self.aux,
+            &mut self.mouse,
+            &mut self.mouse_scroll,
+        ]
+        .into_iter()
+        .chain(self.wheel_buttons.iter_mut())
+        {
+            if let Err(error) = group.release(self.sink.as_mut(), self.now) {
+                if binding_error.is_none() {
+                    binding_error = Some(error);
+                }
+            }
         }
         self.pen.held = 0;
         self.contact.held = 0;
@@ -1054,12 +1499,28 @@ impl ButtonOutput {
         }
         self.unsettled = true;
         let sent = self.sink.release_all()?;
-        for group in [&mut self.pen, &mut self.contact, &mut self.aux, &mut self.mouse, &mut self.mouse_scroll].into_iter().chain(self.wheel_buttons.iter_mut()) {
-            for slot in &mut group.slots { slot.active = false; }
+        for group in [
+            &mut self.pen,
+            &mut self.contact,
+            &mut self.aux,
+            &mut self.mouse,
+            &mut self.mouse_scroll,
+        ]
+        .into_iter()
+        .chain(self.wheel_buttons.iter_mut())
+        {
+            for slot in &mut group.slots {
+                slot.active = false;
+            }
         }
-        for rotation in &mut self.rotations { rotation.clockwise.active = false; rotation.counter_clockwise.active = false; }
+        for rotation in &mut self.rotations {
+            rotation.clockwise.active = false;
+            rotation.counter_clockwise.active = false;
+        }
         self.unsettled = false;
-        if let Some(error) = binding_error { return Err(error); }
+        if let Some(error) = binding_error {
+            return Err(error);
+        }
         Ok(sent != 0)
     }
 }
@@ -1082,39 +1543,92 @@ mod tests {
 
     #[test]
     fn unchanged_binding_slots_keep_distinct_owners_and_release_once() {
-        #[derive(Default)] struct ManagedLog(Rc<RefCell<Vec<(u32, bool)>>>);
+        #[derive(Default)]
+        struct ManagedLog(Rc<RefCell<Vec<(u32, bool)>>>);
         impl ActionSink for ManagedLog {
-            fn supports(&self, _: Action) -> bool { true }
-            fn supports_managed(&self, _: &crate::plugins::PluginConfig) -> bool { true }
-            fn managed_binding(&mut self, owner: u32, _: &crate::plugins::PluginConfig, pressed: bool) -> io::Result<()> { self.0.borrow_mut().push((owner, pressed)); Ok(()) }
-            fn hold(&mut self, _: u32, _: Action, _: bool) -> io::Result<()> { Ok(()) }
-            fn flush(&mut self) -> io::Result<usize> { Ok(0) }
-            fn release_all(&mut self) -> io::Result<usize> { Ok(0) }
+            fn supports(&self, _: Action) -> bool {
+                true
+            }
+            fn supports_managed(&self, _: &crate::plugins::PluginConfig) -> bool {
+                true
+            }
+            fn managed_binding(
+                &mut self,
+                owner: u32,
+                _: &crate::plugins::PluginConfig,
+                pressed: bool,
+            ) -> io::Result<()> {
+                self.0.borrow_mut().push((owner, pressed));
+                Ok(())
+            }
+            fn hold(&mut self, _: u32, _: Action, _: bool) -> io::Result<()> {
+                Ok(())
+            }
+            fn flush(&mut self) -> io::Result<usize> {
+                Ok(0)
+            }
+            fn release_all(&mut self) -> io::Result<usize> {
+                Ok(0)
+            }
         }
-        let config = crate::plugins::PluginConfig { path: "Original.dll".into(), kind: crate::plugins::PluginKind::Dotnet, enabled: true,
-            type_name: "Original.Binding".into(), settings_json: r#"{"MissingIsNotNull":null,"Unknown":123}"#.into() };
+        let config = crate::plugins::PluginConfig {
+            path: "Original.dll".into(),
+            kind: crate::plugins::PluginKind::Dotnet,
+            enabled: true,
+            type_name: "Original.Binding".into(),
+            settings_json: r#"{"MissingIsNotNull":null,"Unknown":123}"#.into(),
+        };
         let action = ButtonAction::Managed(config.clone());
         assert_eq!(action.to_string().parse::<ButtonAction>().unwrap(), action);
-        let log = ManagedLog::default(); let records = Rc::clone(&log.0);
-        let (mut buttons, rejected) = ButtonOutput::new(&[action.clone(), action.clone()], false, Box::new(log));
+        let log = ManagedLog::default();
+        let records = Rc::clone(&log.0);
+        let (mut buttons, rejected) =
+            ButtonOutput::new(&[action.clone(), action.clone()], false, Box::new(log));
         assert!(rejected.is_empty());
-        buttons.apply(3).unwrap(); buttons.apply(3).unwrap(); buttons.apply(1).unwrap(); buttons.release_all().unwrap(); buttons.release_all().unwrap();
-        assert_eq!(*records.borrow(), [(0, true), (1, true), (1, false), (0, false)]);
-        let profile = crate::config::Profile { pen_buttons: vec![action.clone()], aux_buttons: vec![action.clone()], mouse_buttons: vec![action], ..Default::default() };
+        buttons.apply(3).unwrap();
+        buttons.apply(3).unwrap();
+        buttons.apply(1).unwrap();
+        buttons.release_all().unwrap();
+        buttons.release_all().unwrap();
+        assert_eq!(
+            *records.borrow(),
+            [(0, true), (1, true), (1, false), (0, false)]
+        );
+        let profile = crate::config::Profile {
+            pen_buttons: vec![action.clone()],
+            aux_buttons: vec![action.clone()],
+            mouse_buttons: vec![action],
+            ..Default::default()
+        };
         let slots = ButtonOutput::managed_slots(&profile);
         assert_eq!(slots.len(), 3);
-        assert_ne!(slots[0].0, slots[1].0); assert_ne!(slots[1].0, slots[2].0);
+        assert_ne!(slots[0].0, slots[1].0);
+        assert_ne!(slots[1].0, slots[2].0);
     }
 
     type Log = Rc<RefCell<Vec<(Action, bool)>>>;
 
     #[test]
     fn toggled_hold_shares_ownership_and_retries_failed_cleanup() {
-        let (mut out, log, fail) = output(&["toggle:keys:Z".parse().unwrap(), "keys:Z".parse().unwrap()], false);
-        for state in [1, 1, 0, 2, 3, 2, 0, 1, 0] { out.apply(state).unwrap(); }
+        let (mut out, log, fail) = output(
+            &["toggle:keys:Z".parse().unwrap(), "keys:Z".parse().unwrap()],
+            false,
+        );
+        for state in [1, 1, 0, 2, 3, 2, 0, 1, 0] {
+            out.apply(state).unwrap();
+        }
         let key = "keys:Z".parse::<ButtonAction>().unwrap();
-        let ButtonAction::Keys(keys) = key else { unreachable!() };
-        assert_eq!(*log.borrow(), [(Action::Key(keys[0]), true), (Action::Key(keys[0]), false), (Action::Key(keys[0]), true)]);
+        let ButtonAction::Keys(keys) = key else {
+            unreachable!()
+        };
+        assert_eq!(
+            *log.borrow(),
+            [
+                (Action::Key(keys[0]), true),
+                (Action::Key(keys[0]), false),
+                (Action::Key(keys[0]), true)
+            ]
+        );
         *fail.borrow_mut() = true;
         assert!(out.release_all().is_err());
         *fail.borrow_mut() = false;
@@ -1128,41 +1642,76 @@ mod tests {
     fn toggled_barrel_uses_effective_state_and_cleanup_clears_latch() {
         let (mut out, _, _) = output(&["toggle:barrel:1".parse().unwrap()], true);
         assert_eq!(out.barrel(1), 1);
-        out.apply(1).unwrap(); out.apply(0).unwrap();
+        out.apply(1).unwrap();
+        out.apply(0).unwrap();
         assert_eq!(out.barrel(0), 1);
         assert_eq!(out.barrel(1), 0);
-        out.apply(1).unwrap(); out.apply(0).unwrap();
+        out.apply(1).unwrap();
+        out.apply(0).unwrap();
         assert_eq!(out.barrel(0), 0);
-        out.apply(1).unwrap(); out.apply(0).unwrap();
+        out.apply(1).unwrap();
+        out.apply(0).unwrap();
         out.release_all().unwrap();
         assert_eq!(out.barrel(0), 0);
     }
 
     #[test]
     fn self_switch_source_is_inhibited_until_real_release_without_blocking_other_keys() {
-        struct Presets { inner: Box<dyn ActionSink>, requests: Rc<std::cell::Cell<usize>> }
-        impl ActionSink for Presets {
-            fn inhibited_binding(&self) -> Option<u32> { Some(0) }
-            fn supports_presets(&self) -> bool { true }
-            fn preset(&mut self, owner: u32, _: &crate::presets::PresetName) -> io::Result<()> {
-                assert_eq!(owner, 0); self.requests.set(self.requests.get() + 1); Ok(())
-            }
-            fn supports(&self, action: Action) -> bool { self.inner.supports(action) }
-            fn hold(&mut self, owner: u32, action: Action, held: bool) -> io::Result<()> { self.inner.hold(owner, action, held) }
-            fn flush(&mut self) -> io::Result<usize> { self.inner.flush() }
-            fn release_all(&mut self) -> io::Result<usize> { self.inner.release_all() }
+        struct Presets {
+            inner: Box<dyn ActionSink>,
+            requests: Rc<std::cell::Cell<usize>>,
         }
-        let log = Log::default(); let fail = Rc::new(RefCell::new(false));
+        impl ActionSink for Presets {
+            fn inhibited_binding(&self) -> Option<u32> {
+                Some(0)
+            }
+            fn supports_presets(&self) -> bool {
+                true
+            }
+            fn preset(&mut self, owner: u32, _: &crate::presets::PresetName) -> io::Result<()> {
+                assert_eq!(owner, 0);
+                self.requests.set(self.requests.get() + 1);
+                Ok(())
+            }
+            fn supports(&self, action: Action) -> bool {
+                self.inner.supports(action)
+            }
+            fn hold(&mut self, owner: u32, action: Action, held: bool) -> io::Result<()> {
+                self.inner.hold(owner, action, held)
+            }
+            fn flush(&mut self) -> io::Result<usize> {
+                self.inner.flush()
+            }
+            fn release_all(&mut self) -> io::Result<usize> {
+                self.inner.release_all()
+            }
+        }
+        let log = Log::default();
+        let fail = Rc::new(RefCell::new(false));
         let requests = Rc::new(std::cell::Cell::new(0));
-        let sink = Presets { inner: sink(&log, &fail), requests: requests.clone() };
-        let (mut out, rejected) = ButtonOutput::new(&["preset:Work".parse().unwrap(), "keys:Z".parse().unwrap()], false, Box::new(sink));
+        let sink = Presets {
+            inner: sink(&log, &fail),
+            requests: requests.clone(),
+        };
+        let (mut out, rejected) = ButtonOutput::new(
+            &["preset:Work".parse().unwrap(), "keys:Z".parse().unwrap()],
+            false,
+            Box::new(sink),
+        );
         assert!(rejected.is_empty());
         for state in [3, 3, 2, 3, 3] {
-            out.observe_source(&crate::reports::ReportValues { pen_buttons: buttons(state), ..Default::default() });
+            out.observe_source(&crate::reports::ReportValues {
+                pen_buttons: buttons(state),
+                ..Default::default()
+            });
             out.apply(out.wanted(buttons(state), true)).unwrap();
         }
         assert_eq!(requests.get(), 1);
-        assert_eq!(log.borrow().len(), 1, "unrelated key is still held exactly once");
+        assert_eq!(
+            log.borrow().len(),
+            1,
+            "unrelated key is still held exactly once"
+        );
         out.release_all().unwrap();
         assert_eq!(log.borrow().len(), 2);
     }
@@ -1170,40 +1719,81 @@ mod tests {
     #[test]
     fn native_toggle_edges_and_cleanup_allocate_nothing_after_setup() {
         let sink = Box::new(LocalActions::new(|_| Ok(()), |_| true));
-        let (mut out, rejected) = ButtonOutput::new(&["toggle:keys:Control+Z".parse().unwrap()], false, sink);
+        let (mut out, rejected) =
+            ButtonOutput::new(&["toggle:keys:Control+Z".parse().unwrap()], false, sink);
         assert!(rejected.is_empty());
         crate::test_alloc::assert_no_allocations(|| {
-            for state in [1, 1, 0, 1, 0, 1, 0] { out.apply(state).unwrap(); }
+            for state in [1, 1, 0, 1, 0, 1, 0] {
+                out.apply(state).unwrap();
+            }
             out.release_all().unwrap();
         });
     }
 
     #[test]
     fn contact_inhibition_requires_raw_zero_not_absence_or_a_new_threshold() {
-        struct Contact { calls: Rc<RefCell<Vec<bool>>> }
+        struct Contact {
+            calls: Rc<RefCell<Vec<bool>>>,
+        }
         impl ActionSink for Contact {
-            fn inhibited_binding(&self) -> Option<u32> { Some(1024) }
-            fn supports(&self, _: Action) -> bool { true }
-            fn supports_managed(&self, _: &crate::plugins::PluginConfig) -> bool { true }
-            fn managed_binding(&mut self, owner: u32, _: &crate::plugins::PluginConfig, pressed: bool) -> io::Result<()> {
-                assert_eq!(owner, 1024); self.calls.borrow_mut().push(pressed); Ok(())
+            fn inhibited_binding(&self) -> Option<u32> {
+                Some(1024)
             }
-            fn hold(&mut self, _: u32, _: Action, _: bool) -> io::Result<()> { Ok(()) }
-            fn flush(&mut self) -> io::Result<usize> { Ok(0) }
-            fn release_all(&mut self) -> io::Result<usize> { Ok(0) }
+            fn supports(&self, _: Action) -> bool {
+                true
+            }
+            fn supports_managed(&self, _: &crate::plugins::PluginConfig) -> bool {
+                true
+            }
+            fn managed_binding(
+                &mut self,
+                owner: u32,
+                _: &crate::plugins::PluginConfig,
+                pressed: bool,
+            ) -> io::Result<()> {
+                assert_eq!(owner, 1024);
+                self.calls.borrow_mut().push(pressed);
+                Ok(())
+            }
+            fn hold(&mut self, _: u32, _: Action, _: bool) -> io::Result<()> {
+                Ok(())
+            }
+            fn flush(&mut self) -> io::Result<usize> {
+                Ok(0)
+            }
+            fn release_all(&mut self) -> io::Result<usize> {
+                Ok(0)
+            }
         }
         let calls = Rc::new(RefCell::new(Vec::new()));
-        let (mut out, _) = ButtonOutput::new(&[], false, Box::new(Contact { calls: calls.clone() }));
-        let config = crate::plugins::PluginConfig { path: "Original.dll".into(), type_name: "Original.PresetBinding".into(),
-            kind: crate::plugins::PluginKind::Dotnet, enabled: true, settings_json: "{}".into() };
+        let (mut out, _) = ButtonOutput::new(
+            &[],
+            false,
+            Box::new(Contact {
+                calls: calls.clone(),
+            }),
+        );
+        let config = crate::plugins::PluginConfig {
+            path: "Original.dll".into(),
+            type_name: "Original.PresetBinding".into(),
+            kind: crate::plugins::PluginKind::Dotnet,
+            enabled: true,
+            settings_json: "{}".into(),
+        };
         assert!(out.set_contact_bindings(Some(&config), None).is_empty());
         for pressure in [Some(100), None, Some(20)] {
-            out.observe_source(&crate::reports::ReportValues { pressure, ..Default::default() });
+            out.observe_source(&crate::reports::ReportValues {
+                pressure,
+                ..Default::default()
+            });
             out.apply_contact(false, false).unwrap();
             out.apply_contact(false, true).unwrap();
         }
         assert!(calls.borrow().is_empty());
-        out.observe_source(&crate::reports::ReportValues { pressure: Some(0), ..Default::default() });
+        out.observe_source(&crate::reports::ReportValues {
+            pressure: Some(0),
+            ..Default::default()
+        });
         out.apply_contact(false, false).unwrap();
         out.apply_contact(false, true).unwrap();
         out.release_all().unwrap();
@@ -1266,13 +1856,7 @@ mod tests {
             "key:Control".parse::<ButtonAction>().unwrap().to_string(),
             "keys:LeftControl"
         );
-        for bad in [
-            "",
-            "barrel:0",
-            "barrel:4",
-            "mouse:none",
-            "wheel:1",
-        ] {
+        for bad in ["", "barrel:0", "barrel:4", "mouse:none", "wheel:1"] {
             assert!(bad.parse::<ButtonAction>().is_err(), "{bad:?}");
         }
     }
@@ -1564,7 +2148,10 @@ mod tests {
     #[test]
     fn stationary_ring_reports_preserve_partial_turns_in_both_directions() {
         let (mut out, log, _) = ring_output(Some(15.0));
-        turn(&mut out, &[Some(0), Some(1), Some(1), Some(2), Some(2), Some(3)]);
+        turn(
+            &mut out,
+            &[Some(0), Some(1), Some(1), Some(2), Some(2), Some(3)],
+        );
         assert_eq!(taps(&log, page_down()), 1);
         turn(&mut out, &[Some(2), Some(2), Some(1), Some(1), Some(0)]);
         assert_eq!(taps(&log, page_up()), 1);
@@ -1580,7 +2167,8 @@ mod tests {
                     deltas: RelativeAnalog::from_slice(&[delta]).unwrap(),
                 }),
                 ..ReportValues::default()
-            }).unwrap();
+            })
+            .unwrap();
         }
         assert_eq!((taps(&log, page_down()), taps(&log, page_up())), (1, 1));
     }
@@ -1747,7 +2335,13 @@ mod tests {
     #[test]
     fn drag_only_gates_rising_edge_but_retains_hold_when_pressure_drops() {
         let (mut out, log, _) = output(&[ButtonAction::Mouse(MouseButton::Right)], false);
-        for (bits, pressure, expected) in [(1, Some(0), 0), (1, Some(1), 1), (1, Some(0), 1), (1, None, 1), (0, Some(0), 0)] {
+        for (bits, pressure, expected) in [
+            (1, Some(0), 0),
+            (1, Some(1), 1),
+            (1, Some(0), 1),
+            (1, None, 1),
+            (0, Some(0), 0),
+        ] {
             let wanted = out.wanted_with_pressure(buttons(bits), true, pressure, true);
             assert_eq!(wanted, expected);
             out.apply(wanted).unwrap();
@@ -1758,7 +2352,10 @@ mod tests {
     #[test]
     fn mouse_group_owns_shared_actions_independently_and_cleanup_releases_them() {
         let (mut out, log, _) = output(&[ButtonAction::Mouse(MouseButton::Right)], false);
-        assert!(out.set_mouse(&[ButtonAction::Mouse(MouseButton::Right)]).is_empty());
+        assert!(
+            out.set_mouse(&[ButtonAction::Mouse(MouseButton::Right)])
+                .is_empty()
+        );
         out.apply(1).unwrap();
         let mut values = crate::reports::ReportValues::default();
         values.mouse_buttons = buttons(1);
@@ -1781,7 +2378,11 @@ mod tests {
             for bits in [1, 0, 1, 0] {
                 let wanted = out.wanted_with_pressure(buttons(bits), true, Some(1), true);
                 out.apply(wanted).unwrap();
-                out.apply_auxiliary(&crate::reports::ReportValues { mouse_buttons: buttons(bits), ..Default::default() }).unwrap();
+                out.apply_auxiliary(&crate::reports::ReportValues {
+                    mouse_buttons: buttons(bits),
+                    ..Default::default()
+                })
+                .unwrap();
             }
             out.release_all().unwrap();
         });
@@ -1789,11 +2390,24 @@ mod tests {
 
     #[test]
     fn scroll_actions_parse_signed_amounts_intervals_and_round_trip() {
-        for text in ["scroll:up", "scroll:down", "scroll:left", "scroll:right", "scroll:vertical:-45:25", "scroll:horizontal:240"] {
+        for text in [
+            "scroll:up",
+            "scroll:down",
+            "scroll:left",
+            "scroll:right",
+            "scroll:vertical:-45:25",
+            "scroll:horizontal:240",
+        ] {
             let action = text.parse::<ButtonAction>().unwrap();
             assert_eq!(action.to_string().parse::<ButtonAction>().unwrap(), action);
         }
-        for text in ["scroll:vertical:0", "scroll:vertical:1:0", "scroll:vertical:1:2147483648", "scroll:vertical:2147483648", "scroll:diagonal:1"] {
+        for text in [
+            "scroll:vertical:0",
+            "scroll:vertical:1:0",
+            "scroll:vertical:1:2147483648",
+            "scroll:vertical:2147483648",
+            "scroll:diagonal:1",
+        ] {
             assert!(text.parse::<ButtonAction>().is_err(), "{text}");
         }
     }
@@ -1802,20 +2416,45 @@ mod tests {
     fn scroll_direction_edges_repeat_without_catching_up_and_release_cancels() {
         let pulses = Rc::new(RefCell::new(Vec::new()));
         let log = Rc::clone(&pulses);
-        let sink = Box::new(LocalActions::new(|_| Ok(()), |_| true).with_scroll(move |pulse| { log.borrow_mut().push(pulse); Ok(()) }));
+        let sink = Box::new(
+            LocalActions::new(|_| Ok(()), |_| true).with_scroll(move |pulse| {
+                log.borrow_mut().push(pulse);
+                Ok(())
+            }),
+        );
         let (mut out, _) = ButtonOutput::new(&[], false, sink);
-        out.set_mouse_scroll(&"scroll:vertical:-120:10".parse().unwrap(), &"scroll:vertical:120:10".parse().unwrap());
+        out.set_mouse_scroll(
+            &"scroll:vertical:-120:10".parse().unwrap(),
+            &"scroll:vertical:120:10".parse().unwrap(),
+        );
         let start = Instant::now();
         out.set_time(start);
-        let mut report = crate::reports::ReportValues { mouse_buttons: buttons(0), mouse_scroll: Some([0.0, 1.0]), ..Default::default() };
+        let mut report = crate::reports::ReportValues {
+            mouse_buttons: buttons(0),
+            mouse_scroll: Some([0.0, 1.0]),
+            ..Default::default()
+        };
         out.apply_auxiliary(&report).unwrap();
         out.apply_auxiliary(&report).unwrap();
         assert_eq!(pulses.borrow().len(), 1, "same sign does not press again");
-        assert_eq!(out.next_tick(start + Duration::from_millis(5)), Some(Duration::from_millis(5)));
+        assert_eq!(
+            out.next_tick(start + Duration::from_millis(5)),
+            Some(Duration::from_millis(5))
+        );
         out.tick(start + Duration::from_millis(35)).unwrap();
-        assert_eq!(pulses.borrow().len(), 2, "three missed periods produce one pulse");
-        assert_eq!(out.next_tick(start + Duration::from_millis(35)), Some(Duration::from_millis(10)));
-        assert!(!out.release_auxiliary().unwrap(), "mouse scroll belongs to the mouse stream");
+        assert_eq!(
+            pulses.borrow().len(),
+            2,
+            "three missed periods produce one pulse"
+        );
+        assert_eq!(
+            out.next_tick(start + Duration::from_millis(35)),
+            Some(Duration::from_millis(10))
+        );
+        assert!(
+            !out.release_auxiliary().unwrap(),
+            "mouse scroll belongs to the mouse stream"
+        );
         report.mouse_scroll = Some([0.0, -1.0]);
         out.set_time(start + Duration::from_millis(36));
         out.apply_auxiliary(&report).unwrap();
@@ -1831,10 +2470,17 @@ mod tests {
     fn failed_scroll_repeat_cancels_deadline_and_cleanup_stops_remaining_holds() {
         let fail = Rc::new(RefCell::new(false));
         let flag = Rc::clone(&fail);
-        let sink = Box::new(LocalActions::new(|_| Ok(()), |_| true).with_scroll(move |_| {
-            if *flag.borrow() { Err(io::Error::other("scroll rejected")) } else { Ok(()) }
-        }));
-        let (mut out, _) = ButtonOutput::new(&["scroll:vertical:120:5".parse().unwrap()], false, sink);
+        let sink = Box::new(
+            LocalActions::new(|_| Ok(()), |_| true).with_scroll(move |_| {
+                if *flag.borrow() {
+                    Err(io::Error::other("scroll rejected"))
+                } else {
+                    Ok(())
+                }
+            }),
+        );
+        let (mut out, _) =
+            ButtonOutput::new(&["scroll:vertical:120:5".parse().unwrap()], false, sink);
         let start = Instant::now();
         out.set_time(start);
         out.apply(1).unwrap();
@@ -1849,8 +2495,14 @@ mod tests {
     fn native_scroll_dispatch_and_timer_tick_allocate_nothing_after_setup() {
         let count = Rc::new(std::cell::Cell::new(0));
         let counted = Rc::clone(&count);
-        let sink = Box::new(LocalActions::new(|_| Ok(()), |_| true).with_scroll(move |_| { counted.set(counted.get() + 1); Ok(()) }));
-        let (mut out, _) = ButtonOutput::new(&["scroll:vertical:-120:1".parse().unwrap()], false, sink);
+        let sink = Box::new(
+            LocalActions::new(|_| Ok(()), |_| true).with_scroll(move |_| {
+                counted.set(counted.get() + 1);
+                Ok(())
+            }),
+        );
+        let (mut out, _) =
+            ButtonOutput::new(&["scroll:vertical:-120:1".parse().unwrap()], false, sink);
         let start = Instant::now();
         crate::test_alloc::assert_no_allocations(|| {
             out.set_time(start);
@@ -1867,30 +2519,55 @@ mod tests {
     fn scroll_rotation_taps_do_not_start_repeating_timers() {
         let pulses = Rc::new(RefCell::new(Vec::new()));
         let log = pulses.clone();
-        let sink = Box::new(LocalActions::new(|_| Ok(()), |_| true)
-            .with_scroll(move |pulse| { log.borrow_mut().push(pulse); Ok(()) }));
+        let sink = Box::new(
+            LocalActions::new(|_| Ok(()), |_| true).with_scroll(move |pulse| {
+                log.borrow_mut().push(pulse);
+                Ok(())
+            }),
+        );
         let (mut out, _) = ButtonOutput::new(&[], false, sink);
         let wheel = WheelBinding {
             clockwise: "scroll:horizontal:-240:1".parse().unwrap(),
             counter_clockwise: "scroll:vertical:120:1".parse().unwrap(),
             ..Default::default()
         };
-        assert!(out.set_auxiliary(&[], &[wheel], crate::spec::TabletSpec::PTH_660.controls.wheels()).is_empty());
+        assert!(
+            out.set_auxiliary(
+                &[],
+                &[wheel],
+                crate::spec::TabletSpec::PTH_660.controls.wheels()
+            )
+            .is_empty()
+        );
         let steps = |delta| ReportValues {
-            relative_analog: Some(RelativeAnalogReport { kind: AnalogKind::Wheel, deltas: RelativeAnalog::from_slice(&[delta]).unwrap() }),
+            relative_analog: Some(RelativeAnalogReport {
+                kind: AnalogKind::Wheel,
+                deltas: RelativeAnalog::from_slice(&[delta]).unwrap(),
+            }),
             ..Default::default()
         };
         out.apply_auxiliary(&steps(2)).unwrap();
         out.apply_auxiliary(&steps(-1)).unwrap();
-        assert_eq!(*pulses.borrow(), [
-            ScrollPulse { axis: ScrollAxis::Horizontal, delta: 240 },
-            ScrollPulse { axis: ScrollAxis::Horizontal, delta: 240 },
-            ScrollPulse { axis: ScrollAxis::Vertical, delta: -120 },
-        ]);
+        assert_eq!(
+            *pulses.borrow(),
+            [
+                ScrollPulse {
+                    axis: ScrollAxis::Horizontal,
+                    delta: 240
+                },
+                ScrollPulse {
+                    axis: ScrollAxis::Horizontal,
+                    delta: 240
+                },
+                ScrollPulse {
+                    axis: ScrollAxis::Vertical,
+                    delta: -120
+                },
+            ]
+        );
         let now = Instant::now();
         assert_eq!(out.next_tick(now), None);
         out.tick(now + Duration::from_secs(1)).unwrap();
         assert_eq!(pulses.borrow().len(), 3);
     }
-
 }

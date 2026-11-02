@@ -80,10 +80,29 @@ impl Dialog {
         }
     }
 
-    fn add(&mut self, class: &str, title: &str, id: u16, style: u32, bounds: RECT) -> Result<HWND, String> {
+    fn add(
+        &mut self,
+        class: &str,
+        title: &str,
+        id: u16,
+        style: u32,
+        bounds: RECT,
+    ) -> Result<HWND, String> {
         let control = unsafe {
-            CreateWindowExW(0, wide(class).as_ptr(), wide(title).as_ptr(), WS_CHILD | WS_VISIBLE | style,
-                0, 0, 0, 0, self.window, id as usize as _, GetModuleHandleW(ptr::null()), ptr::null())
+            CreateWindowExW(
+                0,
+                wide(class).as_ptr(),
+                wide(title).as_ptr(),
+                WS_CHILD | WS_VISIBLE | style,
+                0,
+                0,
+                0,
+                0,
+                self.window,
+                id as usize as _,
+                GetModuleHandleW(ptr::null()),
+                ptr::null(),
+            )
         };
         if control.is_null() {
             return Err(std::io::Error::last_os_error().to_string());
@@ -94,10 +113,17 @@ impl Dialog {
             _ => Kind::Label,
         };
         update_look(|look| {
-            look.controls.insert(control as isize, ControlInfo {
-                kind,
-                surface: if kind == Kind::Field { Surface::Group } else { Surface::Window },
-            });
+            look.controls.insert(
+                control as isize,
+                ControlInfo {
+                    kind,
+                    surface: if kind == Kind::Field {
+                        Surface::Group
+                    } else {
+                        Surface::Window
+                    },
+                },
+            );
         });
         self.controls.push((control, bounds));
         Ok(control)
@@ -111,12 +137,48 @@ impl Dialog {
         register_capture_class()?;
         set_text(window, "Key binding");
         let prompt = format!("Shortcut for {}", self.target);
-        self.add("STATIC", &prompt, PROMPT, SS_LEFT | SS_NOPREFIX, rect(16, 16, 444, 38))?;
-        self.capture = self.add(CAPTURE_CLASS, WAITING, CAPTURE, WS_TABSTOP, rect(16, 46, 444, 86))?;
-        self.add("STATIC", HELP_TEXT, HELP, SS_LEFT | SS_NOPREFIX, rect(16, 96, 444, 140))?;
-        self.add("BUTTON", "Clear", CLEAR, WS_TABSTOP | BS_PUSHBUTTON as u32, rect(16, 152, 116, 184))?;
-        self.add("BUTTON", "OK", IDOK as u16, WS_TABSTOP | BS_DEFPUSHBUTTON as u32, rect(236, 152, 336, 184))?;
-        self.add("BUTTON", "Cancel", IDCANCEL as u16, WS_TABSTOP | BS_PUSHBUTTON as u32, rect(344, 152, 444, 184))?;
+        self.add(
+            "STATIC",
+            &prompt,
+            PROMPT,
+            SS_LEFT | SS_NOPREFIX,
+            rect(16, 16, 444, 38),
+        )?;
+        self.capture = self.add(
+            CAPTURE_CLASS,
+            WAITING,
+            CAPTURE,
+            WS_TABSTOP,
+            rect(16, 46, 444, 86),
+        )?;
+        self.add(
+            "STATIC",
+            HELP_TEXT,
+            HELP,
+            SS_LEFT | SS_NOPREFIX,
+            rect(16, 96, 444, 140),
+        )?;
+        self.add(
+            "BUTTON",
+            "Clear",
+            CLEAR,
+            WS_TABSTOP | BS_PUSHBUTTON as u32,
+            rect(16, 152, 116, 184),
+        )?;
+        self.add(
+            "BUTTON",
+            "OK",
+            IDOK as u16,
+            WS_TABSTOP | BS_DEFPUSHBUTTON as u32,
+            rect(236, 152, 336, 184),
+        )?;
+        self.add(
+            "BUTTON",
+            "Cancel",
+            IDCANCEL as u16,
+            WS_TABSTOP | BS_PUSHBUTTON as u32,
+            rect(344, 152, 444, 184),
+        )?;
         self.resize(unsafe { GetDpiForWindow(window) }.max(96), None);
         self.apply_theme();
         self.update();
@@ -132,8 +194,12 @@ impl Dialog {
         };
         self.dark_mode.apply_title_bar(self.window, palette.dark);
         unsafe {
-            RedrawWindow(self.window, ptr::null(), ptr::null_mut(),
-                RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
+            RedrawWindow(
+                self.window,
+                ptr::null(),
+                ptr::null_mut(),
+                RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN,
+            );
         }
     }
 
@@ -158,13 +224,22 @@ impl Dialog {
             };
             unsafe {
                 SendMessageW(*control, WM_SETFONT, font as usize, 1);
-                SetWindowPos(*control, ptr::null_mut(), scale(bounds.left, dpi), scale(bounds.top, dpi),
-                    scale(bounds.right - bounds.left, dpi), scale(bounds.bottom - bounds.top, dpi),
-                    SWP_NOZORDER | SWP_NOACTIVATE);
+                SetWindowPos(
+                    *control,
+                    ptr::null_mut(),
+                    scale(bounds.left, dpi),
+                    scale(bounds.top, dpi),
+                    scale(bounds.right - bounds.left, dpi),
+                    scale(bounds.bottom - bounds.top, dpi),
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
             }
         }
         self.fonts = Some(fonts);
-        for (index, (kind, metric)) in [(ICON_BIG, SM_CXICON), (ICON_SMALL, SM_CXSMICON)].into_iter().enumerate() {
+        for (index, (kind, metric)) in [(ICON_BIG, SM_CXICON), (ICON_SMALL, SM_CXSMICON)]
+            .into_iter()
+            .enumerate()
+        {
             let icon = canvas::app_icon(unsafe { GetSystemMetricsForDpi(metric, dpi) }.max(16));
             if !icon.is_null() {
                 unsafe {
@@ -180,8 +255,13 @@ impl Dialog {
         }
         let mut bounds = rect(0, 0, scale(460, dpi), scale(200, dpi));
         unsafe {
-            AdjustWindowRectExForDpi(&mut bounds, WS_CAPTION | WS_SYSMENU | DS_MODALFRAME as u32,
-                0, WS_EX_DLGMODALFRAME, dpi);
+            AdjustWindowRectExForDpi(
+                &mut bounds,
+                WS_CAPTION | WS_SYSMENU | DS_MODALFRAME as u32,
+                0,
+                WS_EX_DLGMODALFRAME,
+                dpi,
+            );
             let mut parent = RECT::default();
             GetWindowRect(GetParent(self.window), &mut parent);
             let (width, height) = (bounds.right - bounds.left, bounds.bottom - bounds.top);
@@ -189,7 +269,15 @@ impl Dialog {
                 (parent.left + parent.right - width) / 2,
                 (parent.top + parent.bottom - height) / 2,
             ));
-            SetWindowPos(self.window, ptr::null_mut(), left, top, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
+            SetWindowPos(
+                self.window,
+                ptr::null_mut(),
+                left,
+                top,
+                width,
+                height,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
             SendMessageW(self.window, DM_REPOSITION, 0, 0);
         }
     }
@@ -207,7 +295,10 @@ impl Dialog {
         };
         set_text(self.capture, &shown);
         unsafe {
-            EnableWindow(GetDlgItem(self.window, IDOK), (!self.keys.is_empty()).into());
+            EnableWindow(
+                GetDlgItem(self.window, IDOK),
+                (!self.keys.is_empty()).into(),
+            );
             InvalidateRect(self.capture, ptr::null(), 0);
         }
     }
@@ -257,7 +348,10 @@ impl Dialog {
             if !self.keys.contains(&key) && self.keys.len() < 8 {
                 // Modifiers first, as the binding presses them.
                 let at = if is_modifier(key) {
-                    self.keys.iter().take_while(|held| is_modifier(**held)).count()
+                    self.keys
+                        .iter()
+                        .take_while(|held| is_modifier(**held))
+                        .count()
                 } else {
                     self.keys.len()
                 };
@@ -326,7 +420,12 @@ fn register_capture_class() -> Result<(), String> {
 
 /// The capture field: a focusable box that wants every key and paints the
 /// shortcut in the panel's field style. Keys go to the dialog.
-unsafe extern "system" fn capture_procedure(window: HWND, message: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+unsafe extern "system" fn capture_procedure(
+    window: HWND,
+    message: u32,
+    wp: WPARAM,
+    lp: LPARAM,
+) -> LRESULT {
     match message {
         WM_GETDLGCODE => (DLGC_WANTALLKEYS | DLGC_WANTCHARS) as LRESULT,
         WM_KEYDOWN | WM_SYSKEYDOWN | WM_KEYUP | WM_SYSKEYUP => {
@@ -385,7 +484,10 @@ fn paint_capture(window: HWND, dc: HDC) {
         canvas.fill(client, palette.window);
         let dpi = unsafe { GetDpiForWindow(window) }.max(96);
         let font = unsafe { GetWindowLongPtrW(window, GWLP_USERDATA) } as HFONT;
-        let style = Style { scale: dpi as f32 / 96.0, ..look.style };
+        let style = Style {
+            scale: dpi as f32 / 96.0,
+            ..look.style
+        };
         let focused = unsafe { GetFocus() } == window;
         draw::field_frame(&mut canvas, client, &style, focused, false, false);
         let shown = text(window);
@@ -397,7 +499,11 @@ fn paint_capture(window: HWND, dc: HDC) {
         canvas.text(
             draw::inset(client, scale(10, dpi), 0),
             &shown,
-            if font.is_null() { look.style.fonts.ui } else { font },
+            if font.is_null() {
+                look.style.fonts.ui
+            } else {
+                font
+            },
             color,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
         );
@@ -488,7 +594,10 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wp: WPARAM, lp: 
             1
         }
         WM_DPICHANGED => {
-            state.resize((wp & 0xffff) as u32, (lp != 0).then(|| unsafe { *(lp as *const RECT) }));
+            state.resize(
+                (wp & 0xffff) as u32,
+                (lp != 0).then(|| unsafe { *(lp as *const RECT) }),
+            );
             1
         }
         WM_THEMECHANGED => {
@@ -544,8 +653,13 @@ pub(super) fn show(parent: HWND, target: &str) -> Result<Option<Vec<KeyboardUsag
     let state = RefCell::new(Dialog::new(target.to_owned()));
     let template = template();
     let result = unsafe {
-        DialogBoxIndirectParamW(GetModuleHandleW(ptr::null()), &template.dialog, parent,
-            Some(procedure), &state as *const RefCell<Dialog> as isize)
+        DialogBoxIndirectParamW(
+            GetModuleHandleW(ptr::null()),
+            &template.dialog,
+            parent,
+            Some(procedure),
+            &state as *const RefCell<Dialog> as isize,
+        )
     };
     WINDOW.with(|window| window.set(ptr::null_mut()));
     let mut state = state.into_inner();
@@ -572,20 +686,40 @@ mod tests {
     #[test]
     fn hidden_dialog_captures_shortcuts_and_uses_panel_colors() {
         let fonts = FontSet::new(96);
-        LOOK.with(|slot| *slot.borrow_mut() = Some(Look {
-            style: Style { palette: Palette::dark(), fonts: fonts.fonts, scale: 1.0 },
-            controls: HashMap::new(), tab: Tab::Output, menu_open: 0,
-            filters: Vec::new(), log: VecDeque::new(), log_columns: [0; 3], brushes: RefCell::new(Vec::new()),
-        }));
+        LOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Look {
+                style: Style {
+                    palette: Palette::dark(),
+                    fonts: fonts.fonts,
+                    scale: 1.0,
+                },
+                controls: HashMap::new(),
+                tab: Tab::Output,
+                menu_open: 0,
+                filters: Vec::new(),
+                log: VecDeque::new(),
+                log_columns: [0; 3],
+                brushes: RefCell::new(Vec::new()),
+            })
+        });
         let state = RefCell::new(Dialog::new("Express Key 1".into()));
         let template = template();
         let window = unsafe {
-            CreateDialogIndirectParamW(GetModuleHandleW(ptr::null()), &template.dialog, ptr::null_mut(),
-                Some(procedure), &state as *const RefCell<Dialog> as isize)
+            CreateDialogIndirectParamW(
+                GetModuleHandleW(ptr::null()),
+                &template.dialog,
+                ptr::null_mut(),
+                Some(procedure),
+                &state as *const RefCell<Dialog> as isize,
+            )
         };
         assert!(!window.is_null());
         assert!(state.borrow().error.is_none());
-        assert_eq!(unsafe { IsWindowVisible(window) }, 0, "verification must stay hidden");
+        assert_eq!(
+            unsafe { IsWindowVisible(window) },
+            0,
+            "verification must stay hidden"
+        );
         let capture = state.borrow().capture;
         assert_eq!(
             unsafe { SendMessageW(capture, WM_GETDLGCODE, 0, 0) } as u32 & DLGC_WANTALLKEYS,
@@ -595,14 +729,24 @@ mod tests {
         let ok = unsafe { GetDlgItem(window, IDOK) };
         assert_eq!(unsafe { IsWindowEnabled(ok) }, 0, "nothing captured yet");
         let send = |scan: isize, extended: bool, up: bool| unsafe {
-            SendMessageW(capture, if up { WM_KEYUP } else { WM_KEYDOWN }, 0, key_lparam(scan, extended, up));
+            SendMessageW(
+                capture,
+                if up { WM_KEYUP } else { WM_KEYDOWN },
+                0,
+                key_lparam(scan, extended, up),
+            );
         };
         // Right Control (E0 1D), Shift, Z, then a repeat of Z.
         send(0x1d, true, false);
         send(0x2a, false, false);
         send(0x2c, false, false);
         unsafe {
-            SendMessageW(capture, WM_KEYDOWN, 0, key_lparam(0x2c, false, false) | 1 << 30);
+            SendMessageW(
+                capture,
+                WM_KEYDOWN,
+                0,
+                key_lparam(0x2c, false, false) | 1 << 30,
+            );
         }
         assert_eq!(text(capture), "RightControl+LeftShift+Z");
         assert_ne!(unsafe { IsWindowEnabled(ok) }, 0);
@@ -625,7 +769,12 @@ mod tests {
         // Enter after a released shortcut accepts it.
         send(0x1c, false, false);
         assert_eq!(
-            state.borrow().result.as_deref().map(otd_core::keys::chord_text).as_deref(),
+            state
+                .borrow()
+                .result
+                .as_deref()
+                .map(otd_core::keys::chord_text)
+                .as_deref(),
             Some("Escape")
         );
         // Painting uses the panel palette in every theme.
@@ -645,11 +794,24 @@ mod tests {
             }
             assert_eq!(unsafe { GetTextColor(dc) }, palette.muted.colorref());
             let mut custom = NMCUSTOMDRAW {
-                hdr: NMHDR { hwndFrom: ok, idFrom: IDOK as usize, code: NM_CUSTOMDRAW },
-                dwDrawStage: CDDS_PREPAINT, hdc: dc, ..Default::default()
+                hdr: NMHDR {
+                    hwndFrom: ok,
+                    idFrom: IDOK as usize,
+                    code: NM_CUSTOMDRAW,
+                },
+                dwDrawStage: CDDS_PREPAINT,
+                hdc: dc,
+                ..Default::default()
             };
             assert_eq!(
-                unsafe { SendMessageW(window, WM_NOTIFY, IDOK as usize, &mut custom as *mut NMCUSTOMDRAW as isize) },
+                unsafe {
+                    SendMessageW(
+                        window,
+                        WM_NOTIFY,
+                        IDOK as usize,
+                        &mut custom as *mut NMCUSTOMDRAW as isize,
+                    )
+                },
                 CDRF_SKIPDEFAULT as isize,
                 "buttons use the shared custom draw"
             );
@@ -662,7 +824,11 @@ mod tests {
         }
         assert!(WINDOW.with(Cell::get).is_null());
         drop(state);
-        assert_eq!(with_look(|look| look.controls.len()), Some(0), "dialog metadata must be removed");
+        assert_eq!(
+            with_look(|look| look.controls.len()),
+            Some(0),
+            "dialog metadata must be removed"
+        );
         LOOK.with(|slot| drop(slot.borrow_mut().take()));
     }
 }

@@ -62,7 +62,9 @@ impl ReaderPriority {
                     status("Report thread uses experimental MMCSS Pro Audio scheduling.");
                 }
                 Err(error) => {
-                    let message = format!("MMCSS Pro Audio scheduling could not be enabled; using time-critical scheduling: {error}");
+                    let message = format!(
+                        "MMCSS Pro Audio scheduling could not be enabled; using time-critical scheduling: {error}"
+                    );
                     eprintln!("{message}");
                     status(&message);
                 }
@@ -92,9 +94,8 @@ impl ProAudio {
     fn register() -> io::Result<Self> {
         use windows_sys::Win32::System::Threading::AvSetMmThreadCharacteristicsW;
         let mut task = 0;
-        let handle = unsafe {
-            AvSetMmThreadCharacteristicsW(windows_sys::core::w!("Pro Audio"), &mut task)
-        };
+        let handle =
+            unsafe { AvSetMmThreadCharacteristicsW(windows_sys::core::w!("Pro Audio"), &mut task) };
         if handle.is_null() {
             Err(io::Error::last_os_error())
         } else {
@@ -107,7 +108,10 @@ impl Drop for ProAudio {
     fn drop(&mut self) {
         use windows_sys::Win32::System::Threading::AvRevertMmThreadCharacteristics;
         if unsafe { AvRevertMmThreadCharacteristics(self.0) } == 0 {
-            eprintln!("could not leave MMCSS Pro Audio scheduling: {}", io::Error::last_os_error());
+            eprintln!(
+                "could not leave MMCSS Pro Audio scheduling: {}",
+                io::Error::last_os_error()
+            );
         }
     }
 }

@@ -207,7 +207,10 @@ impl WriterLock {
             let marker = Temporary::write(path, MARKER)?;
             if let Err(error) = publish(&marker.path, path, false) {
                 if !path.try_exists().map_err(|error| error.to_string())? {
-                    return Err(format!("cannot publish writer lock {}: {error}", path.display()));
+                    return Err(format!(
+                        "cannot publish writer lock {}: {error}",
+                        path.display()
+                    ));
                 }
             }
         }
@@ -220,14 +223,21 @@ impl WriterLock {
             // unlink/rename while one writer could still own this file.
             options.share_mode(0x0000_0001 | 0x0000_0002); // FILE_SHARE_READ | FILE_SHARE_WRITE
         }
-        let mut file = options.open(path)
+        let mut file = options
+            .open(path)
             .map_err(|error| format!("cannot open writer lock {}: {error}", path.display()))?;
-        file.try_lock().map_err(|error| format!("cannot acquire writer lock {}: {error}", path.display()))?;
+        file.try_lock()
+            .map_err(|error| format!("cannot acquire writer lock {}: {error}", path.display()))?;
         let mut marker = Vec::with_capacity(MARKER.len() + 1);
-        (&mut file).take((MARKER.len() + 1) as u64).read_to_end(&mut marker)
+        (&mut file)
+            .take((MARKER.len() + 1) as u64)
+            .read_to_end(&mut marker)
             .map_err(|error| error.to_string())?;
         if marker != MARKER {
-            return Err(format!("legacy or unrecognized writer lock {}: close all older driver/panel versions, confirm no save is running, then remove this legacy lock once. Modern v2 lock files stay in place and recover automatically after a crash.", path.display()));
+            return Err(format!(
+                "legacy or unrecognized writer lock {}: close all older driver/panel versions, confirm no save is running, then remove this legacy lock once. Modern v2 lock files stay in place and recover automatically after a crash.",
+                path.display()
+            ));
         }
         Ok(Self { _file: file })
     }

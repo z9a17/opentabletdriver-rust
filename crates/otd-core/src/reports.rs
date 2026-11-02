@@ -258,7 +258,10 @@ pub struct RelativeAnalogReport {
 /// It is never derived from plugin-modifiable report bytes or OS pointers.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ManagedReportToken { pub parser: u64, pub sequence: u64 }
+pub struct ManagedReportToken {
+    pub parser: u64,
+    pub sequence: u64,
+}
 
 /// The values that report consumers/plugins may observe and modify. Independent
 /// fields allow reports implementing several upstream interfaces simultaneously.

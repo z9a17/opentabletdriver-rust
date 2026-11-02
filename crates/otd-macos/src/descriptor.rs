@@ -139,7 +139,15 @@ mod tests {
     #[test]
     fn overflowing_report_fields_are_rejected() {
         assert_eq!(lengths(&[0x77, 255, 255, 255, 255, 0x95, 2, 0x81, 2]), None);
-        assert_eq!(lengths(&[0x77, 255, 255, 255, 255, 0x95, 1, 0x81, 2, 0x81, 2]), None);
-        assert_eq!(lengths(&[0x77, 255, 255, 255, 255, 0x95, 1, 0x81, 2]).unwrap().input, 536_870_913);
+        assert_eq!(
+            lengths(&[0x77, 255, 255, 255, 255, 0x95, 1, 0x81, 2, 0x81, 2]),
+            None
+        );
+        assert_eq!(
+            lengths(&[0x77, 255, 255, 255, 255, 0x95, 1, 0x81, 2])
+                .unwrap()
+                .input,
+            536_870_913
+        );
     }
 }

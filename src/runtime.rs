@@ -49,8 +49,14 @@ pub enum Notice {
     Waiting,
     ActivationFailed(String),
 }
-fn send_notice(notices: &SyncSender<Notice>, devices: &crate::device_sessions::Handle, notice: Notice) -> Result<(), String> {
-    let sent = notices.send(notice).map_err(|_| "daemon control owner disconnected".to_owned());
+fn send_notice(
+    notices: &SyncSender<Notice>,
+    devices: &crate::device_sessions::Handle,
+    notice: Notice,
+) -> Result<(), String> {
+    let sent = notices
+        .send(notice)
+        .map_err(|_| "daemon control owner disconnected".to_owned());
     devices.wake_supervisor();
     crate::control::wake();
     sent
@@ -73,13 +79,23 @@ struct Done(Arc<AtomicBool>, Option<crate::device_sessions::Handle>);
 impl Drop for Done {
     fn drop(&mut self) {
         self.0.store(true, Ordering::Release);
-        if let Some(devices) = &self.1 { devices.wake_supervisor(); }
+        if let Some(devices) = &self.1 {
+            devices.wake_supervisor();
+        }
         crate::control::wake();
     }
 }
 impl Worker {
     #[cfg(test)]
-    pub(crate) fn fixture(script: impl FnOnce(Receiver<Directive>, SyncSender<Notice>, Arc<AtomicBool>) -> Result<(), String> + Send + 'static) -> Self {
+    pub(crate) fn fixture(
+        script: impl FnOnce(
+            Receiver<Directive>,
+            SyncSender<Notice>,
+            Arc<AtomicBool>,
+        ) -> Result<(), String>
+        + Send
+        + 'static,
+    ) -> Self {
         let interrupt = Event::create(true).unwrap();
         let cancelled = Arc::new(AtomicBool::new(false));
         let thread_cancelled = Arc::clone(&cancelled);
@@ -88,16 +104,40 @@ impl Worker {
         let (_logger, logs) = mpsc::sync_channel(1);
         let done = Arc::new(AtomicBool::new(false));
         let thread_done = Done(Arc::clone(&done), None);
-        let thread = std::thread::spawn(move || { let _done = thread_done; script(receiver, notifier, thread_cancelled) });
-        Self { interrupt, cancelled, commands, notices, logs, thread, done }
+        let thread = std::thread::spawn(move || {
+            let _done = thread_done;
+            script(receiver, notifier, thread_cancelled)
+        });
+        Self {
+            interrupt,
+            cancelled,
+            commands,
+            notices,
+            logs,
+            thread,
+            done,
+        }
     }
-    pub fn spawn(profile: Profile, devices: crate::device_sessions::Handle, prefer_saved: bool) -> Result<Self, String> {
+    pub fn spawn(
+        profile: Profile,
+        devices: crate::device_sessions::Handle,
+        prefer_saved: bool,
+    ) -> Result<Self, String> {
         Self::spawn_bound(profile, devices, None, prefer_saved)
     }
-    pub(crate) fn spawn_device(profile: Profile, devices: crate::device_sessions::Handle, id: String) -> Result<Self, String> {
+    pub(crate) fn spawn_device(
+        profile: Profile,
+        devices: crate::device_sessions::Handle,
+        id: String,
+    ) -> Result<Self, String> {
         Self::spawn_bound(profile, devices, Some(id), false)
     }
-    fn spawn_bound(profile: Profile, devices: crate::device_sessions::Handle, id: Option<String>, prefer_saved: bool) -> Result<Self, String> {
+    fn spawn_bound(
+        profile: Profile,
+        devices: crate::device_sessions::Handle,
+        id: Option<String>,
+        prefer_saved: bool,
+    ) -> Result<Self, String> {
         let interrupt = Event::create(true).map_err(|error| error.to_string())?;
         let thread_interrupt = interrupt.duplicate().map_err(|error| error.to_string())?;
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -171,7 +211,10 @@ mod worker_cleanup_tests {
 
     #[test]
     fn lifecycle_notice_wakes_supervisor_without_reports() {
-        use windows_sys::Win32::{Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT}, System::Threading::WaitForSingleObject};
+        use windows_sys::Win32::{
+            Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT},
+            System::Threading::WaitForSingleObject,
+        };
         let wake = Event::create(true).unwrap();
         let (devices, _) = crate::device_sessions::Handle::channel(wake.duplicate().unwrap());
         let (notices, received) = mpsc::sync_channel(8);
@@ -188,14 +231,20 @@ mod worker_cleanup_tests {
 
     #[test]
     fn completion_wakes_supervisor_after_finished_flag_without_reports() {
-        use windows_sys::Win32::{Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT}, System::Threading::WaitForSingleObject};
+        use windows_sys::Win32::{
+            Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT},
+            System::Threading::WaitForSingleObject,
+        };
         let wake = Event::create(true).unwrap();
         let (devices, _) = crate::device_sessions::Handle::channel(wake.duplicate().unwrap());
         assert_eq!(unsafe { WaitForSingleObject(wake.raw(), 0) }, WAIT_TIMEOUT);
         let finished = Arc::new(AtomicBool::new(false));
         let (release, wait) = mpsc::sync_channel(1);
         let done = Done(Arc::clone(&finished), Some(devices));
-        let thread = std::thread::spawn(move || { wait.recv().unwrap(); drop(done); });
+        let thread = std::thread::spawn(move || {
+            wait.recv().unwrap();
+            drop(done);
+        });
         release.send(()).unwrap();
         let signalled = unsafe { WaitForSingleObject(wake.raw(), 2_000) };
         thread.join().unwrap();
@@ -207,7 +256,9 @@ mod worker_cleanup_tests {
     fn join_releases_worker_blocked_by_full_notice_queue() {
         let (sender_thread, sender_owner) = mpsc::sync_channel(1);
         let worker = Worker::fixture(move |_, notices, _| {
-            for _ in 0..8 { notices.send(Notice::Waiting).unwrap(); }
+            for _ in 0..8 {
+                notices.send(Notice::Waiting).unwrap();
+            }
             let (sent, completed) = mpsc::sync_channel(1);
             // Keep this blocking send on a separate fixture thread so that a
             // regression still lets the worker exit on a bounded timeout.
@@ -220,7 +271,9 @@ mod worker_cleanup_tests {
             match completed.recv_timeout(Duration::from_secs(2)) {
                 Ok(true) => Ok(()),
                 Ok(false) => Err("notice unexpectedly fit in full queue".into()),
-                Err(_) => Err("join retained the notice receiver while waiting for the worker".into()),
+                Err(_) => {
+                    Err("join retained the notice receiver while waiting for the worker".into())
+                }
             }
         });
         let sender = sender_owner.recv_timeout(Duration::from_secs(2)).unwrap();
@@ -281,11 +334,15 @@ fn run(
     let configured_tablets = crate::check_tablet_configurations()?;
     let database = configured_tablets.as_ref();
     crate::plugins::prepare_parser_registry(&profile, database)?;
-    profile.validate_runtime_tablet_in_with_parser_support(database, &crate::dotnet::installed_report_parser)?;
+    profile.validate_runtime_tablet_in_with_parser_support(
+        database,
+        &crate::dotnet::installed_report_parser,
+    )?;
     profile.validate_filter_execution()?;
     let tablet_name = profile.tablet_name()?;
     if profile.plugin_configs().any(|plugin| plugin.enabled)
-        && !crate::plugin_catalog::recover_installations()? {
+        && !crate::plugin_catalog::recover_installations()?
+    {
         return Err("Plugins are being installed or recovered; retry starting the driver after that finishes.".into());
     }
     let mut authored_profile = profile;
@@ -316,10 +373,14 @@ fn run(
             device_sessions.validate_profile(id, &profile)?;
             device_sessions.find(id, &devices, database)?
         } else {
-            crate::hid::select_device_for_start(&devices, database, profile.device_path.as_deref(), tablet_name.as_deref())?
+            crate::hid::select_device_for_start(
+                &devices,
+                database,
+                profile.device_path.as_deref(),
+                tablet_name.as_deref(),
+            )?
         };
-        let Some(selected) = choice
-        else {
+        let Some(selected) = choice else {
             if !waiting {
                 notify(Notice::Waiting)?;
                 log(&format!(
@@ -357,16 +418,21 @@ fn run(
         let id = if let Some(id) = &bound_id {
             device_sessions.discover(&selected)?;
             id.clone()
-        } else { device_sessions.reserve_primary(&selected)? };
+        } else {
+            device_sessions.reserve_primary(&selected)?
+        };
         crate::device_sessions::set_debug_key(&id);
-        let source_generation=device_sessions.preparation_generation(&id,bound_id.is_none())?;
+        let source_generation = device_sessions.preparation_generation(&id, bound_id.is_none())?;
         crate::device_sessions::set_source_generation(source_generation);
         let mut reload_profile = !profile_loaded;
         if !profile_loaded {
-            if prefer_saved { authored_profile.use_settings_collection = true; }
+            if prefer_saved {
+                authored_profile.use_settings_collection = true;
+            }
             // A physical file returned by this lookup clears the transient
             // marker through native TOML parsing; no second file-read inference.
-            authored_profile = device_sessions.effective_profile(&id, &authored_profile, prefer_saved)?;
+            authored_profile =
+                device_sessions.effective_profile(&id, &authored_profile, prefer_saved)?;
         } else if authored_profile.use_settings_collection {
             // Cold physical reconnect only. Inner quiesce/rollback activation
             // keeps its owned graph and profile; reports never call this path.
@@ -374,16 +440,24 @@ fn run(
                 authored_profile = saved;
                 authored_profile.use_settings_collection = false;
                 reload_profile = true;
-            } else if let Some(mut retained) = crate::upstream_rpc::profile_for_tablet(&selected.configuration)? {
+            } else if let Some(mut retained) =
+                crate::upstream_rpc::profile_for_tablet(&selected.configuration)?
+            {
                 // Read one owned document snapshot on every physical reconnect;
                 // separately sampled revision/profile reads can miss a publish.
-                retained.device_path.clone_from(&authored_profile.device_path);
+                retained
+                    .device_path
+                    .clone_from(&authored_profile.device_path);
                 reload_profile = retained.to_toml()? != authored_profile.to_toml()?;
                 authored_profile = retained;
             }
         }
         if reload_profile {
-            if authored_profile.plugin_configs().any(|plugin| plugin.enabled) && !crate::plugin_catalog::recover_installations()? {
+            if authored_profile
+                .plugin_configs()
+                .any(|plugin| plugin.enabled)
+                && !crate::plugin_catalog::recover_installations()?
+            {
                 return Err("Plugins are being installed or recovered; retry starting the driver after that finishes.".into());
             }
             profile = execution_profile(&authored_profile, |execution| {
@@ -391,22 +465,34 @@ fn run(
                 crate::plugin_catalog::use_native_ports(execution, log);
             });
             crate::plugins::prepare_parser_registry(&profile, database)?;
-            profile.validate_runtime_tablet_in_with_parser_support(database, &crate::dotnet::installed_report_parser)?;
+            profile.validate_runtime_tablet_in_with_parser_support(
+                database,
+                &crate::dotnet::installed_report_parser,
+            )?;
             profile.validate_filter_execution()?;
             let _ = otd_core::pipeline::ReportPipeline::new(&profile.for_tablet(selected.spec)?)?;
-            if profile.relative.is_none() { crate::display::read_snapshot()?.mapper(&profile.for_tablet(selected.spec)?)?; }
+            if profile.relative.is_none() {
+                crate::display::read_snapshot()?.mapper(&profile.for_tablet(selected.spec)?)?;
+            }
             profile_loaded = true;
         }
-        if cancelled.load(Ordering::Acquire) { return Ok(()); }
+        if cancelled.load(Ordering::Acquire) {
+            return Ok(());
+        }
         let source = PreparedSession::new(&selected, &notification, interrupt)
             .map_err(|error| format!("HID preparation failed: {error}"))?;
         // Metadata names the endpoints actually opened, not configuration
         // alternatives. Preparation still issues no input read or init write.
         let mut plugins = PluginChain::load_for_profile_with_identifiers(
-            &profile, &selected.configuration, &source.identifiers())?;
+            &profile,
+            &selected.configuration,
+            &source.identifiers(),
+        )?;
         plugins.validate_output_mode(profile.relative.is_some())?;
         reset_plugins(&mut plugins)?;
-        if cancelled.load(Ordering::Acquire) { return Ok(()); }
+        if cancelled.load(Ordering::Acquire) {
+            return Ok(());
+        }
         let mut prepared = Some(source);
         notify(Notice::PreparedProfile(Box::new(authored_profile.clone())))?;
         notify(Notice::Prepared)?;
@@ -414,7 +500,11 @@ fn run(
             match receive(&commands, cancelled).map_err(|error| error.to_string())? {
                 Directive::Stop => return Ok(()),
                 Directive::Quiesce => {
-                    if let Some(mut source)=prepared.take(){source.retire().map_err(|error|format!("prepared device retirement failed: {error}"))?;}
+                    if let Some(mut source) = prepared.take() {
+                        source.retire().map_err(|error| {
+                            format!("prepared device retirement failed: {error}")
+                        })?;
+                    }
                     reset_plugins(&mut plugins)?;
                     notify(Notice::Quiesced)?;
                     continue;
@@ -476,8 +566,13 @@ fn run(
                 let now = std::time::Instant::now();
                 let elapsed = now.saturating_duration_since(last_preset_press);
                 last_preset_press = now;
-                if elapsed <= std::time::Duration::from_millis(50) { return Ok(()); }
-                preset_notices.try_send(Notice::PresetRequested(crate::binding_presets::Request::new(owner, name)))
+                if elapsed <= std::time::Duration::from_millis(50) {
+                    return Ok(());
+                }
+                preset_notices
+                    .try_send(Notice::PresetRequested(
+                        crate::binding_presets::Request::new(owner, name),
+                    ))
                     .map_err(|_| io::Error::from(io::ErrorKind::WouldBlock))?;
                 preset_devices.wake_supervisor();
                 crate::control::wake();
@@ -487,8 +582,13 @@ fn run(
                 notify(Notice::ActivationReady).map_err(io::Error::other)?;
                 match receive(&commands, cancelled)? {
                     Directive::Run if !cancelled.load(Ordering::Acquire) => {
-                        let epoch = device_sessions.activated_with_identifiers(&id, &selected, identifiers);
-                        if epoch == 0 { return Err(io::Error::other("Cannot register this activation's actual opened endpoints.")); }
+                        let epoch =
+                            device_sessions.activated_with_identifiers(&id, &selected, identifiers);
+                        if epoch == 0 {
+                            return Err(io::Error::other(
+                                "Cannot register this activation's actual opened endpoints.",
+                            ));
+                        }
                         opened_epoch.set(Some(epoch));
                         running.set(true);
                         notify(Notice::Running).map_err(io::Error::other)?;
@@ -496,7 +596,9 @@ fn run(
                         // separate from tablet profiles. Peer workers run their
                         // filters/output/bindings, never another global tool set.
                         if bound_id.is_none() {
-                            if let Err(error)=crate::tool_host::apply_profile(&profile.plugins) {log(&format!("Global tool submission failed: {error}"));}
+                            if let Err(error) = crate::tool_host::apply_profile(&profile.plugins) {
+                                log(&format!("Global tool submission failed: {error}"));
+                            }
                         }
                         Ok(true)
                     }
@@ -573,11 +675,10 @@ fn run(
 #[cfg(test)]
 mod authored_profile_tests {
     use super::*;
-    use std::path::Path;
 
     #[test]
     fn native_filter_execution_preserves_saved_settings_and_reconnect_publication() {
-        let path = Path::new("E:/AgentWork/tmp/authored-profile-fixture.toml");
+        let path = &std::env::temp_dir().join("authored-profile-fixture.toml");
         let source = format!(
             "[[plugins]]\npath='radial.dll'\nkind='dotnet'\nenabled=true\ntype_name='{}'\nsettings_json='{{\"InnerRadius\":0.302,\"OuterRadius\":0.7039,\"SmoothingCoefficient\":0.302,\"SmoothingLeakCoefficient\":0.201,\"SoftKneeScale\":0.603}}'\n",
             otd_core::radial_follow::FILTER_PATH,
@@ -587,7 +688,10 @@ mod authored_profile_tests {
         // The real port transformation runs with an injected verification
         // predicate; the fixture loads no DLL and never opens a device.
         let execution = execution_profile(&authored, |execution| {
-            assert_eq!(execution.use_native_ports(|dll| dll.ends_with("radial.dll")), 1);
+            assert_eq!(
+                execution.use_native_ports(|dll| dll.ends_with("radial.dll")),
+                1
+            );
         });
         assert_eq!(execution.radial_follow.len(), 1);
         assert!(!execution.plugins[0].enabled);
@@ -599,15 +703,23 @@ mod authored_profile_tests {
             // PreparedProfile is what both primary and peer transactions
             // commit, including physical reconnect after saved-file reload.
             let Notice::PreparedProfile(profile) =
-                Notice::PreparedProfile(Box::new(published.clone())) else { unreachable!() };
-            assert_eq!(profile.to_toml().unwrap(), persisted.to_toml().unwrap(),
-                "raw saved-profile semantic comparison must remain equal");
+                Notice::PreparedProfile(Box::new(published.clone()))
+            else {
+                unreachable!()
+            };
+            assert_eq!(
+                profile.to_toml().unwrap(),
+                persisted.to_toml().unwrap(),
+                "raw saved-profile semantic comparison must remain equal"
+            );
             assert!(profile.plugins[0].enabled);
             let reopened = execution_profile(&profile, |execution| {
                 assert_eq!(execution.use_native_ports(|_| true), 1);
             });
-            assert_eq!(serde_json::to_value(&reopened.radial_follow).unwrap(),
-                serde_json::to_value(&execution.radial_follow).unwrap());
+            assert_eq!(
+                serde_json::to_value(&reopened.radial_follow).unwrap(),
+                serde_json::to_value(&execution.radial_follow).unwrap()
+            );
             assert_eq!(profile.to_toml().unwrap(), saved);
         }
     }

@@ -414,8 +414,14 @@ pub fn app_icon(size: i32) -> HICON {
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::WindowsAndMessaging::{IMAGE_ICON, LoadImageW};
     unsafe {
-        LoadImageW(GetModuleHandleW(ptr::null()), 1usize as *const u16, IMAGE_ICON, size, size, 0)
-            as HICON
+        LoadImageW(
+            GetModuleHandleW(ptr::null()),
+            1usize as *const u16,
+            IMAGE_ICON,
+            size,
+            size,
+            0,
+        ) as HICON
     }
 }
 

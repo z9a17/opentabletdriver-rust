@@ -54,13 +54,18 @@ pub(super) fn add(window: HWND, icon: HICON, tip: &str) -> bool {
             true
         }
     };
-    if added { remember_tip(window, tip); }
+    if added {
+        remember_tip(window, tip);
+    }
     added
 }
 
 pub(super) fn set_tip(window: HWND, tip: &str) {
-    if LAST_TIP.with(|last| last.borrow().as_ref()
-        .is_some_and(|(owner, text)| *owner == window as isize && text == tip)) {
+    if LAST_TIP.with(|last| {
+        last.borrow()
+            .as_ref()
+            .is_some_and(|(owner, text)| *owner == window as isize && text == tip)
+    }) {
         return;
     }
     if unsafe { Shell_NotifyIconW(NIM_MODIFY, &data(window, tip)) } != 0 {
@@ -92,8 +97,13 @@ pub(super) fn balloon(window: HWND, title: &str, text: &str) -> bool {
 
 pub(super) fn remove(window: HWND) {
     LAST_TIP.with(|last| {
-        let owned = last.borrow().as_ref().is_some_and(|(owner, _)| *owner == window as isize);
-        if owned { *last.borrow_mut() = None; }
+        let owned = last
+            .borrow()
+            .as_ref()
+            .is_some_and(|(owner, _)| *owner == window as isize);
+        if owned {
+            *last.borrow_mut() = None;
+        }
     });
     unsafe { Shell_NotifyIconW(NIM_DELETE, &data(window, "")) };
 }
@@ -137,7 +147,11 @@ fn menu(window: HWND, (x, y): (i32, i32)) {
     append(menu, MF_STRING, CMD_SHOW, "Show Window");
     append(
         menu,
-        if busy || running { MF_GRAYED } else { MF_STRING },
+        if busy || running {
+            MF_GRAYED
+        } else {
+            MF_STRING
+        },
         CMD_START_STOP,
         "Start driver",
     );

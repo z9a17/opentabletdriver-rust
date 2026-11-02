@@ -201,8 +201,21 @@ impl Mapper {
             clipping: settings.clipping,
             limiting: settings.limiting,
         };
-        if ![a, b, c, d, tx, ty, transform.min_x, transform.max_x,
-            transform.min_y, transform.max_y].into_iter().all(f64::is_finite) {
+        if ![
+            a,
+            b,
+            c,
+            d,
+            tx,
+            ty,
+            transform.min_x,
+            transform.max_x,
+            transform.min_y,
+            transform.max_y,
+        ]
+        .into_iter()
+        .all(f64::is_finite)
+        {
             return None;
         }
         Some(Self {
@@ -385,12 +398,33 @@ mod tests {
 
     #[test]
     fn invalid_rectangle_spans_are_rejected_without_overflow() {
-        let screen = Rect { left: 0, top: 0, right: 1920, bottom: 1080 };
+        let screen = Rect {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
         for invalid in [
-            Rect { left: i32::MIN, right: i32::MAX, ..screen },
-            Rect { top: i32::MIN, bottom: i32::MAX, ..screen },
-            Rect { left: i32::MAX, right: i32::MIN, ..screen },
-            Rect { top: i32::MAX, bottom: i32::MIN, ..screen },
+            Rect {
+                left: i32::MIN,
+                right: i32::MAX,
+                ..screen
+            },
+            Rect {
+                top: i32::MIN,
+                bottom: i32::MAX,
+                ..screen
+            },
+            Rect {
+                left: i32::MAX,
+                right: i32::MIN,
+                ..screen
+            },
+            Rect {
+                top: i32::MAX,
+                bottom: i32::MIN,
+                ..screen
+            },
         ] {
             assert!(!invalid.valid());
             assert!(Mapper::new(Crop::default(), 0, invalid, screen).is_none());
@@ -400,32 +434,79 @@ mod tests {
 
     #[test]
     fn positions_outside_virtual_desktop_clamp_to_the_nearest_edge() {
-        let screen = Rect { left: 0, top: 0, right: 1920, bottom: 1080 };
-        let destination = Rect { left: -1920, top: -1080, right: 3840, bottom: 2160 };
+        let screen = Rect {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        let destination = Rect {
+            left: -1920,
+            top: -1080,
+            right: 3840,
+            bottom: 2160,
+        };
         let mapper = Mapper::new(Crop::default(), 0, destination, screen).unwrap();
         assert_eq!(mapper.map(0, 0), Some((0, 0)));
         assert_eq!(mapper.map(MAX_X, MAX_Y), Some((65_535, 65_535)));
         assert_eq!(mapper.map(0, MAX_Y), Some((0, 65_535)));
         // Subtraction itself must also be safe when two individually valid
         // rectangles occupy opposite ends of the signed coordinate range.
-        let far_screen = Rect { left: i32::MAX - 1920, right: i32::MAX, ..screen };
-        let far_destination = Rect { left: i32::MIN, right: i32::MIN + 1920, ..screen };
+        let far_screen = Rect {
+            left: i32::MAX - 1920,
+            right: i32::MAX,
+            ..screen
+        };
+        let far_destination = Rect {
+            left: i32::MIN,
+            right: i32::MIN + 1920,
+            ..screen
+        };
         let far = Mapper::new(Crop::default(), 0, far_destination, far_screen).unwrap();
         assert_eq!(far.map(MAX_X, MAX_Y), Some((0, 65_535)));
     }
 
     #[test]
     fn overflowing_original_area_transform_is_rejected_during_setup() {
-        let screen = Rect { left: 0, top: 0, right: 1920, bottom: 1080 };
-        let area = OtdArea { width: 100.0, height: 100.0, x: 50.0, y: 50.0, rotation: 0.0 };
+        let screen = Rect {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        let area = OtdArea {
+            width: 100.0,
+            height: 100.0,
+            x: 50.0,
+            y: 50.0,
+            rotation: 0.0,
+        };
         for tablet in [
-            OtdArea { width: f64::MIN_POSITIVE, ..area },
-            OtdArea { x: f64::MAX, ..area },
+            OtdArea {
+                width: f64::MIN_POSITIVE,
+                ..area
+            },
+            OtdArea {
+                x: f64::MAX,
+                ..area
+            },
         ] {
-            assert!(Mapper::from_otd(OtdMapping {
-                display: OtdArea { width: 1920.0, height: 1080.0, ..area },
-                tablet, clipping: true, limiting: false,
-            }, screen).is_none());
+            assert!(
+                Mapper::from_otd(
+                    OtdMapping {
+                        display: OtdArea {
+                            width: 1920.0,
+                            height: 1080.0,
+                            ..area
+                        },
+                        tablet,
+                        clipping: true,
+                        limiting: false,
+                    },
+                    screen
+                )
+                .is_none()
+            );
         }
     }
 

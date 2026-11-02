@@ -284,8 +284,12 @@ impl App {
             self.c.tabs.push(hwnd);
         }
         for (index, (tab, label)) in BUTTON_SECTIONS.iter().enumerate() {
-            self.c.button_sections[index] = self.button(label, ID_BUTTON_SECTION + index as u16,
-                Kind::Section(*tab), Surface::Page)?;
+            self.c.button_sections[index] = self.button(
+                label,
+                ID_BUTTON_SECTION + index as u16,
+                Kind::Section(*tab),
+                Surface::Page,
+            )?;
         }
         self.c.back = self.button("Back", CMD_NAV_BACK, Kind::Button, Surface::Page)?;
         // Creation order is the Tab order: the pages top to bottom, then the bar.
@@ -340,9 +344,23 @@ impl App {
         self.labels.insert(self.c.eraser_binding as isize, label);
         self.c.eraser_field = self.labeled_field(ID_ERASER_FIELD, "Eraser Threshold")?;
         self.c.eraser_slider = self.slider(ID_ERASER_SLIDER)?;
-        for (index, label) in ["Drag only", "Disable pressure", "Disable tilt", "Disable rotation"].iter().enumerate() {
-            self.c.pen_policy[index] = self.control("BUTTON", label, ID_PEN_POLICY + index as u16,
-                WS_TABSTOP | BS_AUTOCHECKBOX as u32, Kind::Check, Surface::Group)?;
+        for (index, label) in [
+            "Drag only",
+            "Disable pressure",
+            "Disable tilt",
+            "Disable rotation",
+        ]
+        .iter()
+        .enumerate()
+        {
+            self.c.pen_policy[index] = self.control(
+                "BUTTON",
+                label,
+                ID_PEN_POLICY + index as u16,
+                WS_TABSTOP | BS_AUTOCHECKBOX as u32,
+                Kind::Check,
+                Surface::Group,
+            )?;
         }
         let cue = wide("Tip switch");
         for field in [self.c.tip_field, self.c.eraser_field] {
@@ -522,7 +540,9 @@ impl App {
             "Suppress pen pressure when the output supports pressure.",
             "Suppress pen tilt when the output supports tilt.",
             "Suppress pen rotation when the output supports rotation.",
-        ]) { self.add_tool(hwnd, 0, tip); }
+        ]) {
+            self.add_tool(hwnd, 0, tip);
+        }
         // Upstream's area editor tool tips.
         self.add_tool(self.hwnd, 1, "You can right click the area editor to set the area to a display, adjust alignment, or resize the area.");
         self.add_tool(self.hwnd, 2, "You can right click the area editor to enable aspect ratio locking, adjust alignment, or resize the area.");
@@ -535,7 +555,14 @@ impl App {
             lpszText: -1isize as *mut u16,
             ..Default::default()
         };
-        unsafe { SendMessageW(self.tooltip, TTM_ADDTOOLW, 0, &filter_tip as *const _ as isize) };
+        unsafe {
+            SendMessageW(
+                self.tooltip,
+                TTM_ADDTOOLW,
+                0,
+                &filter_tip as *const _ as isize,
+            )
+        };
         let c = &self.c;
         let unit = |index: usize, unit: &str| match index {
             0 => format!("Area width in {unit}"),
@@ -599,7 +626,11 @@ impl App {
 
     pub(super) fn sync_all(&mut self) {
         if let Err(error) = self.editor.update_detected_tablet(&self.connected_tablets) {
-            self.log(Level::Warning, "Tablet", format!("Could not use the detected tablet's dimensions: {error}"));
+            self.log(
+                Level::Warning,
+                "Tablet",
+                format!("Could not use the detected tablet's dimensions: {error}"),
+            );
         }
         self.invalid.clear();
         self.sync_mode();
@@ -617,7 +648,12 @@ impl App {
             OutputMode::Absolute => "Absolute Mode",
             OutputMode::Relative => "Relative Mode",
         };
-        let managed = self.editor.profile.managed_output.as_ref().map(|config| format!("Managed: {}", model::plugin_name(config)));
+        let managed = self
+            .editor
+            .profile
+            .managed_output
+            .as_ref()
+            .map(|config| format!("Managed: {}", model::plugin_name(config)));
         set_text(self.c.mode, managed.as_deref().unwrap_or(label));
     }
 
@@ -667,8 +703,15 @@ impl App {
 
     pub(super) fn sync_pen(&mut self, skip: Option<HWND>) {
         let contact = &self.editor.profile.contact;
-        for (hwnd, checked) in self.c.pen_policy.into_iter().zip([contact.drag_only, contact.disable_pressure, contact.disable_tilt, contact.disable_rotation]) {
-            unsafe { SendMessageW(hwnd, BM_SETCHECK, usize::from(checked), 0); }
+        for (hwnd, checked) in self.c.pen_policy.into_iter().zip([
+            contact.drag_only,
+            contact.disable_pressure,
+            contact.disable_tilt,
+            contact.disable_rotation,
+        ]) {
+            unsafe {
+                SendMessageW(hwnd, BM_SETCHECK, usize::from(checked), 0);
+            }
         }
         for eraser in [false, true] {
             let (binding, slider, field) = if eraser {
@@ -683,9 +726,17 @@ impl App {
             let name = if eraser { "Eraser" } else { "Tip" };
             set_text(
                 binding,
-                &if let Some(config) = if eraser { &self.editor.profile.managed_eraser_binding } else { &self.editor.profile.managed_tip_binding } {
+                &if let Some(config) = if eraser {
+                    &self.editor.profile.managed_eraser_binding
+                } else {
+                    &self.editor.profile.managed_tip_binding
+                } {
                     format!("Managed: {}", model::plugin_name(config))
-                } else if self.editor.binding_enabled(eraser) { name.into() } else { "None".into() },
+                } else if self.editor.binding_enabled(eraser) {
+                    name.into()
+                } else {
+                    "None".into()
+                },
             );
             let percent = self.editor.threshold_percent(eraser);
             if Some(slider) != skip {
@@ -747,10 +798,17 @@ impl App {
             return;
         }
         let mut point = POINT::default();
-        unsafe { GetCursorPos(&mut point); ScreenToClient(self.c.filter_list, &mut point); }
+        unsafe {
+            GetCursorPos(&mut point);
+            ScreenToClient(self.c.filter_list, &mut point);
+        }
         let item = unsafe {
-            SendMessageW(self.c.filter_list, LB_ITEMFROMPOINT, 0,
-                ((point.y as u32 & 0xffff) << 16 | (point.x as u32 & 0xffff)) as isize)
+            SendMessageW(
+                self.c.filter_list,
+                LB_ITEMFROMPOINT,
+                0,
+                ((point.y as u32 & 0xffff) << 16 | (point.x as u32 & 0xffff)) as isize,
+            )
         };
         let text = if item < 0 || (item as usize >> 16) != 0 {
             String::new()
@@ -804,14 +862,22 @@ impl App {
         let hovered = if window == self.c.filter_list {
             let item = unsafe { SendMessageW(window, LB_ITEMFROMPOINT, 0, point) };
             (item >= 0 && (item as usize >> 16) == 0).then_some(item as usize & 0xffff)
-        } else { None };
-        if hovered == self.hovered_filter { return None; }
+        } else {
+            None
+        };
+        if hovered == self.hovered_filter {
+            return None;
+        }
         self.hovered_filter = hovered;
         Some(self.tooltip)
     }
 
     pub(super) fn refresh_deferred_metadata(&mut self) {
-        if self.metadata_refresh_deferred && !self.closing && !self.update_restart_pending && !self.editing_controls() {
+        if self.metadata_refresh_deferred
+            && !self.closing
+            && !self.update_restart_pending
+            && !self.editing_controls()
+        {
             self.metadata_refresh_deferred = false;
             self.rebuild_properties();
             self.layout();
@@ -825,11 +891,17 @@ impl App {
     }
 
     fn page_plugins(&self) -> Vec<model::FilterItem> {
-        if self.tab == Tab::Tools { self.editor.tools() } else { self.editor.filters() }
+        if self.tab == Tab::Tools {
+            self.editor.tools()
+        } else {
+            self.editor.filters()
+        }
     }
 
     pub(super) fn page_plugin_index(&self, target: FilterRef) -> Option<usize> {
-        self.page_plugins().iter().position(|item| item.target == target)
+        self.page_plugins()
+            .iter()
+            .position(|item| item.target == target)
     }
 
     pub(super) fn refresh_filter_list(&mut self) {
@@ -837,7 +909,14 @@ impl App {
         if matches!(self.tab, Tab::Filters | Tab::Tools) {
             self.ensure_plugin_metadata();
         }
-        set_text(self.c.filter_list, if self.tab == Tab::Tools { "Tools" } else { "Filters" });
+        set_text(
+            self.c.filter_list,
+            if self.tab == Tab::Tools {
+                "Tools"
+            } else {
+                "Filters"
+            },
+        );
         let mut items = self.page_plugins();
         for item in &mut items {
             if let FilterRef::Plugin(index) = item.target
@@ -894,10 +973,7 @@ impl App {
         for row in std::mem::take(&mut self.properties) {
             self.remove_tool(row.hwnd);
             self.invalid.remove(&(row.hwnd as isize));
-            for hwnd in [Some(row.hwnd), row.label_control]
-                .into_iter()
-                .flatten()
-            {
+            for hwnd in [Some(row.hwnd), row.label_control].into_iter().flatten() {
                 self.remove_tool(hwnd);
                 update_look(|look| {
                     look.controls.remove(&(hwnd as isize));
@@ -950,12 +1026,16 @@ impl App {
             FilterRef::Plugin(index) => {
                 let plugin = &self.editor.profile.plugins[index];
                 let metadata = self.metadata_for(plugin).cloned();
-                let properties = model::plugin_editor_fields(&plugin.settings_json, metadata.as_ref())
-                    .filter(|properties| properties.len() < MAX_PROPERTY_ROWS as usize);
+                let properties =
+                    model::plugin_editor_fields(&plugin.settings_json, metadata.as_ref())
+                        .filter(|properties| properties.len() < MAX_PROPERTY_ROWS as usize);
                 match properties {
                     Some(properties) => {
                         for field in properties {
-                            let shown = if matches!(&field.value, PropertyValue::JsonScalar | PropertyValue::Json(_)) {
+                            let shown = if matches!(
+                                &field.value,
+                                PropertyValue::JsonScalar | PropertyValue::Json(_)
+                            ) {
                                 "Configured".into()
                             } else {
                                 field.value.display_text()
@@ -968,7 +1048,10 @@ impl App {
                                 } else {
                                     "Changes take effect with Save or Apply.".into()
                                 };
-                                Some(format!("{}\n\n{state}", field.tooltip.as_deref().unwrap_or("")))
+                                Some(format!(
+                                    "{}\n\n{state}",
+                                    field.tooltip.as_deref().unwrap_or("")
+                                ))
                             } else {
                                 field.tooltip
                             };
@@ -1030,10 +1113,7 @@ impl App {
                     }
                 }
             }
-            for control in [label_control, Some(hwnd)]
-                .into_iter()
-                .flatten()
-            {
+            for control in [label_control, Some(hwnd)].into_iter().flatten() {
                 unsafe {
                     SetWindowPos(
                         control,
@@ -1165,11 +1245,20 @@ impl App {
 
     /// Makes the profile target a tablet (`None`: whichever is connected).
     pub(super) fn choose_tablet(&mut self, name: Option<String>) {
-        if self.editor.profile.tablet_name().is_ok_and(|target| target == name) {
+        if self
+            .editor
+            .profile
+            .tablet_name()
+            .is_ok_and(|target| target == name)
+        {
             return;
         }
         if let Err(error) = self.editor.set_tablet(name) {
-            self.log(Level::Error, "Tablet", format!("Could not select the tablet: {error}. Current settings were kept."));
+            self.log(
+                Level::Error,
+                "Tablet",
+                format!("Could not select the tablet: {error}. Current settings were kept."),
+            );
             return;
         }
         self.mark_dirty();
@@ -1258,15 +1347,19 @@ impl App {
             self.sync_wheel_fields(None);
         }
         if self.metadata_refresh_deferred {
-            unsafe { PostMessageW(self.hwnd, WM_METADATA_REFRESH, 0, 0); }
+            unsafe {
+                PostMessageW(self.hwnd, WM_METADATA_REFRESH, 0, 0);
+            }
         }
     }
 
     pub(super) fn bounds(&self, which: AreaKind) -> Bounds {
         match which {
             AreaKind::Display => Bounds::from_rect(self.displays.virtual_screen),
-            AreaKind::Tablet => self.tablet_view
-                .map_or_else(|| Bounds::tablet_for(self.editor.profile.tablet), |view| view.bounds),
+            AreaKind::Tablet => self.tablet_view.map_or_else(
+                || Bounds::tablet_for(self.editor.profile.tablet),
+                |view| view.bounds,
+            ),
         }
     }
 
@@ -1286,7 +1379,9 @@ impl App {
             if self.prefs.lock_tablet_to_usable_area {
                 model::constrain(&mut mapping.tablet, view.bounds);
             }
-            if self.prefs.lock_aspect_ratio && let Some(source) = aspect {
+            if self.prefs.lock_aspect_ratio
+                && let Some(source) = aspect
+            {
                 model::lock_aspect(&mut mapping, source, view.bounds);
             }
             if self.prefs.lock_tablet_to_usable_area {
@@ -1495,7 +1590,11 @@ impl App {
             return;
         }
         // The default menu action writes a known attribute/editor default.
-        let value = if value.is_null() { previous.reset_value() } else { value };
+        let value = if value.is_null() {
+            previous.reset_value()
+        } else {
+            value
+        };
         let config = &self.editor.profile.plugins[plugin];
         let result = model::set_plugin_property(&config.settings_json, key, value.clone())
             .and_then(|settings_json| {
@@ -1572,7 +1671,7 @@ impl App {
                 return;
             }
             self.selected_filter = index as usize;
-                self.property_page = 0;
+            self.property_page = 0;
             self.rebuild_properties();
             self.layout();
         }
@@ -1594,9 +1693,9 @@ impl App {
 
     pub(super) fn can_leave_filter(&mut self) -> bool {
         if self
-                .properties
-                .iter()
-                .any(|row| self.invalid.contains(&(row.hwnd as isize)))
+            .properties
+            .iter()
+            .any(|row| self.invalid.contains(&(row.hwnd as isize)))
         {
             self.show_status(
                 "Correct invalid filter edits or use Defaults before changing the editor view."
@@ -1623,7 +1722,7 @@ impl App {
         match self.editor.reset_filter(target, metadata.as_ref()) {
             Ok(()) => {
                 // Defaults intentionally replace invalid property edits.
-                        self.mark_dirty();
+                self.mark_dirty();
                 self.refresh_filters();
                 self.layout();
                 self.log(
@@ -1651,7 +1750,9 @@ impl App {
     }
 
     pub(super) fn pen_policy_toggled(&mut self, index: usize) {
-        let Some(hwnd) = self.c.pen_policy.get(index).copied() else { return; };
+        let Some(hwnd) = self.c.pen_policy.get(index).copied() else {
+            return;
+        };
         let value = unsafe { SendMessageW(hwnd, BM_GETCHECK, 0, 0) } == BST_CHECKED as isize;
         let slot = match index {
             0 => &mut self.editor.profile.contact.drag_only,
@@ -1659,11 +1760,18 @@ impl App {
             2 => &mut self.editor.profile.contact.disable_tilt,
             _ => &mut self.editor.profile.contact.disable_rotation,
         };
-        if *slot != value { *slot = value; self.mark_dirty(); }
+        if *slot != value {
+            *slot = value;
+            self.mark_dirty();
+        }
     }
 
     pub(super) fn set_binding(&mut self, eraser: bool, enabled: bool) {
-        let managed = if eraser { self.editor.profile.managed_eraser_binding.take().is_some() } else { self.editor.profile.managed_tip_binding.take().is_some() };
+        let managed = if eraser {
+            self.editor.profile.managed_eraser_binding.take().is_some()
+        } else {
+            self.editor.profile.managed_tip_binding.take().is_some()
+        };
         if managed || self.editor.binding_enabled(eraser) != enabled {
             self.editor.set_binding_enabled(eraser, enabled);
             self.mark_dirty();
@@ -1898,8 +2006,11 @@ impl App {
             AREA_LIMITING => mapping.limiting ^= true,
             AREA_FULL | AREA_QUARTER if which == AreaKind::Tablet => {
                 let (width, height) = if self.prefs.lock_aspect_ratio {
-                    otd_core::areas::fit_rotated_aspect(bounds, mapping.tablet.rotation,
-                        mapping.display.width / mapping.display.height)
+                    otd_core::areas::fit_rotated_aspect(
+                        bounds,
+                        mapping.tablet.rotation,
+                        mapping.display.width / mapping.display.height,
+                    )
                 } else {
                     otd_core::areas::fit_rotated(bounds, mapping.tablet.rotation)
                 };
@@ -1910,7 +2021,9 @@ impl App {
             AREA_FULL | AREA_QUARTER if which == AreaKind::Display => {
                 aspect = Some(AspectSource::DisplayArea);
             }
-            c if which == AreaKind::Display && c >= AREA_DISPLAY => aspect = Some(AspectSource::DisplayArea),
+            c if which == AreaKind::Display && c >= AREA_DISPLAY => {
+                aspect = Some(AspectSource::DisplayArea)
+            }
             _ => {}
         }
         if matches!(command, AREA_LOCK_USABLE | AREA_LOCK_ASPECT) {
@@ -1937,7 +2050,9 @@ impl App {
         self.tab = tab;
         self.drag = None;
         update_look(|look| look.tab = tab);
-        if tab == Tab::Mouse { self.property_page = 0; }
+        if tab == Tab::Mouse {
+            self.property_page = 0;
+        }
         if matches!(tab, Tab::Filters | Tab::Tools) {
             self.selected_filter = 0;
             self.property_page = 0;
@@ -1951,13 +2066,20 @@ impl App {
 
     pub(super) fn cycle_tab(&mut self, step: isize) {
         let current = self.tab.primary().or_else(|| self.return_tab.primary());
-        let index = PRIMARY_TABS.iter().position(|tab| Some(*tab) == current).unwrap_or(0) as isize;
+        let index = PRIMARY_TABS
+            .iter()
+            .position(|tab| Some(*tab) == current)
+            .unwrap_or(0) as isize;
         let next = (index + step).rem_euclid(PRIMARY_TABS.len() as isize) as usize;
         self.select_primary_tab(PRIMARY_TABS[next]);
     }
 
     pub(super) fn select_primary_tab(&mut self, tab: Tab) {
-        self.select_tab(if tab == Tab::Aux { self.buttons_tab } else { tab });
+        self.select_tab(if tab == Tab::Aux {
+            self.buttons_tab
+        } else {
+            tab
+        });
     }
 
     pub(super) fn navigate_back(&mut self) {
@@ -2142,9 +2264,15 @@ impl App {
         self.metadata_refresh_deferred = false;
         self.import_pending = false;
         if let Some(plugin) = selected_plugin {
-            let same = |candidate: &PluginConfig| candidate.kind == plugin.kind
-                && candidate.path == plugin.path && candidate.type_name == plugin.type_name;
-            let previous = match target { Some(FilterRef::Plugin(index)) => index, _ => 0 };
+            let same = |candidate: &PluginConfig| {
+                candidate.kind == plugin.kind
+                    && candidate.path == plugin.path
+                    && candidate.type_name == plugin.type_name
+            };
+            let previous = match target {
+                Some(FilterRef::Plugin(index)) => index,
+                _ => 0,
+            };
             let index = if self.editor.profile.plugins.get(previous).is_some_and(same) {
                 Some(previous)
             } else {
@@ -2163,23 +2291,52 @@ impl App {
         self.sync_all();
         self.layout();
         let count = self.page_plugins().len();
-        unsafe { SendMessageW(self.c.filter_list, LB_SETTOPINDEX, top.min(count.saturating_sub(1)), 0); }
+        unsafe {
+            SendMessageW(
+                self.c.filter_list,
+                LB_SETTOPINDEX,
+                top.min(count.saturating_sub(1)),
+                0,
+            );
+        }
         self.update_title();
     }
 
-    fn owns_runtime_draft(&self, instance: &str, device: Option<&crate::device_sessions::SessionSnapshot>) -> bool {
-        self.runtime_dirty_origin.as_ref().zip(device).is_some_and(|((origin_instance, id, generation, revision), device)| {
-            origin_instance == instance && id == &device.id && device.device_generation >= *generation
-                && device.pending_generation.is_none() && self.edit_revision == *revision
-        })
+    fn owns_runtime_draft(
+        &self,
+        instance: &str,
+        device: Option<&crate::device_sessions::SessionSnapshot>,
+    ) -> bool {
+        self.runtime_dirty_origin.as_ref().zip(device).is_some_and(
+            |((origin_instance, id, generation, revision), device)| {
+                origin_instance == instance
+                    && id == &device.id
+                    && device.device_generation >= *generation
+                    && device.pending_generation.is_none()
+                    && self.edit_revision == *revision
+            },
+        )
     }
-    fn can_adopt_runtime_profile(&self, instance: &str, device: Option<&crate::device_sessions::SessionSnapshot>) -> bool {
+    fn can_adopt_runtime_profile(
+        &self,
+        instance: &str,
+        device: Option<&crate::device_sessions::SessionSnapshot>,
+    ) -> bool {
         self.invalid.is_empty() && (!self.dirty || self.owns_runtime_draft(instance, device))
     }
-    fn refresh_runtime_saved_origin(&mut self, instance: &str, device: &crate::device_sessions::SessionSnapshot) {
-        if !device.profile_saved || device.has_unsaved_runtime_edits
+    fn refresh_runtime_saved_origin(
+        &mut self,
+        instance: &str,
+        device: &crate::device_sessions::SessionSnapshot,
+    ) {
+        if !device.profile_saved
+            || device.has_unsaved_runtime_edits
             || !self.owns_runtime_draft(instance, Some(device))
-            || self.runtime_dirty_origin.as_ref().is_none_or(|(_, _, generation, _)| *generation != device.device_generation) {
+            || self
+                .runtime_dirty_origin
+                .as_ref()
+                .is_none_or(|(_, _, generation, _)| *generation != device.device_generation)
+        {
             return;
         }
         // Persistence can change without a device-generation/profile reply.
@@ -2196,12 +2353,23 @@ impl App {
             Err(error) => self.log(Level::Warning, "Settings", error),
         }
     }
-    fn adopt_runtime_profile(&mut self, profile: Profile, instance: &str,
-        device: Option<&crate::device_sessions::SessionSnapshot>) {
+    fn adopt_runtime_profile(
+        &mut self,
+        profile: Profile,
+        instance: &str,
+        device: Option<&crate::device_sessions::SessionSnapshot>,
+    ) {
         self.load_active_profile(profile);
-        if let Some(device) = device.filter(|device| device.has_unsaved_runtime_edits && !device.profile_saved) {
+        if let Some(device) =
+            device.filter(|device| device.has_unsaved_runtime_edits && !device.profile_saved)
+        {
             self.mark_dirty();
-            self.runtime_dirty_origin = Some((instance.to_owned(), device.id.clone(), device.device_generation, self.edit_revision));
+            self.runtime_dirty_origin = Some((
+                instance.to_owned(),
+                device.id.clone(),
+                device.device_generation,
+                self.edit_revision,
+            ));
         } else {
             // Callers only adopt a clean editor or an unchanged owned runtime
             // draft. Actual user edits never reach this branch.
@@ -2284,19 +2452,23 @@ impl App {
     }
 
     pub(super) fn import_otd(&mut self) {
-        if self.original_pending||self.import_pending {
+        if self.original_pending || self.import_pending {
             return;
         }
         let generation = self.metadata_generation;
         let edit_revision = self.edit_revision;
-        let selected_tablet = self.selected_device.as_ref().map(|device| device.tablet.clone());
+        let selected_tablet = self
+            .selected_device
+            .as_ref()
+            .map(|device| device.tablet.clone());
         self.import_pending =
             self.background("settings-import", move || BackgroundResult::Import {
                 generation,
                 edit_revision,
                 result: crate::hid::connected_tablets_for_import()
                     .and_then(|names| {
-                        let names = background::import_tablet_order(names, selected_tablet.as_deref());
+                        let names =
+                            background::import_tablet_order(names, selected_tablet.as_deref());
                         crate::plugins::load_original_profile(&names)
                     })
                     .map(Box::new),
@@ -2311,7 +2483,14 @@ impl App {
     }
 
     fn save_to_mode(&mut self, path: PathBuf, create_new: bool) {
-        if self.original_pending{self.log(Level::Warning,"Original settings","Wait for the collection operation before saving this profile.");return;}
+        if self.original_pending {
+            self.log(
+                Level::Warning,
+                "Original settings",
+                "Wait for the collection operation before saving this profile.",
+            );
+            return;
+        }
         if self.recovered_backup && !create_new {
             self.log(
                 Level::Error,
@@ -2417,7 +2596,19 @@ impl App {
     }
 
     pub(super) fn submit_control(&mut self, command: client::ClientCommand) -> bool {
-        if self.original_pending&&!matches!(&command,client::ClientCommand::DeviceLifecycle{start:false,..}) { self.log(Level::Warning,"Original settings","Wait for the original collection operation to finish."); return false; }
+        if self.original_pending
+            && !matches!(
+                &command,
+                client::ClientCommand::DeviceLifecycle { start: false, .. }
+            )
+        {
+            self.log(
+                Level::Warning,
+                "Original settings",
+                "Wait for the original collection operation to finish.",
+            );
+            return false;
+        }
         if self.closing || self.update_restart_pending {
             return false;
         }
@@ -2446,7 +2637,11 @@ impl App {
 
     pub(super) fn auto_start(&mut self) {
         // Input autostart is separate from the client's daemon process launch.
-        if !self.closing && !self.update_restart_pending && self.running.is_none() && !self.control_busy {
+        if !self.closing
+            && !self.update_restart_pending
+            && self.running.is_none()
+            && !self.control_busy
+        {
             match self.checked_profile() {
                 Ok(profile) => self.start_with_intent(profile, true),
                 Err(error) => self.log(Level::Error, "Settings", error),
@@ -2466,11 +2661,16 @@ impl App {
 
     pub(super) fn apply_experimental(&mut self, settings: crate::experimental::Settings) {
         if self.submit_control(client::ClientCommand::Experimental(settings)) {
-            if let Some(page) = &self.experimental { page.set_busy(true); }
+            if let Some(page) = &self.experimental {
+                page.set_busy(true);
+            }
             self.log(Level::Info, "Experimental", "Saving experimental settings and applying CPU affinity. Use Stop, then Start to apply MMCSS changes.");
         } else if let Some(page) = &self.experimental {
             page.set_busy(true);
-            page.complete(&Err("The daemon is busy or unavailable. See the Console and retry Save and apply.".into()));
+            page.complete(&Err(
+                "The daemon is busy or unavailable. See the Console and retry Save and apply."
+                    .into(),
+            ));
         }
     }
 
@@ -2528,19 +2728,27 @@ impl App {
             return;
         };
         let command = if let Some(device) = &self.selected_device {
-            client::ClientCommand::ApplyDevice { expected, id: device.id.clone(),
-                device_generation: device.device_generation, profile: Box::new(profile) }
-        } else { client::ClientCommand::Restart {
-            expected,
-            profile: Box::new(profile),
-        } };
+            client::ClientCommand::ApplyDevice {
+                expected,
+                id: device.id.clone(),
+                device_generation: device.device_generation,
+                profile: Box::new(profile),
+            }
+        } else {
+            client::ClientCommand::Restart {
+                expected,
+                profile: Box::new(profile),
+            }
+        };
         if self.submit_control(command) {
             self.log(Level::Info, "Daemon", "Settings apply requested for the selected tablet. Other tablets keep their profiles; the device state reports completion.");
         }
     }
 
     pub(super) fn driver_status(&mut self) {
-        if self.update_restart_pending { return; }
+        if self.update_restart_pending {
+            return;
+        }
         let events = self
             .daemon_client
             .as_ref()
@@ -2548,39 +2756,47 @@ impl App {
             .unwrap_or_default();
         for event in events {
             match event {
-                client::ClientEvent::DaemonReady(result) => {
-                    match result {
-                        Ok(()) => self.log(Level::Info, "Daemon", "The separate daemon process is available."),
-                        Err(error) => self.log(Level::Error, "Daemon", error),
-                    }
-                }
+                client::ClientEvent::DaemonReady(result) => match result {
+                    Ok(()) => self.log(
+                        Level::Info,
+                        "Daemon",
+                        "The separate daemon process is available.",
+                    ),
+                    Err(error) => self.log(Level::Error, "Daemon", error),
+                },
                 client::ClientEvent::VersionWarning(message) => {
                     self.log(Level::Warning, "Version", &message);
                     tray::balloon(self.hwnd, "Driver and panel versions", &message);
                 }
-                client::ClientEvent::CloseFinished(result) => {
-                    match result {
-                        Ok(warning) => {
-                            if let Some(warning) = warning {
-                                self.log(Level::Warning, "Daemon", warning);
-                            }
-                            self.close_ready = true;
-                            self.save_prefs();
-                            unsafe { PostMessageW(self.hwnd, WM_CLOSE, 0, 0); }
+                client::ClientEvent::CloseFinished(result) => match result {
+                    Ok(warning) => {
+                        if let Some(warning) = warning {
+                            self.log(Level::Warning, "Daemon", warning);
                         }
-                        Err(error) => {
-                            self.closing = false;
-                            self.control_busy = false;
-                            unsafe { EnableWindow(self.hwnd, 1); }
-                            plugin_manager::set_restart_pending(false);
-                            self.log(Level::Error, "Daemon", error);
-                            self.set_driver_state(self.driver);
+                        self.close_ready = true;
+                        self.save_prefs();
+                        unsafe {
+                            PostMessageW(self.hwnd, WM_CLOSE, 0, 0);
                         }
                     }
-                }
+                    Err(error) => {
+                        self.closing = false;
+                        self.control_busy = false;
+                        unsafe {
+                            EnableWindow(self.hwnd, 1);
+                        }
+                        plugin_manager::set_restart_pending(false);
+                        self.log(Level::Error, "Daemon", error);
+                        self.set_driver_state(self.driver);
+                    }
+                },
                 client::ClientEvent::ActionFinished(result) => {
-                    if !self.closing { self.control_busy = false; }
-                    if let Some(page) = &self.experimental { page.complete(&result); }
+                    if !self.closing {
+                        self.control_busy = false;
+                    }
+                    if let Some(page) = &self.experimental {
+                        page.complete(&result);
+                    }
                     if let Err(error) = result {
                         self.log(Level::Error, "Daemon", error);
                     }
@@ -2597,14 +2813,23 @@ impl App {
                     self.log(if error.is_some() { Level::Warning } else { Level::Info }, "Daemon",
                         error.unwrap_or_else(|| "No daemon is available. Start driver launches it; closing this panel stops tablet input.".into()));
                 }
-                client::ClientEvent::Snapshot { status, profile, sessions, editing_device } => {
+                client::ClientEvent::Snapshot {
+                    status,
+                    profile,
+                    sessions,
+                    editing_device,
+                } => {
                     let identity = status.identity();
                     if self.daemon_instance.as_deref() != Some(&status.instance) {
                         self.daemon_instance = Some(status.instance.clone());
                         self.daemon_log_sequence = 0;
                     }
                     self.running = client::active(status.state).then_some(Running { identity });
-                    let next_device = sessions.sessions.iter().find(|device| Some(&device.id) == editing_device.as_ref()).cloned();
+                    let next_device = sessions
+                        .sessions
+                        .iter()
+                        .find(|device| Some(&device.id) == editing_device.as_ref())
+                        .cloned();
                     let switched_device = next_device.as_ref().map(|device| &device.id)
                         != self.selected_device.as_ref().map(|device| &device.id);
                     self.device_sessions = sessions.sessions;
@@ -2615,17 +2840,26 @@ impl App {
                         }
                     }
                     if let Some(profile) = profile.filter(|_| !self.closing) {
-                        if !self.can_adopt_runtime_profile(&status.instance, self.selected_device.as_ref()) {
+                        if !self.can_adopt_runtime_profile(
+                            &status.instance,
+                            self.selected_device.as_ref(),
+                        ) {
                             self.log(Level::Warning, "Settings", "Daemon configuration changed. Unsaved local edits were kept; Apply deliberately replaces the active configuration.");
                         } else {
                             if let Some(device) = self.selected_device.clone()
-                                && (switched_device || self.profile_path == PathBuf::from(&device.profile_path)) {
+                                && (switched_device
+                                    || self.profile_path == PathBuf::from(&device.profile_path))
+                            {
                                 self.profile_path = PathBuf::from(&device.profile_path);
-                                self.profile_revision_floor = device.persisted_revision.unwrap_or(0);
+                                self.profile_revision_floor =
+                                    device.persisted_revision.unwrap_or(0);
                                 self.recovered_backup = false;
                                 match crate::device_sessions::observed_profile_snapshot(&device) {
                                     Ok(snapshot) => self.profile_snapshot = Some(snapshot),
-                                    Err(error) => { self.profile_snapshot = None; self.log(Level::Warning, "Settings", error); }
+                                    Err(error) => {
+                                        self.profile_snapshot = None;
+                                        self.log(Level::Warning, "Settings", error);
+                                    }
                                 }
                             }
                             let device = self.selected_device.clone();
@@ -2684,8 +2918,15 @@ impl App {
             self.recording_close_pending = true;
             self.drag = None;
             debugger::close();
-            self.show_status("Finishing debugger recording before shutdown...".into(), Level::Info, false);
-            unsafe { EnableWindow(self.hwnd, 0); SetTimer(self.hwnd, 0xD06, 33, None); }
+            self.show_status(
+                "Finishing debugger recording before shutdown...".into(),
+                Level::Info,
+                false,
+            );
+            unsafe {
+                EnableWindow(self.hwnd, 0);
+                SetTimer(self.hwnd, 0xD06, 33, None);
+            }
             plugin_manager::set_restart_pending(true);
             return false;
         }
@@ -2698,8 +2939,12 @@ impl App {
             return true;
         }
         self.connect_daemon();
-        let result = self.daemon_client.as_ref()
-            .ok_or_else(|| "Daemon client unavailable; input cleanup could not be confirmed.".to_owned())
+        let result = self
+            .daemon_client
+            .as_ref()
+            .ok_or_else(|| {
+                "Daemon client unavailable; input cleanup could not be confirmed.".to_owned()
+            })
             .and_then(|client| client.submit(client::ClientCommand::Close));
         match result {
             Ok(()) => {
@@ -2708,13 +2953,21 @@ impl App {
                 self.drag = None;
                 debugger::close();
                 self.set_driver_state(DriverState::Stopping);
-                self.show_status("Shutting down the daemon before closing…".into(), Level::Info, false);
-                unsafe { EnableWindow(self.hwnd, 0); }
+                self.show_status(
+                    "Shutting down the daemon before closing…".into(),
+                    Level::Info,
+                    false,
+                );
+                unsafe {
+                    EnableWindow(self.hwnd, 0);
+                }
                 plugin_manager::set_restart_pending(true);
             }
             Err(error) => {
                 self.closing = false;
-                unsafe { EnableWindow(self.hwnd, 1); }
+                unsafe {
+                    EnableWindow(self.hwnd, 1);
+                }
                 plugin_manager::set_restart_pending(false);
                 self.log(Level::Error, "Daemon", error);
             }

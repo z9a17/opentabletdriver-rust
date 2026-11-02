@@ -19,9 +19,13 @@ pub(super) struct Statistics {
 impl Statistics {
     /// Duplicate polls must neither inflate statistics nor create recordings.
     pub fn observe(&mut self, report: &DebugReport) -> bool {
-        if report.raw_hex.is_empty() { return false; }
+        if report.raw_hex.is_empty() {
+            return false;
+        }
         if let Some((tablet, sequence)) = &self.previous {
-            if tablet == &report.tablet && *sequence == report.sequence { return false; }
+            if tablet == &report.tablet && *sequence == report.sequence {
+                return false;
+            }
             if tablet == &report.tablet && report.sequence > *sequence {
                 self.skipped = self.skipped.saturating_add(report.sequence - *sequence - 1);
             }
@@ -33,16 +37,25 @@ impl Statistics {
     }
 
     fn collect(&mut self, path: &str, value: &Value, depth: usize) {
-        if depth > 4 { return; }
-        if let Some(number) = value.as_f64().or_else(|| value.as_bool().map(|v| u8::from(v) as f64)) {
-            if !number.is_finite() { return; }
+        if depth > 4 {
+            return;
+        }
+        if let Some(number) = value
+            .as_f64()
+            .or_else(|| value.as_bool().map(|v| u8::from(v) as f64))
+        {
+            if !number.is_finite() {
+                return;
+            }
             if self.ranges.len() < 128 || self.ranges.contains_key(path) {
                 let range = self.ranges.entry(path.into()).or_insert((number, number));
                 range.0 = range.0.min(number);
                 range.1 = range.1.max(number);
             }
         } else if let Some(fields) = value.as_object() {
-            for (key, value) in fields { self.collect(&format!("{path}{key}."), value, depth + 1); }
+            for (key, value) in fields {
+                self.collect(&format!("{path}{key}."), value, depth + 1);
+            }
         } else if let Some(values) = value.as_array() {
             for (index, value) in values.iter().take(64).enumerate() {
                 self.collect(&format!("{path}{index}"), value, depth + 1);
@@ -51,9 +64,13 @@ impl Statistics {
     }
 
     pub fn lines(&self) -> Vec<String> {
-        let mut lines = vec![format!("Samples: {}   Sequence gaps: {}", self.samples, self.skipped)];
-        lines.extend(self.ranges.iter().map(|(name, (min, max))|
-            format!("{}: {min:.2} .. {max:.2}", name.trim_end_matches('.'))));
+        let mut lines = vec![format!(
+            "Samples: {}   Sequence gaps: {}",
+            self.samples, self.skipped
+        )];
+        lines.extend(self.ranges.iter().map(|(name, (min, max))| {
+            format!("{}: {min:.2} .. {max:.2}", name.trim_end_matches('.'))
+        }));
         lines
     }
 }
@@ -74,30 +91,50 @@ pub(super) enum Recording {
 
 impl Recording {
     pub fn start(path: &Path, full_rate: bool) -> Result<Self, String> {
-        if full_rate { super::debugger_capture::Recorder::start(path).map(Self::Capture) }
-        else { Recorder::start(path).map(Self::Sampled) }
+        if full_rate {
+            super::debugger_capture::Recorder::start(path).map(Self::Capture)
+        } else {
+            Recorder::start(path).map(Self::Sampled)
+        }
     }
     pub fn push(&self, elapsed_us: u64, report: DebugReport) {
-        if let Self::Sampled(recorder) = self { recorder.push(elapsed_us, report); }
+        if let Self::Sampled(recorder) = self {
+            recorder.push(elapsed_us, report);
+        }
     }
     pub fn stop(&mut self) {
-        match self { Self::Sampled(recorder) => recorder.stop(), Self::Capture(recorder) => recorder.stop() }
+        match self {
+            Self::Sampled(recorder) => recorder.stop(),
+            Self::Capture(recorder) => recorder.stop(),
+        }
     }
     pub fn active(&self) -> bool {
-        match self { Self::Sampled(recorder) => recorder.active(), Self::Capture(recorder) => recorder.active() }
+        match self {
+            Self::Sampled(recorder) => recorder.active(),
+            Self::Capture(recorder) => recorder.active(),
+        }
     }
     pub fn status(&self) -> String {
-        match self { Self::Sampled(recorder) => recorder.status(), Self::Capture(recorder) => recorder.status() }
+        match self {
+            Self::Sampled(recorder) => recorder.status(),
+            Self::Capture(recorder) => recorder.status(),
+        }
     }
     pub fn result(&self) -> Option<Result<(), String>> {
-        match self { Self::Sampled(recorder) => recorder.result(), Self::Capture(recorder) => recorder.result() }
+        match self {
+            Self::Sampled(recorder) => recorder.result(),
+            Self::Capture(recorder) => recorder.result(),
+        }
     }
 }
 
 impl Recorder {
     pub fn start(path: &Path) -> Result<Self, String> {
         // Never silently replace an existing capture, like profile Save As.
-        let file = std::fs::OpenOptions::new().write(true).create_new(true).open(path)
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
             .map_err(|error| format!("Cannot create recording {}: {error}", path.display()))?;
         let (sender, receive) = mpsc::sync_channel::<(u64, DebugReport)>(256);
         let (complete, completed) = mpsc::channel();
@@ -127,30 +164,51 @@ impl Recorder {
             let _ = std::fs::remove_file(path);
             return Err(error.to_string());
         }
-        Ok(Self { sender: Some(sender), completed, written, dropped })
+        Ok(Self {
+            sender: Some(sender),
+            completed,
+            written,
+            dropped,
+        })
     }
 
     pub fn push(&self, elapsed_us: u64, report: DebugReport) {
         if let Some(sender) = &self.sender {
             match sender.try_send((elapsed_us, report)) {
-                Ok(()) => {},
-                Err(mpsc::TrySendError::Full(_)) => { self.dropped.fetch_add(1, Ordering::Relaxed); },
-                Err(mpsc::TrySendError::Disconnected(_)) => {},
+                Ok(()) => {}
+                Err(mpsc::TrySendError::Full(_)) => {
+                    self.dropped.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(mpsc::TrySendError::Disconnected(_)) => {}
             }
         }
     }
 
-    pub fn stop(&mut self) { self.sender.take(); }
-    pub fn active(&self) -> bool { self.sender.is_some() }
+    pub fn stop(&mut self) {
+        self.sender.take();
+    }
+    pub fn active(&self) -> bool {
+        self.sender.is_some()
+    }
     pub fn status(&self) -> String {
-        format!("{}: {} saved, {} queue drops", if self.active() { "Recording samples" } else { "Finishing" },
-            self.written.load(Ordering::Relaxed), self.dropped.load(Ordering::Relaxed))
+        format!(
+            "{}: {} saved, {} queue drops",
+            if self.active() {
+                "Recording samples"
+            } else {
+                "Finishing"
+            },
+            self.written.load(Ordering::Relaxed),
+            self.dropped.load(Ordering::Relaxed)
+        )
     }
     pub fn result(&self) -> Option<Result<(), String>> {
         match self.completed.try_recv() {
             Ok(result) => Some(result),
             Err(mpsc::TryRecvError::Empty) => None,
-            Err(mpsc::TryRecvError::Disconnected) => Some(Err("Recording worker exited without a completion result.".into())),
+            Err(mpsc::TryRecvError::Disconnected) => Some(Err(
+                "Recording worker exited without a completion result.".into(),
+            )),
         }
     }
 }
@@ -159,8 +217,13 @@ impl Recorder {
 mod tests {
     use super::*;
     fn report(sequence: u64) -> DebugReport {
-        DebugReport { tablet: Some("fixture".into()), parser: None, sequence, raw_hex: "1001".into(),
-            values: json!({"kind":"data", "values":{"position":[sequence, -2], "pressure":sequence}}) }
+        DebugReport {
+            tablet: Some("fixture".into()),
+            parser: None,
+            sequence,
+            raw_hex: "1001".into(),
+            values: json!({"kind":"data", "values":{"position":[sequence, -2], "pressure":sequence}}),
+        }
     }
     #[test]
     fn samples_distinguish_duplicate_polls_gaps_and_restart() {
@@ -175,9 +238,14 @@ mod tests {
     }
     #[test]
     fn recording_drains_on_stop_and_refuses_overwrite() {
-        let directory = std::path::PathBuf::from("E:/AgentWork/tmp")
-            .join(format!("otd-recording-fixture-{}-{}", std::process::id(),
-                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let directory = std::env::temp_dir().join(format!(
+            "otd-recording-fixture-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("sample.jsonl");
         let mut recorder = Recorder::start(&path).unwrap();
@@ -185,9 +253,16 @@ mod tests {
         // A UI statistics reset may offer the same last packet again.
         recorder.push(456, report(7));
         recorder.stop();
-        recorder.completed.recv_timeout(std::time::Duration::from_secs(3)).unwrap().unwrap();
-        let lines: Vec<Value> = std::fs::read_to_string(&path).unwrap().lines()
-            .map(|line| serde_json::from_str(line).unwrap()).collect();
+        recorder
+            .completed
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap()
+            .unwrap();
+        let lines: Vec<Value> = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
         assert_eq!(lines[0]["complete_hid_stream"], false);
         assert_eq!(lines[1]["report"]["sequence"], 7);
         assert_eq!(lines[1]["elapsed_us"], 123);

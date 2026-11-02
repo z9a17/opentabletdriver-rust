@@ -6,22 +6,65 @@
 //!
 //!     cargo run --release --locked --example bench -- --help
 
-// The driver's Windows modules, compiled here unchanged.
+// The driver's modules, compiled here unchanged. An inline module with a path
+// resolves their own nested modules as the driver's crate root does.
+#[allow(dead_code, unused_imports)]
+#[path = "../../src"]
+mod driver {
+    pub mod action_output;
+    pub mod binding_presets;
+    pub mod companions;
+    pub mod control;
+    pub mod custom_devices;
+    pub mod daemon;
+    pub mod decode_cli;
+    pub mod device_sessions;
+    pub mod diagnostics;
+    pub mod display;
+    pub mod dotnet;
+    pub mod download;
+    pub mod experimental;
+    pub mod global_tools;
+    pub mod hid;
+    pub mod managed_host;
+    pub mod managed_inputs;
+    pub mod managed_services;
+    pub mod original_driver;
+    pub mod output;
+    pub mod pen_output;
+    pub mod plugin_catalog;
+    pub mod plugin_manager;
+    pub mod plugins;
+    pub mod priority;
+    pub mod runtime;
+    pub mod session;
+    pub mod shared_devices;
+    pub mod tool_host;
+    pub mod update;
+    pub mod upstream_rpc;
+    pub mod winusb;
+}
+use driver::*;
+
+// The driver's crate root provides these to its daemon modules. The harness
+// compiles those modules only for the types its timed paths share with them,
+// and never runs a daemon.
 #[allow(dead_code)]
-#[path = "../../src/dotnet.rs"]
-mod dotnet;
+fn check_tablet_configurations()
+-> Result<std::borrow::Cow<'static, otd_core::tablets::Database>, String> {
+    otd_core::config::configured_tablets()
+}
 #[allow(dead_code)]
-#[path = "../../src/hid.rs"]
-mod hid;
+fn single_instance() -> Result<hid::OwnedHandle, String> {
+    Err("the benchmark harness runs no driver instance".into())
+}
 #[allow(dead_code)]
-#[path = "../../src/output.rs"]
-mod output;
-#[allow(dead_code)]
-#[path = "../../src/plugins.rs"]
-mod plugins;
-#[allow(dead_code)]
-#[path = "../../src/priority.rs"]
-mod priority;
+fn load_runtime_profile(
+    _config: Option<&PathBuf>,
+    _otd_settings: Option<&PathBuf>,
+) -> Result<Profile, String> {
+    Err("the benchmark harness runs no daemon".into())
+}
 
 mod clock;
 mod differential;
@@ -30,7 +73,7 @@ mod stats;
 mod trace;
 
 // The portable core, at the crate paths the driver's modules use.
-use otd_core::{config, protocol};
+use otd_core::{config, mapping, protocol, radial_follow, relative};
 
 use std::hint::black_box;
 use std::io;
@@ -47,7 +90,7 @@ use otd_core::mapping::{Mapper, OtdArea, Rect};
 use otd_core::output::{MousePacket, flags};
 use otd_core::pipeline::ReportPipeline;
 use otd_core::plugins::{Filters, NoFilters, PluginConfig, PluginKind};
-use otd_core::session::{self, Displays, Mode, Read, ReportSource};
+use otd_core::session::{Displays, Mode, Read, ReportSource};
 use otd_core::test_alloc::Count;
 
 use crate::plugins::PluginChain;
@@ -401,14 +444,8 @@ fn pipeline(
         if let Ok(Some(pen)) = protocol::parse(report) {
             // With the raw packet, as the driver passes it: .NET filters
             // refuse a pen report without one.
-            let _ = black_box(pipeline.process_with_raw(
-                pen,
-                report,
-                now,
-                mapper,
-                &mut filters,
-                send,
-            ));
+            let _ =
+                black_box(pipeline.process_with_raw(pen, report, now, mapper, &mut filters, send));
         }
     }))
 }
@@ -509,7 +546,7 @@ fn session_case<F: Filters>(
             };
             let mut displays = FixedDisplays(desktop());
             let mut filters = make_filters()?;
-            session::run(
+            otd_core::session::run(
                 &mut source,
                 &mut displays,
                 profile,

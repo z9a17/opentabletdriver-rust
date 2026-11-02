@@ -87,7 +87,12 @@ impl Controls {
             ),
             &wheels,
         );
-        controls.mouse_buttons = count(specifications.mouse_buttons.as_ref().and_then(|buttons| buttons.button_count));
+        controls.mouse_buttons = count(
+            specifications
+                .mouse_buttons
+                .as_ref()
+                .and_then(|buttons| buttons.button_count),
+        );
         controls
     }
 }
@@ -172,7 +177,9 @@ impl TabletSpec {
             max_y: whole(positive(digitizer.max_y, "MaxY")?, "MaxY")?,
             max_pressure: u16::try_from(max_pressure)
                 .map_err(|_| format!("{name} pen MaxPressure {max_pressure} exceeds 65535"))?,
-            rotation_range: pen.min_rotation.zip(pen.max_rotation)
+            rotation_range: pen
+                .min_rotation
+                .zip(pen.max_rotation)
                 .filter(|(min, max)| i64::from(*max) > i64::from(*min)),
             width_mm: positive(digitizer.width, "Width")?,
             height_mm: positive(digitizer.height, "Height")?,
