@@ -34,7 +34,10 @@ bindings, plugin bindings, key names this driver cannot press) is reported in th
 import diagnostics, and that button does nothing. Key names are OpenTabletDriver's
 (`D1` for the 1 key, `Control`, `Shift`, `Alt`, `LeftApplication`, `Keypad5`,
 ...); `Control`, `Shift`, `Alt` and `Application` mean the left key. The media
-keys (`Mute`, `VolumeUp`, `PlayPause`, ...) are not supported.
+keys `Mute`, `VolumeDown`, `VolumeUp`, `PlayPause`, `PreviousSong`, `NextSong`
+and `StopSong` are supported. Like the pinned upstream
+[MacOSVirtualKeyboard](https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Desktop/Interop/Input/Keyboard/MacOSVirtualKeyboard.cs),
+macOS presses only `Mute`, `VolumeDown` and `VolumeUp`.
 
 Since 0.15.5, `profiles export` writes supported pen-button edits into a copy of
 the archived OpenTabletDriver document. It preserves unchanged bindings, other

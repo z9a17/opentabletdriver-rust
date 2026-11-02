@@ -1122,23 +1122,10 @@ mod tests {
     fn archives_install_only_with_the_catalog_hash() {
         let root = std::env::temp_dir().join(format!("otd-plugin-install-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        let (source, work, plugins) =
-            (root.join("source"), root.join("work"), root.join("Plugins"));
-        fs::create_dir_all(&source).unwrap();
+        let (work, plugins) = (root.join("work"), root.join("Plugins"));
         fs::create_dir_all(&work).unwrap();
-        fs::write(source.join("Filter.dll"), b"dll").unwrap();
         let archive = root.join("plugin.zip");
-        let status = Command::new(system_tool("tar.exe"))
-            .creation_flags(CREATE_NO_WINDOW)
-            .arg("-a")
-            .arg("-cf")
-            .arg(&archive)
-            .arg("-C")
-            .arg(&source)
-            .arg("Filter.dll")
-            .status()
-            .unwrap();
-        assert!(status.success());
+        zip_entries(&archive, &["Filter.dll"]);
         let mut plugin = entry("1.0.0.0", "0.6.0.0", None);
         plugin.compression_format = Some("zip".into());
         plugin.sha256 = Some("00".repeat(32));
@@ -1175,17 +1162,7 @@ mod tests {
             serde_json::from_slice(&fs::read(folder.join("metadata.json")).unwrap()).unwrap();
         assert_eq!(saved.owner, "Local file");
         let archive = root.join("Packed.zip");
-        let status = Command::new(system_tool("tar.exe"))
-            .creation_flags(CREATE_NO_WINDOW)
-            .arg("-a")
-            .arg("-cf")
-            .arg(&archive)
-            .arg("-C")
-            .arg(&root)
-            .arg("MyFilter.dll")
-            .status()
-            .unwrap();
-        assert!(status.success());
+        zip_entries(&archive, &["MyFilter.dll"]);
         let folder = install_file_into(&archive, &plugins, &work).unwrap();
         assert_eq!(dlls(&folder), [plugins.join("Packed").join("MyFilter.dll")]);
         let text = root.join("notes.txt");
@@ -1226,40 +1203,59 @@ mod tests {
         assert_eq!(plugin.folder(), "_Evil_Plugin_1");
     }
 
+    /// Writes a ZIP whose entries hold `fixture`, or are directories when the
+    /// name ends in `/`. Entries are stored (uncompressed) with their CRC-32,
+    /// so the archive is byte-identical on Windows, Linux and macOS and needs
+    /// no PowerShell or `tar`, which cannot write ZIPs everywhere.
     fn zip_entries(path: &Path, names: &[&str]) {
-        let script = r#"
-$ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-$zip = [IO.Compression.ZipFile]::Open($env:OTD_TEST_ZIP, [IO.Compression.ZipArchiveMode]::Create)
-try {
-    foreach ($name in (ConvertFrom-Json $env:OTD_TEST_NAMES)) {
-        $entry = $zip.CreateEntry($name)
-        if (-not $name.EndsWith('/')) {
-            $stream = $entry.Open()
-            try { $bytes = [Text.Encoding]::UTF8.GetBytes('fixture'); $stream.Write($bytes, 0, $bytes.Length) }
-            finally { $stream.Dispose() }
+        fn crc32(bytes: &[u8]) -> u32 {
+            let mut crc = !0u32;
+            for &byte in bytes {
+                crc ^= u32::from(byte);
+                for _ in 0..8 {
+                    crc = (crc >> 1) ^ (0xedb8_8320 & (crc & 1).wrapping_neg());
+                }
+            }
+            !crc
         }
-    }
-} finally { $zip.Dispose() }
-"#;
-        let output = Command::new(system_tool("WindowsPowerShell/v1.0/powershell.exe"))
-            .creation_flags(CREATE_NO_WINDOW)
-            .args([
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                script,
-            ])
-            .env("OTD_TEST_ZIP", path)
-            .env("OTD_TEST_NAMES", serde_json::to_string(names).unwrap())
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        let (mut zip, mut central) = (Vec::new(), Vec::new());
+        for name in names {
+            let data: &[u8] = if name.ends_with('/') { b"" } else { b"fixture" };
+            let size = u32::try_from(data.len()).unwrap().to_le_bytes();
+            // Shared by both headers: version 2.0 needed, no flags, stored,
+            // 1980-01-01 00:00, CRC-32, sizes, name length, no extra field.
+            let mut fields = Vec::new();
+            for value in [20u16, 0, 0, 0, 0x21] {
+                fields.extend_from_slice(&value.to_le_bytes());
+            }
+            fields.extend_from_slice(&crc32(data).to_le_bytes());
+            fields.extend_from_slice(&size);
+            fields.extend_from_slice(&size);
+            fields.extend_from_slice(&u16::try_from(name.len()).unwrap().to_le_bytes());
+            fields.extend_from_slice(&0u16.to_le_bytes());
+            let offset = u32::try_from(zip.len()).unwrap().to_le_bytes();
+            zip.extend_from_slice(b"PK\x03\x04");
+            zip.extend_from_slice(&fields);
+            zip.extend_from_slice(name.as_bytes());
+            zip.extend_from_slice(data);
+            // Made by version 2.0 on MS-DOS; no comment, disk 0, no attributes.
+            central.extend_from_slice(b"PK\x01\x02\x14\x00");
+            central.extend_from_slice(&fields);
+            central.extend_from_slice(&[0; 10]);
+            central.extend_from_slice(&offset);
+            central.extend_from_slice(name.as_bytes());
+        }
+        let count = u16::try_from(names.len()).unwrap().to_le_bytes();
+        let central_size = u32::try_from(central.len()).unwrap().to_le_bytes();
+        let central_offset = u32::try_from(zip.len()).unwrap().to_le_bytes();
+        zip.extend_from_slice(&central);
+        zip.extend_from_slice(b"PK\x05\x06\0\0\0\0");
+        zip.extend_from_slice(&count);
+        zip.extend_from_slice(&count);
+        zip.extend_from_slice(&central_size);
+        zip.extend_from_slice(&central_offset);
+        zip.extend_from_slice(&0u16.to_le_bytes());
+        fs::write(path, zip).unwrap();
     }
 
     #[test]

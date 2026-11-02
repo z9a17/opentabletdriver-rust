@@ -231,15 +231,29 @@ impl Operation {
         })
     }
 
+    /// The control thread's wake event, unless this operation must not consume it.
+    fn wake_event(&self) -> Option<HANDLE> {
+        self.wake_control.then(super::wake_event).flatten()
+    }
+
     fn wait(
         &mut self,
         deadline: Option<Instant>,
         stop: &AtomicBool,
         tick: &mut impl FnMut(),
     ) -> io::Result<u32> {
+        self.wait_with_wake(self.wake_event(), deadline, stop, tick)
+    }
+
+    fn wait_with_wake(
+        &mut self,
+        wake: Option<HANDLE>,
+        deadline: Option<Instant>,
+        stop: &AtomicBool,
+        tick: &mut impl FnMut(),
+    ) -> io::Result<u32> {
         // Sleep until the operation completes or the handler has work; a
         // timer here would wake an idle daemon many times a second.
-        let wake = self.wake_control.then(super::wake_event).flatten();
         let handles = [self.event.0, wake.unwrap_or(null_mut())];
         let count = if wake.is_some() { 2 } else { 1 };
         loop {
@@ -829,30 +843,41 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
+    use windows_sys::Win32::System::Threading::SetEvent;
 
     /// An idle server sleeps until it is woken: no timer polls its handler.
     #[test]
     fn idle_wait_polls_only_when_woken() {
+        // The server's operations sleep on the process-wide control wake event.
+        let owner = Operation::new(null_mut()).unwrap();
+        assert!(owner.wake_event().is_some());
+        assert_eq!(owner.wake_event(), crate::control::wake_event());
+        // Concurrent tests' workers signal that event when they notify or exit,
+        // so count only this test's wakes, on an equivalent auto-reset event.
+        let wake = unsafe { CreateEventW(null(), 0, 0, null()) };
+        assert!(!wake.is_null());
         let stop = Arc::new(AtomicBool::new(false));
         let ticks = Arc::new(AtomicUsize::new(0));
         let waiter = {
-            let (stop, ticks) = (Arc::clone(&stop), Arc::clone(&ticks));
+            let (stop, ticks, wake) = (Arc::clone(&stop), Arc::clone(&ticks), wake as usize);
             std::thread::spawn(move || {
                 // An operation on no pipe whose event never completes.
                 let mut operation = Operation::new(null_mut()).unwrap();
-                operation.wait(None, &stop, &mut || {
+                operation.wait_with_wake(Some(wake as HANDLE), None, &stop, &mut || {
                     ticks.fetch_add(1, Ordering::SeqCst);
                 })
             })
         };
         std::thread::sleep(Duration::from_millis(500));
         assert_eq!(ticks.load(Ordering::SeqCst), 0, "polled without a wake");
-        crate::control::wake();
+        unsafe { SetEvent(wake) };
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(ticks.load(Ordering::SeqCst), 1);
         stop.store(true, Ordering::Release);
-        crate::control::wake();
+        unsafe { SetEvent(wake) };
         let error = waiter.join().unwrap().unwrap_err();
+        // Closed only after the waiter has returned from waiting on it.
+        unsafe { CloseHandle(wake) };
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
     }
 }

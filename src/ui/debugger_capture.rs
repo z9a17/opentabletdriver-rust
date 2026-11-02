@@ -448,6 +448,11 @@ mod tests {
         }
     }
 
+    // Sessions report the configuration's full parser type name, the only
+    // form upstream's ReportParserProvider (keyed by Type.FullName) resolves.
+    const INTUOS_V2: &str =
+        "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV2.IntuosV2ReportParser";
+
     fn touch_report(sequence: u64, contact: u8, x: u8) -> DebugReport {
         let mut raw = [0u8; 40];
         raw[0] = 0x21;
@@ -456,7 +461,7 @@ mod tests {
         raw[4] = x;
         DebugReport {
             tablet: Some("fixture".into()),
-            parser: Some("Wacom.IntuosV2.IntuosV2ReportParser".into()),
+            parser: Some(INTUOS_V2.into()),
             sequence,
             raw_hex: raw.iter().map(|byte| format!("{byte:02x}")).collect(),
             values: serde_json::Value::Null,
@@ -466,7 +471,7 @@ mod tests {
     #[test]
     fn capture_touch_decoders_keep_endpoint_state_and_clear_both_after_gaps() {
         let mut capture = status(true, 0, 0, "requested");
-        capture.parser = "Wacom.IntuosV2.IntuosV2ReportParser".into();
+        capture.parser = INTUOS_V2.into();
         capture.auxiliary_parser = Some(capture.parser.clone());
         let mut decoders = CaptureDecoders::new(&capture);
         let mut first = touch_report(1, 1, 10);

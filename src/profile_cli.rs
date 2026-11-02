@@ -1163,7 +1163,7 @@ mod tests {
             vec!["--pen-button", "one=none"],
             vec!["--pen-button", "1"],
             vec!["--pen-button", "1="],
-            vec!["--pen-button", "1=keys:Mute"],
+            vec!["--pen-button", "1=keys:UnknownKey"],
             vec!["--pen-button", "1=barrel:4"],
             vec!["--pen-button", "1=none", "--pen-button", "1=mouse:right"],
         ] {
@@ -1307,7 +1307,7 @@ mod tests {
         for invalid in [
             vec!["--aux-button", "0=none"],
             vec!["--aux-button", "65=none"],
-            vec!["--aux-button", "1=keys:Mute"],
+            vec!["--aux-button", "1=keys:UnknownKey"],
             vec!["--aux-button", "1=none", "--aux-button", "1=mouse:right"],
             vec!["--wheel-clockwise", "9=none"],
             vec!["--wheel-clockwise", "1=wheel:up"],

@@ -701,6 +701,28 @@ fn run(
 mod tests {
     use super::*;
 
+    /// cfg(test) builds give this whole process one control endpoint, and one
+    /// fake daemon owns it at a time. Tests that serve or contact it take
+    /// turns, so parallel tests cannot answer or refuse each other's requests.
+    fn endpoint() -> std::sync::MutexGuard<'static, ()> {
+        static ENDPOINT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        ENDPOINT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Wait until the fake daemon answers, also on a loaded machine.
+    fn wait_for_fake_daemon() {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while call(Command::Status).is_err() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fake daemon did not become ready"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     #[test]
     #[ignore = "benign process helper, launched only by the shutdown tests"]
     fn shutdown_process_helper() {
@@ -784,6 +806,7 @@ mod tests {
                 }
             }
         }
+        let _endpoint = endpoint();
         for state in [
             DriverState::Running,
             DriverState::Stopped,
@@ -814,12 +837,7 @@ mod tests {
                     helper.finish();
                 })
             };
-            for _ in 0..100 {
-                if call(Command::Status).is_ok() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            wait_for_fake_daemon();
             let started = std::time::Instant::now();
             let result = shutdown_for_close(&AtomicBool::new(false), Some(&process)).unwrap();
             assert!(started.elapsed() >= Duration::from_millis(150));
@@ -841,6 +859,8 @@ mod tests {
 
     #[test]
     fn close_waits_for_an_already_disconnected_daemon_to_finish_cleanup() {
+        // No fake daemon may own the endpoint while this close runs.
+        let _endpoint = endpoint();
         let mut helper = Helper::spawn();
         let process = Watched::open(&helper.instance()).unwrap();
         let finish = std::thread::spawn(move || {
@@ -944,9 +964,17 @@ mod tests {
                         source_commit: env!("OTD_BUILD_COMMIT").into(),
                     });
                 }
+                if matches!(command, Command::ListDeviceSessions) {
+                    // Status polls also read the device list (61e67d1); an
+                    // idle daemon without tablets has no sessions.
+                    return Ok(Reply::DeviceSessions {
+                        sessions: Vec::new(),
+                        selected_id: None,
+                    });
+                }
                 assert!(
                     matches!(command, Command::Status),
-                    "attachment must not start or replace input"
+                    "attachment must not start or replace input: {command:?}"
                 );
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 Ok(Reply::Status {
@@ -964,45 +992,66 @@ mod tests {
         }
         // cfg(test) endpoints include this test process ID, so this server and
         // client cannot connect to or replace the user's active daemon.
+        let _endpoint = endpoint();
         let calls = Arc::new(AtomicUsize::new(0));
         let cancelled = Arc::new(AtomicBool::new(false));
         let server = {
             let (calls, cancelled) = (calls.clone(), cancelled.clone());
             std::thread::spawn(move || control::serve(&mut Fake { calls }, &cancelled))
         };
-        for _ in 0..100 {
-            if call(Command::Status).is_ok() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        wait_for_fake_daemon();
         assert!(
             calls.load(Ordering::SeqCst) > 0,
             "fake daemon did not become ready"
         );
         let client = DaemonClient::new(std::ptr::null_mut()).unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        let mut ready = false;
-        while std::time::Instant::now() < deadline {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let (mut ready, mut attached) = (false, false);
+        // Wait for the first status poll as well, so every request a launch
+        // makes while attaching reaches the fake daemon on every run.
+        while !(ready && attached) && std::time::Instant::now() < deadline {
             for event in client.drain() {
-                if let ClientEvent::DaemonReady(result) = event {
-                    result.unwrap();
-                    ready = true;
+                match event {
+                    ClientEvent::DaemonReady(result) => {
+                        result.unwrap();
+                        ready = true;
+                    }
+                    ClientEvent::Snapshot { status, .. } => {
+                        assert_eq!(status.state, DriverState::Stopped);
+                        attached = true;
+                    }
+                    _ => {}
                 }
-            }
-            if ready {
-                break;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
+        // Detach as a closing panel does, then wait for the client thread to
+        // end so no late poll reaches the next test's fake daemon.
+        client.cancelled.store(true, Ordering::Release);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !matches!(
+            client.events.recv_timeout(Duration::from_millis(10)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        ) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "daemon client did not stop after detaching"
+            );
+        }
         drop(client);
         cancelled.store(true, Ordering::Release);
-        control::wake();
+        // Other tests can consume a wake from the process-wide auto-reset
+        // event, so wake the fake daemon until its thread returns.
+        while !server.is_finished() {
+            control::wake();
+            std::thread::sleep(Duration::from_millis(10));
+        }
         server.join().unwrap().unwrap();
         assert!(
             ready,
             "normal client creation must ensure daemon readiness even without AutoStart"
         );
+        assert!(attached, "the panel did not attach to the idle daemon");
         assert!(calls.load(Ordering::SeqCst) >= 2);
     }
 }
