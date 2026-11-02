@@ -312,8 +312,9 @@ pub enum AspectSource {
 }
 
 /// OpenTabletDriver's "Lock aspect ratio": the tablet area follows the
-/// display area's shape.
-pub fn lock_aspect(mapping: &mut OtdMapping, source: AspectSource, bounds: Bounds) {
+/// display area's shape. `confine` is "Lock to usable area"; without it the
+/// area may grow past the tablet, as in upstream #5193.
+pub fn lock_aspect(mapping: &mut OtdMapping, source: AspectSource, bounds: Bounds, confine: bool) {
     let display = mapping.display;
     if !(display.width > 0.0 && display.height > 0.0) || !bounds.valid() {
         return;
@@ -329,13 +330,13 @@ pub fn lock_aspect(mapping: &mut OtdMapping, source: AspectSource, bounds: Bound
     ) || matches!(source, AspectSource::DisplayArea) && ratio <= 1.0;
     if height_first {
         tablet.height = tablet.width / ratio;
-        if tablet.height > bounds.height() {
+        if confine && tablet.height > bounds.height() {
             tablet.height = bounds.height();
             tablet.width = tablet.height * ratio;
         }
     } else {
         tablet.width = tablet.height * ratio;
-        if tablet.width > bounds.width() {
+        if confine && tablet.width > bounds.width() {
             tablet.width = bounds.width();
             tablet.height = tablet.width / ratio;
         }
@@ -424,9 +425,43 @@ mod rc_area_tests {
     fn changing_display_width_keeps_ratio_when_tablet_hits_its_width_limit() {
         let mut mapping = mapping();
         mapping.display.width = 3840.0;
-        lock_aspect(&mut mapping, AspectSource::DisplayWidth, Bounds::tablet());
+        lock_aspect(
+            &mut mapping,
+            AspectSource::DisplayWidth,
+            Bounds::tablet(),
+            true,
+        );
         constrain(&mut mapping.tablet, Bounds::tablet());
         assert_eq!((mapping.tablet.width, mapping.tablet.height), (224.0, 63.0));
+    }
+
+    #[test]
+    fn locked_ratio_may_outgrow_the_tablet_without_the_usable_area_lock() {
+        let mut mapping = mapping();
+        mapping.tablet.width = 224.0;
+        mapping.tablet.height = 100.0;
+        mapping.display.width = 3840.0;
+        mapping.display.height = 1080.0;
+        lock_aspect(
+            &mut mapping,
+            AspectSource::DisplayHeight,
+            Bounds::tablet(),
+            false,
+        );
+        assert_eq!(mapping.tablet.width, 224.0);
+        assert_eq!(mapping.tablet.height, 63.0);
+        mapping.display.width = 1080.0;
+        mapping.display.height = 1920.0;
+        lock_aspect(
+            &mut mapping,
+            AspectSource::TabletWidth,
+            Bounds::tablet(),
+            false,
+        );
+        assert_eq!(
+            (mapping.tablet.width, mapping.tablet.height),
+            (224.0, 224.0 * 1920.0 / 1080.0)
+        );
     }
 
     #[test]
@@ -434,14 +469,24 @@ mod rc_area_tests {
         let mut mapping = mapping();
         mapping.display.width /= 2.0;
         mapping.display.height /= 2.0;
-        lock_aspect(&mut mapping, AspectSource::DisplayArea, Bounds::tablet());
+        lock_aspect(
+            &mut mapping,
+            AspectSource::DisplayArea,
+            Bounds::tablet(),
+            true,
+        );
         assert_eq!(
             (mapping.tablet.width, mapping.tablet.height),
             (200.0, 112.5)
         );
         mapping.display.width = 1080.0;
         mapping.display.height = 1920.0;
-        lock_aspect(&mut mapping, AspectSource::DisplayArea, Bounds::tablet());
+        lock_aspect(
+            &mut mapping,
+            AspectSource::DisplayArea,
+            Bounds::tablet(),
+            true,
+        );
         assert_eq!(mapping.tablet.height, 148.0);
         assert_eq!(mapping.tablet.width, 83.25);
     }

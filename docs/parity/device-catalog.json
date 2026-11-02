@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "scope": "Pinned 0.6.8-rc1 device catalog source coverage only. Configuration and parser presence do not certify physical hardware, auxiliary output, managed plugin compatibility, or every transport.",
+  "scope": "Pinned 0.6.8.1 device catalog source coverage only. Configuration and parser presence do not certify physical hardware, auxiliary output, managed plugin compatibility, or every transport.",
   "upstream": {
     "repository": "https://github.com/OpenTabletDriver/OpenTabletDriver",
     "branch": "0.6.x",
-    "revision": "126f4828564abb673d39e97a093fd815aab335c2",
-    "tag": "v0.6.8-rc1"
+    "revision": "f3927ac11146cb7dd5c3b43277d5d1e33e36f6d6",
+    "tag": "v0.6.8.1"
   },
   "configurations": [
     {
@@ -7479,6 +7479,33 @@
       "specification_source_coverage": "positive native ranges"
     },
     {
+      "path": "OpenTabletDriver.Configurations/Configurations/Wacom/CTK-4120.json",
+      "git_blob": "9943f291ed1a911d18934a91c24639338bea58b6",
+      "name": "Wacom CTK-4120",
+      "parsers": [
+        "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV3.IntuosV3ReportParser"
+      ],
+      "hardware_evidence": "unverified",
+      "manufacturer_directory": "Wacom",
+      "digitizer": [
+        {
+          "vendor_id": 1329,
+          "product_id": 265,
+          "parser": "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV3.IntuosV3ReportParser",
+          "input_report_length": 192,
+          "output_report_length": null,
+          "feature_report_length": null,
+          "feature_init_reports": 1,
+          "output_init_reports": 0,
+          "initialization_strings": 0,
+          "device_string_indices": [],
+          "attribute_names": []
+        }
+      ],
+      "auxiliary": [],
+      "specification_source_coverage": "positive native ranges"
+    },
+    {
       "path": "OpenTabletDriver.Configurations/Configurations/Wacom/CTL-4100.json",
       "git_blob": "0e981ef49dab970628a35e357a950fbc3f008710",
       "name": "Wacom CTL-4100",
@@ -11386,6 +11413,33 @@
       "specification_source_coverage": "positive native ranges"
     },
     {
+      "path": "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist Ultra 14.json",
+      "git_blob": "8dd08f8740d7428428c68ffc9dc4d5a66bfff9cc",
+      "name": "XP-Pen Artist Ultra 14",
+      "parsers": [
+        "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenGen2ReportParser"
+      ],
+      "hardware_evidence": "unverified",
+      "manufacturer_directory": "XP-Pen",
+      "digitizer": [
+        {
+          "vendor_id": 10429,
+          "product_id": 2442,
+          "parser": "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenGen2ReportParser",
+          "input_report_length": 14,
+          "output_report_length": 33,
+          "feature_report_length": null,
+          "feature_init_reports": 0,
+          "output_init_reports": 1,
+          "initialization_strings": 0,
+          "device_string_indices": [],
+          "attribute_names": []
+        }
+      ],
+      "auxiliary": [],
+      "specification_source_coverage": "positive native ranges"
+    },
+    {
       "path": "OpenTabletDriver.Configurations/Configurations/XP-Pen/Artist Ultra 16.json",
       "git_blob": "54d4636202539a4e0402c1aaf26e05ec44294aa5",
       "name": "XP-Pen Artist Ultra 16",
@@ -13239,7 +13293,7 @@
     }
   ],
   "counts": {
-    "configurations": 359,
+    "configurations": 361,
     "referenced_parser_types": 54,
     "specification_source_gaps": 0
   }

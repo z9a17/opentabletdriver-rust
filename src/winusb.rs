@@ -538,9 +538,11 @@ fn usb_ids(instance: &str) -> Option<(u16, u16)> {
     vendor.zip(product)
 }
 
-// Match upstream hub exclusions: Quest headsets and Android fastboot devices.
+// Match upstream hub exclusions: Quest headsets, Android fastboot devices and
+// Microsoft devices. 0.6.8.1 lost its Quest check by comparing 0x05AC under
+// the Quest message; this list keeps 0x2833 and does not skip Apple.
 fn excluded_vendor(vendor: u16) -> bool {
-    matches!(vendor, 0x2833 | 0x18d1)
+    matches!(vendor, 0x2833 | 0x18d1 | 0x045e)
 }
 
 fn paths() -> io::Result<Vec<(Vec<u16>, u32)>> {
@@ -768,6 +770,7 @@ mod tests {
     fn unrelated_sensitive_usb_vendors_are_excluded() {
         assert!(excluded_vendor(0x18d1));
         assert!(excluded_vendor(0x2833));
+        assert!(excluded_vendor(0x045e));
         assert!(!excluded_vendor(0x056a));
         assert!(!excluded_vendor(0x256c));
     }

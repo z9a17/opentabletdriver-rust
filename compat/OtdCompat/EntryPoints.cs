@@ -181,10 +181,6 @@ sealed class Instance : IDisposable
                 throw new NotSupportedException("Only OTD position filters are supported; output modes and bindings are not supported.");
             created = HostServices.Construct(type) ?? throw new InvalidOperationException("Cannot construct filter");
             filter = (IPositionedPipelineElement<IDeviceReport>)created;
-            // SDK 0.6.8's Scheduler setter immediately derives its interval from
-            // Frequency. Initialize that SDK-owned property before injection so
-            // an untouched default does not request an infinite host interval.
-            PrepareAsyncFrequency(type, created, config["settings"] as JObject ?? new JObject());
             // PluginManager.ConstructObject injects services before
             // PluginSettingStore.ApplySettings, so Frequency finds its timer.
             services = new HostServices(() => {
@@ -195,6 +191,9 @@ sealed class Instance : IDisposable
             services.ConfigureSource(config);
             services.Inject(type, created);
             providerTimers = services.ProviderInjected;
+            // SDK 0.6.8.1's Scheduler setter no longer reads Frequency, so the
+            // timer gets its interval here, from the saved or declared value.
+            PrepareAsyncFrequency(type, created, config["settings"] as JObject ?? new JObject());
             ApplySettings(type, created, config["settings"] as JObject ?? new JObject(), preparedAsyncFrequency: true);
             HostServices.Complete(type, created, CreateTabletReference(config));
             Position = filter.Position;
