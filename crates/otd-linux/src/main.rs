@@ -891,9 +891,9 @@ Source checkout setup: sudo ./packaging/linux/install.sh install";
                     return linux::usb_string(usb, index).map_err(|e| e.to_string());
                 }
             }
-            for device in otd_platform::dotnet::custom_devices::snapshot()?
+            if let Some(device) = otd_platform::dotnet::custom_devices::snapshot()?
                 .iter()
-                .filter(|device| device.vendor == vendor && device.product == product)
+                .find(|device| device.vendor == vendor && device.product == product)
             {
                 return otd_platform::dotnet::custom_devices::device_string(device.endpoint, index);
             }

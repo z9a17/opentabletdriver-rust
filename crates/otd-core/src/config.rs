@@ -502,7 +502,12 @@ struct OtdProfile {
 struct OtdAbsolute {
     display: OtdArea,
     tablet: OtdArea,
+    /// Optional like upstream's plain `[JsonProperty]` flags: Newtonsoft leaves
+    /// an absent one false, while null still fails to deserialize. See
+    /// https://github.com/OpenTabletDriver/OpenTabletDriver/blob/736003ed72c8bbb28033b039d5a0bb76c344145c/OpenTabletDriver.Desktop/Profiles/AbsoluteModeSettings.cs
+    #[serde(default)]
     enable_clipping: bool,
+    #[serde(default)]
     enable_area_limiting: bool,
 }
 
@@ -2261,6 +2266,27 @@ impl Profile {
 mod tests {
     use super::*;
 
+    /// Imported keys use the platform's own key table, so round trips compare
+    /// against the same table: `vk:` names on Windows, and on Unix the generic
+    /// spelling with each key marked `evdev:` (Linux) or `cg:` (macOS).
+    fn native_keys(windows: &str, unix: &str) -> String {
+        if cfg!(windows) {
+            return windows.to_owned();
+        }
+        let table = if cfg!(target_os = "macos") {
+            "cg:"
+        } else {
+            "evdev:"
+        };
+        let keys: Vec<_> = unix
+            .strip_prefix("keys:")
+            .unwrap()
+            .split('+')
+            .map(|key| format!("{table}{key}"))
+            .collect();
+        format!("keys:{}", keys.join("+"))
+    }
+
     #[test]
     fn managed_parser_validation_requires_an_explicit_verified_factory() {
         let mut configuration = crate::tablets::Database::builtin()
@@ -2795,6 +2821,35 @@ mod tests {
         assert_eq!(profile.auto_enabled_radial_follow, 0);
     }
 
+    #[test]
+    fn absent_absolute_flags_import_false_like_upstream_but_null_is_rejected() {
+        let mut json = serde_json::json!({"Profiles":[{"Tablet":"Wacom PTH-660",
+            "OutputMode":{"Path":"OpenTabletDriver.Desktop.Output.AbsoluteMode","Enable":true},
+            "AbsoluteModeSettings":{"Display":{"Width":2560,"Height":1440,"X":1280,"Y":720,"Rotation":0},
+                "Tablet":{"Width":85,"Height":47.8125,"X":110,"Y":23.90625,"Rotation":0}},
+            "Bindings":{}}]});
+        let mapping = Profile::from_otd_text(&json.to_string(), Path::new("settings.json"))
+            .unwrap()
+            .otd_mapping
+            .unwrap();
+        assert!(!mapping.clipping);
+        assert!(!mapping.limiting);
+        json["Profiles"][0]["AbsoluteModeSettings"]["EnableClipping"] = true.into();
+        let mapping = Profile::from_otd_text(&json.to_string(), Path::new("settings.json"))
+            .unwrap()
+            .otd_mapping
+            .unwrap();
+        assert!(mapping.clipping);
+        assert!(!mapping.limiting);
+        for field in ["EnableClipping", "EnableAreaLimiting"] {
+            let mut json = json.clone();
+            json["Profiles"][0]["AbsoluteModeSettings"][field] = serde_json::Value::Null;
+            let error =
+                Profile::from_otd_text(&json.to_string(), Path::new("settings.json")).unwrap_err();
+            assert!(error.contains("invalid type: null"), "{field}: {error}");
+        }
+    }
+
     fn relative_profile() -> serde_json::Value {
         serde_json::json!({"Profiles": [{
             "Tablet": "Wacom PTH-660",
@@ -2902,19 +2957,14 @@ mod tests {
         );
         assert_eq!(
             profile.pen_buttons[1].to_string(),
-            if cfg!(windows) {
-                "keys:vk:Escape"
-            } else {
-                "keys:Escape"
-            }
+            native_keys("keys:vk:Escape", "keys:Escape")
         );
         assert_eq!(
             profile.pen_buttons[2].to_string(),
-            if cfg!(windows) {
-                "keys:vk:Control+vk:Shift+vk:Z"
-            } else {
+            native_keys(
+                "keys:vk:Control+vk:Shift+vk:Z",
                 "keys:LeftControl+LeftShift+Z"
-            }
+            )
         );
         assert!(
             profile
@@ -3059,23 +3109,16 @@ mod tests {
     fn edited_pen_buttons_export_and_reimport_all_supported_action_types() {
         let mut profile = import_pen_buttons_from(serde_json::json!([]));
         assert!(profile.to_otd_json().is_ok());
-        profile.pen_buttons = if cfg!(windows) {
-            [
-                "barrel:3",
-                "mouse:forward",
-                "keys:vk:Escape",
+        profile.pen_buttons = [
+            "barrel:3".to_owned(),
+            "mouse:forward".to_owned(),
+            native_keys("keys:vk:Escape", "keys:Escape"),
+            native_keys(
                 "keys:vk:Control+vk:Shift+vk:Z",
-                "none",
-            ]
-        } else {
-            [
-                "barrel:3",
-                "mouse:forward",
-                "keys:Escape",
-                "keys:Control+Shift+Z",
-                "none",
-            ]
-        }
+                "keys:LeftControl+LeftShift+Z",
+            ),
+            "none".to_owned(),
+        ]
         .into_iter()
         .map(|action| action.parse().unwrap())
         .collect();
@@ -3136,13 +3179,9 @@ mod tests {
     fn edited_pen_buttons_change_known_types_and_disable_without_losing_properties() {
         let source = store(ADAPTIVE_BINDING, "Binding", "Button 1".into());
         let mut profile = import_pen_buttons_from(serde_json::json!([source.clone()]));
-        profile.pen_buttons[0] = if cfg!(windows) {
-            "keys:vk:Escape"
-        } else {
-            "keys:Escape"
-        }
-        .parse()
-        .unwrap();
+        profile.pen_buttons[0] = native_keys("keys:vk:Escape", "keys:Escape")
+            .parse()
+            .unwrap();
         let exported = profile.to_otd_json().unwrap();
         let reimported = Profile::from_otd_text(&exported, Path::new("edited.json")).unwrap();
         assert_eq!(reimported.pen_buttons, profile.pen_buttons);
@@ -3333,20 +3372,17 @@ mod tests {
             .collect();
         assert_eq!(
             texts,
-            if cfg!(windows) {
-                ["keys:vk:E", "none", "keys:vk:Control+vk:Z", "none"]
-            } else {
-                ["keys:E", "none", "keys:LeftControl+Z", "none"]
-            }
+            [
+                native_keys("keys:vk:E", "keys:E"),
+                "none".to_owned(),
+                native_keys("keys:vk:Control+vk:Z", "keys:LeftControl+Z"),
+                "none".to_owned(),
+            ]
         );
         let wheel = &profile.wheels[0];
         assert_eq!(
             wheel.clockwise.to_string(),
-            if cfg!(windows) {
-                "keys:vk:PageDown"
-            } else {
-                "keys:PageDown"
-            }
+            native_keys("keys:vk:PageDown", "keys:PageDown")
         );
         assert_eq!(wheel.counter_clockwise, ButtonAction::None);
         assert_eq!(
@@ -3417,31 +3453,23 @@ mod tests {
         let mut profile = import_bindings(serde_json::json!({
             "AuxButtons": [store(KEY_BINDING, "Key", "E".into()), null],
         }));
-        profile.aux_buttons = if cfg!(windows) {
-            ["keys:vk:E", "keys:vk:Control+vk:Z", "mouse:middle"]
-        } else {
-            ["keys:E", "keys:Control+Z", "mouse:middle"]
-        }
+        profile.aux_buttons = [
+            native_keys("keys:vk:E", "keys:E"),
+            native_keys("keys:vk:Control+vk:Z", "keys:LeftControl+Z"),
+            "mouse:middle".to_owned(),
+        ]
         .into_iter()
         .map(|action| action.parse().unwrap())
         .collect();
         profile.wheels = vec![crate::output::buttons::WheelBinding {
-            clockwise: if cfg!(windows) {
-                "keys:vk:PageDown"
-            } else {
-                "keys:PageDown"
-            }
-            .parse()
-            .unwrap(),
-            counter_clockwise_threshold: Some(20.0),
-            buttons: vec![
-                if cfg!(windows) {
-                    "keys:vk:Escape"
-                } else {
-                    "keys:Escape"
-                }
+            clockwise: native_keys("keys:vk:PageDown", "keys:PageDown")
                 .parse()
                 .unwrap(),
+            counter_clockwise_threshold: Some(20.0),
+            buttons: vec![
+                native_keys("keys:vk:Escape", "keys:Escape")
+                    .parse()
+                    .unwrap(),
             ],
             ..Default::default()
         }];
@@ -3489,13 +3517,9 @@ mod tests {
         );
         assert_eq!(reloaded.mouse_buttons, profile.mouse_buttons);
         profile.contact.drag_only = false;
-        profile.mouse_buttons[1] = if cfg!(windows) {
-            "keys:vk:Control+vk:Z"
-        } else {
-            "keys:Control+Z"
-        }
-        .parse()
-        .unwrap();
+        profile.mouse_buttons[1] = native_keys("keys:vk:Control+vk:Z", "keys:LeftControl+Z")
+            .parse()
+            .unwrap();
         let exported = profile.to_otd_json().unwrap();
         let imported = Profile::from_otd_text(&exported, Path::new("export.json")).unwrap();
         assert!(!imported.contact.drag_only);

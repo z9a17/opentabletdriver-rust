@@ -367,7 +367,11 @@ pub fn filter_api() -> Result<FilterApi, String> {
     Ok(unsafe { ptr.read() })
 }
 
-pub fn position(context: *mut c_void) -> Result<crate::plugins::PipelineStage, String> {
+/// # Safety
+/// `context` must be a live filter context returned by the `create` callback of
+/// `filter_api()` and not yet passed to its `destroy`. The bridge resolves it as
+/// a .NET GC handle, so any other pointer is undefined behavior.
+pub unsafe fn position(context: *mut c_void) -> Result<crate::plugins::PipelineStage, String> {
     match unsafe { (bridge()?.get_position)(context) } {
         1 => Ok(crate::plugins::PipelineStage::PreTransform),
         2 => Ok(crate::plugins::PipelineStage::Pixels),
@@ -379,7 +383,11 @@ pub fn position(context: *mut c_void) -> Result<crate::plugins::PipelineStage, S
 
 /// Copies into fresh managed ownership during this synchronous call. The native
 /// pointer is never retained by the bridge. The PTH adapter checks ID and length.
-pub fn process_report(
+///
+/// # Safety
+/// As for `position`: `context` must be a live filter context from the bridge's
+/// `create` that has not been destroyed.
+pub unsafe fn process_report(
     context: *mut c_void,
     sample: &mut Sample,
     pen: crate::protocol::PenReport,
@@ -414,7 +422,10 @@ pub fn process_report(
     unsafe { (bridge.process_report)(context, sample, &report) }
 }
 
-pub fn reset_report(context: *mut c_void, raw: &[u8]) -> i32 {
+/// # Safety
+/// As for `position`: `context` must be a live filter context from the bridge's
+/// `create` that has not been destroyed.
+pub unsafe fn reset_report(context: *mut c_void, raw: &[u8]) -> i32 {
     if raw.len() > 192 {
         return -1;
     }

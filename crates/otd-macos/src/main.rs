@@ -912,10 +912,10 @@ mod app {
         }
         fn device_string(&self, vendor: u16, product: u16, index: u8) -> Result<String, String> {
             let database = otd_core::config::configured_tablets()?;
-            for device in macos::enumerate(&database, None, None)
+            if let Some(device) = macos::enumerate(&database, None, None)
                 .map_err(|e| e.to_string())?
                 .iter()
-                .filter(|device| {
+                .find(|device| {
                     device.endpoint.vendor_id == vendor && device.endpoint.product_id == product
                 })
             {
@@ -926,9 +926,9 @@ mod app {
                 }
                 return device.indexed_string(index).map_err(|e| e.to_string());
             }
-            for device in otd_platform::dotnet::custom_devices::snapshot()?
+            if let Some(device) = otd_platform::dotnet::custom_devices::snapshot()?
                 .iter()
-                .filter(|device| device.vendor == vendor && device.product == product)
+                .find(|device| device.vendor == vendor && device.product == product)
             {
                 return otd_platform::dotnet::custom_devices::device_string(device.endpoint, index);
             }

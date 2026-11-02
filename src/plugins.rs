@@ -648,6 +648,7 @@ pub struct Plugin {
     pub name: String,
     pub stage: PipelineStage,
     disabled: bool,
+    /// Set only when `api` and `context` come from the .NET bridge.
     managed: bool,
     // Destroy the context before unloading its callbacks.
     _library: Option<Library>,
@@ -728,7 +729,9 @@ impl Plugin {
             ));
         }
         let stage = if config.kind == PluginKind::Dotnet {
-            match crate::dotnet::position(context) {
+            // SAFETY: `create` is the .NET bridge's and just returned this
+            // non-null context; it is destroyed only below or by `Drop`.
+            match unsafe { crate::dotnet::position(context) } {
                 Ok(stage) => stage,
                 Err(error) => {
                     unsafe { (api.destroy.unwrap())(context) };
@@ -779,7 +782,9 @@ impl Plugin {
             return false;
         };
         let original = *sample;
-        let status = crate::dotnet::process_report(self.context, sample, pen, raw);
+        // SAFETY: a managed plugin owns the context the .NET bridge's `create`
+        // returned; only `Drop` destroys it.
+        let status = unsafe { crate::dotnet::process_report(self.context, sample, pen, raw) };
         self.finish_process(sample, original, status)
     }
 
@@ -811,7 +816,9 @@ impl Plugin {
             self.reset();
             return true;
         }
-        if crate::dotnet::reset_report(self.context, raw) != 0 {
+        // SAFETY: a managed plugin owns the context the .NET bridge's `create`
+        // returned; only `Drop` destroys it.
+        if unsafe { crate::dotnet::reset_report(self.context, raw) } != 0 {
             self.disabled = true;
             return false;
         }
@@ -1116,17 +1123,22 @@ impl PluginChain {
                 )
             })
             .collect();
-        let configs = profile
+        let mut configs = profile
             .plugins
             .iter()
             .filter(|p| p.enabled && p.kind != PluginKind::DotnetTool);
         let slot = self.builtin_slot.unwrap_or(0);
         let (mut before, mut after) = (Vec::new(), Vec::new());
-        for (index, (plugin, config)) in self.plugins.iter().zip(configs).enumerate() {
+        // Walk the loaded plugins as dispatch does, so the built-in filters
+        // are listed at their slot even when the profile has fewer entries.
+        for (index, plugin) in self.plugins.iter().enumerate() {
             if index == slot {
                 before.extend(builtins.iter().cloned());
             }
-            let entry = format!("{} {}", plugin.name, config.settings_json);
+            let entry = match configs.next() {
+                Some(config) => format!("{} {}", plugin.name, config.settings_json),
+                None => plugin.name.clone(),
+            };
             match plugin.stage {
                 PipelineStage::Internal => before.push(format!("Internal: {entry}")),
                 PipelineStage::PreTransform => before.push(entry),
