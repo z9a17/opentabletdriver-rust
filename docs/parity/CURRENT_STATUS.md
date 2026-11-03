@@ -10,7 +10,7 @@ describe the selected 0.6.8 RC components.
 | Area | Current source |
 | --- | --- |
 | Native driver | Rust owns device I/O, decoding, mapping, scheduling, output, control and Windows UI |
-| Device catalog | RC commit `126f4828564abb673d39e97a093fd815aab335c2`: 359 configurations, 54 referenced parser names |
+| Device catalog | [v0.6.8.1](UPSTREAM_0.6.8.1.md) commit `f3927ac11146cb7dd5c3b43277d5d1e33e36f6d6`: 361 configurations, 54 referenced parser names |
 | Managed Plugin SDK | Actual RC source, assembly 0.6.8, plus documented compatibility bodies/restored older members |
 | Configurations/Native assemblies | Pinned 0.6.8 NuGet packages from the same RC revision |
 | Core/Desktop/UX/Console | Copied 0.6.7 sources with native-host adaptations and selected RC fixes, targeting .NET 10 |

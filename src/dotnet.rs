@@ -928,6 +928,56 @@ mod tests {
 
     #[test]
     #[ignore = "requires bridge and SettingsFixture DLL; set OTD_COMPAT_DIR and OTD_TEST_SETTINGS_PLUGIN"]
+    fn dotnet_async_filter_timer_uses_its_frequency() {
+        use otd_core::plugins::Filters;
+        let path: PathBuf = std::env::var_os("OTD_TEST_SETTINGS_PLUGIN")
+            .expect("set OTD_TEST_SETTINGS_PLUGIN")
+            .into();
+        let config = PluginConfig {
+            path,
+            kind: PluginKind::Dotnet,
+            enabled: true,
+            type_name: "SettingsFixture.AsyncFixtureFilter".into(),
+            settings_json: r#"{"Frequency":10.0}"#.into(),
+        };
+        let mut chain = PluginChain::load(&[config]).unwrap();
+        let desktop = Rect {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        let mapper = Mapper::new(Crop::default(), 0, desktop, desktop).unwrap();
+        let raw = [
+            0x10, 0x60, 0x14, 0x56, 0x00, 0xa3, 0x16, 0x00, 0x00, 0x00, 0x07, 0x04, 0, 0, 0, 0,
+            0x28,
+        ];
+        let pen = crate::protocol::parse(&raw).unwrap().unwrap();
+        let mut pipeline = ReportPipeline::new(&Profile::default()).unwrap();
+        pipeline
+            .process_with_raw(pen, &raw, Instant::now(), Some(mapper), &mut chain, |_| {
+                Ok(())
+            })
+            .unwrap();
+        // SDK 0.6.8.1 stopped setting the interval on injection; the host's
+        // 1 ms timer default must not replace the saved 100 ms period.
+        let (mut reports, start) = (0, Instant::now());
+        while start.elapsed() < Duration::from_millis(150) {
+            if chain.next_tick() == Some(Duration::ZERO) {
+                let stats = pipeline
+                    .process_tick(Instant::now(), Some(mapper), &mut chain, |_| Ok(()))
+                    .unwrap();
+                reports += stats.reports;
+            } else {
+                std::thread::sleep(Duration::from_micros(200));
+            }
+        }
+        assert_eq!(chain.take_failure(), None);
+        assert!((1..=2).contains(&reports), "{reports} emissions in 150 ms");
+    }
+
+    #[test]
+    #[ignore = "requires bridge and SettingsFixture DLL; set OTD_COMPAT_DIR and OTD_TEST_SETTINGS_PLUGIN"]
     fn dotnet_timer_filters_emit_between_reports() {
         use otd_core::plugins::Filters;
         for (type_name, late) in [
@@ -952,7 +1002,9 @@ mod tests {
             let mut chain = PluginChain::load(&[config]).unwrap();
             // Frequency 1000 Hz: the Scheduler was injected before settings.
             if late {
-                assert_eq!(chain.next_tick(), None, "timer starts on the first report");
+                // A stopped timer leaves only the graph's bounded poll.
+                let idle = chain.next_tick().expect("the graph polls foreign timers");
+                assert!(idle > Duration::from_millis(5), "{idle:?}");
             } else {
                 let first = chain.next_tick().expect("the async filter has a timer");
                 assert!(first <= Duration::from_millis(2), "{first:?}");

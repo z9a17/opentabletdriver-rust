@@ -1,6 +1,6 @@
 //! Literal cases transcribed from v0.6.8-rc1 parser source at 126f4828.
 //! They complement the seeded corpus in tests/parsers/upstream.json, which
-//! the same revision's parser classes decoded.
+//! the same revision's parser classes decoded. 0.6.8.1 changed no parser.
 use otd_core::{config::Profile, decoders::ReportParser, reports::*};
 use std::{path::Path, time::Duration};
 

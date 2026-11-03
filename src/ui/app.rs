@@ -1382,7 +1382,12 @@ impl App {
             if self.prefs.lock_aspect_ratio
                 && let Some(source) = aspect
             {
-                model::lock_aspect(&mut mapping, source, view.bounds);
+                model::lock_aspect(
+                    &mut mapping,
+                    source,
+                    view.bounds,
+                    self.prefs.lock_tablet_to_usable_area,
+                );
             }
             if self.prefs.lock_tablet_to_usable_area {
                 model::constrain(&mut mapping.tablet, view.bounds);

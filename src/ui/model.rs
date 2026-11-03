@@ -1635,10 +1635,10 @@ Minimum: 0, Maximum: 2"
         mapping.display.width = 2560.0;
         mapping.display.height = 1440.0;
         mapping.tablet.width = 160.0;
-        lock_aspect(&mut mapping, AspectSource::TabletWidth, bounds);
+        lock_aspect(&mut mapping, AspectSource::TabletWidth, bounds, true);
         assert_eq!(mapping.tablet.height, 90.0);
         mapping.display.width = 1280.0;
-        lock_aspect(&mut mapping, AspectSource::DisplayWidth, bounds);
+        lock_aspect(&mut mapping, AspectSource::DisplayWidth, bounds, true);
         assert_eq!(mapping.tablet.width, 80.0);
     }
 

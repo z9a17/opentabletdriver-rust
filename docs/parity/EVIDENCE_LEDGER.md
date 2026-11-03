@@ -6,7 +6,7 @@ The first ledger has one row for each of the 52 capability IDs, 339 device confi
 
 ## Current device catalog
 
-The 0.19 release series uses [device-catalog.json](device-catalog.json) for the pinned 0.6.8-rc1 snapshot: 359 configurations and 54 referenced parser names. The managed SDK also adopts RC source with documented legacy compatibility changes. The inventory and ledger in this document remain the historical 0.6.7 acceptance baseline. Every current-catalog hardware field remains unverified. Importing newer definitions does not advance this ledger or certify old results against changed parsers. See the [current evidence map](CURRENT_STATUS.md), [source composition](UPSTREAM_0.6.8_RC1.md) and [device audit](../TABLET_CATALOG_0.6.8_RC1.md).
+The 0.19 release series uses [device-catalog.json](device-catalog.json) for the pinned 0.6.8.1 snapshot: 361 configurations and 54 referenced parser names. The managed SDK also adopts RC source with documented legacy compatibility changes. The inventory and ledger in this document remain the historical 0.6.7 acceptance baseline. Every current-catalog hardware field remains unverified. Importing newer definitions does not advance this ledger or certify old results against changed parsers. See the [current evidence map](CURRENT_STATUS.md), [source composition](UPSTREAM_0.6.8_RC1.md) and [device audit](../TABLET_CATALOG_0.6.8_RC1.md).
 
 ## Record evidence
 
