@@ -398,7 +398,7 @@ mod tests {
         }
         assert_eq!(
             (strings, usages),
-            (216, 0),
+            (219, 0),
             "review changed pinned regex inventory"
         );
         let unsupported = unsupported_patterns(Database::builtin());

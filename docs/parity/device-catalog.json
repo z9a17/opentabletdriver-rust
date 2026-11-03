@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "scope": "Pinned 0.6.8.1 device catalog source coverage only. Configuration and parser presence do not certify physical hardware, auxiliary output, managed plugin compatibility, or every transport.",
+  "scope": "Pinned post-0.6.8.1 device catalog source coverage only. Configuration and parser presence do not certify physical hardware, auxiliary output, managed plugin compatibility, or every transport.",
   "upstream": {
     "repository": "https://github.com/OpenTabletDriver/OpenTabletDriver",
     "branch": "0.6.x",
-    "revision": "f3927ac11146cb7dd5c3b43277d5d1e33e36f6d6",
-    "tag": "v0.6.8.1"
+    "revision": "2c4b9a5649eb34cd74bc8b1b1041dbb0356ae762",
+    "tag": null
   },
   "configurations": [
     {
@@ -552,6 +552,35 @@
       "path": "OpenTabletDriver.Configurations/Configurations/Gaomon/GM116HD.json",
       "git_blob": "ec33a44056b445627d23b99757f82ca3887394b4",
       "name": "Gaomon GM116HD",
+      "parsers": [
+        "OpenTabletDriver.Configurations.Parsers.Huion.GianoReportParser"
+      ],
+      "hardware_evidence": "unverified",
+      "manufacturer_directory": "Gaomon",
+      "digitizer": [
+        {
+          "vendor_id": 9580,
+          "product_id": 109,
+          "parser": "OpenTabletDriver.Configurations.Parsers.Huion.GianoReportParser",
+          "input_report_length": 12,
+          "output_report_length": null,
+          "feature_report_length": null,
+          "feature_init_reports": 0,
+          "output_init_reports": 0,
+          "initialization_strings": 1,
+          "device_string_indices": [
+            "201"
+          ],
+          "attribute_names": []
+        }
+      ],
+      "auxiliary": [],
+      "specification_source_coverage": "positive native ranges"
+    },
+    {
+      "path": "OpenTabletDriver.Configurations/Configurations/Gaomon/GM156HD (16K).json",
+      "git_blob": "010920e91b0c1968f14b242481d7f0a704fb42b9",
+      "name": "Gaomon GM156HD (16K)",
       "parsers": [
         "OpenTabletDriver.Configurations.Parsers.Huion.GianoReportParser"
       ],
@@ -2707,6 +2736,35 @@
       "specification_source_coverage": "positive native ranges"
     },
     {
+      "path": "OpenTabletDriver.Configurations/Configurations/Huion/H950P (16K).json",
+      "git_blob": "1403a4824e035114d36afa791b6fdd3c68df9be7",
+      "name": "Huion H950P (16K)",
+      "parsers": [
+        "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicTiltReportParser"
+      ],
+      "hardware_evidence": "unverified",
+      "manufacturer_directory": "Huion",
+      "digitizer": [
+        {
+          "vendor_id": 9580,
+          "product_id": 111,
+          "parser": "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicTiltReportParser",
+          "input_report_length": 12,
+          "output_report_length": null,
+          "feature_report_length": null,
+          "feature_init_reports": 0,
+          "output_init_reports": 0,
+          "initialization_strings": 1,
+          "device_string_indices": [
+            "201"
+          ],
+          "attribute_names": []
+        }
+      ],
+      "auxiliary": [],
+      "specification_source_coverage": "positive native ranges"
+    },
+    {
       "path": "OpenTabletDriver.Configurations/Configurations/Huion/H950P.json",
       "git_blob": "4b478deaa2d2b52c2983b22f5724b4ac89c6fe18",
       "name": "Huion H950P",
@@ -3981,7 +4039,7 @@
     },
     {
       "path": "OpenTabletDriver.Configurations/Configurations/Huion/New 1060 Plus (2048).json",
-      "git_blob": "4e21f8312a23aaee41df14c11db1618ba63c8480",
+      "git_blob": "5a6f840bc1d999b4fda702714203d983bbdb5f2b",
       "name": "Huion New 1060 Plus (2048)",
       "parsers": [
         "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicReportParser"
@@ -4011,6 +4069,23 @@
           "product_id": 110,
           "parser": "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicReportParser",
           "input_report_length": 8,
+          "output_report_length": null,
+          "feature_report_length": null,
+          "feature_init_reports": 0,
+          "output_init_reports": 0,
+          "initialization_strings": 1,
+          "device_string_indices": [
+            "201"
+          ],
+          "attribute_names": [
+            "Interface"
+          ]
+        },
+        {
+          "vendor_id": 9580,
+          "product_id": 110,
+          "parser": "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicReportParser",
+          "input_report_length": 16,
           "output_report_length": null,
           "feature_report_length": null,
           "feature_init_reports": 0,
@@ -8469,7 +8544,7 @@
     },
     {
       "path": "OpenTabletDriver.Configurations/Configurations/Wacom/DTH-2700.json",
-      "git_blob": "bb48f6d5b26a3aad87cb737d0f08749eb7c98c1a",
+      "git_blob": "a13058aaa608e65e73517530a4c45af09cb2f579",
       "name": "Wacom Cintiq 27QHD (DTH-2700)",
       "parsers": [
         "OpenTabletDriver.Configurations.Parsers.Wacom.CintiqV1.CintiqV1ReportParser"
@@ -8477,6 +8552,19 @@
       "hardware_evidence": "unverified",
       "manufacturer_directory": "Wacom",
       "digitizer": [
+        {
+          "vendor_id": 1386,
+          "product_id": 810,
+          "parser": "OpenTabletDriver.Configurations.Parsers.Wacom.CintiqV1.CintiqV1ReportParser",
+          "input_report_length": 192,
+          "output_report_length": null,
+          "feature_report_length": null,
+          "feature_init_reports": 1,
+          "output_init_reports": 0,
+          "initialization_strings": 0,
+          "device_string_indices": [],
+          "attribute_names": []
+        },
         {
           "vendor_id": 1386,
           "product_id": 811,
@@ -9245,7 +9333,7 @@
     },
     {
       "path": "OpenTabletDriver.Configurations/Configurations/Wacom/PTH-460.json",
-      "git_blob": "95a5867a79c4461099f46d8ba6183e097720fd43",
+      "git_blob": "2789eaaf2010972c0d73b797bb07bebb3c0b1d3a",
       "name": "Wacom PTH-460",
       "parsers": [
         "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV2.IntuosV2ReportParser",
@@ -9425,7 +9513,7 @@
     },
     {
       "path": "OpenTabletDriver.Configurations/Configurations/Wacom/PTH-660.json",
-      "git_blob": "6e8ffe1468853a4cfb6e64a3feb5e6e497b033d0",
+      "git_blob": "8ce9ed440bcc1b48da95a5f9e1f9a54aed707911",
       "name": "Wacom PTH-660",
       "parsers": [
         "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV2.IntuosV2ReportParser",
@@ -13293,7 +13381,7 @@
     }
   ],
   "counts": {
-    "configurations": 361,
+    "configurations": 363,
     "referenced_parser_types": 54,
     "specification_source_gaps": 0
   }

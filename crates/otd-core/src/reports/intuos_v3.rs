@@ -81,23 +81,14 @@ fn pen(raw: &[u8]) -> Result<ReportValues, ReportError> {
             f32::from(u16::from_le_bytes([raw[5], raw[6]])),
         ]),
         pressure: Some(u32::from(u16::from_le_bytes([raw[7], raw[8]]))),
-        // Upstream subtracts 0xFF, not 0x100, for the negative byte encoding.
-        // In particular 0x80 means -127 and 0xFF means zero in this variant.
-        tilt: Some([tilt_byte(raw[9]), tilt_byte(raw[11])]),
+        // Signed bytes, as upstream #5215 corrects: subtracting 0xFF read
+        // 0xFF as zero and put every negative tilt off by one.
+        tilt: Some([f32::from(raw[9] as i8), f32::from(raw[11] as i8)]),
         eraser: Some(raw[2] & 0x20 != 0),
         near_proximity: Some(raw[2] & 0x40 != 0),
         hover_distance: Some(u32::from(raw[13])),
         pen_buttons: Some(Buttons::from_bits(u64::from(raw[2] >> 1), 2)?),
         ..ReportValues::default()
-    })
-}
-
-fn tilt_byte(value: u8) -> f32 {
-    let value = i16::from(value);
-    f32::from(if value & 0x80 != 0 {
-        value - 0xff
-    } else {
-        value
     })
 }
 
@@ -141,4 +132,31 @@ fn wheel_delta(value: u8) -> i32 {
     // Signed seven-bit value: bit 6 is sign; bit 7 is ignored. The two
     // channels remain present even when the device exposes only one wheel.
     i32::from(value & 0x7f) - if value & 0x40 != 0 { 0x80 } else { 0 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reports::{DeviceId, EndpointId, SessionId};
+    use std::time::Duration;
+
+    #[test]
+    fn pen_tilt_bytes_are_signed() {
+        let metadata = ReportMetadata {
+            device: DeviceId(1),
+            session: SessionId(1),
+            endpoint: EndpointId(0),
+            received_at: Duration::ZERO,
+            sequence: 0,
+        };
+        for (byte, expected) in [(0x00, 0.0), (0x7f, 127.0), (0x80, -128.0), (0xff, -1.0)] {
+            let mut raw = [0; 14];
+            raw[0] = 0x1f;
+            raw[1] = 0x01;
+            raw[9] = byte;
+            raw[11] = byte;
+            let report = parse_intuos_v3(&raw, metadata).unwrap();
+            assert_eq!(report.values.tilt, Some([expected, expected]));
+        }
+    }
 }

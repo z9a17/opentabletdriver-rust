@@ -2,7 +2,8 @@
 
 Reference: [upstream v0.6.8.1, commit `f3927ac11146cb7dd5c3b43277d5d1e33e36f6d6`](https://github.com/OpenTabletDriver/OpenTabletDriver/tree/f3927ac11146cb7dd5c3b43277d5d1e33e36f6d6), compared with the
 [adopted 0.6.8-rc1](UPSTREAM_0.6.8_RC1.md). Automated checks only; nothing here
-was tried on hardware, and both new tablets remain unverified.
+was tried on hardware, and both new tablets remain unverified. Later upstream
+work is in [the follow-up](UPSTREAM_AFTER_0.6.8.1.md).
 
 | Upstream change | Here |
 | --- | --- |

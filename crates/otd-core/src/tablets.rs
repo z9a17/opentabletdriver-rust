@@ -1008,7 +1008,7 @@ mod tests {
         let records = inventory["configurations"].as_array().unwrap();
         let database = Database::builtin();
         assert_eq!(database.entries().len(), records.len());
-        assert_eq!(records.len(), 361);
+        assert_eq!(records.len(), 363);
         let revision = inventory["upstream"]["revision"].as_str().unwrap();
         assert_eq!(
             source_revision(),
