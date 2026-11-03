@@ -21,7 +21,8 @@ use super::{
 
 /// Decode `OpenTabletDriver.Configurations.Parsers.Huion.GianoReportParser`.
 /// 0xF1 selects two relative wheels; flags with both bits 5/6 set select
-/// auxiliary. Every other flag selects 17-bit position and inverted X/Y tilt.
+/// auxiliary. Every other flag selects 17-bit position and inverted X/Y tilt,
+/// with flag bit 5 marking the eraser end of the pen (upstream #5232).
 pub fn parse_huion_giano(
     raw: &[u8],
     metadata: ReportMetadata,
@@ -42,7 +43,10 @@ pub fn parse_huion_giano(
     } else if raw[1] & 0x60 == 0x60 {
         auxiliary(raw)?
     } else {
-        tilt_pen(raw, true)?
+        ReportValues {
+            eraser: Some(raw[1] & 0x20 != 0),
+            ..tilt_pen(raw, true)?
+        }
     };
     Ok((
         ReportKind::Data,
@@ -188,4 +192,29 @@ fn require_length(raw: &[u8], need: usize) -> Result<(), ReportError> {
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reports::{DeviceId, EndpointId, SessionId};
+    use std::time::Duration;
+
+    #[test]
+    fn giano_reports_the_eraser_end_of_the_pen() {
+        let metadata = ReportMetadata {
+            device: DeviceId(1),
+            session: SessionId(1),
+            endpoint: EndpointId(0),
+            received_at: Duration::ZERO,
+            sequence: 0,
+        };
+        for (flags, eraser) in [(0x80, false), (0x81, false), (0xa0, true), (0xa1, true)] {
+            let mut raw = [0; 12];
+            raw[0] = 0x08;
+            raw[1] = flags;
+            let (_, report) = parse_huion_giano(&raw, metadata).unwrap();
+            assert_eq!(report.values.eraser, Some(eraser));
+        }
+    }
 }

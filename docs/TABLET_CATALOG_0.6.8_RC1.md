@@ -1,7 +1,8 @@
 # Tablet catalog and device changes from OpenTabletDriver 0.6.8-rc1
 
-The catalog has since moved to 0.6.8.1, which adds two configurations; see
-[the 0.6.8.1 update](parity/UPSTREAM_0.6.8.1.md). This page describes the RC step.
+The catalog has since moved past 0.6.8.1 and has 363 configurations; see
+[the 0.6.8.1 update](parity/UPSTREAM_0.6.8.1.md) and
+[later fixes](parity/UPSTREAM_AFTER_0.6.8.1.md). This page describes the RC step.
 
 The embedded catalog now follows [v0.6.8-rc1, commit
 126f4828564abb673d39e97a093fd815aab335c2](https://github.com/OpenTabletDriver/OpenTabletDriver/tree/126f4828564abb673d39e97a093fd815aab335c2).

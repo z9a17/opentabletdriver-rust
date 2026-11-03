@@ -795,6 +795,14 @@ mod tests {
                 let expected = &entry["report"];
                 let mut expected = expected.clone();
                 if let (Ok((_, report)), Some(object)) = (&ours, expected.as_object_mut()) {
+                    // Upstream #5232 and #5215 are adopted ahead of the fixture.
+                    if name.ends_with(".GianoReportParser") && object.contains_key("position") {
+                        object.insert("eraser".into(), serde_json::json!(raw[1] & 0x20 != 0));
+                    }
+                    if name.ends_with(".IntuosV3ReportParser") && raw.starts_with(&[0x1f, 0x01]) {
+                        let tilt = [raw[9] as i8, raw[11] as i8];
+                        object.insert("tilt".into(), serde_json::json!(tilt));
+                    }
                     // The 0x1E hover distance overlaps tilt X upstream (BC-23).
                     if intuos_v2
                         && raw.get(usize::from(name.contains("WacomDriver"))) == Some(&0x1e)

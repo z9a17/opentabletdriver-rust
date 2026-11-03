@@ -4,7 +4,7 @@
 
 A Rust drawing-tablet driver based on [OpenTabletDriver](https://github.com/OpenTabletDriver/OpenTabletDriver), with a native Windows control panel, Linux/macOS command-line drivers, and the original Gtk/Eto frontends on Linux/macOS. It imports OpenTabletDriver settings and hosts supported existing .NET plugins unchanged.
 
-**Experimental compatibility:** the project includes 361 tablet configurations and native entries for all 54 referenced parsers. Only the **Wacom PTH-660 (Intuos Pro M) on Windows** has confirmed hardware evidence. Catalog/parser coverage does not establish working initialization, transport or output for every tablet. Linux/macOS runtime and hardware acceptance, the unchanged plugin corpus, and full verified parity remain open. See [RC adoption and evidence limits](docs/parity/UPSTREAM_0.6.8_RC1.md) and the [0.6.8.1 update](docs/parity/UPSTREAM_0.6.8.1.md).
+**Experimental compatibility:** the project includes 363 tablet configurations and native entries for all 54 referenced parsers. Only the **Wacom PTH-660 (Intuos Pro M) on Windows** has confirmed hardware evidence. Catalog/parser coverage does not establish working initialization, transport or output for every tablet. Linux/macOS runtime and hardware acceptance, the unchanged plugin corpus, and full verified parity remain open. See [RC adoption and evidence limits](docs/parity/UPSTREAM_0.6.8_RC1.md) and the [0.6.8.1 update](docs/parity/UPSTREAM_0.6.8.1.md) and [later fixes](docs/parity/UPSTREAM_AFTER_0.6.8.1.md).
 
 ## Download
 
