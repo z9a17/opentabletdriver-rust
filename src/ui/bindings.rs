@@ -100,7 +100,7 @@ pub(super) fn action_text(action: &ButtonAction) -> String {
         ButtonAction::None => "None".into(),
         ButtonAction::Toggle(action) => format!("Toggle: {}", action_text(action)),
         ButtonAction::Preset(name) => format!("Preset: {}", name.as_str()),
-        ButtonAction::Managed(config) => format!("Managed: {}", model::plugin_name(config)),
+        ButtonAction::Managed(config) => format!("Plugin: {}", model::plugin_name(config)),
         ButtonAction::Barrel(number) => format!("Pen Button {number}"),
         ButtonAction::Mouse(button) => MOUSE_CHOICES
             .iter()

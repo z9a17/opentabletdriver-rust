@@ -295,6 +295,19 @@ pub fn use_native_ports(profile: &mut otd_core::config::Profile, log: impl Fn(&s
             "Running {moved} RadialFollow 0.3.0 filter(s) on the built-in port instead of the .NET bridge."
         ));
     }
+    let moved = profile.use_native_contact_bindings(is_desktop_dll);
+    if moved > 0 {
+        log(&format!(
+            "Running {moved} left-click tip/eraser binding(s) natively instead of through the .NET bridge."
+        ));
+    }
+}
+
+/// OpenTabletDriver's own Desktop assembly, whose left-click tip/eraser
+/// bindings the native contact reproduces exactly.
+pub fn is_desktop_dll(path: &std::path::Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("OpenTabletDriver.Desktop.dll"))
 }
 
 /// Where plugins are installed: `Plugins` in this driver's data folder.

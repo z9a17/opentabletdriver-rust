@@ -83,6 +83,10 @@ The live 0.16.2 daemon running the DLL used 60 MB of private memory and 86 MB of
 
 These are historical measurements against the 0.16.2 bridge, not measurements of the current managed service/report implementation. Native substitution does not load the unchanged DLL and supplies no new unchanged-DLL or physical latency evidence. PR80 review retains the managed chain whenever any tablet-space Radial Follow cannot be substituted without changing order or triggering duplicate-filter validation; the native tablet filter also passes puck/mouse positions through like the original DLL.
 
+## Native left-click tip and eraser bindings
+
+Imported OpenTabletDriver profiles usually bind the tip to `OpenTabletDriver.Desktop.Binding.MouseBinding` with `Button: Left` (or `AdaptiveBinding: Tip`). Through 0.19 the driver ran that binding through the .NET bridge, which hands every report to .NET so the binding can see it, and loads the runtime into the report thread. With mouse output it presses the left button exactly like the native tip, so since 0.20.0 the driver runs such tip and eraser bindings from `OpenTabletDriver.Desktop.dll` natively (`Profile::use_native_contact_bindings`), and imports store them that way. `OTD_DISABLE_NATIVE_PORTS=1` keeps the .NET binding. Pen output, other buttons and other DLLs keep their managed binding. No physical latency was measured for this change.
+
 ## Session summary
 
 When a device session ends (**Stop driver**, unplugging the tablet, or Ctrl+C in the console), the driver logs one line, which the panel shows in the Console:

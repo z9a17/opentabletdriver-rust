@@ -682,7 +682,7 @@ impl DriverState {
             DriverState::Connected => "Running",
             DriverState::Stopping => "Stopping",
             DriverState::Failed => "Stopped with an error",
-            DriverState::Disconnected => "Daemon connection unavailable",
+            DriverState::Disconnected => "Driver not running",
         }
     }
 }

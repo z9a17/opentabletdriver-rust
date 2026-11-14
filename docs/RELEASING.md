@@ -99,6 +99,17 @@ scripts/package-windows-cross.sh
 
 This produces GNU-target Windows binaries rather than MSVC binaries. Document that in the release notes. The managed bridge uses the [selected 0.6.8 RC components and documented legacy compatibility adaptations](parity/UPSTREAM_0.6.8_RC1.md).
 
+## GitHub-hosted release build
+
+[The Release build workflow](../.github/workflows/release-build.yml) builds all four packages with `release.py build` from one commit: Windows with MSVC on a Windows runner, Linux with [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) against glibc 2.31 (the job fails if the driver needs a newer glibc), and both Mac packages on an Apple Silicon runner with `MACOSX_DEPLOYMENT_TARGET=11.0`. Start it by hand on the merged `main` commit after CI passed, then download its artifacts into `target/releases` of a clean checkout of that commit:
+
+```sh
+gh workflow run release-build.yml -f ref=<merged commit>
+gh run download <run id> --dir target/releases-download
+```
+
+Move the archives and `.sha256` files from the artifact folders into `target/releases`, then verify and publish as below. It also runs on pull requests that change the release tooling.
+
 ## Publish
 
 Collect the four archives and their checksum files in `target/releases`. Assets built on separate hosts must come from the same clean merged commit and lockfile. Write release notes with executed checks and remaining hardware/platform limitations, then run:

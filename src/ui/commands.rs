@@ -1201,20 +1201,19 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
         ID_TIP_BINDING | ID_ERASER_BINDING => {
             let eraser = id == ID_ERASER_BINDING;
             let enabled = with_app(|app| app.editor.binding_enabled(eraser)).unwrap_or(true);
-            let managed = with_app(|app| {
-                if eraser {
-                    app.editor.profile.managed_eraser_binding.is_some()
-                } else {
-                    app.editor.profile.managed_tip_binding.is_some()
-                }
+            let (managed, native_label) = with_app(|app| {
+                (
+                    app.custom_contact_binding(eraser).is_some(),
+                    app.native_contact_label(eraser),
+                )
             })
-            .unwrap_or(false);
+            .unwrap_or((false, if eraser { "Eraser" } else { "Tip" }));
             let menu = unsafe { CreatePopupMenu() };
             append(
                 menu,
                 MFT_RADIOCHECK | checked(enabled && !managed),
                 1,
-                if eraser { "Eraser" } else { "Tip" },
+                native_label,
             );
             append(
                 menu,
@@ -1222,7 +1221,7 @@ pub(super) fn on_command(window: HWND, id: u16, code: u32, control: HWND) {
                 2,
                 "None",
             );
-            append(menu, 0, 3, "Managed binding...");
+            append(menu, 0, 3, "Plugin binding...");
             match popup(window, menu, control) {
                 3 => managed_settings::choose(
                     window,

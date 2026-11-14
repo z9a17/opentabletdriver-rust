@@ -1929,6 +1929,67 @@ impl Profile {
         moved
     }
 
+    /// Runs a tip or eraser binding that is OpenTabletDriver's own
+    /// `MouseBinding: Left` or `AdaptiveBinding: Tip/Eraser` from
+    /// `OpenTabletDriver.Desktop.dll` as the native contact instead. With
+    /// mouse output both press the left button, exactly like the native tip
+    /// ([`OutputKind::Mouse`]), but the managed form hands every report to
+    /// the .NET bridge and loads the runtime into the report thread.
+    /// `is_desktop_dll` confirms the binding's DLL. Only this execution
+    /// copy changes; saved settings are not touched. Returns how many moved.
+    pub fn use_native_contact_bindings(&mut self, is_desktop_dll: impl Fn(&Path) -> bool) -> usize {
+        let left_click = |config: &PluginConfig, eraser| {
+            self.is_native_left_click(config, eraser, &is_desktop_dll)
+        };
+        let tip = self
+            .managed_tip_binding
+            .as_ref()
+            .is_some_and(|config| left_click(config, false));
+        let eraser = self
+            .managed_eraser_binding
+            .as_ref()
+            .is_some_and(|config| left_click(config, true));
+        let mut moved = 0;
+        if tip && let Some(config) = &self.managed_tip_binding {
+            self.contact.tip_enabled = config.enabled;
+            self.managed_tip_binding = None;
+            moved += 1;
+        }
+        if eraser && let Some(config) = &self.managed_eraser_binding {
+            self.contact.eraser_enabled = config.enabled;
+            self.managed_eraser_binding = None;
+            moved += 1;
+        }
+        moved
+    }
+
+    /// Whether this managed tip (or eraser) binding only presses the left
+    /// button, which the native contact does identically with mouse output.
+    pub fn is_native_left_click(
+        &self,
+        config: &PluginConfig,
+        eraser: bool,
+        is_desktop_dll: impl Fn(&Path) -> bool,
+    ) -> bool {
+        if self.output != OutputKind::Mouse
+            || self.managed_output.is_some()
+            || config.kind != crate::plugins::PluginKind::Dotnet
+            || !is_desktop_dll(&config.path)
+        {
+            return false;
+        }
+        let Ok(settings) = serde_json::from_str::<serde_json::Value>(&config.settings_json) else {
+            return false;
+        };
+        let value = |name: &str| settings.get(name).and_then(serde_json::Value::as_str);
+        match config.type_name.as_str() {
+            // Upstream parses the button name with Enum.TryParse(ignoreCase: true).
+            MOUSE_BINDING => value("Button").is_some_and(|b| b.eq_ignore_ascii_case("left")),
+            ADAPTIVE_BINDING => value("Binding") == Some(if eraser { "Eraser" } else { "Tip" }),
+            _ => false,
+        }
+    }
+
     /// Where the built-in Radial Follow runs among the enabled DLL filters
     /// that `PluginChain` loads (all but tools), or `None` to run it before
     /// them all. OpenTabletDriver runs filters in profile order, so the port
@@ -2638,6 +2699,90 @@ mod tests {
                 .crop
                 .valid()
         );
+    }
+
+    #[test]
+    fn desktop_left_click_contact_bindings_run_natively_with_mouse_output() {
+        let binding = |field: &str, path: &str, type_name: &str, settings: &str, enabled: bool| {
+            format!(
+                "[{field}]\npath='{path}'\nkind='dotnet'\nenabled={enabled}\ntype_name='{type_name}'\nsettings_json='{settings}'\n"
+            )
+        };
+        let desktop = |path: &Path| path.ends_with("OpenTabletDriver.Desktop.dll");
+        let load = |text: String| Profile::from_toml_text(&text, Path::new("driver.toml")).unwrap();
+        let dll = "compat/OpenTabletDriver.Desktop.dll";
+
+        // The imported default: MouseBinding Left on the tip, Adaptive Eraser.
+        let mut profile = load(format!(
+            "{}{}",
+            binding(
+                "managed_tip_binding",
+                dll,
+                MOUSE_BINDING,
+                r#"{"Button":"left"}"#,
+                true
+            ),
+            binding(
+                "managed_eraser_binding",
+                dll,
+                ADAPTIVE_BINDING,
+                r#"{"Binding":"Eraser"}"#,
+                false
+            ),
+        ));
+        assert_eq!(profile.use_native_contact_bindings(desktop), 2);
+        assert!(profile.managed_tip_binding.is_none() && profile.managed_eraser_binding.is_none());
+        assert!(profile.contact.tip_enabled);
+        assert!(
+            !profile.contact.eraser_enabled,
+            "a disabled binding stays disabled"
+        );
+
+        // Other buttons, other DLLs and pen output keep the managed binding.
+        for text in [
+            binding(
+                "managed_tip_binding",
+                dll,
+                MOUSE_BINDING,
+                r#"{"Button":"Right"}"#,
+                true,
+            ),
+            binding(
+                "managed_tip_binding",
+                dll,
+                ADAPTIVE_BINDING,
+                r#"{"Binding":"Eraser"}"#,
+                true,
+            ),
+            binding(
+                "managed_tip_binding",
+                dll,
+                KEY_BINDING,
+                r#"{"Key":"Z"}"#,
+                true,
+            ),
+            binding(
+                "managed_tip_binding",
+                "Other.dll",
+                MOUSE_BINDING,
+                r#"{"Button":"Left"}"#,
+                true,
+            ),
+            format!(
+                "output='pen'\n{}",
+                binding(
+                    "managed_tip_binding",
+                    dll,
+                    MOUSE_BINDING,
+                    r#"{"Button":"Left"}"#,
+                    true
+                )
+            ),
+        ] {
+            let mut profile = load(text);
+            assert_eq!(profile.use_native_contact_bindings(desktop), 0);
+            assert!(profile.managed_tip_binding.is_some());
+        }
     }
 
     #[test]

@@ -449,6 +449,9 @@ pub fn resolve_imported_stores(
         next.contact.eraser_enabled = config.enabled;
         next.managed_eraser_binding = Some(config);
     }
+    // A plain left-click tip/eraser imports as the native contact, which
+    // behaves identically without sending every report through .NET.
+    next.use_native_contact_bindings(crate::plugin_catalog::is_desktop_dll);
     let preserve = |current: &mut otd_core::output::buttons::ButtonAction,
                     saved: &otd_core::output::buttons::ButtonAction| {
         if matches!(saved, otd_core::output::buttons::ButtonAction::Managed(_)) {

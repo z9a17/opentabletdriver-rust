@@ -1138,7 +1138,10 @@ impl Daemon {
                         return;
                     }
                 }
-                self.log("Driver generation activated; replacement starts with fresh filter/output/relative state.".into());
+                self.log(format!(
+                    "{} The new driver generation starts with fresh filter, output and relative state.",
+                    crate::daemon::SETTINGS_ACTIVE
+                ));
             }
             Notice::ActivationFailed(error) if phase == Phase::Activating => {
                 self.reject_candidate(error, !initial)

@@ -10,6 +10,9 @@ use std::time::{Duration, Instant};
 mod state;
 use state::Daemon;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+/// Starts the daemon log line written when new settings take effect; the
+/// panel turns it into a short "Settings applied." status.
+pub const SETTINGS_ACTIVE: &str = "Settings are now active.";
 
 /// Own resources until all driver output cleanup finishes.
 pub fn serve() -> Result<(), String> {
