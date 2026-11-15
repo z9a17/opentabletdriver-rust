@@ -104,11 +104,13 @@ This produces GNU-target Windows binaries rather than MSVC binaries. Document th
 [The Release build workflow](../.github/workflows/release-build.yml) builds all four packages with `release.py build` from one commit: Windows with MSVC on a Windows runner, Linux with [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) against glibc 2.31 (the job fails if the driver needs a newer glibc), and both Mac packages on an Apple Silicon runner with `MACOSX_DEPLOYMENT_TARGET=11.0`. Start it by hand on the merged `main` commit after CI passed, then download its artifacts into `target/releases` of a clean checkout of that commit:
 
 ```sh
-gh workflow run release-build.yml -f ref=<merged commit>
+gh workflow run release-build.yml -f ref=$(git rev-parse origin/main)
 gh run download <run id> --dir target/releases-download
 ```
 
-Move the archives and `.sha256` files from the artifact folders into `target/releases`, then verify and publish as below. It also runs on pull requests that change the release tooling.
+Pass the full 40-character commit ID; `actions/checkout` cannot fetch an abbreviated one. Move the archives and `.sha256` files from the artifact folders into `target/releases`, then verify and publish as below. It also runs on pull requests that change the release tooling.
+
+Each package records the SHA-256 of `Cargo.lock` as checked out on its build host, so `.gitattributes` pins that file to LF. Otherwise Git on Windows checks it out with CRLF, and Windows and Unix packages from the same commit could never verify together.
 
 ## Publish
 
