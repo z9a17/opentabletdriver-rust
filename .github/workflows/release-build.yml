@@ -39,6 +39,10 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
+      # Package the committed bytes, as the Unix jobs do. release.py compares
+      # packaged text files and the lockfile hash across every platform.
+      - name: Keep committed line endings
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}

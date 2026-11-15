@@ -110,7 +110,12 @@ gh run download <run id> --dir target/releases-download
 
 Pass the full 40-character commit ID; `actions/checkout` cannot fetch an abbreviated one. Move the archives and `.sha256` files from the artifact folders into `target/releases`, then verify and publish as below. It also runs on pull requests that change the release tooling.
 
-Each package records the SHA-256 of `Cargo.lock` as checked out on its build host, so `.gitattributes` pins that file to LF. Otherwise Git on Windows checks it out with CRLF, and Windows and Unix packages from the same commit could never verify together.
+Packages contain text files (README, licenses, guides) and record the SHA-256 of `Cargo.lock`, and `release.py verify` compares them byte for byte with the checkout. Every host must therefore use the committed bytes: the workflow's Windows job sets `core.autocrlf false` before checkout, and `.gitattributes` also pins `Cargo.lock` to LF. On Windows, verify and publish from a clone made the same way:
+
+```sh
+git -c core.autocrlf=false clone https://github.com/z9a17/opentabletdriver-rust.git otd-release
+cd otd-release && git config core.autocrlf false
+```
 
 ## Publish
 
