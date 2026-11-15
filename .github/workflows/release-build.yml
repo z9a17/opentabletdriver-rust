@@ -1,0 +1,137 @@
+# Builds the four release packages from one commit with scripts/release.py.
+# Run it by hand on a merged main commit whose CI passed, then download the
+# artifacts into target/releases of a clean checkout of that same commit and
+# run `python3 scripts/release.py publish --notes <file>` (docs/RELEASING.md).
+# This workflow only builds; it never tags or publishes.
+name: Release build
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit or branch to build (normally main)
+        required: true
+        default: main
+  # Pull requests that change the release tooling prove it still packages.
+  pull_request:
+    paths:
+      - .github/workflows/release-build.yml
+      - scripts/release.py
+      - scripts/package-unix.sh
+      - packaging/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-build-${{ inputs.ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_NOLOGO: 1
+
+jobs:
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
+        with:
+          toolchain: stable
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.x
+      - name: Build and package
+        run: python scripts/release.py build --platform win-x64 --rust-target x86_64-pc-windows-msvc
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: win-x64
+          path: target/releases/*
+          if-no-files-found: error
+
+  linux:
+    name: Linux x64
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
+        with:
+          toolchain: stable
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.x
+      # Link against glibc 2.31, the documented Linux minimum, instead of the
+      # runner's newer glibc. release.py runs "$CARGO build --target ...".
+      - name: Install cargo-zigbuild
+        run: |
+          python3 -m pip install --user cargo-zigbuild
+          wrapper="$RUNNER_TEMP/cargo-glibc"
+          cat > "$wrapper" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          args=()
+          for arg in "$@"; do
+            case "$arg" in
+              build) args+=(zigbuild) ;;
+              x86_64-unknown-linux-gnu) args+=(x86_64-unknown-linux-gnu.2.31) ;;
+              *) args+=("$arg") ;;
+            esac
+          done
+          exec cargo "${args[@]}"
+          EOF
+          chmod +x "$wrapper"
+          echo "CARGO=$wrapper" >> "$GITHUB_ENV"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Build and package
+        run: scripts/package-unix.sh linux-x64
+      - name: Check the glibc requirement
+        run: |
+          binary=target/x86_64-unknown-linux-gnu/release/opentabletdriver-rust-linux
+          newest=$(objdump -T "$binary" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n1)
+          echo "Newest required: $newest"
+          test "$(printf '%s\nGLIBC_2.31\n' "$newest" | sort -V | tail -n1)" = GLIBC_2.31
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-x64
+          path: target/releases/*
+          if-no-files-found: error
+
+  macos:
+    name: macOS Intel and Apple Silicon
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
+        with:
+          toolchain: stable
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.x
+      - name: Build and package (Intel)
+        run: scripts/package-unix.sh macos-x64
+      - name: Build and package (Apple Silicon)
+        run: scripts/package-unix.sh macos-arm64
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos
+          path: target/releases/*
+          if-no-files-found: error

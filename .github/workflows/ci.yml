@@ -86,7 +86,14 @@ jobs:
           dotnet-version: 10.0.x
       - name: Build plugin ZIP validator
         if: ${{ !cancelled() }}
-        run: dotnet build compat/ArchiveTools/OtdArchiveTools.csproj -p:RestoreLockedMode=true -c Release -o target/debug/deps
+        # Cargo 1.100 moved test binaries out of target/debug/deps, so ask
+        # Cargo where each test binary is and put the validator beside it.
+        run: |
+          cargo test --locked --no-run --message-format=json -p otd-core -p otd-platform -p otd-plugin-api -p otd-ema-filter -p otd-linux > "$RUNNER_TEMP/tests.json"
+          jq -r 'select(.reason == "compiler-artifact" and .profile.test and .executable != null) | .executable' "$RUNNER_TEMP/tests.json" | xargs -n1 dirname | sort -u > "$RUNNER_TEMP/test-dirs"
+          test -s "$RUNNER_TEMP/test-dirs"
+          dotnet build compat/ArchiveTools/OtdArchiveTools.csproj -p:RestoreLockedMode=true -c Release -o "$RUNNER_TEMP/validator"
+          while read -r dir; do cp -R "$RUNNER_TEMP/validator/." "$dir/"; done < "$RUNNER_TEMP/test-dirs"
       - name: Test
         if: ${{ !cancelled() }}
         run: cargo test --locked -p otd-core -p otd-platform -p otd-plugin-api -p otd-ema-filter -p otd-linux
@@ -118,7 +125,14 @@ jobs:
           dotnet-version: 10.0.x
       - name: Build plugin ZIP validator
         if: ${{ !cancelled() }}
-        run: dotnet build compat/ArchiveTools/OtdArchiveTools.csproj -p:RestoreLockedMode=true -c Release -o target/debug/deps
+        # Cargo 1.100 moved test binaries out of target/debug/deps, so ask
+        # Cargo where each test binary is and put the validator beside it.
+        run: |
+          cargo test --locked --no-run --message-format=json -p otd-core -p otd-platform -p otd-plugin-api -p otd-ema-filter -p otd-macos > "$RUNNER_TEMP/tests.json"
+          jq -r 'select(.reason == "compiler-artifact" and .profile.test and .executable != null) | .executable' "$RUNNER_TEMP/tests.json" | xargs -n1 dirname | sort -u > "$RUNNER_TEMP/test-dirs"
+          test -s "$RUNNER_TEMP/test-dirs"
+          dotnet build compat/ArchiveTools/OtdArchiveTools.csproj -p:RestoreLockedMode=true -c Release -o "$RUNNER_TEMP/validator"
+          while read -r dir; do cp -R "$RUNNER_TEMP/validator/." "$dir/"; done < "$RUNNER_TEMP/test-dirs"
       - name: Test (Apple Silicon)
         if: ${{ !cancelled() }}
         run: cargo test --locked -p otd-core -p otd-platform -p otd-plugin-api -p otd-ema-filter -p otd-macos

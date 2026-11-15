@@ -21,7 +21,7 @@ Use the [project README](../README.md) for downloads and quick setup. These guid
 - [Performance](PERFORMANCE.md), [input latency](INPUT_LATENCY.md): measurement methods and limits
 - [13 October reliability review](BACKGROUND_AUDIT_2026-10-13.md): reader fairness, shutdown, cleanup and offline regression results
 - [15 October driver overhead review](PERFORMANCE_IMPROVEMENTS_2026-10-15.md): managed graph, snapshot, wake and debugger improvements with offline measurements
-- [0.19.1 release notes](RELEASE_0.19.1.md), [0.19.0 release notes](RELEASE_0.19.0.md), [porting status and historical release snapshots](PORTING_STATUS.md)
+- [0.20.0 release notes](RELEASE_0.20.0.md), [0.19.1 release notes](RELEASE_0.19.1.md), [0.19.0 release notes](RELEASE_0.19.0.md), [porting status and historical release snapshots](PORTING_STATUS.md)
 
 ## Development
 

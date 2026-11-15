@@ -614,7 +614,7 @@ impl App {
         ));
         tips.push((
             c.apply,
-            "Restart the running driver with the current settings.".into(),
+            "Use these settings now. Starts the driver if it is stopped.".into(),
         ));
         tips.push((c.save, "Save the profile.".into()));
         for (hwnd, tip) in tips {
@@ -653,7 +653,7 @@ impl App {
             .profile
             .managed_output
             .as_ref()
-            .map(|config| format!("Managed: {}", model::plugin_name(config)));
+            .map(|config| format!("Plugin: {}", model::plugin_name(config)));
         set_text(self.c.mode, managed.as_deref().unwrap_or(label));
     }
 
@@ -723,15 +723,11 @@ impl App {
             } else {
                 (self.c.tip_binding, self.c.tip_slider, self.c.tip_field)
             };
-            let name = if eraser { "Eraser" } else { "Tip" };
+            let name = self.native_contact_label(eraser);
             set_text(
                 binding,
-                &if let Some(config) = if eraser {
-                    &self.editor.profile.managed_eraser_binding
-                } else {
-                    &self.editor.profile.managed_tip_binding
-                } {
-                    format!("Managed: {}", model::plugin_name(config))
+                &if let Some(config) = self.custom_contact_binding(eraser) {
+                    format!("Plugin: {}", model::plugin_name(config))
                 } else if self.editor.binding_enabled(eraser) {
                     name.into()
                 } else {
@@ -1190,11 +1186,20 @@ impl App {
 
     // ----- Logging and title ------------------------------------------------------
 
+    /// Writes to the Console and shows the message in the status bar.
     pub(super) fn log(&mut self, level: Level, group: &'static str, message: impl Into<String>) {
         let message = message.into();
         self.status = message.clone();
         self.status_level = level;
         self.validation_status = false;
+        self.log_console(level, group, message);
+        self.set_tool_text(3, &self.status.clone());
+        self.invalidate_status();
+    }
+
+    /// Writes to the Console only. Use it for technical detail; the status
+    /// bar is for short, plain messages a user can act on.
+    pub(super) fn log_console(&mut self, level: Level, group: &'static str, message: String) {
         let mut removed = false;
         let time = local_time();
         let row = wide(&format!("{time} {} {group}: {message}", level.label()));
@@ -1219,8 +1224,6 @@ impl App {
                 SendMessageW(self.c.log, LB_SETTOPINDEX, index as usize, 0);
             }
         }
-        self.set_tool_text(3, &self.status.clone());
-        self.invalidate_status();
     }
 
     pub(super) fn update_title(&self) {
@@ -1733,7 +1736,7 @@ impl App {
                 self.log(
                     Level::Info,
                     "Plugins",
-                    "Restored selected filter defaults. Use Apply to update the running driver.",
+                    "Restored the filter's default values. Press Apply to use them.",
                 );
             }
             Err(error) => self.log(Level::Warning, "Plugins", error),
@@ -1769,6 +1772,29 @@ impl App {
             *slot = value;
             self.mark_dirty();
         }
+    }
+
+    /// What the built-in tip/eraser action does with the current output.
+    pub(super) fn native_contact_label(&self, eraser: bool) -> &'static str {
+        match (self.editor.profile.output, eraser) {
+            (otd_core::config::OutputKind::Mouse, _) => "Left click",
+            (_, false) => "Pen tip",
+            (_, true) => "Eraser",
+        }
+    }
+
+    /// A plugin tip/eraser binding that does something other than the
+    /// built-in left click. Plain left-click bindings imported from
+    /// OpenTabletDriver run natively and are shown as the built-in action.
+    pub(super) fn custom_contact_binding(&self, eraser: bool) -> Option<&PluginConfig> {
+        let profile = &self.editor.profile;
+        let config = if eraser {
+            profile.managed_eraser_binding.as_ref()
+        } else {
+            profile.managed_tip_binding.as_ref()
+        }?;
+        (!profile.is_native_left_click(config, eraser, crate::plugin_catalog::is_desktop_dll))
+            .then_some(config)
     }
 
     pub(super) fn set_binding(&mut self, eraser: bool, enabled: bool) {
@@ -2527,11 +2553,12 @@ impl App {
                 self.runtime_dirty_origin = None;
                 self.update_title();
                 self.update_save_tip();
-                self.log(
+                self.log_console(
                     Level::Info,
                     "Settings",
                     format!("Saved {}.", self.profile_path.display()),
                 );
+                self.show_status("Settings saved.".into(), Level::Info, false);
                 // Upstream's Save also applies the settings.
                 if self.running.is_some() {
                     self.restart_with(profile);
@@ -2547,11 +2574,13 @@ impl App {
         let changed = self.driver != state;
         let was_connected = self.driver == DriverState::Connected;
         self.driver = state;
-        let running = self.running.is_some();
+        // Apply restarts a running driver or starts a stopped one.
         unsafe {
             EnableWindow(
                 self.c.apply,
-                (running && !self.control_busy && state != DriverState::Stopping).into(),
+                (!self.control_busy
+                    && !matches!(state, DriverState::Stopping | DriverState::Starting))
+                .into(),
             );
         }
         if was_connected != (state == DriverState::Connected) {
@@ -2618,7 +2647,7 @@ impl App {
             return false;
         }
         if self.control_busy {
-            self.log(Level::Warning, "Daemon", "Another daemon request is pending; these settings were not applied. Retry Apply after the status updates.");
+            self.log(Level::Warning, "Daemon", "The driver is busy, so these settings were not applied yet. Wait a moment, then press Apply again.");
             return false;
         }
         self.connect_daemon();
@@ -2695,24 +2724,19 @@ impl App {
         };
         if self.submit_control(command) {
             self.set_driver_state(DriverState::Starting);
-            self.log(
+            self.log_console(
                 Level::Info,
                 "Daemon",
-                "Connecting to the daemon; an existing driver keeps its active settings.",
+                "Connecting to the daemon; an existing driver keeps its active settings.".into(),
             );
+            self.show_status("Starting the driver...".into(), Level::Info, false);
         }
     }
 
     pub(super) fn apply(&mut self) {
-        if self.running.is_none() {
-            self.log(
-                Level::Info,
-                "Driver",
-                "The driver is not attached. Start driver connects to the daemon.",
-            );
-            return;
-        }
         match self.checked_profile() {
+            // Apply with the driver stopped starts it with these settings.
+            Ok(profile) if self.running.is_none() => self.start_with(profile),
             Ok(profile) => self.restart_with(profile),
             Err(error) => self.log(Level::Error, "Settings", error),
         }
@@ -2746,7 +2770,8 @@ impl App {
             }
         };
         if self.submit_control(command) {
-            self.log(Level::Info, "Daemon", "Settings apply requested for the selected tablet. Other tablets keep their profiles; the device state reports completion.");
+            self.log_console(Level::Info, "Daemon", "Settings apply requested for the selected tablet. Other tablets keep their profiles; the device state reports completion.".into());
+            self.show_status("Applying settings...".into(), Level::Info, false);
         }
     }
 
@@ -2762,10 +2787,10 @@ impl App {
         for event in events {
             match event {
                 client::ClientEvent::DaemonReady(result) => match result {
-                    Ok(()) => self.log(
+                    Ok(()) => self.log_console(
                         Level::Info,
                         "Daemon",
-                        "The separate daemon process is available.",
+                        "The separate daemon process is available.".into(),
                     ),
                     Err(error) => self.log(Level::Error, "Daemon", error),
                 },
@@ -2815,8 +2840,10 @@ impl App {
                     self.device_sessions.clear();
                     self.selected_device = None;
                     self.set_driver_state(DriverState::Disconnected);
-                    self.log(if error.is_some() { Level::Warning } else { Level::Info }, "Daemon",
-                        error.unwrap_or_else(|| "No daemon is available. Start driver launches it; closing this panel stops tablet input.".into()));
+                    match error {
+                        Some(error) => self.log(Level::Warning, "Daemon", error),
+                        None => self.log_console(Level::Info, "Daemon", "No daemon is available. Start driver launches it; closing this panel stops tablet input.".into()),
+                    }
                 }
                 client::ClientEvent::Snapshot {
                     status,
@@ -2849,7 +2876,7 @@ impl App {
                             &status.instance,
                             self.selected_device.as_ref(),
                         ) {
-                            self.log(Level::Warning, "Settings", "Daemon configuration changed. Unsaved local edits were kept; Apply deliberately replaces the active configuration.");
+                            self.log(Level::Warning, "Settings", "The driver's settings were changed elsewhere. Your unsaved edits were kept; press Apply to use them instead.");
                         } else {
                             if let Some(device) = self.selected_device.clone()
                                 && (switched_device
@@ -2869,7 +2896,7 @@ impl App {
                             }
                             let device = self.selected_device.clone();
                             self.adopt_runtime_profile(*profile, &status.instance, device.as_ref());
-                            self.log(Level::Info, "Settings", "Loaded the daemon's active configuration. Save writes it to the local profile file.");
+                            self.log_console(Level::Info, "Settings", "Loaded the daemon's active configuration. Save writes it to the local profile file.".into());
                         }
                     }
                     let mut state = match status.state {
@@ -2897,14 +2924,22 @@ impl App {
                         }
                         let sequence = first_sequence + index as u64 + 1;
                         if sequence > self.daemon_log_sequence {
-                            let level = if message.starts_with("Device session stopped")
+                            if message.starts_with("Device session stopped")
                                 || message.starts_with("Disabled failing plugin")
                             {
-                                Level::Warning
+                                self.log(Level::Warning, "Driver", message);
                             } else {
-                                Level::Info
-                            };
-                            self.log(level, "Driver", message);
+                                // Routine driver progress belongs in the Console;
+                                // the status bar's state label already says it.
+                                if message.starts_with(crate::daemon::SETTINGS_ACTIVE) {
+                                    self.show_status(
+                                        "Settings applied.".into(),
+                                        Level::Info,
+                                        false,
+                                    );
+                                }
+                                self.log_console(Level::Info, "Driver", message);
+                            }
                         }
                     }
                     self.daemon_log_sequence = status.log_sequence;
