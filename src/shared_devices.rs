@@ -428,35 +428,53 @@ struct Packet {
 }
 fn packets(stream: &mut Stream, after: u64, limit: usize) -> Result<Vec<Packet>, String> {
     let endpoint = &stream.endpoint;
-    let ring = endpoint.ring.lock().map_err(|_| "Report ring poisoned")?;
     let after = after.max(stream.cursor);
-    let mut slots: Vec<_> = ring
-        .sequences
-        .iter()
-        .copied()
-        .enumerate()
-        .filter(|(_, s)| *s > after)
-        .collect();
-    slots.sort_unstable_by_key(|(_, s)| *s);
-    let mut out = Vec::new();
+    // Copy raw bytes and slot metadata under `ring.lock()` with zero sorting
+    // of heavy records or hex encoding while holding the producer's lock.
+    let (mut raw_slots, raw_bytes, received) = {
+        let ring = endpoint.ring.lock().map_err(|_| "Report ring poisoned")?;
+        let mut matched = 0usize;
+        let mut total_bytes = 0usize;
+        for (index, &sequence) in ring.sequences.iter().enumerate() {
+            if sequence > after {
+                matched += 1;
+                total_bytes += ring.lengths[index];
+            }
+        }
+        let mut raw_slots: Vec<(u64, u64, usize, usize)> = Vec::with_capacity(matched);
+        let mut raw_bytes: Vec<u8> = Vec::with_capacity(total_bytes);
+        if matched != 0 {
+            for (index, &sequence) in ring.sequences.iter().enumerate() {
+                if sequence > after {
+                    let offset = index * endpoint.report_length;
+                    let length = ring.lengths[index];
+                    let byte_start = raw_bytes.len();
+                    raw_bytes.extend_from_slice(&ring.bytes[offset..offset + length]);
+                    raw_slots.push((sequence, ring.events[index], byte_start, length));
+                }
+            }
+        }
+        let received = endpoint.sequence.load(Ordering::Acquire);
+        (raw_slots, raw_bytes, received)
+    };
+    raw_slots.sort_unstable_by_key(|&(sequence, _, _, _)| sequence);
+    let mut out = Vec::with_capacity(raw_slots.len().min(limit));
     let mut expected = after.saturating_add(1);
-    for (index, sequence) in slots.into_iter().take(limit) {
+    for (sequence, event_sequence, byte_start, length) in raw_slots.into_iter().take(limit) {
         stream.lost = stream
             .lost
             .saturating_add(sequence.saturating_sub(expected));
         expected = sequence.saturating_add(1);
-        let offset = index * endpoint.report_length;
-        let raw = &ring.bytes[offset..offset + ring.lengths[index]];
+        let raw = &raw_bytes[byte_start..byte_start + length];
         out.push(Packet {
             sequence,
-            event_sequence: ring.events[index],
+            event_sequence,
             data: encode(raw),
             lost: stream.lost,
         });
         stream.cursor = sequence;
     }
     // A last dropped report is observable even when no later packet arrives.
-    let received = endpoint.sequence.load(Ordering::Acquire);
     if out.len() < limit && received > stream.cursor {
         stream.lost = stream.lost.saturating_add(received - stream.cursor);
         stream.cursor = received;

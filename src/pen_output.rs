@@ -12,9 +12,14 @@
 //! documentation describes, where the plugin keeps them set.
 
 use std::io;
+use std::ptr;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::time::Duration;
 
 use otd_core::output::pen::{PenPacket, PenPhase, PenSink};
-use windows_sys::Win32::Foundation::POINT;
+use windows_sys::Win32::Foundation::{HWND, POINT};
+use windows_sys::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows_sys::Win32::UI::Controls::{
     CreateSyntheticPointerDevice, DestroySyntheticPointerDevice, HSYNTHETICPOINTERDEVICE,
     POINTER_FEEDBACK_INDIRECT, POINTER_TYPE_INFO, POINTER_TYPE_INFO_0,
@@ -27,13 +32,79 @@ use windows_sys::Win32::UI::Input::Pointer::{
     POINTER_PEN_INFO,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, PEN_FLAG_BARREL, PEN_FLAG_ERASER, PEN_FLAG_INVERTED, PEN_FLAG_NONE,
-    PEN_MASK_PRESSURE, PEN_MASK_ROTATION, PEN_MASK_TILT_X, PEN_MASK_TILT_Y, PT_PEN,
+    DispatchMessageW, EVENT_SYSTEM_FOREGROUND, GetForegroundWindow, GetMessageW, MSG,
+    PEN_FLAG_BARREL, PEN_FLAG_ERASER, PEN_FLAG_INVERTED, PEN_FLAG_NONE, PEN_MASK_PRESSURE,
+    PEN_MASK_ROTATION, PEN_MASK_TILT_X, PEN_MASK_TILT_Y, PT_PEN, WINEVENT_OUTOFCONTEXT,
 };
 
 /// Windows pen pressure runs 0..=1024.
 const MAX_PRESSURE: f32 = 1024.0;
 const POINTER_ID: u32 = 1;
+
+static FOREGROUND_HWND: AtomicIsize = AtomicIsize::new(0);
+static FOREGROUND_HOOK_ACTIVE: AtomicBool = AtomicBool::new(false);
+static FOREGROUND_WATCHER: OnceLock<bool> = OnceLock::new();
+
+unsafe extern "system" fn foreground_event_proc(
+    _hook: HWINEVENTHOOK,
+    _event: u32,
+    hwnd: HWND,
+    _id_object: i32,
+    _id_child: i32,
+    _event_thread: u32,
+    _event_time: u32,
+) {
+    FOREGROUND_HWND.store(hwnd as isize, Ordering::Relaxed);
+}
+
+fn ensure_foreground_watcher() {
+    let _ = FOREGROUND_WATCHER.get_or_init(|| {
+        FOREGROUND_HWND.store(unsafe { GetForegroundWindow() } as isize, Ordering::Relaxed);
+        let (tx, rx) = std::sync::mpsc::sync_channel::<bool>(1);
+        let spawned = std::thread::Builder::new()
+            .name("pen-foreground-watcher".into())
+            .spawn(move || {
+                crate::priority::demote_background_thread();
+                let hook = unsafe {
+                    SetWinEventHook(
+                        EVENT_SYSTEM_FOREGROUND,
+                        EVENT_SYSTEM_FOREGROUND,
+                        ptr::null_mut(),
+                        Some(foreground_event_proc),
+                        0,
+                        0,
+                        WINEVENT_OUTOFCONTEXT,
+                    )
+                };
+                if hook.is_null() {
+                    let _ = tx.send(false);
+                    return;
+                }
+                FOREGROUND_HWND.store(unsafe { GetForegroundWindow() } as isize, Ordering::Relaxed);
+                FOREGROUND_HOOK_ACTIVE.store(true, Ordering::Release);
+                let _ = tx.send(true);
+                let mut msg: MSG = unsafe { std::mem::zeroed() };
+                while unsafe { GetMessageW(&mut msg, ptr::null_mut(), 0, 0) } > 0 {
+                    unsafe { DispatchMessageW(&msg) };
+                }
+                FOREGROUND_HOOK_ACTIVE.store(false, Ordering::Release);
+                unsafe { UnhookWinEvent(hook) };
+            });
+        if spawned.is_err() {
+            return false;
+        }
+        rx.recv_timeout(Duration::from_millis(500)).unwrap_or(false)
+    });
+}
+
+#[inline]
+fn cached_foreground_window() -> HWND {
+    if FOREGROUND_HOOK_ACTIVE.load(Ordering::Acquire) {
+        FOREGROUND_HWND.load(Ordering::Relaxed) as HWND
+    } else {
+        unsafe { GetForegroundWindow() }
+    }
+}
 
 pub struct SyntheticPen {
     device: HSYNTHETICPOINTERDEVICE,
@@ -41,6 +112,7 @@ pub struct SyntheticPen {
 
 impl SyntheticPen {
     pub fn new() -> io::Result<Self> {
+        ensure_foreground_watcher();
         let device = unsafe { CreateSyntheticPointerDevice(PT_PEN, 1, POINTER_FEEDBACK_INDIRECT) };
         if device.is_null() {
             let error = io::Error::last_os_error();
@@ -58,7 +130,7 @@ impl SyntheticPen {
 
     fn inject(&self, info: &mut POINTER_TYPE_INFO) -> io::Result<()> {
         unsafe {
-            info.Anonymous.penInfo.pointerInfo.hwndTarget = GetForegroundWindow();
+            info.Anonymous.penInfo.pointerInfo.hwndTarget = cached_foreground_window();
             if InjectSyntheticPointerInput(self.device, info, 1) == 0 {
                 return Err(io::Error::last_os_error());
             }

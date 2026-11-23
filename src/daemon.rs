@@ -62,6 +62,9 @@ fn serve_owned(
         daemon.foreground(profile);
     }
     let _process_priority = crate::priority::ProcessPriority::raise();
+    // Keep the control-pipe thread below normal priority and under EcoQoS so
+    // only the tablet reader thread(s) run at time-critical priority.
+    crate::priority::demote_background_thread();
     let managed_services =
         crate::managed_host::Owner::start(daemon.identity(), Arc::clone(&cancelled))
             .map_err(|error| format!("managed service owner: {error}"))?;

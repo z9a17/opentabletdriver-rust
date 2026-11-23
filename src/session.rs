@@ -10,19 +10,29 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{
-    ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_OPERATION_ABORTED, HANDLE, WAIT_OBJECT_0,
-    WAIT_TIMEOUT,
+    ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_OPERATION_ABORTED, HANDLE, STATUS_PENDING,
+    WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Storage::FileSystem::ReadFile;
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Threading::{
-    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, INFINITE, ResetEvent,
-    SetWaitableTimer, TIMER_ALL_ACCESS, WaitForMultipleObjects, WaitForSingleObject,
+    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CancelWaitableTimer, CreateWaitableTimerExW, INFINITE,
+    ResetEvent, SetWaitableTimer, TIMER_ALL_ACCESS, WaitForMultipleObjects, WaitForSingleObject,
 };
 
 /// Waits shorter than this use a high-resolution waitable timer: filter timer
 /// ticks need sub-millisecond deadlines, which millisecond waits truncate.
 const PRECISE_WAIT: Duration = Duration::from_millis(50);
+
+/// Tolerance when reusing an already-armed high-resolution waitable timer so
+/// consecutive reports targeting the same filter tick avoid redundant
+/// `SetWaitableTimer` syscalls.
+const TIMER_REUSE_TOLERANCE: Duration = Duration::from_micros(50);
+
+/// Periodic kernel stop-event verification interval during unbroken bursts of
+/// immediate/queued reports (catches external raw `SetEvent` such as CLI Ctrl+C
+/// while eliminating 98%+ of zero-timeout `WaitForSingleObject` syscalls).
+const STOP_POLL_STRIDE: u8 = 64;
 
 use crate::dotnet::RuntimeDecoder;
 use otd_core::decoders::PenDecoder;
@@ -65,25 +75,63 @@ fn initialization_writes(identifier: &DeviceIdentifier) -> bool {
     })
 }
 
-/// One overlapped read at a time on one HID collection, double-buffered so
-/// a completed report is copied into `delivered` and the next overlapped
-/// `ReadFile` IRP is submitted immediately before the pipeline and `SendInput`
-/// run. A read left pending by an idle timeout stays pending for the next call.
-/// Dropping the reader cancels a pending read and waits for it, so `buffer` is
-/// never freed while the kernel can still write to it.
+/// One overlapped read slot in the 2-IRP ring.
+struct ReadSlot {
+    event: Event,
+    buffer: Box<[u8]>,
+    // Windows retains this address until completion, including across moves
+    // of the reader/source between calls.
+    operation: Box<OVERLAPPED>,
+    state: ReadState,
+    pending_error: Option<io::Error>,
+}
+
+impl ReadSlot {
+    fn new(report_len: usize) -> io::Result<Self> {
+        let event = Event::create(true)?;
+        Ok(Self {
+            operation: Box::new(OVERLAPPED {
+                hEvent: event.raw(),
+                ..Default::default()
+            }),
+            event,
+            buffer: vec![0; report_len].into_boxed_slice(),
+            state: ReadState::Idle,
+            pending_error: None,
+        })
+    }
+
+    /// Syscall-free user-mode readiness check (`HasOverlappedIoCompleted`).
+    #[inline]
+    fn is_completed_fast(&self) -> bool {
+        if self.pending_error.is_some() || self.state == ReadState::Ready {
+            return true;
+        }
+        if self.state != ReadState::Pending {
+            return false;
+        }
+        // SAFETY: `operation` is heap-pinned and valid for the lifetime of the
+        // slot; Windows updates `Internal` from `STATUS_PENDING` upon I/O
+        // completion. Volatile read + acquire fence avoids caching stale state.
+        let internal = unsafe { ptr::read_volatile(&self.operation.Internal) };
+        std::sync::atomic::fence(Ordering::Acquire);
+        internal != STATUS_PENDING as usize
+    }
+}
+
+/// 2-IRP overlapped read ring on one HID/WinUSB collection with zero-copy
+/// buffer swapping into `delivered`. While waiting on hardware, both IRPs stay
+/// queued in the kernel so the USB host controller / `hidclass.sys` never sees
+/// a gap between packet completion and re-submission. Dropping the reader
+/// cancels all pending IRPs and drains them before freeing any buffers.
 struct Reader {
     shared: crate::shared_devices::Registration,
     custom: Option<crate::custom_devices::Reader>,
     custom_length: Option<usize>,
     custom_ready: Option<Instant>,
-    event: Event,
-    buffer: Box<[u8]>,
+    slots: [ReadSlot; 2],
+    head: usize,
     delivered: Box<[u8]>,
-    pending_error: Option<io::Error>,
-    // Windows retains this address until completion, including across moves
-    // of the reader/source between calls.
-    operation: Box<OVERLAPPED>,
-    state: ReadState,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -113,7 +161,6 @@ impl Reader {
         auxiliary: bool,
         epoch: Option<u64>,
     ) -> io::Result<Self> {
-        let event = Event::create(true)?;
         let custom = if let Some(endpoint) = candidate.managed_endpoint {
             let wake = Arc::clone(&output);
             Some(crate::custom_devices::Reader::open(
@@ -157,6 +204,7 @@ impl Reader {
                 } else {
                     None
                 };
+            hid::configure_overlapped_handle(&handle, winusb.is_none());
             crate::shared_devices::SharedIo::new(
                 handle,
                 winusb,
@@ -179,71 +227,109 @@ impl Reader {
         .map_err(io::Error::other)?;
         let report_len = usize::from(candidate.input_length.max(1));
         Ok(Self {
-            operation: Box::new(OVERLAPPED {
-                hEvent: event.raw(),
-                ..Default::default()
-            }),
             shared,
             custom,
             custom_length: None,
             custom_ready: None,
-            event,
-            // ReadFile needs room for the collection's whole input report.
-            buffer: vec![0; report_len].into_boxed_slice(),
+            slots: [ReadSlot::new(report_len)?, ReadSlot::new(report_len)?],
+            head: 0,
             delivered: vec![0; report_len].into_boxed_slice(),
-            pending_error: None,
-            state: ReadState::Idle,
         })
     }
 
-    /// Copies the completed report into `delivered`, publishes it to any active
-    /// managed endpoint subscriber, and immediately re-arms the next overlapped
-    /// kernel read for native HID/WinUSB endpoints so the kernel can receive the
-    /// next USB packet in parallel with filtering and `SendInput`.
+    #[inline]
+    fn report_length(&self) -> usize {
+        self.delivered.len()
+    }
+
+    #[inline]
+    fn active_event(&self) -> HANDLE {
+        self.slots[self.head].event.raw()
+    }
+
+    #[inline]
+    fn is_completed_fast(&self) -> bool {
+        if self.custom.is_some() {
+            return self.slots[0].state == ReadState::Ready;
+        }
+        self.slots[self.head].is_completed_fast()
+    }
+
+    /// Swaps the completed report buffer into `delivered` (zero-copy),
+    /// publishes it to any active managed subscriber, advances FIFO head to the
+    /// already-queued backup IRP if active, and immediately re-arms the freed
+    /// slot so 2 IRPs remain in flight while waiting on hardware.
     fn deliver_and_rearm(&mut self, length: usize) -> &[u8] {
-        self.delivered[..length].copy_from_slice(&self.buffer[..length]);
+        let old_head = self.head;
+        std::mem::swap(&mut self.slots[old_head].buffer, &mut self.delivered);
         self.shared.publish(&self.delivered[..length]);
-        if self.custom.is_none()
-            && self.state == ReadState::Idle
-            && let Err(error) = self.start()
-        {
-            self.pending_error = Some(error);
+        if self.custom.is_none() {
+            let other = old_head ^ 1;
+            let other_active = self.slots[other].state != ReadState::Idle
+                || self.slots[other].pending_error.is_some();
+            if other_active {
+                // Consume the older in-flight backup IRP next (strict FIFO),
+                // and immediately re-arm `old_head` behind it as the new tail.
+                self.head = other;
+                if self.slots[old_head].state == ReadState::Idle
+                    && let Err(error) = self.start_slot(old_head)
+                {
+                    self.slots[old_head].pending_error = Some(error);
+                }
+            } else {
+                // Single-slot backlog drain: re-arm `old_head` in place, and if
+                // it becomes Pending (backlog drained), also arm `other`.
+                if self.slots[old_head].state == ReadState::Idle {
+                    match self.start_slot(old_head) {
+                        Ok(false) => {
+                            if self.slots[other].state == ReadState::Idle
+                                && let Err(error) = self.start_slot(other)
+                            {
+                                self.slots[other].pending_error = Some(error);
+                            }
+                        }
+                        Ok(true) => {}
+                        Err(error) => {
+                            self.slots[old_head].pending_error = Some(error);
+                        }
+                    }
+                }
+            }
         }
         &self.delivered[..length]
     }
 
-    /// Starts a read unless one is already outstanding. `true` means the
-    /// complete report is retained in our buffer until `finish` consumes it.
-    fn start(&mut self) -> io::Result<bool> {
-        if let Some(error) = self.pending_error.take() {
+    fn start_slot(&mut self, index: usize) -> io::Result<bool> {
+        if let Some(error) = self.slots[index].pending_error.take() {
             return Err(error);
         }
-        match self.state {
+        match self.slots[index].state {
             ReadState::Ready => return Ok(true),
             ReadState::Pending => return Ok(false),
             ReadState::Idle => {}
         }
         if let Some(custom) = &mut self.custom {
-            let report = custom.poll_report(&mut self.buffer)?;
+            let report = custom.poll_report(&mut self.slots[0].buffer)?;
             self.custom_length = report.map(|(length, _)| length);
             self.custom_ready = report.map(|(_, ready)| ready);
             if self.custom_length.is_some() {
-                self.state = ReadState::Ready;
+                self.slots[0].state = ReadState::Ready;
             }
-            return Ok(self.state == ReadState::Ready);
+            return Ok(self.slots[0].state == ReadState::Ready);
         }
+        let slot = &mut self.slots[index];
         // ReadFile resets the event when it starts the read.
         // https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-readfile
-        *self.operation = OVERLAPPED {
-            hEvent: self.event.raw(),
+        *slot.operation = OVERLAPPED {
+            hEvent: slot.event.raw(),
             ..Default::default()
         };
         if let Some(winusb) = &self.shared.endpoint.io.winusb {
-            if unsafe { ResetEvent(self.event.raw()) } == 0 {
+            if unsafe { ResetEvent(slot.event.raw()) } == 0 {
                 return Err(io::Error::last_os_error());
             }
-            let immediate = unsafe { winusb.read(&mut self.buffer, &self.operation) }?;
-            self.state = if immediate {
+            let immediate = unsafe { winusb.read(&mut slot.buffer, &slot.operation) }?;
+            slot.state = if immediate {
                 ReadState::Ready
             } else {
                 ReadState::Pending
@@ -253,31 +339,53 @@ impl Reader {
         let started = unsafe {
             ReadFile(
                 self.shared.endpoint.io.native_handle()?.raw(),
-                self.buffer.as_mut_ptr(),
-                self.buffer.len() as u32,
+                slot.buffer.as_mut_ptr(),
+                slot.buffer.len() as u32,
                 ptr::null_mut(),
-                &mut *self.operation,
+                &mut *slot.operation,
             )
         };
         if started != 0 {
-            self.state = ReadState::Ready;
+            slot.state = ReadState::Ready;
             return Ok(true);
         }
         let error = io::Error::last_os_error();
         if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
             return Err(error);
         }
-        self.state = ReadState::Pending;
+        slot.state = ReadState::Pending;
         Ok(false)
+    }
+
+    /// Starts the head read unless one is already outstanding. When the head
+    /// read is Pending on native HID/WinUSB, also arms the second ring slot so
+    /// two concurrent IRPs stay queued in the kernel.
+    fn start(&mut self) -> io::Result<bool> {
+        let head = self.head;
+        let ready = self.start_slot(head)?;
+        if !ready && self.custom.is_none() {
+            let tail = head ^ 1;
+            if self.slots[tail].state == ReadState::Idle
+                && self.slots[tail].pending_error.is_none()
+                && let Err(error) = self.start_slot(tail)
+            {
+                self.slots[tail].pending_error = Some(error);
+            }
+        }
+        Ok(ready)
     }
 
     /// The length of a completed read, or `None` if it was cancelled.
     fn finish(&mut self) -> io::Result<Option<usize>> {
+        let head = self.head;
         if self.custom.is_some() {
-            self.state = ReadState::Idle;
+            self.slots[0].state = ReadState::Idle;
             return Ok(self.custom_length.take());
         }
-        if self.state == ReadState::Idle {
+        if let Some(error) = self.slots[head].pending_error.take() {
+            return Err(error);
+        }
+        if self.slots[head].state == ReadState::Idle {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "No outstanding input read",
@@ -285,13 +393,15 @@ impl Reader {
         }
         let mut transferred = 0u32;
         let completion = if let Some(winusb) = &self.shared.endpoint.io.winusb {
-            winusb.completed(&self.operation, false).map(|length| {
-                transferred = length;
-            })
+            winusb
+                .completed(&self.slots[head].operation, false)
+                .map(|length| {
+                    transferred = length;
+                })
         } else if unsafe {
             GetOverlappedResult(
                 self.shared.endpoint.io.native_handle()?.raw(),
-                &*self.operation,
+                &*self.slots[head].operation,
                 &mut transferred,
                 0,
             )
@@ -303,14 +413,14 @@ impl Reader {
         };
         // An unsuccessful readiness probe must not relinquish ownership
         // of storage which the kernel can still write into.
-        self.state.completed(&completion);
+        self.slots[head].state.completed(&completion);
         if let Err(error) = completion {
             if error.raw_os_error() == Some(ERROR_OPERATION_ABORTED as i32) {
                 return Ok(None);
             }
             return Err(error);
         }
-        if transferred as usize > self.buffer.len() {
+        if transferred as usize > self.slots[head].buffer.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "HID read exceeded its advertised input report length",
@@ -320,28 +430,46 @@ impl Reader {
     }
 
     fn cancel(&mut self) {
-        if self.state == ReadState::Idle {
-            return;
-        }
         if self.custom.is_some() {
             self.custom_length = None;
             self.custom_ready = None;
-            self.state = ReadState::Idle;
+            for slot in &mut self.slots {
+                slot.state = ReadState::Idle;
+                slot.pending_error = None;
+            }
+            self.head = 0;
             return;
         }
         if let Some(winusb) = &self.shared.endpoint.io.winusb {
-            winusb.cancel(&self.operation);
-            self.state = ReadState::Idle;
+            for slot in &mut self.slots {
+                if slot.state != ReadState::Idle {
+                    winusb.cancel(&slot.operation);
+                    slot.state = ReadState::Idle;
+                }
+                slot.pending_error = None;
+            }
+            self.head = 0;
             return;
         }
         let Ok(handle) = self.shared.endpoint.io.native_handle() else {
             return;
         };
-        unsafe { CancelIoEx(handle.raw(), &*self.operation) };
-        let mut ignored = 0;
-        // Cancellation is only a request; wait before reusing the buffer.
-        unsafe { GetOverlappedResult(handle.raw(), &*self.operation, &mut ignored, 1) };
-        self.state = ReadState::Idle;
+        // Cancel all active slots first, then wait for each to drain before
+        // reusing or freeing their buffers.
+        for slot in &self.slots {
+            if slot.state != ReadState::Idle {
+                unsafe { CancelIoEx(handle.raw(), &*slot.operation) };
+            }
+        }
+        for slot in &mut self.slots {
+            if slot.state != ReadState::Idle {
+                let mut ignored = 0;
+                unsafe { GetOverlappedResult(handle.raw(), &*slot.operation, &mut ignored, 1) };
+                slot.state = ReadState::Idle;
+            }
+            slot.pending_error = None;
+        }
+        self.head = 0;
     }
 
     fn initialize(
@@ -610,6 +738,9 @@ fn select_input<R: InputReader>(
 struct HidSource<'a> {
     candidate: &'a Candidate,
     notification: &'a Notification,
+    /// Targeted PnP removal watcher for this opened device interface; avoids
+    /// waking the report thread on unrelated USB/Bluetooth HID changes.
+    device_removal: Option<hid::DeviceRemovalNotification>,
     stop: &'a Event,
     pen: Reader,
     auxiliary: Option<Reader>,
@@ -617,6 +748,16 @@ struct HidSource<'a> {
     /// Created on the first short wait; sessions without timer-driven
     /// filters never wait less than a second and never create it.
     timer: Option<OwnedHandle>,
+    /// Target deadline currently armed on `timer`, used to avoid redundant
+    /// `SetWaitableTimer` syscalls when consecutive reports share a tick.
+    timer_deadline: Option<Instant>,
+    /// Scoped `timeBeginPeriod(1)` guard held only while precise (<50 ms)
+    /// filter/scroll timers are active.
+    timer_resolution: Option<crate::priority::TimerResolution>,
+    /// Per-thread `driver_cpus` affinity guard, refreshed lazily on idle.
+    affinity: Option<crate::experimental::ThreadAffinity>,
+    /// Consecutive immediate completions without a blocking wait.
+    immediate_streak: std::cell::Cell<u8>,
     output: Arc<crate::shared_devices::OutputGate>,
     preferred: InputEndpoint,
 }
@@ -666,6 +807,11 @@ impl<'a> HidSource<'a> {
             reader.shared.tablet(tablet);
         }
         crate::managed_host::publish_owned_devices();
+        let device_removal = if candidate.managed_endpoint.is_none() {
+            hid::DeviceRemovalNotification::for_candidate(candidate).ok()
+        } else {
+            None
+        };
         Ok(Self {
             label: format!(
                 "HID input length {}, usage {:04x}:{:04x}",
@@ -673,10 +819,15 @@ impl<'a> HidSource<'a> {
             ),
             candidate,
             notification,
+            device_removal,
             stop,
             pen,
             auxiliary,
             timer: None,
+            timer_deadline: None,
+            timer_resolution: None,
+            affinity: None,
+            immediate_streak: std::cell::Cell::new(0),
             output,
             preferred: InputEndpoint::Pen,
         })
@@ -774,8 +925,22 @@ impl<'a> HidSource<'a> {
         .map_err(io::Error::other)
     }
 
-    /// Arms the high-resolution timer to signal after `wait`.
+    /// Arms the high-resolution timer to signal after `wait`, skipping
+    /// `SetWaitableTimer` when an already-armed timer matches the same target
+    /// deadline within `TIMER_REUSE_TOLERANCE`.
     fn arm_timer(&mut self, wait: Duration) -> io::Result<HANDLE> {
+        let now = Instant::now();
+        let target = now + wait;
+        if let (Some(timer), Some(armed)) = (&self.timer, self.timer_deadline)
+            && armed > now
+            && (if armed >= target {
+                armed - target
+            } else {
+                target - armed
+            }) <= TIMER_REUSE_TOLERANCE
+        {
+            return Ok(timer.raw());
+        }
         if self.timer.is_none() {
             self.timer = Some(OwnedHandle::new(unsafe {
                 CreateWaitableTimerExW(
@@ -794,12 +959,24 @@ impl<'a> HidSource<'a> {
         // Relative due time in 100 ns units, rounded up so it never fires early.
         let due = -i64::try_from(wait.as_nanos().div_ceil(100).max(1)).unwrap_or(i64::MAX);
         if unsafe { SetWaitableTimer(timer, &due, 0, None, ptr::null(), 0) } == 0 {
+            self.timer_deadline = None;
             return Err(io::Error::last_os_error());
         }
+        self.timer_deadline = Some(target);
         Ok(timer)
     }
 
+    fn disarm_timer(&mut self) {
+        if self.timer_deadline.take().is_some()
+            && let Some(timer) = &self.timer
+        {
+            unsafe { CancelWaitableTimer(timer.raw()) };
+        }
+        self.timer_resolution = None;
+    }
+
     fn cancel(&mut self) {
+        self.disarm_timer();
         self.pen.cancel();
         if let Some(auxiliary) = &mut self.auxiliary {
             auxiliary.cancel();
@@ -807,44 +984,57 @@ impl<'a> HidSource<'a> {
     }
 
     fn stopped(&self) -> io::Result<bool> {
-        match unsafe { WaitForSingleObject(self.stop.raw(), 0) } {
-            WAIT_OBJECT_0 => Ok(true),
-            WAIT_TIMEOUT => Ok(false),
-            _ => Err(io::Error::last_os_error()),
+        if self.stop.is_signaled_fast() {
+            return Ok(true);
         }
+        self.stop.sync_signaled()
+    }
+
+    #[inline]
+    fn stopped_fast(stop: &Event, immediate_streak: &std::cell::Cell<u8>) -> io::Result<bool> {
+        if stop.is_signaled_fast() {
+            return Ok(true);
+        }
+        let next = immediate_streak.get().wrapping_add(1);
+        if next >= STOP_POLL_STRIDE {
+            immediate_streak.set(0);
+            return stop.sync_signaled();
+        }
+        immediate_streak.set(next);
+        Ok(false)
     }
 
     fn select_input(&mut self, poll_pending: bool) -> io::Result<InputSelection> {
-        let stop = self.stop.raw();
+        let stop = self.stop;
+        let streak = &self.immediate_streak;
         select_input(
             &mut self.pen,
             self.auxiliary.as_mut(),
             self.preferred,
             poll_pending,
             |reader| {
+                if Self::stopped_fast(stop, streak)? {
+                    return Ok(InputPoll::Stopped);
+                }
                 if reader.custom.is_some() {
-                    return match unsafe { WaitForSingleObject(stop, 0) } {
-                        WAIT_OBJECT_0 => Ok(InputPoll::Stopped),
-                        WAIT_TIMEOUT => Ok(InputPoll::Pending),
-                        _ => Err(io::Error::last_os_error()),
-                    };
+                    return Ok(InputPoll::Pending);
                 }
-                match wait(&[stop, reader.event.raw()], 0)? {
-                    Some(0) => Ok(InputPoll::Stopped),
-                    Some(_) => Ok(InputPoll::Ready),
-                    None => Ok(InputPoll::Pending),
+                if reader.is_completed_fast() {
+                    Ok(InputPoll::Ready)
+                } else {
+                    Ok(InputPoll::Pending)
                 }
             },
-            || match unsafe { WaitForSingleObject(stop, 0) } {
-                WAIT_OBJECT_0 => Ok(true),
-                WAIT_TIMEOUT => Ok(false),
-                _ => Err(io::Error::last_os_error()),
-            },
+            || Self::stopped_fast(stop, streak),
         )
     }
 
     fn input_report(&mut self, endpoint: InputEndpoint, queued: bool) -> io::Result<Read<'_>> {
-        self.preferred = endpoint.other();
+        if self.auxiliary.is_some() {
+            self.preferred = endpoint.other();
+        } else {
+            self.preferred = InputEndpoint::Pen;
+        }
         match endpoint {
             InputEndpoint::Pen => self.pen_report(queued),
             InputEndpoint::Auxiliary => self.auxiliary_report(queued),
@@ -975,8 +1165,12 @@ impl ReportSource for HidSource<'_> {
         // An already-due deadline is an input/stop poll, not a new timer wakeup.
         let precise = !timeout.is_zero() && timeout < PRECISE_WAIT;
         let timer = if precise {
+            if self.timer_resolution.is_none() {
+                self.timer_resolution = crate::priority::TimerResolution::acquire(1);
+            }
             self.arm_timer(timeout)?
         } else {
+            self.disarm_timer();
             ptr::null_mut()
         };
         // Stop first, then alternate endpoints after every report so neither
@@ -991,21 +1185,24 @@ impl ReportSource for HidSource<'_> {
         add(self.stop.raw());
         let output_change = add(self.output.event());
         let (pen, auxiliary) = if self.preferred == InputEndpoint::Pen {
-            let pen = add(self.pen.event.raw());
+            let pen = add(self.pen.active_event());
             (
                 pen,
                 self.auxiliary
                     .as_ref()
-                    .map(|reader| add(reader.event.raw())),
+                    .map(|reader| add(reader.active_event())),
             )
         } else {
             let auxiliary = self
                 .auxiliary
                 .as_ref()
-                .map(|reader| add(reader.event.raw()));
-            (add(self.pen.event.raw()), auxiliary)
+                .map(|reader| add(reader.active_event()));
+            (add(self.pen.active_event()), auxiliary)
         };
-        let notification = add(self.notification.event());
+        let notification = add(self.device_removal.as_ref().map_or_else(
+            || self.notification.event(),
+            hid::DeviceRemovalNotification::event,
+        ));
         // The timer is last, so a non-precise wait leaves it out.
         let timer_index = add(timer);
         let waited = if precise {
@@ -1027,6 +1224,7 @@ impl ReportSource for HidSource<'_> {
                 let millis = u32::try_from(remaining.as_millis()).unwrap_or(u32::MAX);
                 wait(&handles[..waited], millis)
             };
+            self.immediate_streak.set(0);
             match result {
                 Ok(Some(index)) if index == output_change => {
                     self.output.begin_event_reset();
@@ -1067,12 +1265,20 @@ impl ReportSource for HidSource<'_> {
                         until = Some(Instant::now() + timeout);
                     }
                 }
-                Ok(Some(index)) if index == timer_index => return Ok(Read::Idle),
+                Ok(Some(index)) if index == timer_index => {
+                    self.timer_deadline = None;
+                    return Ok(Read::Idle);
+                }
                 Ok(Some(_)) => {
                     self.cancel();
                     return Ok(Read::Ended);
                 }
-                Ok(None) => return Ok(Read::Idle),
+                Ok(None) => {
+                    if let Some(affinity) = &mut self.affinity {
+                        affinity.refresh();
+                    }
+                    return Ok(Read::Idle);
+                }
                 Err(error) => {
                     self.cancel();
                     return Err(error);
@@ -1147,10 +1353,12 @@ pub fn run(
     }
     let _debug = DebugDevice::set(selected, &source);
     let _priority = if matches!(mode, Mode::Driver) {
+        source.affinity = Some(crate::experimental::ThreadAffinity::apply_driver_thread());
         ReaderPriority::for_driver(crate::experimental::mmcss_enabled(), status)
     } else {
         ReaderPriority::raise()
     };
+    let _ = source.stop.sync_signaled();
     let mut output = if matches!(mode, Mode::Driver) {
         Some(SessionOutput::new()?)
     } else {
@@ -1173,9 +1381,10 @@ pub fn run(
         })
         .transpose()
         .map_err(io::Error::other)?;
+    let mut displays = WindowsDisplays::new();
     let result = otd_core::session::run_gated_with_endpoints(
         &mut source,
-        &mut WindowsDisplays,
+        &mut displays,
         &profile,
         mode,
         &mut decoder,
@@ -1242,8 +1451,8 @@ impl DebugDevice {
                 source
                     .auxiliary
                     .as_ref()
-                    .map_or(source.pen.buffer.len(), |auxiliary| {
-                        source.pen.buffer.len().max(auxiliary.buffer.len())
+                    .map_or(source.pen.report_length(), |auxiliary| {
+                        source.pen.report_length().max(auxiliary.report_length())
                     }),
                 source
                     .auxiliary
@@ -1392,7 +1601,9 @@ impl<'a> PreparedSession<'a> {
         }
         let _debug = DebugDevice::set(self.selected, &source);
         announce_auxiliary(&source, self.selected, status);
+        source.affinity = Some(crate::experimental::ThreadAffinity::apply_driver_thread());
         let _priority = ReaderPriority::for_driver(crate::experimental::mmcss_enabled(), status);
+        let _ = source.stop.sync_signaled();
         let mut output = SessionOutput::new()?;
         plugins
             .set_managed_wake(source.output.clone())
@@ -1418,9 +1629,10 @@ impl<'a> PreparedSession<'a> {
             (sink, _) => sink,
         };
         let identifiers = source.identifiers(self.selected);
+        let mut displays = WindowsDisplays::new();
         let result = otd_core::session::run_gated_with_endpoints(
             &mut source,
-            &mut WindowsDisplays,
+            &mut displays,
             &profile,
             Mode::Driver,
             &mut decoder,
