@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 pub struct OutputWake {
     read: File,
     write: File,
+    signaled: AtomicBool,
 }
 impl OutputWake {
     pub fn create(_manual: bool) -> io::Result<Self> {
@@ -24,6 +25,7 @@ impl OutputWake {
         let value = Self {
             read: unsafe { File::from_raw_fd(fds[0]) },
             write: unsafe { File::from_raw_fd(fds[1]) },
+            signaled: AtomicBool::new(false),
         };
         for fd in fds {
             if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0
@@ -35,6 +37,9 @@ impl OutputWake {
         Ok(value)
     }
     pub fn signal(&self) -> io::Result<()> {
+        // Write to the pipe BEFORE publishing `signaled = true` (Release) so
+        // `take_signal()` observing `true` (AcqRel) is guaranteed to see and
+        // drain the written byte, never leaving an unread byte behind.
         let result = unsafe { libc::write(self.write.as_raw_fd(), [1u8].as_ptr().cast(), 1) };
         if result < 0 {
             let error = io::Error::last_os_error();
@@ -42,12 +47,17 @@ impl OutputWake {
                 return Err(error);
             }
         }
+        self.signaled.store(true, Ordering::Release);
         Ok(())
     }
     pub fn raw(&self) -> RawFd {
         self.read.as_raw_fd()
     }
     pub fn drain(&self) {
+        // Called on wake paths (after poll revents or pending flag). Clear the
+        // flag first, then drain the pipe so any concurrent signal racing after
+        // `read` finishes will still publish `signaled = true`.
+        self.signaled.store(false, Ordering::Release);
         let mut bytes = [0u8; 64];
         while unsafe {
             libc::read(
@@ -59,8 +69,10 @@ impl OutputWake {
         {}
     }
     pub fn take_signal(&self) -> bool {
+        if !self.signaled.swap(false, Ordering::AcqRel) {
+            return false;
+        }
         let mut bytes = [0u8; 64];
-        let mut signaled = false;
         while unsafe {
             libc::read(
                 self.read.as_raw_fd(),
@@ -68,10 +80,8 @@ impl OutputWake {
                 bytes.len(),
             )
         } > 0
-        {
-            signaled = true;
-        }
-        signaled
+        {}
+        true
     }
 }
 #[derive(Clone, Copy)]

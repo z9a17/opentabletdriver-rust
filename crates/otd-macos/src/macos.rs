@@ -26,7 +26,7 @@ use otd_core::tablets::{Database, DeviceIdentifier, TabletConfiguration};
 use crate::{descriptor, ffi};
 
 const MAX_REPORT: usize = 4096;
-const QUEUE: usize = 32;
+const QUEUE: usize = 256;
 const UTF8: u32 = 0x0800_0100;
 const LISTEN_EVENT: u32 = 1;
 
@@ -214,6 +214,18 @@ pub fn enumerate(
     stop: Option<&AtomicBool>,
     deadline: Option<Instant>,
 ) -> io::Result<Vec<Device>> {
+    enumerate_with_string_cache(database, stop, deadline, &BTreeMap::new())
+}
+
+/// Like [`enumerate`], but reuses already-read USB string descriptors for known
+/// active `physical_id`s so periodic daemon scans do not issue live USB control
+/// transfers (`IOUSBDeviceInterface245`) to connected tablets.
+pub fn enumerate_with_string_cache(
+    database: &Database,
+    stop: Option<&AtomicBool>,
+    deadline: Option<Instant>,
+    cached_strings: &BTreeMap<String, BTreeMap<u8, String>>,
+) -> io::Result<Vec<Device>> {
     let mut iterator = 0;
     // SAFETY: IOServiceMatching returns a dictionary consumed by matching.
     let matching = unsafe { ffi::IOServiceMatching(c"IOHIDDevice".as_ptr()) };
@@ -354,44 +366,56 @@ pub fn enumerate(
             .filter_map(|index| index.parse::<u8>().ok())
             .collect();
         if !indices.is_empty() {
-            let result = (|| -> io::Result<()> {
-                let parent = device.usb_parent.as_ref().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::Unsupported,
-                        "USB parent service is unavailable for indexed string matching",
-                    )
-                })?;
-                let mut strings = crate::usb::Strings::open(parent.0)?;
-                for index in indices {
-                    check_discovery(stop, deadline)?;
-                    match strings.read_checked(index, || check_discovery(stop, deadline)) {
-                        Ok(value) => {
-                            device.endpoint.strings.insert(index, value);
-                        }
-                        Err(error)
-                            if matches!(
-                                error.kind(),
-                                io::ErrorKind::Interrupted | io::ErrorKind::TimedOut
-                            ) && (stop.is_some_and(|stop| stop.load(Ordering::Acquire))
-                                || deadline.is_some_and(|deadline| Instant::now() >= deadline)) =>
-                        {
-                            return Err(error);
-                        }
-                        Err(error) => {
-                            device.string_error.get_or_insert_with(|| error.to_string());
+            let cached = cached_strings.get(&device.endpoint.physical_id);
+            let mut missing = Vec::new();
+            for index in indices {
+                if let Some(value) = cached.and_then(|map| map.get(&index)) {
+                    device.endpoint.strings.insert(index, value.clone());
+                } else {
+                    missing.push(index);
+                }
+            }
+            if !missing.is_empty() {
+                let result = (|| -> io::Result<()> {
+                    let parent = device.usb_parent.as_ref().ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::Unsupported,
+                            "USB parent service is unavailable for indexed string matching",
+                        )
+                    })?;
+                    let mut strings = crate::usb::Strings::open(parent.0)?;
+                    for index in missing {
+                        check_discovery(stop, deadline)?;
+                        match strings.read_checked(index, || check_discovery(stop, deadline)) {
+                            Ok(value) => {
+                                device.endpoint.strings.insert(index, value);
+                            }
+                            Err(error)
+                                if matches!(
+                                    error.kind(),
+                                    io::ErrorKind::Interrupted | io::ErrorKind::TimedOut
+                                ) && (stop.is_some_and(|stop| stop.load(Ordering::Acquire))
+                                    || deadline
+                                        .is_some_and(|deadline| Instant::now() >= deadline)) =>
+                            {
+                                return Err(error);
+                            }
+                            Err(error) => {
+                                device.string_error.get_or_insert_with(|| error.to_string());
+                            }
                         }
                     }
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::Interrupted | io::ErrorKind::TimedOut
+                    ) {
+                        return Err(error);
+                    }
+                    device.string_error = Some(error.to_string());
                 }
-                Ok(())
-            })();
-            if let Err(error) = result {
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::Interrupted | io::ErrorKind::TimedOut
-                ) {
-                    return Err(error);
-                }
-                device.string_error = Some(error.to_string());
             }
         }
         devices.push(device);
@@ -400,13 +424,13 @@ pub fn enumerate(
     Ok(devices)
 }
 
-struct Slot {
-    bytes: [u8; MAX_REPORT],
-    length: usize,
-    ready: Instant,
-}
 struct Callbacks {
-    slots: [Slot; QUEUE],
+    /// Dynamically sized 64-byte-aligned ring (`QUEUE * stride` bytes), giving
+    /// 8x more burst headroom and ~8x smaller cache footprint for typical reports.
+    data: Box<[u8]>,
+    lengths: [u16; QUEUE],
+    ready: [Instant; QUEUE],
+    stride: usize,
     head: usize,
     count: usize,
     uses_report_ids: bool,
@@ -437,19 +461,26 @@ unsafe extern "C" fn report_callback(
         return;
     }
     let offset = usize::from(!state.uses_report_ids);
-    if bytes.is_null() || length as usize > MAX_REPORT - offset || state.count == QUEUE {
+    if bytes.is_null()
+        || length as usize > state.stride.saturating_sub(offset)
+        || state.count == QUEUE
+    {
         state.overflow = true;
         return;
     }
     let index = (state.head + state.count) % QUEUE;
-    let slot = &mut state.slots[index];
-    slot.bytes[0] = 0;
+    let base = index * state.stride;
+    state.data[base] = 0;
     // SAFETY: native callback supplies length valid bytes; bounds checked above.
     unsafe {
-        ptr::copy_nonoverlapping(bytes, slot.bytes.as_mut_ptr().add(offset), length as usize)
+        ptr::copy_nonoverlapping(
+            bytes,
+            state.data.as_mut_ptr().add(base + offset),
+            length as usize,
+        )
     };
-    slot.length = length as usize + offset;
-    slot.ready = Instant::now();
+    state.lengths[index] = (length as usize + offset) as u16;
+    state.ready[index] = Instant::now();
     state.count += 1;
 }
 
@@ -476,8 +507,7 @@ pub struct HidSource<'a> {
     stop: &'a AtomicBool,
     label: String,
     callbacks: Box<UnsafeCell<Callbacks>>,
-    input: Box<UnsafeCell<[u8; MAX_REPORT]>>,
-    delivery: [u8; MAX_REPORT],
+    input: UnsafeCell<Box<[u8]>>,
     run_loop: ffi::Ref,
     // Buffers passed to asynchronous init calls stay alive through close even
     // on a timeout/stop. No subsequent write is issued before completion.
@@ -525,16 +555,19 @@ impl<'a> HidSource<'a> {
             return Err(native_error("opening USB HID endpoint", result));
         }
         let now = Instant::now();
+        let offset = usize::from(!device.uses_report_ids);
+        let input_len = device.endpoint.input_length as usize;
+        // 64-byte aligned slot stride matching this device's actual report length.
+        let stride = ((input_len + offset).max(1) + 63) & !63;
         let source = Self {
             device,
             stop,
             label,
             callbacks: Box::new(UnsafeCell::new(Callbacks {
-                slots: std::array::from_fn(|_| Slot {
-                    bytes: [0; MAX_REPORT],
-                    length: 0,
-                    ready: now,
-                }),
+                data: vec![0u8; QUEUE * stride].into_boxed_slice(),
+                lengths: [0u16; QUEUE],
+                ready: [now; QUEUE],
+                stride,
                 head: 0,
                 count: 0,
                 uses_report_ids: device.uses_report_ids,
@@ -544,8 +577,7 @@ impl<'a> HidSource<'a> {
                 write_done: false,
                 write_result: 0,
             })),
-            input: Box::new(UnsafeCell::new([0; MAX_REPORT])),
-            delivery: [0; MAX_REPORT],
+            input: UnsafeCell::new(vec![0u8; input_len].into_boxed_slice()),
             run_loop: unsafe { ffi::CFRunLoopGetCurrent() },
             pending_writes: Vec::new(),
             services: None,
@@ -553,13 +585,14 @@ impl<'a> HidSource<'a> {
             service: None,
         };
         let context = source.callbacks.get().cast();
-        // SAFETY: callbacks and input are stable heap allocations, retained
-        // until this source unregisters callbacks and closes the endpoint.
+        // SAFETY: callbacks and the heap buffer behind `input` are stable heap
+        // allocations, retained until this source unregisters callbacks and closes.
         unsafe {
+            let input_buf = &mut *source.input.get();
             ffi::IOHIDDeviceRegisterInputReportCallback(
                 hid,
-                source.input.get().cast::<u8>(),
-                MAX_REPORT as isize,
+                input_buf.as_mut_ptr(),
+                input_buf.len() as isize,
                 Some(report_callback),
                 context,
             );
@@ -962,17 +995,18 @@ impl ReportSource for HidSource<'_> {
         }
     }
     fn next(&mut self, timeout: Duration) -> io::Result<Read<'_>> {
-        let queued = self.state().count > 0;
-        let deadline = Instant::now() + timeout;
+        let initially_queued = self.state().count > 0;
+        let mut deadline: Option<Instant> = None;
+        let mut waited = false;
         loop {
             if self.stopped() {
                 return Ok(Read::Ended);
             }
             self.service_requests()?;
-            if let Some(registration) = &self.registration {
-                if registration.endpoint.output.reader_wake().take_signal() {
-                    return Ok(Read::Idle);
-                }
+            if let Some(registration) = &self.registration
+                && registration.endpoint.output.reader_wake().take_signal()
+            {
+                return Ok(Read::Idle);
             }
             if self.state().error != 0 {
                 return Err(native_error("HID report callback", self.state().error));
@@ -984,28 +1018,36 @@ impl ReportSource for HidSource<'_> {
                 ));
             }
             if self.state().count > 0 {
-                // SAFETY: no callback is running and this reference ends before
-                // any pump; delivery and state are disjoint owned allocations.
+                // SAFETY: no callback is running while `&mut self` is borrowed
+                // for the returned `Read<'_>`, so borrowing the ring slot
+                // directly is sound and avoids a redundant copy.
                 let state = unsafe { &mut *self.callbacks.get() };
-                let slot = &state.slots[state.head];
-                let length = slot.length;
-                let ready = slot.ready;
-                self.delivery[..length].copy_from_slice(&slot.bytes[..length]);
+                let slot_index = state.head;
+                let length = usize::from(state.lengths[slot_index]);
+                let ready = state.ready[slot_index];
+                let start = slot_index * state.stride;
                 state.head = (state.head + 1) % QUEUE;
                 state.count -= 1;
+                let bytes = &state.data[start..start + length];
                 if let Some(registration) = &self.registration {
-                    registration.publish(&self.delivery[..length]);
+                    registration.publish(bytes);
                 }
                 return Ok(Read::Report {
-                    bytes: &self.delivery[..length],
+                    bytes,
                     ready,
-                    queued,
+                    queued: !waited && initially_queued,
                 });
             }
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            if timeout.is_zero() {
+                return Ok(Read::Idle);
+            }
+            let now = Instant::now();
+            let deadline = *deadline.get_or_insert_with(|| now + timeout);
+            let remaining = deadline.saturating_duration_since(now);
             if remaining.is_zero() {
                 return Ok(Read::Idle);
             }
+            waited = true;
             self.pump(remaining.min(Duration::from_millis(50)));
         }
     }
@@ -1017,17 +1059,26 @@ impl Drop for HidSource<'_> {
         // SAFETY: close cancels active I/O; unscheduling prevents subsequent
         // callback dispatch on this runloop before storage is dropped.
         unsafe {
+            let input_buf = &mut *self.input.get();
             ffi::IOHIDDeviceClose(hid, 0);
             ffi::IOHIDDeviceUnscheduleFromRunLoop(hid, self.run_loop, ffi::kCFRunLoopDefaultMode);
             ffi::IOHIDDeviceRegisterInputReportCallback(
                 hid,
-                self.input.get().cast::<u8>(),
-                MAX_REPORT as isize,
+                input_buf.as_mut_ptr(),
+                input_buf.len() as isize,
                 None,
                 ptr::null_mut(),
             );
             ffi::IOHIDDeviceRegisterRemovalCallback(hid, None, ptr::null_mut());
         }
+    }
+}
+
+unsafe extern "C" fn display_reconfigured(_display: u32, _flags: u32, user_info: *mut c_void) {
+    if !user_info.is_null() {
+        // SAFETY: `user_info` points to the heap-boxed AtomicBool owned by
+        // `NativeDisplays` until `Drop` removes this callback.
+        unsafe { &*user_info.cast::<AtomicBool>() }.store(true, Ordering::Release);
     }
 }
 
@@ -1037,6 +1088,10 @@ pub struct NativeDisplays {
     last: DisplayFingerprint,
     layout: [Rect; 32],
     changed: bool,
+    /// Set by `CGDisplayRegisterReconfigurationCallback` so `fingerprint()`
+    /// does zero WindowServer Mach IPC on the real-time report thread unless a
+    /// display reconfiguration actually occurred.
+    reconfigured: Option<Box<AtomicBool>>,
 }
 
 fn active_displays() -> io::Result<([Rect; 32], usize, Rect)> {
@@ -1117,6 +1172,21 @@ impl NativeDisplays {
             let (layout, count, screen) = active_displays()?;
             (layout, count as i32, screen)
         };
+        let reconfigured = if explicit.is_none() {
+            let flag = Box::new(AtomicBool::new(false));
+            let ptr = (&*flag as *const AtomicBool as *mut AtomicBool).cast();
+            // SAFETY: `flag` stays at a stable heap address until `Drop`
+            // unregisters the callback before releasing `flag`.
+            if unsafe { ffi::CGDisplayRegisterReconfigurationCallback(display_reconfigured, ptr) }
+                == 0
+            {
+                Some(flag)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         Ok(Self {
             explicit,
             geometry: Rc::new(Cell::new(screen)),
@@ -1126,14 +1196,31 @@ impl NativeDisplays {
             },
             layout,
             changed: false,
+            reconfigured,
         })
+    }
+}
+
+impl Drop for NativeDisplays {
+    fn drop(&mut self) {
+        if let Some(flag) = self.reconfigured.take() {
+            let ptr = (&*flag as *const AtomicBool as *mut AtomicBool).cast();
+            // SAFETY: unregister callback before `flag` is deallocated.
+            unsafe {
+                ffi::CGDisplayRemoveReconfigurationCallback(display_reconfigured, ptr);
+            }
+        }
     }
 }
 
 impl Displays for NativeDisplays {
     fn fingerprint(&mut self) -> DisplayFingerprint {
         if self.explicit.is_none() {
-            if let Ok((layout, count, screen)) = active_displays() {
+            let should_query = self
+                .reconfigured
+                .as_ref()
+                .is_none_or(|flag| flag.swap(false, Ordering::AcqRel));
+            if should_query && let Ok((layout, count, screen)) = active_displays() {
                 self.changed |= layout != self.layout;
                 self.layout = layout;
                 self.last = DisplayFingerprint {
@@ -1321,21 +1408,58 @@ impl Mouse {
     }
 
     fn set_attributes(&mut self, attributes: otd_core::output::MouseAttributes) -> io::Result<()> {
-        crate::pointer::attributes(attributes)?;
-        self.position_emitted = false;
-        self.attributes.has_position = attributes.has_position;
+        let mut changed = false;
         if let Some(pressure) = attributes.pressure {
-            self.attributes.pressure = Some(pressure);
+            if !pressure.is_finite() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Nonfinite pointer pressure",
+                ));
+            }
+            if self.attributes.pressure != Some(pressure) {
+                self.attributes.pressure = Some(pressure);
+                changed = true;
+            }
         }
         if let Some(tilt) = attributes.tilt {
-            self.attributes.tilt = Some(tilt);
+            if tilt.iter().any(|value| !value.is_finite()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Nonfinite pointer tilt",
+                ));
+            }
+            if self.attributes.tilt != Some(tilt) {
+                self.attributes.tilt = Some(tilt);
+                changed = true;
+            }
         }
         if let Some(rotation) = attributes.rotation {
-            self.attributes.rotation = Some(rotation);
+            if !rotation.is_finite() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Nonfinite pointer rotation",
+                ));
+            }
+            let clamped = rotation.clamp(0.0, 1.0);
+            if self.attributes.rotation != Some(clamped) {
+                self.attributes.rotation = Some(clamped);
+                changed = true;
+            }
         }
+        let eraser_changed = attributes
+            .eraser
+            .is_some_and(|eraser| self.attributes.eraser != Some(eraser));
         if let Some(eraser) = attributes.eraser {
             self.attributes.eraser = Some(eraser);
         }
+        // Only acquire the shared POINTER mutex here when an eraser proximity
+        // transition must fire immediately, or when no position event will
+        // follow to deliver `self.attributes` under its single lock.
+        if eraser_changed || (!attributes.has_position && changed) {
+            crate::pointer::attributes(attributes)?;
+        }
+        self.position_emitted = false;
+        self.attributes.has_position = attributes.has_position;
         if attributes.reset {
             self.contact_owner.release()?;
             self.contact = false;

@@ -8,7 +8,7 @@ use std::{
     io,
     sync::{
         Mutex, OnceLock,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -48,16 +48,89 @@ pub struct PointerContext {
     pub delta: Option<(f64, f64)>,
     pub attributes: Option<otd_core::output::MouseAttributes>,
 }
+const DIRTY_WORDS: usize = 13; // 13 * 64 = 832 >= 773
+const KEY_WORDS: usize = 12; // 12 * 64 = 768
+
+/// Lock-free mirrors of the global `STATE.emitted` table and maintenance need.
+static EMITTED_BUTTONS: AtomicU8 = AtomicU8::new(0);
+static EMITTED_KEYS: [AtomicU64; KEY_WORDS] = [const { AtomicU64::new(0) }; KEY_WORDS];
+static MAINTENANCE_NEEDED: AtomicBool = AtomicBool::new(false);
+
+#[inline]
+fn is_modifier_index(index: usize) -> bool {
+    if cfg!(target_os = "linux") {
+        matches!(index, 29 | 42 | 56 | 125 | 97 | 54 | 100 | 126)
+    } else {
+        matches!(index, 59 | 56 | 58 | 55 | 62 | 60 | 61 | 54)
+    }
+}
+
+#[inline]
+fn mirror_emitted_atomic(index: usize, pressed: bool) {
+    if index < 768 {
+        let word = &EMITTED_KEYS[index >> 6];
+        let bit = 1u64 << (index & 63);
+        if pressed {
+            word.fetch_or(bit, Ordering::Release);
+        } else {
+            word.fetch_and(!bit, Ordering::Release);
+        }
+    } else if index < 773 {
+        let bit = 1u8 << (index - 768);
+        if pressed {
+            EMITTED_BUTTONS.fetch_or(bit, Ordering::Release);
+        } else {
+            EMITTED_BUTTONS.fetch_and(!bit, Ordering::Release);
+        }
+    }
+}
+
 type Writer = Box<dyn FnMut(Code, bool, Option<PointerContext>) -> io::Result<()> + Send>;
 struct State {
     holds: [Option<Hold>; 4096],
+    active_holds: usize,
     desired: [usize; 773],
     emitted: [bool; 773],
+    dirty: [u64; DIRTY_WORDS],
     positions: [Option<PointerContext>; 773],
     writer: Option<Writer>,
     leases: BTreeMap<u64, Instant>,
+    mirror_global: bool,
 }
 impl State {
+    #[inline]
+    fn update_dirty(&mut self, index: usize) {
+        let word = index >> 6;
+        let bit = 1u64 << (index & 63);
+        if self.emitted[index] != (self.desired[index] != 0) {
+            self.dirty[word] |= bit;
+        } else {
+            self.dirty[word] &= !bit;
+        }
+    }
+    #[inline]
+    fn has_dirty(&self) -> bool {
+        self.dirty.iter().any(|&word| word != 0)
+    }
+    #[inline]
+    fn sync_maintenance_flag(&self) {
+        if self.mirror_global {
+            MAINTENANCE_NEEDED.store(
+                !self.leases.is_empty() || self.has_dirty(),
+                Ordering::Release,
+            );
+        }
+    }
+    fn remove_hold_at(&mut self, slot: usize) -> Hold {
+        self.active_holds -= 1;
+        let last = self.active_holds;
+        if slot == last {
+            self.holds[slot].take().unwrap()
+        } else {
+            let moved = self.holds[last].take();
+            self.holds[slot].replace(moved.unwrap()).unwrap()
+        }
+    }
     fn maintenance_deadline(&self, now: Instant) -> Instant {
         // Native readers share this domain and can leave a failed release
         // after their last report, independently of managed queue admission.
@@ -77,26 +150,27 @@ impl State {
         position: Option<PointerContext>,
     ) -> io::Result<()> {
         let index = code.index()?;
-        let existing = self
-            .holds
+        let existing = self.holds[..self.active_holds]
             .iter()
             .position(|hold| hold.is_some_and(|hold| hold.owner == owner && hold.index == index));
         if held && existing.is_none() {
-            let slot = self
-                .holds
-                .iter_mut()
-                .find(|slot| slot.is_none())
-                .ok_or_else(|| io::Error::other("Shared input owner capacity reached"))?;
-            *slot = Some(Hold {
+            if self.active_holds >= self.holds.len() {
+                return Err(io::Error::other("Shared input owner capacity reached"));
+            }
+            let slot = self.active_holds;
+            self.holds[slot] = Some(Hold {
                 owner,
                 index,
                 context: position,
             });
+            self.active_holds += 1;
             self.desired[index] += 1;
+            self.update_dirty(index);
         } else if !held {
             if let Some(slot) = existing {
-                let removed = self.holds[slot].take().unwrap();
+                let removed = self.remove_hold_at(slot);
                 self.desired[index] -= 1;
+                self.update_dirty(index);
                 if position.is_none() {
                     self.positions[index] = removed.context;
                 }
@@ -109,51 +183,65 @@ impl State {
         if self.emitted[index] != (self.desired[index] != 0) && position.is_some() {
             self.positions[index] = position;
         }
-        match self.flush() {
+        let result = match self.flush() {
             // An unrelated pending failure must not hide this accepted prefix
             // from LocalActions, otherwise it cannot release what was sent.
             Err(_) if self.emitted[index] == (self.desired[index] != 0) => Ok(()),
             Err(error) => {
                 if held
                     && existing.is_none()
-                    && let Some(slot) = self.holds.iter().position(|hold| {
+                    && let Some(slot) = self.holds[..self.active_holds].iter().position(|hold| {
                         hold.is_some_and(|hold| hold.owner == owner && hold.index == index)
                     })
                 {
-                    self.holds[slot] = None;
+                    self.remove_hold_at(slot);
                     self.desired[index] -= 1;
+                    self.update_dirty(index);
                 }
                 Err(error)
             }
             Ok(()) => Ok(()),
-        }
+        };
+        self.sync_maintenance_flag();
+        result
     }
     fn flush(&mut self) -> io::Result<()> {
+        if !self.has_dirty() {
+            return Ok(());
+        }
         // Releases precede presses. Native chord ordering is already supplied
         // by LocalActions; a retry never acknowledges an unaccepted prefix.
         for pressed in [false, true] {
             for modifier in [pressed, !pressed] {
-                for index in 0..773 {
-                    let desired = self.desired[index] != 0;
-                    let is_modifier = if cfg!(target_os = "linux") {
-                        [29, 42, 56, 125, 97, 54, 100, 126].contains(&index)
-                    } else {
-                        [59, 56, 58, 55, 62, 60, 61, 54].contains(&index)
-                    };
-                    if is_modifier == modifier
-                        && desired == pressed
-                        && self.emitted[index] != desired
-                    {
-                        let code = if index < 768 {
-                            Code::Key(index as u16)
-                        } else {
-                            Code::Button((index - 768) as u8)
-                        };
-                        (self.writer.as_mut().ok_or_else(|| {
-                            io::Error::other("Actual platform input writer is unavailable")
-                        })?)(code, pressed, self.positions[index])?;
-                        self.emitted[index] = pressed;
-                        self.positions[index] = None;
+                for word in 0..DIRTY_WORDS {
+                    let mut bits = self.dirty[word];
+                    while bits != 0 {
+                        let bit = bits.trailing_zeros() as usize;
+                        bits &= bits - 1;
+                        let index = (word << 6) | bit;
+                        if index >= 773 {
+                            break;
+                        }
+                        let desired = self.desired[index] != 0;
+                        if is_modifier_index(index) == modifier
+                            && desired == pressed
+                            && self.emitted[index] != desired
+                        {
+                            let code = if index < 768 {
+                                Code::Key(index as u16)
+                            } else {
+                                Code::Button((index - 768) as u8)
+                            };
+                            (self.writer.as_mut().ok_or_else(|| {
+                                io::Error::other("Actual platform input writer is unavailable")
+                            })?)(code, pressed, self.positions[index])?;
+                            self.emitted[index] = pressed;
+                            self.positions[index] = None;
+                            self.update_dirty(index);
+                            if self.mirror_global {
+                                mirror_emitted_atomic(index, pressed);
+                            }
+                        }
                     }
                 }
             }
@@ -161,24 +249,38 @@ impl State {
         Ok(())
     }
     fn release(&mut self, owner: Owner) -> io::Result<()> {
-        for hold in &mut self.holds {
-            if hold.is_some_and(|hold| hold.owner == owner) {
-                let removed = hold.take().unwrap();
+        let mut slot = 0;
+        while slot < self.active_holds {
+            if self.holds[slot].is_some_and(|hold| hold.owner == owner) {
+                let removed = self.remove_hold_at(slot);
                 self.desired[removed.index] -= 1;
+                self.update_dirty(removed.index);
                 self.positions[removed.index] = removed.context;
+            } else {
+                slot += 1;
             }
         }
-        self.flush()
+        let result = self.flush();
+        self.sync_maintenance_flag();
+        result
     }
     fn release_native(&mut self, id: u64) -> io::Result<()> {
-        for hold in &mut self.holds {
-            if hold.is_some_and(|hold| matches!(hold.owner,Owner::Native(owner,_)if owner==id)) {
-                let removed = hold.take().unwrap();
+        let mut slot = 0;
+        while slot < self.active_holds {
+            if self.holds[slot]
+                .is_some_and(|hold| matches!(hold.owner, Owner::Native(owner, _) if owner == id))
+            {
+                let removed = self.remove_hold_at(slot);
                 self.desired[removed.index] -= 1;
+                self.update_dirty(removed.index);
                 self.positions[removed.index] = removed.context;
+            } else {
+                slot += 1;
             }
         }
-        self.flush()
+        let result = self.flush();
+        self.sync_maintenance_flag();
+        result
     }
 }
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
@@ -186,11 +288,14 @@ fn state() -> &'static Mutex<State> {
     STATE.get_or_init(|| {
         Mutex::new(State {
             holds: [None; 4096],
+            active_holds: 0,
             desired: [0; 773],
             emitted: [false; 773],
+            dirty: [0; DIRTY_WORDS],
             positions: [None; 773],
             writer: None,
             leases: BTreeMap::new(),
+            mirror_global: true,
         })
     })
 }
@@ -276,23 +381,17 @@ impl Drop for Native {
     }
 }
 pub fn button_down(button: u8) -> bool {
-    state()
-        .lock()
-        .ok()
-        .is_some_and(|state| button < 5 && state.emitted[768 + button as usize])
+    button < 5 && (EMITTED_BUTTONS.load(Ordering::Acquire) & (1u8 << button)) != 0
 }
 pub fn buttons() -> u8 {
-    state().lock().map_or(0, |state| {
-        (0..5).fold(0, |mask, button| {
-            mask | ((state.emitted[768 + button] as u8) << button)
-        })
-    })
+    EMITTED_BUTTONS.load(Ordering::Acquire)
 }
 pub fn key_mask(codes: [u16; 8]) -> u8 {
-    state().lock().map_or(0, |state| {
-        codes.into_iter().enumerate().fold(0, |mask, (bit, code)| {
-            mask | ((code < 768 && state.emitted[code as usize]) as u8) << bit
-        })
+    codes.into_iter().enumerate().fold(0, |mask, (bit, code)| {
+        let down = code < 768
+            && (EMITTED_KEYS[(code >> 6) as usize].load(Ordering::Acquire) & (1u64 << (code & 63)))
+                != 0;
+        mask | ((down as u8) << bit)
     })
 }
 pub fn execute(operation: Operation, scope: u64, payload: &Value) -> Result<Value, String> {
@@ -307,6 +406,7 @@ pub fn execute(operation: Operation, scope: u64, payload: &Value) -> Result<Valu
             .release(Owner::Managed(scope))
             .map_err(|error| error.to_string())?;
         state.leases.remove(&scope);
+        state.sync_maintenance_flag();
         return Ok(Value::Null);
     }
     if operation != Operation::InputHold {
@@ -366,7 +466,7 @@ pub fn execute(operation: Operation, scope: u64, payload: &Value) -> Result<Valu
             .insert(scope, Instant::now() + Duration::from_millis(lease));
         let repeat = held
             && matches!(code, Code::Key(_))
-            && state.holds.iter().any(|hold| {
+            && state.holds[..state.active_holds].iter().any(|hold| {
                 hold.is_some_and(|hold| {
                     hold.owner == Owner::Managed(scope) && hold.index == code.index().unwrap()
                 })
@@ -391,9 +491,13 @@ pub fn execute(operation: Operation, scope: u64, payload: &Value) -> Result<Valu
     state
         .leases
         .insert(scope, Instant::now() + Duration::from_millis(lease));
+    state.sync_maintenance_flag();
     Ok(Value::Null)
 }
 pub fn maintain() {
+    if !MAINTENANCE_NEEDED.load(Ordering::Acquire) {
+        return;
+    }
     if let Ok(mut state) = state().lock() {
         let now = Instant::now();
         let expired = state
@@ -415,6 +519,7 @@ pub fn maintain() {
         // A retired native reader has no lease or future report to trigger retry.
         // The independent lane remains the cleanup owner even with no scopes.
         let _ = state.flush();
+        state.sync_maintenance_flag();
     }
 }
 pub fn maintenance_deadline() -> Option<Instant> {
@@ -448,11 +553,14 @@ mod fixtures {
     fn owner(writer: Writer) -> State {
         State {
             holds: [None; 4096],
+            active_holds: 0,
             desired: [0; 773],
             emitted: [false; 773],
+            dirty: [0; DIRTY_WORDS],
             positions: [None; 773],
             writer: Some(writer),
             leases: BTreeMap::new(),
+            mirror_global: false,
         }
     }
     #[test]

@@ -261,6 +261,9 @@ impl App {
             validation_status: false,
             tray_icon: null,
             in_tray: false,
+            backbuffer: None,
+            rotated_fonts: area::RotatedFontCache::default(),
+            cached_tablet_spec: RefCell::new(None),
         };
         app.create_controls()?;
         app.create_tooltips();
@@ -657,32 +660,91 @@ impl App {
         set_text(self.c.mode, managed.as_deref().unwrap_or(label));
     }
 
+    pub(super) fn detected_tablet_spec(&self) -> Option<otd_core::spec::TabletSpec> {
+        let target = self.editor.profile.tablet_name().ok()?;
+        let name = match target.as_deref() {
+            Some(target) => self
+                .connected_tablets
+                .iter()
+                .find(|name| name.as_str() == target)?,
+            None => {
+                let [name] = self.connected_tablets.as_slice() else {
+                    return None;
+                };
+                name
+            }
+        };
+        let mut cache = self.cached_tablet_spec.borrow_mut();
+        if let Some((cached_name, spec)) = cache.as_ref()
+            && cached_name == name
+        {
+            return *spec;
+        }
+        let spec = otd_core::config::spec_for_tablet(name).ok();
+        *cache = Some((name.clone(), spec));
+        spec
+    }
+
+    pub(super) fn detected_tablet_bounds(&self) -> Option<Bounds> {
+        self.detected_tablet_spec().map(Bounds::tablet_for)
+    }
+
+    pub(super) fn detected_controls(&self) -> Option<otd_core::spec::Controls> {
+        self.detected_tablet_spec().map(|spec| spec.controls)
+    }
+
+    pub(super) fn invalidate_tablet_spec_cache(&self) {
+        *self.cached_tablet_spec.borrow_mut() = None;
+    }
+
+    pub(super) fn set_client_visible(&self, visible: bool) {
+        if let Some(client) = &self.daemon_client {
+            client.set_visible(visible);
+        }
+    }
+
     pub(super) fn sync_areas(&mut self, skip: Option<HWND>) {
+        self.sync_area_kind(AreaKind::Display, skip);
+        self.sync_area_kind(AreaKind::Tablet, skip);
+    }
+
+    pub(super) fn sync_area_kind(&mut self, which: AreaKind, skip: Option<HWND>) {
         let mapping = self.editor.absolute(&self.displays);
-        let display = mapping.display;
-        let tablet = mapping.tablet;
-        let values = [
-            (self.c.display[0], display.width),
-            (self.c.display[1], display.height),
-            (self.c.display[2], display.x),
-            (self.c.display[3], display.y),
-            (self.c.tablet[0], tablet.width),
-            (self.c.tablet[1], tablet.height),
-            (self.c.tablet[2], tablet.x),
-            (self.c.tablet[3], tablet.y),
-            (self.c.tablet[4], tablet.rotation),
-        ];
-        for (index, (hwnd, value)) in values.into_iter().enumerate() {
-            if Some(hwnd) != skip {
-                // Pixels to 3 decimals, millimetres to 5 (upstream stores floats).
-                set_text(
-                    hwnd,
-                    &model::format_number(value, if index < 4 { 3 } else { 5 }),
-                );
-                self.set_invalid(hwnd, false, None);
+        match which {
+            AreaKind::Display => {
+                let display = mapping.display;
+                let values = [
+                    (self.c.display[0], display.width),
+                    (self.c.display[1], display.height),
+                    (self.c.display[2], display.x),
+                    (self.c.display[3], display.y),
+                ];
+                for (hwnd, value) in values {
+                    if Some(hwnd) != skip {
+                        set_text(hwnd, &model::format_number(value, 3));
+                        self.set_invalid(hwnd, false, None);
+                    }
+                }
+            }
+            AreaKind::Tablet => {
+                let tablet = mapping.tablet;
+                let values = [
+                    (self.c.tablet[0], tablet.width),
+                    (self.c.tablet[1], tablet.height),
+                    (self.c.tablet[2], tablet.x),
+                    (self.c.tablet[3], tablet.y),
+                    (self.c.tablet[4], tablet.rotation),
+                ];
+                for (hwnd, value) in values {
+                    if Some(hwnd) != skip {
+                        // Millimetres to 5 decimals (upstream stores floats).
+                        set_text(hwnd, &model::format_number(value, 5));
+                        self.set_invalid(hwnd, false, None);
+                    }
+                }
             }
         }
-        self.invalidate_areas();
+        self.invalidate_area(which);
     }
 
     pub(super) fn sync_relative(&mut self, skip: Option<HWND>) {
@@ -1156,8 +1218,8 @@ impl App {
         );
     }
 
-    pub(super) fn invalidate_areas(&self) {
-        for view in [self.display_view, self.tablet_view].into_iter().flatten() {
+    pub(super) fn invalidate_area(&self, which: AreaKind) {
+        if let Some(view) = self.view(which) {
             unsafe { InvalidateRect(self.hwnd, &view.rect, 0) };
         }
     }
@@ -1393,11 +1455,18 @@ impl App {
                 model::constrain(&mut mapping.tablet, view.bounds);
             }
         }
-        if mapping != self.editor.absolute(&self.displays) {
+        let previous = self.editor.absolute(&self.displays);
+        if mapping != previous {
             self.editor.set_absolute(mapping);
             self.mark_dirty();
         }
-        self.sync_areas(skip);
+        let display_changed = mapping.display != previous.display;
+        let tablet_changed = mapping.tablet != previous.tablet;
+        match (display_changed, tablet_changed) {
+            (true, false) => self.sync_area_kind(AreaKind::Display, skip),
+            (false, true) => self.sync_area_kind(AreaKind::Tablet, skip),
+            _ => self.sync_areas(skip),
+        }
     }
 
     pub(super) fn edit_area(&mut self, which: AreaKind, index: usize, hwnd: HWND, value: &str) {
@@ -2183,6 +2252,7 @@ impl App {
             look.style.scale = dpi as f32 / 96.0;
         });
         // The previous fonts are released only after every control switched.
+        self.rotated_fonts.clear();
         self.fonts = fonts;
         self.set_item_heights();
         unsafe {

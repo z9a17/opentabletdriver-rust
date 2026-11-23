@@ -1,18 +1,36 @@
 //! Painting of the main window and of the custom-drawn child controls.
 use super::*;
 
+thread_local! {
+    static CONTROL_CANVAS: RefCell<Option<canvas::Canvas>> = const { RefCell::new(None) };
+}
+
+pub(super) fn clear_scratch_canvas() {
+    CONTROL_CANVAS.with(|slot| {
+        if let Ok(mut slot) = slot.try_borrow_mut() {
+            *slot = None;
+        }
+    });
+}
+
+#[inline]
+fn intersects(a: RECT, b: RECT) -> bool {
+    a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top
+}
+
 impl App {
     pub(super) fn paint(&mut self) {
         let mut ps = PAINTSTRUCT::default();
         let hdc = unsafe { BeginPaint(self.hwnd, &mut ps) };
         let client = client_rect(self.hwnd);
         // Status polling and focus changes usually invalidate a small strip.
-        // Canvas uses window coordinates and clips drawing to its own buffer;
-        // allocate/rasterize only the update rectangle, not the entire page.
-        if let Some(mut canvas) = canvas::Canvas::new(hdc, ps.rcPaint) {
-            self.paint_items(&mut canvas, client);
+        // Reuse the persistent backbuffer DIB and cull items to ps.rcPaint.
+        let mut backbuffer = self.backbuffer.take();
+        if let Some(canvas) = canvas::Canvas::begin_paint(&mut backbuffer, hdc, ps.rcPaint) {
+            self.paint_items(canvas, client);
             canvas.present(hdc);
         }
+        self.backbuffer = backbuffer;
         unsafe { EndPaint(self.hwnd, &ps) };
     }
 
@@ -21,23 +39,41 @@ impl App {
         let p = style.palette;
         let fonts = style.fonts;
         let s = |value: i32| scale(value, self.dpi);
+        let clip = canvas.clip_rect();
         canvas.fill(client, p.window);
         let focus = unsafe { GetFocus() };
         let mapping = self.editor.absolute(&self.displays);
         for item in &self.items {
             match item {
                 Item::Page(r) => {
+                    if !intersects(*r, clip) {
+                        continue;
+                    }
                     canvas.fill(*r, p.page);
                     canvas.round_rect(*r, [0.0; 4], None, Some((p.tab_border, 1.0)));
                 }
                 Item::Title(r, text) => {
-                    canvas.text(*r, text, fonts.bold, p.text, draw::TEXT_LEFT | DT_NOPREFIX)
+                    if !intersects(*r, clip) {
+                        continue;
+                    }
+                    canvas.text(*r, text, fonts.bold, p.text, draw::TEXT_LEFT | DT_NOPREFIX);
                 }
-                Item::Group(r) => draw::group_box(canvas, *r, &style, p.group),
+                Item::Group(r) => {
+                    if !intersects(*r, clip) {
+                        continue;
+                    }
+                    draw::group_box(canvas, *r, &style, p.group);
+                }
                 Item::Unit(r) => {
-                    canvas.round_rect(*r, [style.px(4.0); 4], Some(p.group), Some((p.border, 1.0)))
+                    if !intersects(*r, clip) {
+                        continue;
+                    }
+                    canvas.round_rect(*r, [style.px(4.0); 4], Some(p.group), Some((p.border, 1.0)));
                 }
                 Item::Label(r, text, tone, format) => {
+                    if !intersects(*r, clip) {
+                        continue;
+                    }
                     let color = match tone {
                         Tone::Text => p.text,
                         Tone::Muted => p.muted,
@@ -46,6 +82,9 @@ impl App {
                     canvas.text(*r, text, fonts.ui, color, *format | DT_NOPREFIX);
                 }
                 Item::Frame(r, hwnd) => {
+                    if !intersects(draw::inset(*r, -2, -2), clip) {
+                        continue;
+                    }
                     let enabled = unsafe { IsWindowEnabled(*hwnd) } != 0;
                     draw::field_frame(
                         canvas,
@@ -57,6 +96,9 @@ impl App {
                     );
                 }
                 Item::Area(r, which) => {
+                    if !intersects(*r, clip) {
+                        continue;
+                    }
                     let (view, backgrounds, unit, error) = match which {
                         AreaKind::Display => (
                             self.display_view.as_ref(),
@@ -78,6 +120,7 @@ impl App {
                     let fonts = area::AreaFonts {
                         small: fonts.small,
                         small_pixels: self.fonts.small_pixels,
+                        rotated_cache: Some(&self.rotated_fonts),
                     };
                     let scene = area::AreaScene {
                         view,
@@ -94,8 +137,16 @@ impl App {
                     };
                     area::paint(canvas, &scene, &fonts, &p);
                 }
-                Item::Status(r) => self.paint_status(canvas, *r, &style),
+                Item::Status(r) => {
+                    if !intersects(*r, clip) {
+                        continue;
+                    }
+                    self.paint_status(canvas, *r, &style);
+                }
                 Item::Header(r) => {
+                    if !intersects(*r, clip) {
+                        continue;
+                    }
                     canvas.fill(*r, p.window.mix(p.group, 0.5));
                     canvas.fill(rect(r.left, r.bottom - 1, r.right, r.bottom), p.border);
                     let columns = with_look(|look| look.log_columns).unwrap_or_default();
@@ -210,73 +261,76 @@ pub(super) fn custom_draw(draw: &mut NMCUSTOMDRAW) -> LRESULT {
         };
         let mut client = RECT::default();
         unsafe { GetClientRect(hwnd, &mut client) };
-        let mut canvas = canvas::Canvas::new(draw.hdc, client)?;
-        match info.kind {
-            Kind::Slider => {
-                let mut channel = RECT::default();
-                let mut thumb = RECT::default();
-                unsafe {
-                    SendMessageW(
-                        hwnd,
-                        TBM_GETCHANNELRECT,
-                        0,
-                        &mut channel as *mut RECT as isize,
+        CONTROL_CANVAS.with(|slot| {
+            let mut slot = slot.try_borrow_mut().ok()?;
+            let canvas = canvas::Canvas::begin_paint(&mut slot, draw.hdc, client)?;
+            match info.kind {
+                Kind::Slider => {
+                    let mut channel = RECT::default();
+                    let mut thumb = RECT::default();
+                    unsafe {
+                        SendMessageW(
+                            hwnd,
+                            TBM_GETCHANNELRECT,
+                            0,
+                            &mut channel as *mut RECT as isize,
+                        );
+                        SendMessageW(hwnd, TBM_GETTHUMBRECT, 0, &mut thumb as *mut RECT as isize);
+                    }
+                    state.disabled = unsafe { IsWindowEnabled(hwnd) } == 0;
+                    state.focus = unsafe { GetFocus() } == hwnd;
+                    canvas.fill(client, surface);
+                    let thumb_x = (thumb.left + thumb.right) / 2;
+                    let channel = RECT {
+                        left: channel.left + style.ipx(2.0),
+                        right: channel.right - style.ipx(2.0),
+                        ..channel
+                    };
+                    draw::slider(canvas, channel, thumb_x, &style, state.disabled);
+                    let size = style.ipx(20.0);
+                    let middle = (channel.top + channel.bottom) / 2;
+                    let knob = rect(
+                        thumb_x - size / 2,
+                        middle - size / 2,
+                        thumb_x - size / 2 + size,
+                        middle - size / 2 + size,
                     );
-                    SendMessageW(hwnd, TBM_GETTHUMBRECT, 0, &mut thumb as *mut RECT as isize);
+                    draw::slider_thumb(canvas, knob, &style, surface, state);
                 }
-                state.disabled = unsafe { IsWindowEnabled(hwnd) } == 0;
-                state.focus = unsafe { GetFocus() } == hwnd;
-                canvas.fill(client, surface);
-                let thumb_x = (thumb.left + thumb.right) / 2;
-                let channel = RECT {
-                    left: channel.left + style.ipx(2.0),
-                    right: channel.right - style.ipx(2.0),
-                    ..channel
-                };
-                draw::slider(&mut canvas, channel, thumb_x, &style, state.disabled);
-                let size = style.ipx(20.0);
-                let middle = (channel.top + channel.bottom) / 2;
-                let knob = rect(
-                    thumb_x - size / 2,
-                    middle - size / 2,
-                    thumb_x - size / 2 + size,
-                    middle - size / 2 + size,
-                );
-                draw::slider_thumb(&mut canvas, knob, &style, surface, state);
-            }
-            kind => {
-                let label = text(hwnd);
-                match kind {
-                    Kind::Menu => {
-                        state.selected = look.menu_open == hwnd as isize;
-                        draw::flat_button(&mut canvas, client, &label, &style, surface, state);
+                kind => {
+                    let label = text(hwnd);
+                    match kind {
+                        Kind::Menu => {
+                            state.selected = look.menu_open == hwnd as isize;
+                            draw::flat_button(canvas, client, &label, &style, surface, state);
+                        }
+                        Kind::Tab(tab) => {
+                            state.selected = look.tab.primary() == Some(tab);
+                            draw::tab(canvas, client, &label, &style, state);
+                        }
+                        Kind::Section(tab) => {
+                            state.selected = look.tab == tab;
+                            draw::flat_button(canvas, client, &label, &style, surface, state);
+                        }
+                        Kind::Dropdown => {
+                            state.selected = look.menu_open == hwnd as isize;
+                            draw::dropdown(canvas, client, &label, &style, surface, state);
+                        }
+                        Kind::Check => {
+                            state.checked = unsafe { SendMessageW(hwnd, BM_GETCHECK, 0, 0) }
+                                == BST_CHECKED as isize;
+                            draw::checkbox(canvas, client, &label, &style, surface, state);
+                        }
+                        Kind::Button => {
+                            draw::button(canvas, client, &label, &style, surface, state)
+                        }
+                        _ => return Some(CDRF_DODEFAULT as LRESULT),
                     }
-                    Kind::Tab(tab) => {
-                        state.selected = look.tab.primary() == Some(tab);
-                        draw::tab(&mut canvas, client, &label, &style, state);
-                    }
-                    Kind::Section(tab) => {
-                        state.selected = look.tab == tab;
-                        draw::flat_button(&mut canvas, client, &label, &style, surface, state);
-                    }
-                    Kind::Dropdown => {
-                        state.selected = look.menu_open == hwnd as isize;
-                        draw::dropdown(&mut canvas, client, &label, &style, surface, state);
-                    }
-                    Kind::Check => {
-                        state.checked = unsafe { SendMessageW(hwnd, BM_GETCHECK, 0, 0) }
-                            == BST_CHECKED as isize;
-                        draw::checkbox(&mut canvas, client, &label, &style, surface, state);
-                    }
-                    Kind::Button => {
-                        draw::button(&mut canvas, client, &label, &style, surface, state)
-                    }
-                    _ => return Some(CDRF_DODEFAULT as LRESULT),
                 }
             }
-        }
-        canvas.present(draw.hdc);
-        Some(CDRF_SKIPDEFAULT as LRESULT)
+            canvas.present(draw.hdc);
+            Some(CDRF_SKIPDEFAULT as LRESULT)
+        })
     })
     .flatten()
     .unwrap_or(CDRF_DODEFAULT as LRESULT)
@@ -292,66 +346,76 @@ pub(super) fn draw_item(item: &DRAWITEMSTRUCT) {
         };
         let style = look.style;
         let p = style.palette;
-        let Some(mut canvas) = canvas::Canvas::new(item.hDC, item.rcItem) else {
-            return;
-        };
-        let r = item.rcItem;
-        let selected = item.itemState & ODS_SELECTED != 0;
-        let focused = item.itemState & ODS_FOCUS != 0;
-        let index = item.itemID as usize;
-        match info.kind {
-            Kind::List => match look.filters.get(index) {
-                Some(filter) => {
-                    let state = State {
-                        selected,
-                        focus: focused,
-                        ..State::default()
-                    };
-                    draw::filter_row(&mut canvas, r, filter, &style, state);
-                }
-                None => canvas.fill(r, p.field),
-            },
-            Kind::Log => {
-                canvas.fill(r, if selected { p.selection } else { p.field });
-                if let Some(entry) = look.log.get(index) {
-                    let base = r.left + style.ipx(10.0);
-                    let columns = look.log_columns;
-                    let text_color = if selected { p.selection_text() } else { p.text };
-                    let level_color = match entry.level {
-                        Level::Info => text_color,
-                        Level::Warning => p.warning,
-                        Level::Error => p.error,
-                    };
-                    let cells = [
-                        (0, columns[0], entry.time.as_str(), p.muted),
-                        (columns[0], columns[1], entry.level.label(), level_color),
-                        (columns[1], columns[2], entry.group, text_color),
-                    ];
-                    for (start, end, value, color) in cells {
+        CONTROL_CANVAS.with(|slot| {
+            let Ok(mut slot) = slot.try_borrow_mut() else {
+                return;
+            };
+            let Some(canvas) = canvas::Canvas::begin_paint(&mut slot, item.hDC, item.rcItem) else {
+                return;
+            };
+            let r = item.rcItem;
+            let selected = item.itemState & ODS_SELECTED != 0;
+            let focused = item.itemState & ODS_FOCUS != 0;
+            let index = item.itemID as usize;
+            match info.kind {
+                Kind::List => match look.filters.get(index) {
+                    Some(filter) => {
+                        let state = State {
+                            selected,
+                            focus: focused,
+                            ..State::default()
+                        };
+                        draw::filter_row(canvas, r, filter, &style, state);
+                    }
+                    None => canvas.fill(r, p.field),
+                },
+                Kind::Log => {
+                    canvas.fill(r, if selected { p.selection } else { p.field });
+                    if let Some(entry) = look.log.get(index) {
+                        let base = r.left + style.ipx(10.0);
+                        let columns = look.log_columns;
+                        let text_color = if selected { p.selection_text() } else { p.text };
+                        let level_color = match entry.level {
+                            Level::Info => text_color,
+                            Level::Warning => p.warning,
+                            Level::Error => p.error,
+                        };
+                        let cells = [
+                            (0, columns[0], entry.time.as_str(), p.muted),
+                            (columns[0], columns[1], entry.level.label(), level_color),
+                            (columns[1], columns[2], entry.group, text_color),
+                        ];
+                        for (start, end, value, color) in cells {
+                            canvas.text(
+                                rect(base + start, r.top, base + end - style.ipx(8.0), r.bottom),
+                                value,
+                                style.fonts.ui,
+                                color,
+                                draw::TEXT_LEFT | DT_NOPREFIX,
+                            );
+                        }
+                        let message = entry.message.replace(['\r', '\n'], " ");
                         canvas.text(
-                            rect(base + start, r.top, base + end - style.ipx(8.0), r.bottom),
-                            value,
+                            rect(base + columns[2], r.top, r.right - style.ipx(6.0), r.bottom),
+                            &message,
                             style.fonts.ui,
-                            color,
+                            text_color,
                             draw::TEXT_LEFT | DT_NOPREFIX,
                         );
                     }
-                    let message = entry.message.replace(['\r', '\n'], " ");
-                    canvas.text(
-                        rect(base + columns[2], r.top, r.right - style.ipx(6.0), r.bottom),
-                        &message,
-                        style.fonts.ui,
-                        text_color,
-                        draw::TEXT_LEFT | DT_NOPREFIX,
-                    );
+                    if focused {
+                        canvas.round_rect(
+                            r,
+                            [0.0; 4],
+                            None,
+                            Some((p.accent.mix(p.field, 0.4), 1.0)),
+                        );
+                    }
                 }
-                if focused {
-                    canvas.round_rect(r, [0.0; 4], None, Some((p.accent.mix(p.field, 0.4), 1.0)));
-                }
+                _ => {}
             }
-            _ => {}
-        }
-        canvas.present(item.hDC);
+            canvas.present(item.hDC);
+        });
     });
 }
 

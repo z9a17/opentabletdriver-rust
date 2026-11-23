@@ -23,6 +23,7 @@ const CLASS: &str = "OpenTabletDriverRustDebugger";
 const TITLE: &str = "Tablet Debugger";
 const WM_DEBUG_REPORT: u32 = WM_APP + 20;
 const POLL: Duration = Duration::from_millis(33);
+const POLL_MINIMIZED: Duration = Duration::from_millis(100);
 const CMD_VISUALIZER: u16 = 1;
 const CMD_HEX: u16 = 2;
 const CMD_BINARY: u16 = 3;
@@ -65,6 +66,9 @@ struct Debugger {
     palette: Palette,
     updates: Receiver<Result<DebugReport, String>>,
     cancelled: Arc<AtomicBool>,
+    minimized: Arc<AtomicBool>,
+    recording_sampled: Arc<AtomicBool>,
+    backbuffer: RefCell<Option<canvas::Canvas>>,
     latest: Option<DebugReport>,
     /// The latest packet's bytes.
     raw: Vec<u8>,
@@ -122,21 +126,32 @@ pub(super) fn open() -> Result<(), String> {
     let palette = with_look(|look| look.style.palette).unwrap_or_else(Palette::light);
     let (sender, updates) = mpsc::sync_channel(1);
     let cancelled = Arc::new(AtomicBool::new(false));
+    let minimized = Arc::new(AtomicBool::new(false));
+    let recording_sampled = Arc::new(AtomicBool::new(false));
     let stop = Arc::clone(&cancelled);
+    let poll_minimized = Arc::clone(&minimized);
+    let poll_recording = Arc::clone(&recording_sampled);
     let target = window as isize;
     if let Err(error) = std::thread::Builder::new()
         .name("tablet-debugger".into())
-        .spawn(move || poll(sender, stop, target))
+        .spawn(move || poll(sender, stop, poll_minimized, poll_recording, target))
     {
         unsafe { DestroyWindow(window) };
         return Err(error.to_string());
     }
     DEBUGGER.with(|slot| {
-        *slot.borrow_mut() = Some(Debugger::new(window, dpi, palette, updates, cancelled))
+        *slot.borrow_mut() = Some(Debugger::new(
+            window,
+            dpi,
+            palette,
+            updates,
+            cancelled,
+            minimized,
+            recording_sampled,
+        ))
     });
     refresh_theme();
     unsafe {
-        SetTimer(window, 2, 100, None);
         ShowWindow(window, SW_SHOW);
         UpdateWindow(window);
     }
@@ -241,9 +256,15 @@ impl Drop for Debugger {
 fn poll(
     sender: SyncSender<Result<DebugReport, String>>,
     cancelled: Arc<AtomicBool>,
+    minimized: Arc<AtomicBool>,
+    recording_sampled: Arc<AtomicBool>,
     window: isize,
 ) {
     while !cancelled.load(Ordering::Acquire) {
+        if minimized.load(Ordering::Acquire) && !recording_sampled.load(Ordering::Acquire) {
+            std::thread::sleep(POLL_MINIMIZED);
+            continue;
+        }
         let update =
             match control::request(&Request::new(1, Command::Debug), Duration::from_secs(1)) {
                 Ok(response) => match response.reply {
@@ -283,6 +304,8 @@ impl Debugger {
         palette: Palette,
         updates: Receiver<Result<DebugReport, String>>,
         cancelled: Arc<AtomicBool>,
+        minimized: Arc<AtomicBool>,
+        recording_sampled: Arc<AtomicBool>,
     ) -> Self {
         Self {
             window,
@@ -292,6 +315,9 @@ impl Debugger {
             palette,
             updates,
             cancelled,
+            minimized,
+            recording_sampled,
+            backbuffer: RefCell::new(None),
             latest: None,
             raw: Vec::new(),
             error: None,
@@ -410,6 +436,7 @@ impl Debugger {
             Err(error) => error.clone(),
         };
         self.recorder = None;
+        self.recording_sampled.store(false, Ordering::Release);
         Some(result)
     }
 
@@ -449,11 +476,12 @@ impl Debugger {
             fonts: self.fonts.fonts,
             scale: self.dpi as f32 / 96.0,
         };
-        if !hdc.is_null()
-            && let Some(mut canvas) = canvas::Canvas::new(hdc, client)
-        {
-            self.draw(&mut canvas, client, &style);
-            canvas.present(hdc);
+        if !hdc.is_null() {
+            let mut backbuffer = self.backbuffer.borrow_mut();
+            if let Some(canvas) = canvas::Canvas::begin_paint(&mut backbuffer, hdc, ps.rcPaint) {
+                self.draw(canvas, client, &style);
+                canvas.present(hdc);
+            }
         }
         unsafe { EndPaint(self.window, &ps) };
     }
@@ -1043,19 +1071,33 @@ fn open_menu(window: HWND) {
                     if !can_start_recording(window, &original) {
                         return;
                     }
-                    let result = debugger_data::Recording::start(&path, command == CMD_RECORD_FULL);
-                    with_debugger(window, |debugger| {
+                    let full_rate = command == CMD_RECORD_FULL;
+                    let result = debugger_data::Recording::start(&path, full_rate);
+                    let started = with_debugger(window, |debugger| {
                         debugger.show_statistics = true;
                         match result {
                             Ok(recorder) => {
                                 debugger.recorder = Some(recorder);
+                                debugger
+                                    .recording_sampled
+                                    .store(!full_rate, Ordering::Release);
                                 debugger.recording_started = Instant::now();
                                 debugger.statistics = debugger_data::Statistics::default();
                                 debugger.recording_status = String::new();
+                                true
                             }
-                            Err(error) => debugger.recording_status = error,
+                            Err(error) => {
+                                debugger.recording_status = error;
+                                false
+                            }
                         }
-                    });
+                    })
+                    .unwrap_or(false);
+                    if started {
+                        unsafe {
+                            SetTimer(window, 2, 100, None);
+                        }
+                    }
                 }
                 Err(error) => {
                     if can_start_recording(window, &original) {
@@ -1130,6 +1172,11 @@ unsafe extern "system" fn window_proc(
                         SetWindowTextW(window, wide(&title).as_ptr());
                     }
                 }
+                if result.is_some() {
+                    unsafe {
+                        KillTimer(window, 2);
+                    }
+                }
                 if let Some(Err(error)) = result {
                     with_app(|app| app.log(Level::Error, "Debugger", error));
                 }
@@ -1162,6 +1209,16 @@ unsafe extern "system" fn window_proc(
             } else {
                 unsafe { DefWindowProcW(window, message, wparam, lparam) }
             }
+        }
+        WM_SIZE => {
+            let is_minimized = wparam as u32 == SIZE_MINIMIZED;
+            with_debugger(window, |debugger| {
+                debugger.minimized.store(is_minimized, Ordering::Release);
+                if is_minimized {
+                    *debugger.backbuffer.borrow_mut() = None;
+                }
+            });
+            0
         }
         WM_ERASEBKGND => 1,
         WM_LBUTTONDOWN => {
@@ -1282,12 +1339,18 @@ unsafe extern "system" fn window_proc(
             0
         }
         WM_TIMER if wparam == 2 => {
-            if let Some((repaint, result)) = with_debugger(window, |debugger| {
+            if let Some((repaint, done, result)) = with_debugger(window, |debugger| {
                 let recording = debugger.recorder.is_some();
                 let result = debugger.finish_recording();
-                let repaint = recording || debugger.recorder.is_some() || result.is_some();
-                (repaint, result)
+                let still_recording = debugger.recorder.is_some();
+                let repaint = recording || still_recording || result.is_some();
+                (repaint, !still_recording, result)
             }) {
+                if done {
+                    unsafe {
+                        KillTimer(window, 2);
+                    }
+                }
                 if let Some(Err(error)) = result {
                     with_app(|app| app.log(Level::Error, "Debugger", error));
                 }
@@ -1295,6 +1358,10 @@ unsafe extern "system" fn window_proc(
                     unsafe {
                         InvalidateRect(window, ptr::null(), 0);
                     }
+                }
+            } else {
+                unsafe {
+                    KillTimer(window, 2);
                 }
             }
             0
@@ -1448,6 +1515,8 @@ mod tests {
                 Palette::light(),
                 updates,
                 Arc::clone(&cancelled),
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicBool::new(false)),
             ))
         });
         let report = DebugReport {
@@ -1502,6 +1571,8 @@ mod tests {
                 96,
                 Palette::light(),
                 updates,
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicBool::new(false)),
                 Arc::new(AtomicBool::new(false)),
             ));
         });
@@ -1606,6 +1677,8 @@ mod preview {
                 96,
                 palette,
                 updates,
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicBool::new(false)),
                 Arc::new(AtomicBool::new(false)),
             );
             debugger.raw = parse_hex(&raw).unwrap();
