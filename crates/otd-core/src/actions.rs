@@ -212,6 +212,10 @@ struct Hold {
 pub struct ActionState<const ACTIONS: usize = 64, const HOLDS: usize = 128> {
     actions: [Option<ActionEntry>; ACTIONS],
     holds: [Option<Hold>; HOLDS],
+    action_mask: u64,
+    pending_mask: u64,
+    hold_mask: u128,
+    pending_count: usize,
 }
 
 impl<const ACTIONS: usize, const HOLDS: usize> Default for ActionState<ACTIONS, HOLDS> {
@@ -225,6 +229,37 @@ impl<const ACTIONS: usize, const HOLDS: usize> ActionState<ACTIONS, HOLDS> {
         Self {
             actions: [None; ACTIONS],
             holds: [None; HOLDS],
+            action_mask: 0,
+            pending_mask: 0,
+            hold_mask: 0,
+            pending_count: 0,
+        }
+    }
+
+    #[inline]
+    fn sync_pending(&mut self, index: usize) {
+        let is_pending =
+            self.actions[index].is_some_and(|entry| (entry.desired_holds != 0) != entry.emitted);
+        if ACTIONS <= 64 {
+            let bit = 1u64 << index;
+            let was_pending = self.pending_mask & bit != 0;
+            if is_pending != was_pending {
+                if is_pending {
+                    self.pending_mask |= bit;
+                    self.pending_count += 1;
+                } else {
+                    self.pending_mask &= !bit;
+                    self.pending_count -= 1;
+                }
+            }
+        } else {
+            self.pending_count = self
+                .actions
+                .iter()
+                .filter(|slot| {
+                    slot.is_some_and(|entry| (entry.desired_holds != 0) != entry.emitted)
+                })
+                .count();
         }
     }
 
@@ -237,13 +272,10 @@ impl<const ACTIONS: usize, const HOLDS: usize> ActionState<ACTIONS, HOLDS> {
         held: bool,
     ) -> Result<bool, CapacityError> {
         let action_index = self.action_index(action);
-        let existing = self.holds.iter().position(|slot| {
-            slot.is_some_and(|hold| hold.owner == owner && Some(hold.action_index) == action_index)
-        });
+        let existing = action_index.and_then(|target| self.find_hold(owner, target));
         if !held {
             if let Some(index) = existing {
                 self.remove_hold(index);
-                self.reclaim_released();
                 return Ok(true);
             }
             return Ok(false);
@@ -252,18 +284,10 @@ impl<const ACTIONS: usize, const HOLDS: usize> ActionState<ACTIONS, HOLDS> {
             return Ok(false);
         }
         // Find both slots before mutating, so either capacity failure is atomic.
-        let hold_index = self
-            .holds
-            .iter()
-            .position(Option::is_none)
-            .ok_or(CapacityError::Holds)?;
+        let hold_index = self.find_free_hold().ok_or(CapacityError::Holds)?;
         let index = match action_index {
             Some(index) => index,
-            None => self
-                .actions
-                .iter()
-                .position(Option::is_none)
-                .ok_or(CapacityError::Actions)?,
+            None => self.find_free_action().ok_or(CapacityError::Actions)?,
         };
         let entry = self.actions[index].get_or_insert(ActionEntry {
             action,
@@ -271,10 +295,17 @@ impl<const ACTIONS: usize, const HOLDS: usize> ActionState<ACTIONS, HOLDS> {
             emitted: false,
         });
         entry.desired_holds += 1;
+        if ACTIONS <= 64 {
+            self.action_mask |= 1u64 << index;
+        }
+        self.sync_pending(index);
         self.holds[hold_index] = Some(Hold {
             owner,
             action_index: index,
         });
+        if HOLDS <= 128 {
+            self.hold_mask |= 1u128 << hold_index;
+        }
         Ok(true)
     }
 
@@ -306,8 +337,9 @@ impl<const ACTIONS: usize, const HOLDS: usize> ActionState<ACTIONS, HOLDS> {
     }
 
     /// Whether desired ownership differs from the last acknowledged OS state.
+    #[inline]
     pub fn has_pending(&self) -> bool {
-        self.pending_index().is_some()
+        self.pending_count != 0
     }
 
     /// Borrow the next event until it is accepted or its guard is dropped.
@@ -317,7 +349,11 @@ impl<const ACTIONS: usize, const HOLDS: usize> ActionState<ACTIONS, HOLDS> {
     /// Within each group portable action order is stable, independent of slot
     /// reuse and binding update order. This is held-state reconciliation, not a
     /// queue of taps: a press removed before output is accepted is cancelled.
+    #[inline]
     pub fn next_pending(&mut self) -> Option<PendingTransition<'_, ACTIONS, HOLDS>> {
+        if self.pending_count == 0 {
+            return None;
+        }
         let index = self.pending_index()?;
         let entry = self.actions[index]?;
         Some(PendingTransition {
@@ -330,13 +366,88 @@ impl<const ACTIONS: usize, const HOLDS: usize> ActionState<ACTIONS, HOLDS> {
         })
     }
 
+    #[inline]
     fn action_index(&self, action: Action) -> Option<usize> {
-        self.actions
-            .iter()
-            .position(|entry| entry.is_some_and(|entry| entry.action == action))
+        if ACTIONS <= 64 {
+            let mut bits = self.action_mask;
+            while bits != 0 {
+                let index = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                if self.actions[index].is_some_and(|entry| entry.action == action) {
+                    return Some(index);
+                }
+            }
+            None
+        } else {
+            self.actions
+                .iter()
+                .position(|entry| entry.is_some_and(|entry| entry.action == action))
+        }
+    }
+
+    #[inline]
+    fn find_free_action(&self) -> Option<usize> {
+        if ACTIONS <= 64 {
+            let index = (!self.action_mask).trailing_zeros() as usize;
+            (index < ACTIONS).then_some(index)
+        } else {
+            self.actions.iter().position(Option::is_none)
+        }
+    }
+
+    #[inline]
+    fn find_hold(&self, owner: ActionOwner, action_index: usize) -> Option<usize> {
+        if HOLDS <= 128 {
+            let mut bits = self.hold_mask;
+            while bits != 0 {
+                let index = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                if self.holds[index]
+                    .is_some_and(|hold| hold.owner == owner && hold.action_index == action_index)
+                {
+                    return Some(index);
+                }
+            }
+            None
+        } else {
+            self.holds.iter().position(|slot| {
+                slot.is_some_and(|hold| hold.owner == owner && hold.action_index == action_index)
+            })
+        }
+    }
+
+    #[inline]
+    fn find_free_hold(&self) -> Option<usize> {
+        if HOLDS <= 128 {
+            let index = (!self.hold_mask).trailing_zeros() as usize;
+            (index < HOLDS).then_some(index)
+        } else {
+            self.holds.iter().position(Option::is_none)
+        }
     }
 
     fn pending_index(&self) -> Option<usize> {
+        if ACTIONS <= 64 {
+            let mut bits = self.pending_mask;
+            let mut best: Option<((bool, bool, Action), usize)> = None;
+            while bits != 0 {
+                let index = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let Some(entry) = self.actions[index] else {
+                    continue;
+                };
+                let pressed = entry.desired_holds != 0;
+                if pressed == entry.emitted {
+                    continue;
+                }
+                let modifier_order = entry.action.is_modifier() != pressed;
+                let key = (pressed, modifier_order, entry.action);
+                if best.is_none_or(|(best_key, _)| key < best_key) {
+                    best = Some((key, index));
+                }
+            }
+            return best.map(|(_, index)| index);
+        }
         self.actions
             .iter()
             .enumerate()
@@ -356,26 +467,44 @@ impl<const ACTIONS: usize, const HOLDS: usize> ActionState<ACTIONS, HOLDS> {
 
     fn remove_hold(&mut self, index: usize) {
         if let Some(hold) = self.holds[index].take() {
-            let entry = self.actions[hold.action_index]
+            if HOLDS <= 128 {
+                self.hold_mask &= !(1u128 << index);
+            }
+            let action_index = hold.action_index;
+            let entry = self.actions[action_index]
                 .as_mut()
                 .expect("a live hold retains its action slot");
             entry.desired_holds -= 1;
+            self.reclaim_slot(action_index);
+            self.sync_pending(action_index);
         }
     }
 
     fn release_matching(&mut self, matches: impl Fn(ActionOwner) -> bool) {
-        for index in 0..HOLDS {
-            if self.holds[index].is_some_and(|hold| matches(hold.owner)) {
-                self.remove_hold(index);
+        if HOLDS <= 128 {
+            let mut bits = self.hold_mask;
+            while bits != 0 {
+                let index = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                if self.holds[index].is_some_and(|hold| matches(hold.owner)) {
+                    self.remove_hold(index);
+                }
+            }
+        } else {
+            for index in 0..HOLDS {
+                if self.holds[index].is_some_and(|hold| matches(hold.owner)) {
+                    self.remove_hold(index);
+                }
             }
         }
-        self.reclaim_released();
     }
 
-    fn reclaim_released(&mut self) {
-        for slot in &mut self.actions {
-            if slot.is_some_and(|entry| entry.desired_holds == 0 && !entry.emitted) {
-                *slot = None;
+    #[inline]
+    fn reclaim_slot(&mut self, index: usize) {
+        if self.actions[index].is_some_and(|entry| entry.desired_holds == 0 && !entry.emitted) {
+            self.actions[index] = None;
+            if ACTIONS <= 64 {
+                self.action_mask &= !(1u64 << index);
             }
         }
     }
@@ -402,6 +531,7 @@ impl<const ACTIONS: usize, const HOLDS: usize> PendingTransition<'_, ACTIONS, HO
             .as_mut()
             .expect("an exclusive pending guard retains its action slot");
         entry.emitted = self.transition.pressed;
-        self.state.reclaim_released();
+        self.state.reclaim_slot(self.index);
+        self.state.sync_pending(self.index);
     }
 }

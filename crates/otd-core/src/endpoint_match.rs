@@ -2,15 +2,37 @@
 //! See `OpenTabletDriver/Driver.cs` at revision 736003ed. No endpoint is opened
 //! or initialized here; transport adapters supply snapshots from discovery.
 
-use std::{collections::BTreeMap, sync::LazyLock};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::{LazyLock, Mutex},
+};
 
 use regex::Regex;
 
-use crate::tablets::{Database, DeviceIdentifier, Match, ParserSupport, Role};
+use crate::tablets::{Database, DeviceIdentifier, Match, ParserSupport, Role, parser_support};
 
 const DOTNET_DATE_PREFIX_EXCLUSION: &str = r"^(?!202\d-\d{2}-\d{2})";
+const MAX_CACHED_REGEXES: usize = 1024;
 static DATE_PREFIX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\A202\d-\d{2}-\d{2}").expect("static date regex is valid"));
+static REGEX_CACHE: LazyLock<Mutex<HashMap<String, Option<Regex>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn cached_regex(pattern: &str) -> Result<Regex, ()> {
+    if let Ok(cache) = REGEX_CACHE.lock()
+        && let Some(entry) = cache.get(pattern)
+    {
+        return entry.clone().ok_or(());
+    }
+    let compiled = Regex::new(pattern).ok();
+    if let Ok(mut cache) = REGEX_CACHE.lock() {
+        if cache.len() >= MAX_CACHED_REGEXES {
+            cache.clear();
+        }
+        cache.insert(pattern.to_owned(), compiled.clone());
+    }
+    compiled.ok_or(())
+}
 
 enum DeviceStringPattern {
     Rust(Regex),
@@ -18,11 +40,11 @@ enum DeviceStringPattern {
 }
 
 impl DeviceStringPattern {
-    fn compile(pattern: &str) -> Result<Self, regex::Error> {
+    fn compile(pattern: &str) -> Result<Self, ()> {
         if pattern == DOTNET_DATE_PREFIX_EXCLUSION {
             Ok(Self::ExcludeDatePrefix)
         } else {
-            Regex::new(pattern).map(Self::Rust)
+            cached_regex(pattern).map(Self::Rust)
         }
     }
 
@@ -126,7 +148,7 @@ pub fn matches(endpoint: &Endpoint, candidate: &Match<'_>) -> Result<(), Rejecti
         && let Some(usage) = attribute("WinUsage")
     {
         let pattern = format!("&col{usage}");
-        let regex = Regex::new(&pattern).map_err(|_| Rejection::InvalidPattern(pattern))?;
+        let regex = cached_regex(&pattern).map_err(|_| Rejection::InvalidPattern(pattern))?;
         if !regex.is_match(&endpoint.path) {
             return Err(Rejection::WrongCollection);
         }
@@ -137,7 +159,8 @@ pub fn matches(endpoint: &Endpoint, candidate: &Match<'_>) -> Result<(), Rejecti
             .as_ref()
             .and_then(|a| a.get("HID_REPORTS"))
     {
-        let regex = Regex::new(pattern).map_err(|_| Rejection::InvalidPattern(pattern.clone()))?;
+        let regex =
+            cached_regex(pattern).map_err(|_| Rejection::InvalidPattern(pattern.clone()))?;
         if !regex.is_match(reports) {
             return Err(Rejection::WrongHidReports);
         }
@@ -192,7 +215,7 @@ pub fn unsupported_patterns(database: &Database) -> Vec<(String, String)> {
                 .as_ref()
                 .and_then(|a| a.get("HidReports"))
                 .or_else(|| config.attributes.as_ref().and_then(|a| a.get("HidReports")))
-                && Regex::new(pattern).is_err()
+                && cached_regex(pattern).is_err()
             {
                 unsupported.push((entry.path.clone(), pattern.clone()));
             }
@@ -203,7 +226,7 @@ pub fn unsupported_patterns(database: &Database) -> Vec<(String, String)> {
                 .or_else(|| config.attributes.as_ref().and_then(|a| a.get("WinUsage")));
             if let Some(usage) = usage {
                 let pattern = format!("&col{usage}");
-                if Regex::new(&pattern).is_err() {
+                if cached_regex(&pattern).is_err() {
                     unsupported.push((entry.path.clone(), pattern));
                 }
             }
@@ -224,6 +247,9 @@ pub struct Selection<'a> {
 /// identifier and endpoint, as upstream does. Auxiliary endpoints must belong
 /// to the same physical device. Selection does not imply parser support.
 pub fn select<'a>(database: &'a Database, endpoints: &'a [Endpoint]) -> Option<Selection<'a>> {
+    if endpoints.is_empty() {
+        return None;
+    }
     for entry in database.entries() {
         let Some(config) = entry.usable() else {
             continue;
@@ -232,12 +258,18 @@ pub fn select<'a>(database: &'a Database, endpoints: &'a [Endpoint]) -> Option<S
             let Some((vendor, product)) = id.vendor_id().zip(id.product_id()) else {
                 continue;
             };
-            let Some(candidate) = database.find(vendor, product).find(|m| {
-                m.role == Role::Digitizer
-                    && std::ptr::eq(m.entry, entry)
-                    && std::ptr::eq(m.identifier, id)
-            }) else {
+            if !endpoints
+                .iter()
+                .any(|ep| ep.vendor_id == vendor && ep.product_id == product)
+            {
                 continue;
+            }
+            let candidate = Match {
+                entry,
+                configuration: config,
+                identifier: id,
+                role: Role::Digitizer,
+                parser: parser_support(id.parser()),
             };
             let mut found = endpoints
                 .iter()
@@ -248,11 +280,19 @@ pub fn select<'a>(database: &'a Database, endpoints: &'a [Endpoint]) -> Option<S
             let ambiguous_digitizer = found.next().is_some();
             let auxiliary = config.auxiliary_identifiers().iter().find_map(|aux_id| {
                 let (vendor, product) = aux_id.vendor_id().zip(aux_id.product_id())?;
-                let aux = database.find(vendor, product).find(|m| {
-                    m.role == Role::Auxiliary
-                        && std::ptr::eq(m.entry, entry)
-                        && std::ptr::eq(m.identifier, aux_id)
-                })?;
+                if !endpoints
+                    .iter()
+                    .any(|ep| ep.vendor_id == vendor && ep.product_id == product)
+                {
+                    return None;
+                }
+                let aux = Match {
+                    entry,
+                    configuration: config,
+                    identifier: aux_id,
+                    role: Role::Auxiliary,
+                    parser: parser_support(aux_id.parser()),
+                };
                 endpoints
                     .iter()
                     .find(|ep| {

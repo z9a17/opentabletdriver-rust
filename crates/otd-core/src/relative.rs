@@ -99,6 +99,7 @@ impl RelativeMapper {
     /// RelativeOutputMode.Read only sets outOfRange here and keeps its origin
     /// until timeout; retaining that origin would reintroduce quick-reentry
     /// jumps into the native path. Plugin-emitted loss is not a new input.
+    #[inline]
     pub fn note_range_loss(&mut self) {
         self.reset();
     }
@@ -123,6 +124,7 @@ impl RelativeMapper {
 
     /// Upstream RelativeOutputMode.Read gates each transport input before any
     /// filters. Multiple emissions from it must not repeat this timeout gate.
+    #[inline]
     pub fn begin_input(&mut self, raw: (f32, f32), now: Instant) -> bool {
         if self
             .last_sample
@@ -146,6 +148,7 @@ impl RelativeMapper {
 
     /// One transform per pre-stage emission, even if a post-stage filter later
     /// suppresses it. Fractional output carry belongs after post-stage filters.
+    #[inline]
     pub fn transform_emission(&mut self, position: (f32, f32)) -> (f64, f64) {
         let position = (f64::from(position.0), f64::from(position.1));
         if !position.0.is_finite() || !position.1.is_finite() {
@@ -164,6 +167,7 @@ impl RelativeMapper {
         (a * x + b * y, c * x + d * y)
     }
 
+    #[inline]
     pub fn quantize(&mut self, delta: (f64, f64)) -> std::io::Result<(i32, i32)> {
         let dx = delta.0 + self.remainder.0;
         let dy = delta.1 + self.remainder.1;
