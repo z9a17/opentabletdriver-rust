@@ -10,7 +10,7 @@ The pre-existing driver files were released under LGPL-3.0-only. Their license t
 
 ## Tablet configuration data
 
-`crates/otd-core/tablets` holds OpenTabletDriver's **363 tablet configuration files**, copied unchanged from [`OpenTabletDriver.Configurations/Configurations`](https://github.com/OpenTabletDriver/OpenTabletDriver/tree/2c4b9a5649eb34cd74bc8b1b1041dbb0356ae762/OpenTabletDriver.Configurations/Configurations) at revision `2c4b9a5649eb34cd74bc8b1b1041dbb0356ae762` on upstream's `0.6.x` branch, after `v0.6.8.1` (OpenTabletDriver contributors, LGPL-3.0-or-later). They reference 54 native parser types. The executables embed this data; `scripts/update-tablet-database.py` copies it, and `crates/otd-core/tablets/SOURCE` records its origin. Earlier catalog inventories remain historical evidence.
+`crates/otd-core/tablets` holds OpenTabletDriver's **363 tablet configuration files**, copied unchanged from [`OpenTabletDriver.Configurations/Configurations`](https://github.com/OpenTabletDriver/OpenTabletDriver/tree/3345dc73a2d607d013a4762e0fa2672118ef132e/OpenTabletDriver.Configurations/Configurations) at revision `3345dc73a2d607d013a4762e0fa2672118ef132e` on upstream's `0.6.x` branch, after `v0.6.8.1` (OpenTabletDriver contributors, LGPL-3.0-or-later). They reference 54 native parser types. The executables embed this data; `scripts/update-tablet-database.py` copies it, and `crates/otd-core/tablets/SOURCE` records its origin. Earlier catalog inventories remain historical evidence.
 
 ## Optional .NET compatibility bridge
 

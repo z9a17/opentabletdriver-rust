@@ -27,6 +27,7 @@ impl SessionOutput {
             owner: Some(owners.register()),
         })
     }
+    #[inline]
     pub fn send(&self, packet: MousePacket) -> io::Result<()> {
         let owner = self
             .owner
@@ -67,6 +68,7 @@ const _: () = assert!(
         && flags::ABSOLUTE == MOUSEEVENTF_ABSOLUTE
 );
 
+#[inline]
 pub fn send_input(packet: MousePacket) -> Result<(), std::io::Error> {
     let input = INPUT {
         r#type: INPUT_MOUSE,

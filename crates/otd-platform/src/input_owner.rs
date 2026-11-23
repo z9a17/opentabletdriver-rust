@@ -101,28 +101,27 @@ impl State {
                     self.positions[index] = removed.context;
                 }
             }
-        } else if let Some(slot) = existing {
-            if position.is_some() {
-                self.holds[slot].as_mut().unwrap().context = position;
-            }
+        } else if let Some(slot) = existing
+            && position.is_some()
+        {
+            self.holds[slot].as_mut().unwrap().context = position;
         }
-        if self.emitted[index] != (self.desired[index] != 0) {
-            if position.is_some() {
-                self.positions[index] = position;
-            }
+        if self.emitted[index] != (self.desired[index] != 0) && position.is_some() {
+            self.positions[index] = position;
         }
         match self.flush() {
             // An unrelated pending failure must not hide this accepted prefix
             // from LocalActions, otherwise it cannot release what was sent.
             Err(_) if self.emitted[index] == (self.desired[index] != 0) => Ok(()),
             Err(error) => {
-                if held && existing.is_none() {
-                    if let Some(slot) = self.holds.iter().position(|hold| {
+                if held
+                    && existing.is_none()
+                    && let Some(slot) = self.holds.iter().position(|hold| {
                         hold.is_some_and(|hold| hold.owner == owner && hold.index == index)
-                    }) {
-                        self.holds[slot] = None;
-                        self.desired[index] -= 1;
-                    }
+                    })
+                {
+                    self.holds[slot] = None;
+                    self.desired[index] -= 1;
                 }
                 Err(error)
             }
@@ -213,7 +212,7 @@ impl Native {
     pub fn new() -> io::Result<Self> {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let id = NEXT
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .map_err(|_| io::Error::other("Input owner IDs exhausted"))?;
         Ok(Self { id })
     }

@@ -125,10 +125,19 @@ pub struct Mapper {
     rotation: u16,
     destination: Rect,
     virtual_screen: Rect,
+    norm_x: f64,
+    norm_y: f64,
     otd: Option<OtdTransform>,
 }
 
 impl Mapper {
+    fn norm_scales(virtual_screen: Rect) -> (f64, f64) {
+        (
+            65_535.0 / f64::from((virtual_screen.width() - 1).max(1)),
+            65_535.0 / f64::from((virtual_screen.height() - 1).max(1)),
+        )
+    }
+
     pub fn new(crop: Crop, rotation: u16, destination: Rect, virtual_screen: Rect) -> Option<Self> {
         Self::new_for(
             crop,
@@ -153,11 +162,14 @@ impl Mapper {
         {
             return None;
         }
+        let (norm_x, norm_y) = Self::norm_scales(virtual_screen);
         Some(Self {
             crop,
             rotation,
             destination,
             virtual_screen,
+            norm_x,
+            norm_y,
             otd: None,
         })
     }
@@ -218,11 +230,14 @@ impl Mapper {
         {
             return None;
         }
+        let (norm_x, norm_y) = Self::norm_scales(virtual_screen);
         Some(Self {
             crop: Crop::default(),
             rotation: 0,
             destination: virtual_screen,
             virtual_screen,
+            norm_x,
+            norm_y,
             otd: Some(transform),
         })
     }
@@ -311,16 +326,17 @@ impl Mapper {
         ))
     }
 
+    #[inline]
     pub fn normalize_pixels(self, px: f64, py: f64) -> Option<(i32, i32)> {
         if !px.is_finite() || !py.is_finite() {
             return None;
         }
         let screen = self.virtual_screen;
         Some((
-            ((px - f64::from(screen.left)) * 65_535.0 / f64::from((screen.width() - 1).max(1)))
+            ((px - f64::from(screen.left)) * self.norm_x)
                 .round()
                 .clamp(0.0, 65_535.0) as i32,
-            ((py - f64::from(screen.top)) * 65_535.0 / f64::from((screen.height() - 1).max(1)))
+            ((py - f64::from(screen.top)) * self.norm_y)
                 .round()
                 .clamp(0.0, 65_535.0) as i32,
         ))

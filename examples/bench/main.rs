@@ -73,7 +73,7 @@ mod stats;
 mod trace;
 
 // The portable core, at the crate paths the driver's modules use.
-use otd_core::{config, mapping, protocol, radial_follow, relative};
+use otd_core::{config, mapping, protocol};
 
 use std::hint::black_box;
 use std::io;

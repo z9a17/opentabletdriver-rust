@@ -30,14 +30,12 @@ pub(super) fn list_names() -> Result<Vec<String>, String> {
             if path
                 .extension()
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
-            {
-                if let Some(name) = path
+                && let Some(name) = path
                     .file_stem()
                     .and_then(|name| name.to_str())
                     .filter(|name| PresetName::parse(name).is_ok())
-                {
-                    names.push(format!("{}{name}", original_settings::PRESET_PREFIX));
-                }
+            {
+                names.push(format!("{}{name}", original_settings::PRESET_PREFIX));
             }
         }
     }

@@ -274,12 +274,10 @@ impl PluginChain {
         if let Some(graph) = &self.graph {
             // Runtime decoders supply their exact interfaces, including
             // IntuosV2 pen buttons. Positional puck reports remain mouse reports.
-            if input.pen.is_some() {
-                if raw.is_empty() || raw.len() > usize::from(u16::MAX) {
-                    return Err(io::Error::other(
-                        "managed dispatch requires the complete raw pen packet",
-                    ));
-                }
+            if input.pen.is_some() && (raw.is_empty() || raw.len() > usize::from(u16::MAX)) {
+                return Err(io::Error::other(
+                    "managed dispatch requires the complete raw pen packet",
+                ));
             }
             // The built-in filters run first unless the graph has a node for
             // them. The fused bridge leaves them to the host, which saves a

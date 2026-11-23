@@ -1527,10 +1527,10 @@ fn write_pen_button(
         scroll.validate()?;
         ensure_object(store)?;
         if store["Path"].as_str() != Some(super::MOUSE_SCROLL_BINDING) {
-            if let Some(path) = store["Path"].as_str() {
-                if unknown_binding_properties(store, path) {
-                    return Err("changing binding type would discard unknown source properties; keep the existing type or edit a new button".into());
-                }
+            if let Some(path) = store["Path"].as_str()
+                && unknown_binding_properties(store, path)
+            {
+                return Err("changing binding type would discard unknown source properties; keep the existing type or edit a new button".into());
             }
             set_field(store, "Settings", json!([]))?;
             set_field(store, "Path", json!(super::MOUSE_SCROLL_BINDING))?;

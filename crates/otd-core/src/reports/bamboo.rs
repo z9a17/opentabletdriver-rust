@@ -42,12 +42,11 @@ pub fn parse_bamboo(
 }
 
 fn bamboo_wheel(raw: &[u8]) -> Result<AbsoluteAnalogReport, ReportError> {
-    require_length(raw, 9)?;
+    // Upstream #5311: 8-byte Bamboo reports omit the wheel byte.
+    let position = (raw.len() > 8 && raw[8] & 0x80 != 0).then(|| u32::from(raw[8] & 0x7f));
     Ok(AbsoluteAnalogReport {
         kind: AnalogKind::Wheel,
-        positions: AbsoluteAnalog::from_slice(&[
-            (raw[8] & 0x80 != 0).then_some(u32::from(raw[8] & 0x7f))
-        ])?,
+        positions: AbsoluteAnalog::from_slice(&[position])?,
     })
 }
 
@@ -183,4 +182,38 @@ fn require_length(raw: &[u8], need: usize) -> Result<(), ReportError> {
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reports::{DeviceId, EndpointId, SessionId};
+    use std::time::Duration;
+
+    fn metadata() -> ReportMetadata {
+        ReportMetadata {
+            device: DeviceId(1),
+            session: SessionId(1),
+            endpoint: EndpointId(0),
+            received_at: Duration::ZERO,
+            sequence: 0,
+        }
+    }
+
+    #[test]
+    fn eight_byte_bamboo_reports_omit_wheel_without_failing() {
+        let aux = parse_bamboo(&[0x02, 0x00, 0, 0, 0, 0, 0, 0x18], metadata()).unwrap();
+        assert_eq!(aux.values.aux_buttons.unwrap().bits(), 0b0011);
+        assert_eq!(
+            aux.values.absolute_analog.unwrap().positions.as_slice(),
+            &[None]
+        );
+        let pen = parse_bamboo(&[0x02, 0x81, 10, 0, 20, 0, 5, 0], metadata()).unwrap();
+        assert_eq!(pen.values.position, Some([10.0, 20.0]));
+        assert_eq!(pen.values.pressure, Some(5));
+        assert_eq!(
+            pen.values.absolute_analog.unwrap().positions.as_slice(),
+            &[None]
+        );
+    }
 }

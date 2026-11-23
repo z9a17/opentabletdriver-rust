@@ -64,11 +64,11 @@ impl Handle {
                     owner.completed.notify_all();
                 }
             });
-        if let Err(error) = started {
-            if let Ok(mut completion) = self.completion.lock() {
-                *completion = Some(Err(error.to_string()));
-                self.completed.notify_all();
-            }
+        if let Err(error) = started
+            && let Ok(mut completion) = self.completion.lock()
+        {
+            *completion = Some(Err(error.to_string()));
+            self.completed.notify_all();
         }
     }
     fn wait_close(&self, deadline: Instant) -> io::Result<()> {

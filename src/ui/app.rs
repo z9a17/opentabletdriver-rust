@@ -1025,42 +1025,39 @@ impl App {
                 let properties =
                     model::plugin_editor_fields(&plugin.settings_json, metadata.as_ref())
                         .filter(|properties| properties.len() < MAX_PROPERTY_ROWS as usize);
-                match properties {
-                    Some(properties) => {
-                        for field in properties {
-                            let shown = if matches!(
-                                &field.value,
-                                PropertyValue::JsonScalar | PropertyValue::Json(_)
-                            ) {
-                                "Configured".into()
+                if let Some(properties) = properties {
+                    for field in properties {
+                        let shown = if matches!(
+                            &field.value,
+                            PropertyValue::JsonScalar | PropertyValue::Json(_)
+                        ) {
+                            "Configured".into()
+                        } else {
+                            field.value.display_text()
+                        };
+                        let tooltip = if !field.value.field_writable() {
+                            Some("This plugin setting is preserved in the profile and cannot be edited here.".into())
+                        } else if let PropertyValue::Typed { .. } = &field.value {
+                            let state = if field.value.uses_default() {
+                                field.value.default_cue()
                             } else {
-                                field.value.display_text()
+                                "Changes take effect with Save or Apply.".into()
                             };
-                            let tooltip = if !field.value.field_writable() {
-                                Some("This plugin setting is preserved in the profile and cannot be edited here.".into())
-                            } else if let PropertyValue::Typed { .. } = &field.value {
-                                let state = if field.value.uses_default() {
-                                    field.value.default_cue()
-                                } else {
-                                    "Changes take effect with Save or Apply.".into()
-                                };
-                                Some(format!(
-                                    "{}\n\n{state}",
-                                    field.tooltip.as_deref().unwrap_or("")
-                                ))
-                            } else {
-                                field.tooltip
-                            };
-                            rows.push((
-                                field.label,
-                                field.unit,
-                                PropertyTarget::Plugin(field.key, field.value),
-                                tooltip,
-                                shown,
-                            ));
-                        }
+                            Some(format!(
+                                "{}\n\n{state}",
+                                field.tooltip.as_deref().unwrap_or("")
+                            ))
+                        } else {
+                            field.tooltip
+                        };
+                        rows.push((
+                            field.label,
+                            field.unit,
+                            PropertyTarget::Plugin(field.key, field.value),
+                            tooltip,
+                            shown,
+                        ));
                     }
-                    None => {}
                 }
             }
         }
@@ -2866,10 +2863,11 @@ impl App {
                         != self.selected_device.as_ref().map(|device| &device.id);
                     self.device_sessions = sessions.sessions;
                     self.selected_device = next_device;
-                    if profile.is_none() && !self.closing {
-                        if let Some(device) = self.selected_device.clone() {
-                            self.refresh_runtime_saved_origin(&status.instance, &device);
-                        }
+                    if profile.is_none()
+                        && !self.closing
+                        && let Some(device) = self.selected_device.clone()
+                    {
+                        self.refresh_runtime_saved_origin(&status.instance, &device);
                     }
                     if let Some(profile) = profile.filter(|_| !self.closing) {
                         if !self.can_adopt_runtime_profile(
@@ -2879,8 +2877,7 @@ impl App {
                             self.log(Level::Warning, "Settings", "The driver's settings were changed elsewhere. Your unsaved edits were kept; press Apply to use them instead.");
                         } else {
                             if let Some(device) = self.selected_device.clone()
-                                && (switched_device
-                                    || self.profile_path == PathBuf::from(&device.profile_path))
+                                && (switched_device || self.profile_path == device.profile_path)
                             {
                                 self.profile_path = PathBuf::from(&device.profile_path);
                                 self.profile_revision_floor =

@@ -223,10 +223,10 @@ pub fn save(document: &Value, expected: u64) -> Result<(), Error> {
     })
 }
 fn bounded_snapshot(path: &Path) -> Result<FileSnapshot, Error> {
-    if let Ok(metadata) = std::fs::metadata(path) {
-        if metadata.len() > crate::control::MAX_PROFILE_BYTES as u64 {
-            return Err(Error::failed("settings file exceeds 128 KiB"));
-        }
+    if let Ok(metadata) = std::fs::metadata(path)
+        && metadata.len() > crate::control::MAX_PROFILE_BYTES as u64
+    {
+        return Err(Error::failed("settings file exceeds 128 KiB"));
     }
     Ok(storage::capture(path)?)
 }
@@ -262,8 +262,11 @@ pub fn profile_for_tablet(
     let projected = super::settings::for_detected(&document, std::slice::from_ref(tablet), screen)
         .map_err(|error| error.message)?;
     let text = serde_json::to_string(&projected).map_err(|error| error.to_string())?;
-    let mut profile =
-        crate::plugins::import_otd_with_installed(&text, &source, &[tablet.name.clone()])?;
+    let mut profile = crate::plugins::import_otd_with_installed(
+        &text,
+        &source,
+        std::slice::from_ref(&tablet.name),
+    )?;
     profile.use_settings_collection = true;
     profile
         .for_tablet(otd_core::spec::TabletSpec::from_configuration(tablet)?)

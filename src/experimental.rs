@@ -303,6 +303,7 @@ mod tests {
         assert_eq!(masks().unwrap().0, system);
         assert_eq!(load_at(&path).unwrap(), settings);
         let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
         permissions.set_readonly(false);
         std::fs::set_permissions(&path, permissions).unwrap();
         save_driver_at(&path, &Settings::default()).unwrap();

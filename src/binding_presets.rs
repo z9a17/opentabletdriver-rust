@@ -47,6 +47,9 @@ pub fn wrap(
     })
 }
 impl ActionSink for Sink {
+    fn observes_pointer(&self) -> bool {
+        self.inner.observes_pointer()
+    }
     fn pointer_attributes(
         &mut self,
         attributes: otd_core::output::MouseAttributes,

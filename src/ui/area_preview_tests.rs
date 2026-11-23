@@ -405,10 +405,10 @@ fn render_page(app: &App, name: &str) {
             }
             RestoreDC(dc, saved);
         }
-        if app.tab == Tab::Experimental {
-            if let Some(page) = &app.experimental {
-                page.render(dc);
-            }
+        if app.tab == Tab::Experimental
+            && let Some(page) = &app.experimental
+        {
+            page.render(dc);
         }
         GdiFlush();
         let pixels = std::slice::from_raw_parts(bits as *const u32, (width * height) as usize);

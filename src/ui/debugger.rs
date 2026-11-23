@@ -360,17 +360,16 @@ impl Debugger {
                         self.spec =
                             Some((name.clone(), otd_core::config::spec_for_tablet(name).ok()));
                     }
-                    if self.statistics.observe(&report) {
-                        if let Some(recorder) = &self.recorder {
-                            recorder.push(
-                                self.recording_started
-                                    .elapsed()
-                                    .as_micros()
-                                    .min(u128::from(u64::MAX))
-                                    as u64,
-                                report.clone(),
-                            );
-                        }
+                    if self.statistics.observe(&report)
+                        && let Some(recorder) = &self.recorder
+                    {
+                        recorder.push(
+                            self.recording_started
+                                .elapsed()
+                                .as_micros()
+                                .min(u128::from(u64::MAX)) as u64,
+                            report.clone(),
+                        );
                     }
                     self.raw = parse_hex(&report.raw_hex).unwrap_or_default();
                     self.error = None;
@@ -732,7 +731,7 @@ fn section(
 }
 
 fn parse_hex(hex: &str) -> Option<Vec<u8>> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return None;
     }
     (0..hex.len())
@@ -1012,12 +1011,11 @@ fn open_menu(window: HWND) {
             _ => {}
         }
     });
-    if command == CMD_COPY_STATS {
-        if let Some(lines) =
+    if command == CMD_COPY_STATS
+        && let Some(lines) =
             with_debugger(window, |debugger| debugger.statistics.lines().join("\r\n"))
-        {
-            copy_to_clipboard(window, &lines);
-        }
+    {
+        copy_to_clipboard(window, &lines);
     }
     if command == CMD_RECORD || command == CMD_RECORD_FULL {
         if recording {

@@ -65,10 +65,12 @@ fn initialization_writes(identifier: &DeviceIdentifier) -> bool {
     })
 }
 
-/// One overlapped read at a time on one HID collection. A read left pending
-/// by an idle timeout stays pending for the next call. Dropping the reader
-/// cancels a pending read and waits for it, so the buffer is never freed
-/// while the read can still write to it.
+/// One overlapped read at a time on one HID collection, double-buffered so
+/// a completed report is copied into `delivered` and the next overlapped
+/// `ReadFile` IRP is submitted immediately before the pipeline and `SendInput`
+/// run. A read left pending by an idle timeout stays pending for the next call.
+/// Dropping the reader cancels a pending read and waits for it, so `buffer` is
+/// never freed while the kernel can still write to it.
 struct Reader {
     shared: crate::shared_devices::Registration,
     custom: Option<crate::custom_devices::Reader>,
@@ -76,6 +78,8 @@ struct Reader {
     custom_ready: Option<Instant>,
     event: Event,
     buffer: Box<[u8]>,
+    delivered: Box<[u8]>,
+    pending_error: Option<io::Error>,
     // Windows retains this address until completion, including across moves
     // of the reader/source between calls.
     operation: Box<OVERLAPPED>,
@@ -173,6 +177,7 @@ impl Reader {
             epoch,
         )
         .map_err(io::Error::other)?;
+        let report_len = usize::from(candidate.input_length.max(1));
         Ok(Self {
             operation: Box::new(OVERLAPPED {
                 hEvent: event.raw(),
@@ -184,14 +189,35 @@ impl Reader {
             custom_ready: None,
             event,
             // ReadFile needs room for the collection's whole input report.
-            buffer: vec![0; usize::from(candidate.input_length.max(1))].into_boxed_slice(),
+            buffer: vec![0; report_len].into_boxed_slice(),
+            delivered: vec![0; report_len].into_boxed_slice(),
+            pending_error: None,
             state: ReadState::Idle,
         })
+    }
+
+    /// Copies the completed report into `delivered`, publishes it to any active
+    /// managed endpoint subscriber, and immediately re-arms the next overlapped
+    /// kernel read for native HID/WinUSB endpoints so the kernel can receive the
+    /// next USB packet in parallel with filtering and `SendInput`.
+    fn deliver_and_rearm(&mut self, length: usize) -> &[u8] {
+        self.delivered[..length].copy_from_slice(&self.buffer[..length]);
+        self.shared.publish(&self.delivered[..length]);
+        if self.custom.is_none()
+            && self.state == ReadState::Idle
+            && let Err(error) = self.start()
+        {
+            self.pending_error = Some(error);
+        }
+        &self.delivered[..length]
     }
 
     /// Starts a read unless one is already outstanding. `true` means the
     /// complete report is retained in our buffer until `finish` consumes it.
     fn start(&mut self) -> io::Result<bool> {
+        if let Some(error) = self.pending_error.take() {
+            return Err(error);
+        }
         match self.state {
             ReadState::Ready => return Ok(true),
             ReadState::Pending => return Ok(false),
@@ -832,9 +858,9 @@ impl<'a> HidSource<'a> {
         let Some(length) = self.pen.finish()? else {
             return Ok(Read::Ended);
         };
-        self.pen.shared.publish(&self.pen.buffer[..length]);
+        let bytes = self.pen.deliver_and_rearm(length);
         Ok(Read::Report {
-            bytes: &self.pen.buffer[..length],
+            bytes,
             ready,
             queued,
         })
@@ -848,11 +874,11 @@ impl<'a> HidSource<'a> {
             .unwrap_or_else(Instant::now);
         let finished = self.auxiliary.as_mut().map(Reader::finish);
         match finished {
-            Some(Ok(Some(length))) => match &self.auxiliary {
+            Some(Ok(Some(length))) => match &mut self.auxiliary {
                 Some(reader) => {
-                    reader.shared.publish(&reader.buffer[..length]);
+                    let bytes = reader.deliver_and_rearm(length);
                     Ok(Read::Auxiliary {
-                        bytes: &reader.buffer[..length],
+                        bytes,
                         ready,
                         queued,
                     })
@@ -863,6 +889,27 @@ impl<'a> HidSource<'a> {
             Some(Err(error)) => Ok(self.lose_auxiliary(error.to_string())),
             None => Ok(Read::Idle),
         }
+    }
+
+    fn flush_queues(&mut self) -> io::Result<()> {
+        for reader in std::iter::once(&mut self.pen).chain(self.auxiliary.iter_mut()) {
+            if let Some(custom) = &mut reader.custom {
+                custom.flush()?;
+                continue;
+            }
+            if let Some(interface) = &reader.shared.endpoint.io.winusb {
+                interface.flush_input()?;
+                continue;
+            }
+            if !unsafe {
+                windows_sys::Win32::Devices::HumanInterfaceDevice::HidD_FlushQueue(
+                    reader.shared.endpoint.io.native_handle()?.raw(),
+                )
+            } {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(())
     }
 
     fn lose_auxiliary(&mut self, reason: String) -> Read<'static> {
@@ -897,10 +944,12 @@ impl ReportSource for HidSource<'_> {
     // Blocking waits and pending-read probes put Stop first; selection also
     // checks it before returning any immediate completion.
     fn next(&mut self, timeout: Duration) -> io::Result<Read<'_>> {
-        let selection = if unsafe { WaitForSingleObject(self.output.event(), 0) } == WAIT_OBJECT_0 {
+        let selection = if self.output.is_event_signaled() {
+            self.output.begin_event_reset();
             if unsafe { ResetEvent(self.output.event()) } == 0 {
                 return Err(io::Error::last_os_error());
             }
+            self.output.finish_event_reset();
             let managed = self.output.take_managed_pending();
             select_awakened_input(
                 managed,
@@ -923,7 +972,6 @@ impl ReportSource for HidSource<'_> {
             InputSelection::Idle => return Ok(Read::Idle),
             InputSelection::Pending => {}
         }
-        let until = Instant::now() + timeout;
         // An already-due deadline is an input/stop poll, not a new timer wakeup.
         let precise = !timeout.is_zero() && timeout < PRECISE_WAIT;
         let timer = if precise {
@@ -965,20 +1013,27 @@ impl ReportSource for HidSource<'_> {
         } else {
             timer_index
         };
+        let mut until: Option<Instant> = None;
         loop {
-            // Other devices' notifications do not extend the wait.
+            // Other devices' notifications do not extend the wait; compute the
+            // absolute deadline lazily only if a notification wakes this loop.
             let result = if precise {
                 wait(&handles[..waited], INFINITE)
             } else {
-                let remaining = until.saturating_duration_since(Instant::now());
+                let remaining = match until {
+                    Some(deadline) => deadline.saturating_duration_since(Instant::now()),
+                    None => timeout,
+                };
                 let millis = u32::try_from(remaining.as_millis()).unwrap_or(u32::MAX);
                 wait(&handles[..waited], millis)
             };
             match result {
                 Ok(Some(index)) if index == output_change => {
+                    self.output.begin_event_reset();
                     if unsafe { ResetEvent(self.output.event()) } == 0 {
                         return Err(io::Error::last_os_error());
                     }
+                    self.output.finish_event_reset();
                     let managed = self.output.take_managed_pending();
                     match select_awakened_input(
                         managed,
@@ -1007,7 +1062,11 @@ impl ReportSource for HidSource<'_> {
                     return self.input_report(InputEndpoint::Auxiliary, false);
                 }
                 // Some HID device arrived or left; only this one matters.
-                Ok(Some(index)) if index == notification && self.candidate.is_present() => {}
+                Ok(Some(index)) if index == notification && self.candidate.is_present() => {
+                    if !precise && until.is_none() {
+                        until = Some(Instant::now() + timeout);
+                    }
+                }
                 Ok(Some(index)) if index == timer_index => return Ok(Read::Idle),
                 Ok(Some(_)) => {
                     self.cancel();
@@ -1040,6 +1099,7 @@ pub fn run(
     )?;
     if matches!(mode, Mode::Driver) {
         source.initialize(selected, status)?;
+        source.flush_queues()?;
     }
     let profile = profile
         .for_tablet(selected.spec)
@@ -1283,25 +1343,7 @@ impl<'a> PreparedSession<'a> {
         // quiesced, so the replacement cannot replay its already-processed
         // pen/button reports.
         // https://learn.microsoft.com/windows-hardware/drivers/ddi/hidsdi/nf-hidsdi-hidd_flushqueue
-        for reader in std::iter::once(&mut self.source.pen).chain(self.source.auxiliary.iter_mut())
-        {
-            if let Some(custom) = &mut reader.custom {
-                custom.flush()?;
-                continue;
-            }
-            if let Some(interface) = &reader.shared.endpoint.io.winusb {
-                interface.flush_input()?;
-                continue;
-            }
-            if !unsafe {
-                windows_sys::Win32::Devices::HumanInterfaceDevice::HidD_FlushQueue(
-                    reader.shared.endpoint.io.native_handle()?.raw(),
-                )
-            } {
-                return Err(io::Error::last_os_error());
-            }
-        }
-        Ok(())
+        self.source.flush_queues()
     }
 
     /// Activation runs after portable mapping/pipeline setup. Neither reports
@@ -1403,10 +1445,10 @@ impl<'a> PreparedSession<'a> {
 fn retire_custom_readers(source: &mut HidSource<'_>) -> io::Result<()> {
     let mut failure = None;
     for reader in std::iter::once(&mut source.pen).chain(source.auxiliary.iter_mut()) {
-        if let Some(custom) = &mut reader.custom {
-            if let Err(error) = custom.close(std::time::Duration::from_secs(3)) {
-                failure.get_or_insert(error);
-            }
+        if let Some(custom) = &mut reader.custom
+            && let Err(error) = custom.close(std::time::Duration::from_secs(3))
+        {
+            failure.get_or_insert(error);
         }
     }
     failure.map_or(Ok(()), Err)
@@ -1452,7 +1494,7 @@ mod identifier_metadata_tests {
         );
         assert_eq!(
             opened_identifiers(&primary, Some(&auxiliary), false),
-            [primary.clone()]
+            std::slice::from_ref(&primary)
         );
         assert_eq!(opened_identifiers(&primary, None, false), [primary]);
     }

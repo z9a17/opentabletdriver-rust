@@ -75,7 +75,7 @@ restore_devices() {
   for record in "$state_dir"/*; do
     device=${record##*/}
     read -r driver < "$record"
-    if [[ $driver != wacom && $driver != hid_uclogic ]]; then
+    if [[ $driver != wacom && $driver != hid_uclogic && $driver != hid_digimend_uclogic ]]; then
       echo "Refusing invalid restore record: $record" >&2; exit 1
     fi
     if [[ ! -d /sys/bus/hid/devices/$device ]]; then
@@ -134,7 +134,7 @@ case "$command" in
     shopt -s nullglob
     for device in /sys/bus/hid/devices/*; do
       driver=$(readlink -f -- "$device/driver" || true)
-      if [[ ${driver##*/} == wacom || ${driver##*/} == hid_uclogic ]]; then
+      if [[ ${driver##*/} == wacom || ${driver##*/} == hid_uclogic || ${driver##*/} == hid_digimend_uclogic ]]; then
         echo "${device##*/}: ${driver##*/}"
       fi
     done

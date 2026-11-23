@@ -155,6 +155,7 @@ pub(crate) struct Registry {
     next_opened_epoch: u64,
     pub shutting_down: bool,
 }
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Request {
     Refresh(mpsc::SyncSender<Result<SessionList, String>>),
     Apply {
@@ -613,10 +614,9 @@ impl Handle {
                 database,
                 Some(&device.path_text()),
                 Some(&key.tablet),
-            ) {
-                if DeviceKey::of(&selected) == key {
-                    return Ok(Some(selected));
-                }
+            ) && DeviceKey::of(&selected) == key
+            {
+                return Ok(Some(selected));
             }
         }
         Ok(None)
@@ -640,16 +640,16 @@ impl Handle {
         Ok(())
     }
     pub(crate) fn state(&self, id: &str, state: SessionState, error: Option<String>) {
-        if let Ok(mut registry) = self.registry.lock() {
-            if let Some(entry) = registry.entries.get_mut(id) {
-                entry.snapshot.state = state;
-                entry.snapshot.last_error = error.map(bounded);
-                if matches!(
-                    state,
-                    SessionState::Stopped | SessionState::Failed | SessionState::Waiting
-                ) {
-                    entry.snapshot.opened_identifiers = None;
-                }
+        if let Ok(mut registry) = self.registry.lock()
+            && let Some(entry) = registry.entries.get_mut(id)
+        {
+            entry.snapshot.state = state;
+            entry.snapshot.last_error = error.map(bounded);
+            if matches!(
+                state,
+                SessionState::Stopped | SessionState::Failed | SessionState::Waiting
+            ) {
+                entry.snapshot.opened_identifiers = None;
             }
         }
     }
@@ -660,53 +660,53 @@ impl Handle {
         self.commit_origin(id, generation, profile, true);
     }
     fn commit_origin(&self, id: &str, generation: u64, profile: Profile, explicitly_applied: bool) {
-        if let Ok(mut registry) = self.registry.lock() {
-            if let Some(entry) = registry.entries.get_mut(id) {
-                // Ignore an older transaction's completion after a new owner.
-                if generation < entry.snapshot.device_generation
-                    || entry
-                        .snapshot
-                        .pending_generation
-                        .is_some_and(|target| target != generation)
-                {
-                    return;
-                }
-                let changed = entry
-                    .profile
-                    .as_ref()
-                    .and_then(|previous| previous.to_toml().ok())
-                    != profile.to_toml().ok();
-                let explicit_edit = changed
-                    && (explicitly_applied || entry.pending_edit_generation == Some(generation));
-                if let Ok(file) = ProfileFile::read(entry.file.path.clone()) {
-                    entry.file = file;
-                }
-                entry.snapshot.device_generation = generation;
-                entry.snapshot.pending_generation = None;
-                entry.snapshot.profile_source = Some(bounded(profile.source.clone()));
-                entry.snapshot.persisted_revision = entry.file.revision();
-                entry.snapshot.persisted_digest = entry.file.digest.clone();
-                entry.snapshot.profile_saved = entry.file.matches(&profile);
-                entry.snapshot.use_settings_collection = profile.use_settings_collection;
-                entry.snapshot.has_unsaved_runtime_edits = runtime_edit_pending(
-                    entry.snapshot.has_unsaved_runtime_edits,
-                    explicit_edit,
-                    entry.snapshot.profile_saved,
-                );
-                entry.pending_edit_generation = None;
-                entry.snapshot.last_error = None;
-                entry.profile = Some(profile);
-                entry.enabled = true;
+        if let Ok(mut registry) = self.registry.lock()
+            && let Some(entry) = registry.entries.get_mut(id)
+        {
+            // Ignore an older transaction's completion after a new owner.
+            if generation < entry.snapshot.device_generation
+                || entry
+                    .snapshot
+                    .pending_generation
+                    .is_some_and(|target| target != generation)
+            {
+                return;
             }
+            let changed = entry
+                .profile
+                .as_ref()
+                .and_then(|previous| previous.to_toml().ok())
+                != profile.to_toml().ok();
+            let explicit_edit = changed
+                && (explicitly_applied || entry.pending_edit_generation == Some(generation));
+            if let Ok(file) = ProfileFile::read(entry.file.path.clone()) {
+                entry.file = file;
+            }
+            entry.snapshot.device_generation = generation;
+            entry.snapshot.pending_generation = None;
+            entry.snapshot.profile_source = Some(bounded(profile.source.clone()));
+            entry.snapshot.persisted_revision = entry.file.revision();
+            entry.snapshot.persisted_digest = entry.file.digest.clone();
+            entry.snapshot.profile_saved = entry.file.matches(&profile);
+            entry.snapshot.use_settings_collection = profile.use_settings_collection;
+            entry.snapshot.has_unsaved_runtime_edits = runtime_edit_pending(
+                entry.snapshot.has_unsaved_runtime_edits,
+                explicit_edit,
+                entry.snapshot.profile_saved,
+            );
+            entry.pending_edit_generation = None;
+            entry.snapshot.last_error = None;
+            entry.profile = Some(profile);
+            entry.enabled = true;
         }
     }
     pub(crate) fn reject(&self, id: &str, error: String) {
-        if let Ok(mut registry) = self.registry.lock() {
-            if let Some(entry) = registry.entries.get_mut(id) {
-                entry.snapshot.pending_generation = None;
-                entry.pending_edit_generation = None;
-                entry.snapshot.last_error = Some(bounded(error));
-            }
+        if let Ok(mut registry) = self.registry.lock()
+            && let Some(entry) = registry.entries.get_mut(id)
+        {
+            entry.snapshot.pending_generation = None;
+            entry.pending_edit_generation = None;
+            entry.snapshot.last_error = Some(bounded(error));
         }
     }
     pub(crate) fn primary_commit(&self, profile: Profile) -> Result<(), String> {
@@ -753,15 +753,15 @@ impl Handle {
         }
     }
     pub(crate) fn activated(&self, id: &str, selected: &SelectedDevice<'_>) {
-        if let Ok(mut registry) = self.registry.lock() {
-            if let Some(entry) = registry.entries.get_mut(id) {
-                entry.snapshot.properties = selected.configuration.clone();
-                entry.snapshot.digitizer = selected.identifier.clone();
-                entry.snapshot.auxiliary = selected
-                    .auxiliary
-                    .as_ref()
-                    .map(|(_, identifier)| identifier.clone());
-            }
+        if let Ok(mut registry) = self.registry.lock()
+            && let Some(entry) = registry.entries.get_mut(id)
+        {
+            entry.snapshot.properties = selected.configuration.clone();
+            entry.snapshot.digitizer = selected.identifier.clone();
+            entry.snapshot.auxiliary = selected
+                .auxiliary
+                .as_ref()
+                .map(|(_, identifier)| identifier.clone());
         }
     }
     /// Setup-only epoch prevents old session cleanup from erasing a replacement's
@@ -806,19 +806,18 @@ impl Handle {
         if epoch == 0 {
             return;
         }
-        if let Ok(mut registry) = self.registry.lock() {
-            if let Some(entry) = registry.entries.get_mut(id) {
-                if entry.opened_epoch == epoch {
-                    entry.snapshot.opened_identifiers = None;
-                }
-            }
+        if let Ok(mut registry) = self.registry.lock()
+            && let Some(entry) = registry.entries.get_mut(id)
+            && entry.opened_epoch == epoch
+        {
+            entry.snapshot.opened_identifiers = None;
         }
     }
     pub(crate) fn error(&self, id: &str, error: String) {
-        if let Ok(mut registry) = self.registry.lock() {
-            if let Some(entry) = registry.entries.get_mut(id) {
-                entry.snapshot.last_error = Some(bounded(error));
-            }
+        if let Ok(mut registry) = self.registry.lock()
+            && let Some(entry) = registry.entries.get_mut(id)
+        {
+            entry.snapshot.last_error = Some(bounded(error));
         }
     }
     pub(crate) fn saved_profile(&self, id: &str) -> Result<Option<Profile>, String> {
@@ -916,31 +915,31 @@ impl Handle {
         Ok(effective)
     }
     pub(crate) fn primary_pending(&self, generation: u64, state: SessionState) {
-        if let Ok(mut registry) = self.registry.lock() {
-            if let Some(id) = registry.primary.clone() {
-                let entry = registry.entries.get_mut(&id).unwrap();
-                entry.snapshot.pending_generation = Some(generation);
-                entry.pending_edit_generation = None;
-                entry.snapshot.state = state;
-            }
+        if let Ok(mut registry) = self.registry.lock()
+            && let Some(id) = registry.primary.clone()
+        {
+            let entry = registry.entries.get_mut(&id).unwrap();
+            entry.snapshot.pending_generation = Some(generation);
+            entry.pending_edit_generation = None;
+            entry.snapshot.state = state;
         }
     }
     pub(crate) fn primary_stopped(&self, generation: u64, error: Option<String>) {
-        if let Ok(mut registry) = self.registry.lock() {
-            if let Some(id) = registry.primary.clone() {
-                let entry = registry.entries.get_mut(&id).unwrap();
-                entry.snapshot.device_generation = generation;
-                entry.snapshot.pending_generation = None;
-                entry.pending_edit_generation = None;
-                entry.snapshot.opened_identifiers = None;
-                entry.snapshot.last_error = error.map(bounded);
-                entry.snapshot.state = if entry.snapshot.last_error.is_some() {
-                    SessionState::Failed
-                } else {
-                    SessionState::Stopped
-                };
-                entry.enabled = false;
-            }
+        if let Ok(mut registry) = self.registry.lock()
+            && let Some(id) = registry.primary.clone()
+        {
+            let entry = registry.entries.get_mut(&id).unwrap();
+            entry.snapshot.device_generation = generation;
+            entry.snapshot.pending_generation = None;
+            entry.pending_edit_generation = None;
+            entry.snapshot.opened_identifiers = None;
+            entry.snapshot.last_error = error.map(bounded);
+            entry.snapshot.state = if entry.snapshot.last_error.is_some() {
+                SessionState::Failed
+            } else {
+                SessionState::Stopped
+            };
+            entry.enabled = false;
         }
     }
 }
@@ -1183,10 +1182,16 @@ mod runtime_origin_and_opened_tests {
             !runtime_edit_pending(true, false, true),
             "an actual persisted match clears origin"
         );
-        let first =
-            handle.activated_with_identifiers(&id, &selected, &[selected.identifier.clone()]);
-        let replacement =
-            handle.activated_with_identifiers(&id, &selected, &[selected.identifier.clone()]);
+        let first = handle.activated_with_identifiers(
+            &id,
+            &selected,
+            std::slice::from_ref(&selected.identifier),
+        );
+        let replacement = handle.activated_with_identifiers(
+            &id,
+            &selected,
+            std::slice::from_ref(&selected.identifier),
+        );
         assert!(replacement > first && first > 0);
         handle.clear_opened_identifiers(&id, first);
         assert!(

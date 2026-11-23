@@ -78,13 +78,12 @@ impl ReportPipeline {
                 contact.eraser_threshold_raw,
             ),
         ] {
-            if let (Some(value), Some(raw)) = (*percent, raw) {
-                if crate::config::activation_raw_for(f64::from(value), profile.tablet.max_pressure)
+            if let (Some(value), Some(raw)) = (*percent, raw)
+                && crate::config::activation_raw_for(f64::from(value), profile.tablet.max_pressure)
                     .ok()
                     != Some(raw)
-                {
-                    *percent = None;
-                }
+            {
+                *percent = None;
             }
         }
         Ok(Self {
@@ -272,8 +271,24 @@ impl ReportPipeline {
         now: Instant,
         mapper: Option<Mapper>,
         plugins: &mut impl Filters,
-        send: impl FnMut(MousePacket) -> io::Result<()>,
+        mut send: impl FnMut(MousePacket) -> io::Result<()>,
     ) -> io::Result<DispatchStats> {
+        // Fast path for native absolute mouse profiles without DLL plugins,
+        // managed bindings, or pointer-attribute observers: avoids constructing
+        // and copying the full multi-capability ReportValues envelope per report.
+        if !self.faulted
+            && !self.managed_input
+            && self.pen.is_none()
+            && self.relative.is_none()
+            && self.managed_tip_binding.is_none()
+            && self.managed_eraser_binding.is_none()
+            && !self.buttons.observes_pointer()
+            && !self.buttons.is_unsettled()
+            && !self.buttons.is_inhibition_active()
+            && plugins.is_passthrough()
+        {
+            return self.process_pen_native_absolute(pen, buttons, now, mapper, &mut send);
+        }
         // Upstream IntuosV2Report always implements ITabletReport, including
         // when proximity flags clear. Filters must still consume its position.
         let kind = ReportKind::Data;
@@ -302,6 +317,135 @@ impl ReportPipeline {
             plugins,
             send,
         )
+    }
+
+    #[inline]
+    fn process_pen_native_absolute(
+        &mut self,
+        pen: PenReport,
+        buttons: Option<Buttons>,
+        now: Instant,
+        mapper: Option<Mapper>,
+        send: &mut impl FnMut(MousePacket) -> io::Result<()>,
+    ) -> io::Result<DispatchStats> {
+        self.managed_graph = false;
+        let physical_loss = !pen.in_range && !pen.sense;
+        self.physical_present = !physical_loss;
+        let Some(mapper) = mapper else {
+            let packets = u64::from(self.release_all(&mut *send)?);
+            return Ok(DispatchStats {
+                reports: 0,
+                packets,
+            });
+        };
+        let mapped = if self.filters.is_empty() {
+            if physical_loss {
+                let packets = u64::from(self.release_all(&mut *send)?);
+                return Ok(DispatchStats {
+                    reports: 1,
+                    packets,
+                });
+            }
+            let Some(mapped) = mapper.map(pen.x, pen.y) else {
+                return Ok(DispatchStats::default());
+            };
+            mapped
+        } else {
+            let (mut fx, mut fy) = (pen.x as f32, pen.y as f32);
+            for filter in &mut self.filters {
+                (fx, fy) = filter.filter_raw_at(fx, fy, now);
+            }
+            if !fx.is_finite() || !fy.is_finite() {
+                self.faulted = true;
+                if self.release_all(&mut *send).is_ok() {
+                    self.faulted = false;
+                }
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "nonfinite filter position",
+                ));
+            }
+            let Some((px, py)) = mapper.map_filtered_pixels(fx, fy) else {
+                if physical_loss {
+                    let packets = u64::from(self.release_all(&mut *send)?);
+                    return Ok(DispatchStats {
+                        reports: 0,
+                        packets,
+                    });
+                }
+                return Ok(DispatchStats::default());
+            };
+            if !(px as f32).is_finite() || !(py as f32).is_finite() {
+                self.faulted = true;
+                if self.release_all(&mut *send).is_ok() {
+                    self.faulted = false;
+                }
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "transformed position exceeds finite range",
+                ));
+            }
+            if physical_loss {
+                let packets = u64::from(self.release_all(&mut *send)?);
+                return Ok(DispatchStats {
+                    reports: 1,
+                    packets,
+                });
+            }
+            let Some(mapped) = mapper.normalize_pixels(px, py) else {
+                return Ok(DispatchStats::default());
+            };
+            mapped
+        };
+        self.is_eraser = pen.eraser;
+        let pressure = u32::from(pen.pressure);
+        let policy = self.contact;
+        let (enabled, threshold) = if self.is_eraser {
+            (policy.eraser_enabled, policy.eraser_threshold_raw)
+        } else {
+            (policy.tip_enabled, policy.tip_threshold_raw)
+        };
+        self.desired_contact = enabled
+            && threshold.map_or(pen.tip_switch, |threshold| pressure >= u32::from(threshold));
+        let emitted = match self
+            .output
+            .emit_mapped(Some(mapped), self.desired_contact, &mut *send)
+        {
+            Ok(sent) => sent,
+            Err(error) => {
+                self.faulted = true;
+                if self.release_all(&mut *send).is_ok() {
+                    self.faulted = false;
+                }
+                return Err(error);
+            }
+        };
+        if self.buttons.has_pen_bindings() {
+            self.buttons.set_time(now);
+            let drag_pressure = if self.contact.drag_only {
+                self.contact
+                    .drag_pressure(Some(pressure), self.max_pressure, self.is_eraser)
+            } else {
+                Some(pressure)
+            };
+            let wanted = self.buttons.wanted_with_pressure(
+                buttons,
+                true,
+                drag_pressure,
+                self.contact.drag_only,
+            );
+            if let Err(error) = self.buttons.apply(wanted) {
+                self.faulted = true;
+                if self.release_all(&mut *send).is_ok() {
+                    self.faulted = false;
+                }
+                return Err(error);
+            }
+        }
+        Ok(DispatchStats {
+            reports: 1,
+            packets: u64::from(emitted),
+        })
     }
 
     /// Non-positional reports retain their category; absent pressure/buttons do
@@ -398,6 +542,14 @@ impl ReportPipeline {
 
     pub fn next_binding_tick(&self, now: Instant) -> Option<std::time::Duration> {
         self.buttons.next_tick(now)
+    }
+
+    #[inline]
+    pub fn next_binding_tick_lazy(
+        &self,
+        now: impl FnOnce() -> Instant,
+    ) -> Option<std::time::Duration> {
+        self.buttons.next_tick_lazy(now)
     }
 
     pub fn process_binding_tick(&mut self, now: Instant) -> io::Result<()> {
@@ -696,22 +848,25 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
     }
 
     fn output(&mut self, kind: ReportKind, values: &ReportValues, raw: &[u8]) -> io::Result<()> {
-        let mut projected = *values;
-        // Native-only reports retain their existing allocation-free path.
-        let threshold_contact = if (self.pipeline.managed_input || self.pipeline.managed_graph)
+        let mut projected;
+        // Native-only reports retain their existing allocation-free path and
+        // avoid copying the full ReportValues struct unless pressure projection runs.
+        let (values, threshold_contact) = if (self.pipeline.managed_input
+            || self.pipeline.managed_graph)
             && kind != ReportKind::OutOfRange
         {
-            if let Some(eraser) = values
+            projected = *values;
+            if let Some(eraser) = projected
                 .eraser
-                .or_else(|| values.tool.map(|tool| tool.tool == ToolType::Eraser))
+                .or_else(|| projected.tool.map(|tool| tool.tool == ToolType::Eraser))
             {
                 self.pipeline.is_eraser = eraser;
             }
-            self.prepare_threshold_report(&mut projected, false)
+            let contact = self.prepare_threshold_report(&mut projected, false);
+            (&projected, contact)
         } else {
-            None
+            (values, None)
         };
-        let values = &projected;
         self.pipeline.buttons.set_report(kind, values, raw)?;
         // A plugin may retain a contact report after transport range loss.
         // Timers still advance, but cannot revive that output without new input.

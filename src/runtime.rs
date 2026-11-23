@@ -38,6 +38,7 @@ pub enum Directive {
     Quiesce,
     Stop,
 }
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum Notice {
     PresetRequested(crate::binding_presets::Request),
@@ -314,6 +315,7 @@ fn execution_profile(authored: &Profile, port: impl FnOnce(&mut Profile)) -> Pro
     execution
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run(
     profile: Profile,
     interrupt: &Event,
@@ -595,10 +597,10 @@ fn run(
                         // Pinned DriverDaemon owns one Settings.Tools collection,
                         // separate from tablet profiles. Peer workers run their
                         // filters/output/bindings, never another global tool set.
-                        if bound_id.is_none() {
-                            if let Err(error) = crate::tool_host::apply_profile(&profile.plugins) {
-                                log(&format!("Global tool submission failed: {error}"));
-                            }
+                        if bound_id.is_none()
+                            && let Err(error) = crate::tool_host::apply_profile(&profile.plugins)
+                        {
+                            log(&format!("Global tool submission failed: {error}"));
                         }
                         Ok(true)
                     }

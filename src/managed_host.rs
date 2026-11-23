@@ -225,13 +225,12 @@ impl Drop for Owner {
         // The service queue joins its executing backend before daemon cleanup
         // can retire devices or a replacement service owner can be installed.
         drop(self.host.take());
-        if let Ok(mut current) = CURRENT.get_or_init(|| Mutex::new(Weak::new())).lock() {
-            if current
+        if let Ok(mut current) = CURRENT.get_or_init(|| Mutex::new(Weak::new())).lock()
+            && current
                 .upgrade()
                 .is_some_and(|backend| Arc::ptr_eq(&backend, &self.backend))
-            {
-                *current = Weak::new();
-            }
+        {
+            *current = Weak::new();
         }
     }
 }
@@ -261,10 +260,10 @@ pub(crate) fn wake_observer() {
         .lock()
         .ok()
         .and_then(|current| current.upgrade());
-    if let Some(backend) = backend {
-        if let Some(observer) = backend.observer_thread.get() {
-            observer.unpark();
-        }
+    if let Some(backend) = backend
+        && let Some(observer) = backend.observer_thread.get()
+    {
+        observer.unpark();
     }
 }
 fn call(command: Command) -> Result<Reply, String> {
@@ -301,10 +300,8 @@ pub(crate) fn publish_native_state(
             .lock()
             .ok()
             .is_some_and(|mut state| state.update(identity, devices, sequence, logs));
-        if changed {
-            if let Some(observer) = backend.observer_thread.get() {
-                observer.unpark();
-            }
+        if changed && let Some(observer) = backend.observer_thread.get() {
+            observer.unpark();
         }
     }
 }
@@ -664,14 +661,12 @@ pub fn publish_owned_devices() {
         .lock()
         .ok()
         .and_then(|value| value.upgrade())
+        && let Ok(devices) = service_devices()
+        && let Ok(mut state) = backend.published.lock()
     {
-        if let Ok(devices) = service_devices() {
-            if let Ok(mut state) = backend.published.lock() {
-                let changed = replace_if_changed(&mut state.snapshot.devices, Some(json!(devices)));
-                state.dirty |= changed;
-                let _ = state.publish_if_changed();
-            }
-        }
+        let changed = replace_if_changed(&mut state.snapshot.devices, Some(json!(devices)));
+        state.dirty |= changed;
+        let _ = state.publish_if_changed();
     }
 }
 fn service_devices() -> Result<Vec<Value>, String> {

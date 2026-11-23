@@ -315,6 +315,7 @@ impl Interface {
         Err(error)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn control(
         &self,
         request_type: u8,
@@ -506,12 +507,14 @@ fn decode_string(data: &[u8]) -> io::Result<String> {
         || data[1] != 3
         || data[0] < 2
         || data[0] as usize > data.len()
-        || data[0] % 2 != 0
+        || !data[0].is_multiple_of(2)
     {
         return Err(invalid());
     }
     let words: Vec<u16> = data[2..data[0] as usize]
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
         .collect();
     String::from_utf16(&words).map_err(|_| invalid())
@@ -587,15 +590,14 @@ fn inspect(
     instance: u32,
     database: Option<&Database>,
 ) -> io::Result<(Candidate, serde_json::Value)> {
-    if let Some((vendor, product)) = hid::instance_id(instance).as_deref().and_then(usb_ids) {
-        if excluded_vendor(vendor)
-            || database.is_some_and(|db| db.find(vendor, product).next().is_none())
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "unrelated WinUSB device",
-            ));
-        }
+    if let Some((vendor, product)) = hid::instance_id(instance).as_deref().and_then(usb_ids)
+        && (excluded_vendor(vendor)
+            || database.is_some_and(|db| db.find(vendor, product).next().is_none()))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "unrelated WinUSB device",
+        ));
     }
     let path_text = String::from_utf16_lossy(&path[..path.len().saturating_sub(1)]);
     let handle = hid::open_path(path, true)?;

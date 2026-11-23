@@ -21,13 +21,11 @@ mod graph;
 mod parser;
 #[path = "dotnet/registry.rs"]
 mod registry;
-pub use parser::{ManagedReportParser, RuntimeDecoder, installed_report_parser};
+pub use parser::{RuntimeDecoder, installed_report_parser};
+pub use registry::{HostedRpc, construct_plugin_store, get_plugin_types};
 pub use registry::{
-    HostedRpc, construct_plugin_store, get_plugin_types, original_display_snapshot,
-};
-pub use registry::{
-    ManagedDebugDecoder, ManagedDebugReport, ManagedRegistryInfo, drain_managed_retirements,
-    known_report_parser, mutate_installed_plugins, registry_snapshot, reload_installed_plugins,
+    ManagedDebugDecoder, ManagedRegistryInfo, drain_managed_retirements, mutate_installed_plugins,
+    registry_snapshot, reload_installed_plugins,
 };
 pub(crate) fn source_session_json() -> Option<serde_json::Value> {
     #[cfg(windows)]
@@ -53,6 +51,7 @@ type SetWake = unsafe extern "C" fn(*mut c_void, Option<WakeCallback>, *mut c_vo
 /// Stable native scope, owned until managed detachment has synchronized with
 /// every callback. It contains no graph/report pointer and never reenters CLR.
 #[cfg(windows)]
+#[allow(clippy::redundant_allocation)] // Stable heap address passed as FFI wake userdata.
 struct WakeTarget(Box<std::sync::Arc<crate::shared_devices::OutputGate>>);
 #[cfg(windows)]
 impl WakeTarget {

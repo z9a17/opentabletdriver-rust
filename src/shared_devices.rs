@@ -34,7 +34,7 @@ fn registry() -> &'static Mutex<Registry> {
     REGISTRY.get_or_init(|| Mutex::new(Registry::default()))
 }
 fn next() -> Result<u64, String> {
-    NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+    NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
         .map_err(|_| "Device lease identity exhausted".into())
 }
 pub fn source_session_json() -> Option<Value> {
@@ -68,6 +68,8 @@ pub struct OutputGate {
     started: AtomicBool,
     #[cfg(windows)]
     managed_pending: AtomicBool,
+    #[cfg(windows)]
+    event_signaled: AtomicBool,
     wake: Event,
     changed: std::sync::Condvar,
     gate: Mutex<()>,
@@ -84,6 +86,8 @@ impl OutputGate {
             wake: Event::create(true)?,
             #[cfg(windows)]
             managed_pending: AtomicBool::new(false),
+            #[cfg(windows)]
+            event_signaled: AtomicBool::new(false),
             changed: std::sync::Condvar::new(),
             gate: Mutex::new(()),
         }))
@@ -95,12 +99,36 @@ impl OutputGate {
         self.native_enabled() != self.acknowledged.load(Ordering::Acquire)
     }
     pub fn signal(&self) -> std::io::Result<()> {
+        #[cfg(windows)]
+        self.event_signaled.store(true, Ordering::SeqCst);
         self.wake.signal()
     }
     #[cfg(windows)]
     pub(crate) fn signal_managed(&self) {
         self.managed_pending.store(true, Ordering::Release);
+        self.event_signaled.store(true, Ordering::SeqCst);
         let _ = self.wake.signal();
+    }
+    /// Fast atomic check before polling the kernel wake event on every report.
+    #[cfg(windows)]
+    #[inline]
+    pub(crate) fn is_event_signaled(&self) -> bool {
+        self.event_signaled.load(Ordering::Acquire)
+    }
+    /// Dekker-ordered reset around `ResetEvent(self.event())`: if a producer
+    /// signals concurrently with `ResetEvent`, `finish_event_reset` re-signals
+    /// the kernel event so `WaitForMultipleObjects` cannot miss the wakeup.
+    #[cfg(windows)]
+    #[inline]
+    pub(crate) fn begin_event_reset(&self) {
+        self.event_signaled.store(false, Ordering::SeqCst);
+    }
+    #[cfg(windows)]
+    #[inline]
+    pub(crate) fn finish_event_reset(&self) {
+        if self.event_signaled.load(Ordering::SeqCst) {
+            let _ = self.wake.signal();
+        }
     }
     // Consume only after ResetEvent. A concurrent producer either joins this
     // Idle return or leaves its event signaled for the next wait.
@@ -134,7 +162,7 @@ impl OutputGate {
             self.acknowledged.store(native, Ordering::Release);
             return Ok(());
         }
-        self.wake.signal().map_err(|e| e.to_string())?;
+        self.signal().map_err(|e| e.to_string())?;
         let until = Instant::now() + Duration::from_secs(3);
         while self.acknowledged.load(Ordering::Acquire) != native {
             let left = until.saturating_duration_since(Instant::now());
@@ -182,6 +210,7 @@ pub struct Registration {
     pub endpoint: Arc<Endpoint>,
 }
 impl Registration {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         path: String,
         parser: String,
@@ -549,12 +578,11 @@ pub fn execute(
             }
             drop(state);
             endpoint.output.request(!managed)?;
-            if !managed {
-                if let Ok(mut state) = registry().lock() {
-                    if state.output_owners.get(&epoch) == Some(&scope) {
-                        state.output_owners.remove(&epoch);
-                    }
-                }
+            if !managed
+                && let Ok(mut state) = registry().lock()
+                && state.output_owners.get(&epoch) == Some(&scope)
+            {
+                state.output_owners.remove(&epoch);
             }
             Ok(Value::Null)
         }
@@ -687,7 +715,7 @@ fn encode(data: &[u8]) -> String {
     output
 }
 fn decode(data: &str) -> Result<Vec<u8>, String> {
-    if data.is_empty() || data.len() > 131070 || data.len() % 2 != 0 {
+    if data.is_empty() || data.len() > 131070 || !data.len().is_multiple_of(2) {
         return Err("Invalid endpoint report hex length".into());
     }
     fn nibble(byte: u8) -> Option<u8> {
@@ -699,7 +727,9 @@ fn decode(data: &str) -> Result<Vec<u8>, String> {
         }
     }
     data.as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|b| {
             Ok((nibble(b[0]).ok_or("Invalid endpoint hex")? << 4)
                 | nibble(b[1]).ok_or("Invalid endpoint hex")?)

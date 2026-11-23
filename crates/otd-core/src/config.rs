@@ -3766,12 +3766,14 @@ mod tests {
         ] {
             assert!(Profile::from_toml_text(text, Path::new("unnamed.toml")).is_err());
         }
-        let mut profile = Profile::default();
-        profile.mouse_scroll_up = ButtonAction::Scroll(crate::output::buttons::ScrollAction {
-            axis: crate::output::buttons::ScrollAxis::Vertical,
-            amount: 0,
-            interval_ms: 1,
-        });
+        let profile = Profile {
+            mouse_scroll_up: ButtonAction::Scroll(crate::output::buttons::ScrollAction {
+                axis: crate::output::buttons::ScrollAxis::Vertical,
+                amount: 0,
+                interval_ms: 1,
+            }),
+            ..Profile::default()
+        };
         assert!(profile.to_toml().is_err());
         assert!(crate::pipeline::ReportPipeline::new(&profile).is_err());
     }

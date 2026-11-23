@@ -172,7 +172,7 @@ fn current_wheel_dispatch_retains_signed_deltas_and_buttons() {
             .unwrap()
             .deltas
             .as_slice()
-            .get(0)
+            .first()
             .copied(),
         Some(-2)
     );
@@ -198,7 +198,7 @@ fn current_wheel_dispatch_retains_signed_deltas_and_buttons() {
             .unwrap()
             .deltas
             .as_slice()
-            .get(0)
+            .first()
             .copied(),
         Some(-2)
     );
@@ -212,7 +212,7 @@ fn current_wheel_dispatch_retains_signed_deltas_and_buttons() {
             .unwrap()
             .deltas
             .as_slice()
-            .get(0)
+            .first()
             .copied(),
         Some(1)
     );
@@ -227,7 +227,7 @@ fn current_wheel_dispatch_retains_signed_deltas_and_buttons() {
             .unwrap()
             .deltas
             .as_slice()
-            .get(0)
+            .first()
             .copied(),
         Some(1)
     );
@@ -251,12 +251,15 @@ fn wacom_rotation_survives_the_following_position_report() {
 }
 
 #[test]
-fn bamboo_wheel_requires_its_byte_but_mouse_does_not() {
+fn bamboo_wheel_tolerates_eight_byte_reports_and_mouse_omits_it() {
     let mut decoder = parser("Wacom.Bamboo.BambooReportParser");
-    assert!(
-        decoder
-            .parse(&[2, 0, 0, 0, 0, 0, 0, 0], metadata())
-            .is_err()
+    // Upstream #5311: 8-byte Bamboo reports emit a null wheel instead of failing.
+    let (_, report) = decoder
+        .parse(&[2, 0, 0, 0, 0, 0, 0, 0], metadata())
+        .unwrap();
+    assert_eq!(
+        report.values.absolute_analog.unwrap().positions.as_slice(),
+        &[None]
     );
     let (_, report) = decoder
         .parse(&[2, 0, 0, 0, 0, 0, 0, 0, 0x85], metadata())

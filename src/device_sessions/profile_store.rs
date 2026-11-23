@@ -17,10 +17,10 @@ impl ProfileFile {
         Self::read(profile_path(&storage::data_directory()?, key)?)
     }
     pub fn read(path: PathBuf) -> Result<Self, String> {
-        if let Ok(metadata) = std::fs::metadata(&path) {
-            if metadata.len() > crate::control::MAX_PROFILE_BYTES as u64 {
-                return Err("physical profile exceeds 128 KiB".into());
-            }
+        if let Ok(metadata) = std::fs::metadata(&path)
+            && metadata.len() > crate::control::MAX_PROFILE_BYTES as u64
+        {
+            return Err("physical profile exceeds 128 KiB".into());
         }
         let snapshot = storage::capture(&path)?;
         if !snapshot.exists() {
