@@ -93,7 +93,16 @@ sealed partial class ManagedProviders : IDriver, IDeviceConfigurationProvider, I
     }
     T OwnedRead<T>(string name) { lifetime.Token.ThrowIfCancellationRequested(); return Read<T>(name); }
     public IEnumerable<TabletReference> Tablets => OwnedRead<TabletReference[]>("tablets");
-    public IEnumerable<TabletConfiguration> TabletConfigurations => OwnedRead<TabletConfiguration[]>("configurations");
+    public IEnumerable<TabletConfiguration> TabletConfigurations
+    {
+        get
+        {
+            lifetime.Token.ThrowIfCancellationRequested();
+            if (ServiceClient.Snapshot()["configurations"] is { Type: not JTokenType.Null } inline)
+                return inline.ToObject<TabletConfiguration[]>() ?? throw new InvalidOperationException("Invalid managed 'configurations' snapshot.");
+            return ServiceClient.Configurations().ToObject<TabletConfiguration[]>() ?? throw new InvalidOperationException("Invalid managed 'configurations' snapshot.");
+        }
+    }
     public IEnumerable<IDeviceHub> DeviceHubs { get { lifetime.Token.ThrowIfCancellationRequested(); return [nativeHub ??= new HostedNativeHub(this)]; } }
     public void ConnectDeviceHub<T>() where T : IDeviceHub => Core.Root.ConnectDeviceHub<T>();
     public void ConnectDeviceHub(IDeviceHub instance) => Core.Root.ConnectDeviceHub(instance);

@@ -9,10 +9,12 @@
 //! https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-cancelioex
 
 use super::{ControlHandler, MAX_FRAME_BYTES, PROTOCOL_VERSION, Reply, Request, Response};
+use std::cell::RefCell;
 use std::ffi::c_void;
 use std::io;
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{
@@ -37,7 +39,7 @@ use windows_sys::Win32::System::Pipes::{
 };
 use windows_sys::Win32::System::Threading::{
     CreateEventW, GetCurrentProcess, INFINITE, OpenProcess, OpenProcessToken,
-    PROCESS_QUERY_LIMITED_INFORMATION, WaitForMultipleObjects,
+    PROCESS_QUERY_LIMITED_INFORMATION, ResetEvent, SetEvent, WaitForMultipleObjects,
 };
 
 const POLL_MS: u32 = 50;
@@ -123,8 +125,14 @@ fn process_sid(process: HANDLE) -> io::Result<String> {
     Ok(sid)
 }
 
-fn current_sid() -> io::Result<String> {
-    process_sid(unsafe { GetCurrentProcess() })
+fn current_sid() -> io::Result<&'static str> {
+    static SID: OnceLock<String> = OnceLock::new();
+    if let Some(sid) = SID.get() {
+        return Ok(sid.as_str());
+    }
+    let sid = process_sid(unsafe { GetCurrentProcess() })?;
+    let _ = SID.set(sid);
+    Ok(SID.get().expect("cached process SID").as_str())
 }
 fn name_for_sid(sid: &str) -> String {
     versioned_name(sid, PROTOCOL_VERSION)
@@ -136,11 +144,11 @@ fn versioned_name(sid: &str, version: u32) -> String {
     name
 }
 pub(super) fn endpoint_name() -> io::Result<String> {
-    current_sid().map(|sid| name_for_sid(&sid))
+    current_sid().map(name_for_sid)
 }
 
 pub(super) fn legacy_service_present() -> io::Result<bool> {
-    let name = wide(&versioned_name(&current_sid()?, 1));
+    let name = wide(&versioned_name(current_sid()?, 1));
     if unsafe { WaitNamedPipeW(name.as_ptr(), 1) } != 0 {
         return Ok(true);
     }
@@ -332,14 +340,162 @@ enum Buffer<'a> {
     Read(&'a mut [u8]),
     Write(&'a [u8]),
 }
+
+const COMPAT_READ_BUFFER: usize = 4096;
+
+struct ReadBuffer {
+    bytes: Box<[u8; COMPAT_READ_BUFFER]>,
+    pos: usize,
+    len: usize,
+}
+impl ReadBuffer {
+    fn new() -> Self {
+        Self {
+            bytes: Box::new([0; COMPAT_READ_BUFFER]),
+            pos: 0,
+            len: 0,
+        }
+    }
+    fn clear(&mut self) {
+        self.pos = 0;
+        self.len = 0;
+    }
+}
+
+/// Reusable manual-reset Win32 event + OVERLAPPED storage for a single-threaded
+/// compatibility pipe endpoint, avoiding CreateEventW/CloseHandle per I/O call.
+struct ReusableOp {
+    event: Handle,
+    overlapped: Box<OVERLAPPED>,
+}
+impl ReusableOp {
+    fn new() -> io::Result<Self> {
+        let event = Handle::new(unsafe { CreateEventW(null(), 1, 0, null()) })?;
+        let mut overlapped: Box<OVERLAPPED> = Box::new(unsafe { zeroed() });
+        overlapped.hEvent = event.0;
+        Ok(Self { event, overlapped })
+    }
+    fn begin(&mut self, pipe: HANDLE) -> io::Result<BorrowedOp<'_>> {
+        if unsafe { ResetEvent(self.event.0) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        *self.overlapped = unsafe { zeroed() };
+        self.overlapped.hEvent = self.event.0;
+        Ok(BorrowedOp {
+            pipe,
+            event: self.event.0,
+            overlapped: &mut self.overlapped,
+            pending: false,
+        })
+    }
+}
+
+struct BorrowedOp<'a> {
+    pipe: HANDLE,
+    event: HANDLE,
+    overlapped: &'a mut OVERLAPPED,
+    pending: bool,
+}
+impl BorrowedOp<'_> {
+    fn wait_with_wake(
+        &mut self,
+        wake: Option<HANDLE>,
+        deadline: Option<Instant>,
+        stop: &AtomicBool,
+        tick: &mut impl FnMut(),
+    ) -> io::Result<u32> {
+        let handles = [self.event, wake.unwrap_or(null_mut())];
+        let count = if wake.is_some() { 2 } else { 1 };
+        loop {
+            if stop.load(Ordering::Acquire) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "control server cancelled",
+                ));
+            }
+            let wait_ms = match deadline {
+                Some(deadline) => {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "control request timed out",
+                        ));
+                    }
+                    left.as_millis().clamp(1, u128::from(INFINITE - 1)) as u32
+                }
+                None => INFINITE,
+            };
+            let wait_ms = if wake.is_some() {
+                wait_ms
+            } else {
+                wait_ms.min(POLL_MS)
+            };
+            match unsafe { WaitForMultipleObjects(count, handles.as_ptr(), 0, wait_ms) } {
+                WAIT_OBJECT_0 => {
+                    let mut bytes = 0;
+                    let ok =
+                        unsafe { GetOverlappedResult(self.pipe, self.overlapped, &mut bytes, 0) };
+                    self.pending = false;
+                    return if ok != 0 {
+                        Ok(bytes)
+                    } else {
+                        Err(io::Error::last_os_error())
+                    };
+                }
+                result if result == WAIT_OBJECT_0 + 1 || result == WAIT_TIMEOUT => tick(),
+                _ => return Err(io::Error::last_os_error()),
+            }
+        }
+    }
+}
+impl Drop for BorrowedOp<'_> {
+    fn drop(&mut self) {
+        if self.pending {
+            unsafe {
+                CancelIoEx(self.pipe, self.overlapped);
+                let mut bytes = 0;
+                GetOverlappedResult(self.pipe, self.overlapped, &mut bytes, 1);
+            }
+        }
+    }
+}
+
+/// Manual-reset Win32 event shared across idle compatibility listeners so they
+/// sleep with INFINITE until either a client connects or shutdown signals.
+pub(crate) struct StopEvent(Handle);
+unsafe impl Send for StopEvent {}
+unsafe impl Sync for StopEvent {}
+impl StopEvent {
+    pub(crate) fn new() -> io::Result<Self> {
+        Handle::new(unsafe { CreateEventW(null(), 1, 0, null()) }).map(Self)
+    }
+    pub(crate) fn signal(&self) {
+        unsafe {
+            SetEvent(self.0.0);
+        }
+    }
+}
+
 /// Exclusive per-worker compatibility connection. Reuses native cancellation
 /// draining and ACL construction, but never consumes the daemon owner's wake.
 pub(crate) struct CompatPipe {
     pipe: Handle,
+    read_op: RefCell<ReusableOp>,
+    write_op: RefCell<ReusableOp>,
+    read_buf: RefCell<ReadBuffer>,
 }
 // Each instance is moved once to its dedicated worker and never shared.
 unsafe impl Send for CompatPipe {}
 impl CompatPipe {
+    fn from_handle(pipe: Handle) -> io::Result<Self> {
+        Ok(Self {
+            pipe,
+            read_op: RefCell::new(ReusableOp::new()?),
+            write_op: RefCell::new(ReusableOp::new()?),
+            read_buf: RefCell::new(ReadBuffer::new()),
+        })
+    }
     /// A persistent same-user client used by the original-console workflow.
     /// The caller captures the native daemon PID before connecting, so a
     /// replacement or another application cannot receive its mutations.
@@ -361,9 +517,12 @@ impl CompatPipe {
         }
         let sid = current_sid()?;
         let endpoint = format!(r"\\.\pipe\{name}");
-        Ok(Self {
-            pipe: connect_named_client(&sid, &endpoint, deadline, expected_process)?,
-        })
+        Self::from_handle(connect_named_client(
+            sid,
+            &endpoint,
+            deadline,
+            expected_process,
+        )?)
     }
     pub(crate) fn instances(name: &str, count: u32) -> io::Result<Vec<Self>> {
         if name.is_empty()
@@ -384,9 +543,12 @@ impl CompatPipe {
         // Keep the first instance alive while creating all others. First-instance
         // ownership failure leaves an existing original or Rust daemon untouched.
         for index in 0..count {
-            pipes.push(Self {
-                pipe: create_named_server(&sid, &endpoint, index == 0, count)?,
-            });
+            pipes.push(Self::from_handle(create_named_server(
+                sid,
+                &endpoint,
+                index == 0,
+                count,
+            )?)?);
         }
         Ok(pipes)
     }
@@ -411,16 +573,32 @@ impl CompatPipe {
         }
         Ok(pid)
     }
-    pub(crate) fn connect(&self, stop: &AtomicBool) -> io::Result<()> {
-        let mut op = Operation::new(self.pipe.0)?;
-        op.wake_control = false;
-        if unsafe { ConnectNamedPipe(self.pipe.0, &mut *op.overlapped) } == 0 {
+    pub(crate) fn connect_with_stop(
+        &self,
+        stop: &AtomicBool,
+        stop_event: &StopEvent,
+    ) -> io::Result<()> {
+        if stop.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "control server cancelled",
+            ));
+        }
+        if let Ok(mut buf) = self.read_buf.try_borrow_mut() {
+            buf.clear();
+        }
+        let mut reusable = self
+            .read_op
+            .try_borrow_mut()
+            .map_err(|_| io::Error::other("concurrent compatibility pipe connect"))?;
+        let mut op = reusable.begin(self.pipe.0)?;
+        if unsafe { ConnectNamedPipe(self.pipe.0, op.overlapped) } == 0 {
             let error = io::Error::last_os_error();
             match error.raw_os_error().map(|value| value as u32) {
                 Some(ERROR_PIPE_CONNECTED) => {}
                 Some(ERROR_IO_PENDING) => {
                     op.pending = true;
-                    op.wait(None, stop, &mut || {})?;
+                    op.wait_with_wake(Some(stop_event.0.0), None, stop, &mut || {})?;
                 }
                 _ => return Err(error),
             }
@@ -428,6 +606,9 @@ impl CompatPipe {
         Ok(())
     }
     pub(crate) fn disconnect(&self) {
+        if let Ok(mut buf) = self.read_buf.try_borrow_mut() {
+            buf.clear();
+        }
         unsafe {
             DisconnectNamedPipe(self.pipe.0);
         }
@@ -438,6 +619,60 @@ impl CompatPipe {
             CancelIoEx(self.pipe.0, null());
         }
     }
+    fn transfer_reusable(
+        &self,
+        slot: &RefCell<ReusableOp>,
+        buffer: Buffer<'_>,
+        deadline: Instant,
+        stop: &AtomicBool,
+        tick: &mut impl FnMut(),
+    ) -> io::Result<usize> {
+        if stop.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "control server cancelled",
+            ));
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "control request timed out",
+            ));
+        }
+        let mut reusable = slot
+            .try_borrow_mut()
+            .map_err(|_| io::Error::other("concurrent compatibility pipe I/O"))?;
+        let mut op = reusable.begin(self.pipe.0)?;
+        let mut bytes = 0;
+        let ok = unsafe {
+            match buffer {
+                Buffer::Read(buffer) => ReadFile(
+                    self.pipe.0,
+                    buffer.as_mut_ptr(),
+                    buffer.len() as u32,
+                    &mut bytes,
+                    op.overlapped,
+                ),
+                Buffer::Write(buffer) => WriteFile(
+                    self.pipe.0,
+                    buffer.as_ptr(),
+                    buffer.len() as u32,
+                    &mut bytes,
+                    op.overlapped,
+                ),
+            }
+        };
+        if ok != 0 {
+            return Ok(bytes as usize);
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
+            return Err(error);
+        }
+        op.pending = true;
+        op.wait_with_wake(None, Some(deadline), stop, tick)
+            .map(|bytes| bytes as usize)
+    }
     pub(crate) fn read(
         &self,
         buffer: &mut [u8],
@@ -445,14 +680,54 @@ impl CompatPipe {
         stop: &AtomicBool,
         tick: &mut impl FnMut(),
     ) -> io::Result<usize> {
-        transfer_with_wake(
-            self.pipe.0,
-            Buffer::Read(buffer),
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        {
+            let mut buf = self
+                .read_buf
+                .try_borrow_mut()
+                .map_err(|_| io::Error::other("concurrent compatibility pipe read"))?;
+            if buf.pos < buf.len {
+                let count = buffer.len().min(buf.len - buf.pos);
+                buffer[..count].copy_from_slice(&buf.bytes[buf.pos..buf.pos + count]);
+                buf.pos += count;
+                if buf.pos == buf.len {
+                    buf.clear();
+                }
+                return Ok(count);
+            }
+        }
+        if buffer.len() >= COMPAT_READ_BUFFER {
+            return self.transfer_reusable(
+                &self.read_op,
+                Buffer::Read(buffer),
+                deadline,
+                stop,
+                tick,
+            );
+        }
+        let mut chunk = [0u8; COMPAT_READ_BUFFER];
+        let got = self.transfer_reusable(
+            &self.read_op,
+            Buffer::Read(&mut chunk),
             deadline,
             stop,
             tick,
-            false,
-        )
+        )?;
+        let count = buffer.len().min(got);
+        buffer[..count].copy_from_slice(&chunk[..count]);
+        if got > count {
+            let mut buf = self
+                .read_buf
+                .try_borrow_mut()
+                .map_err(|_| io::Error::other("concurrent compatibility pipe read"))?;
+            let extra = got - count;
+            buf.bytes[..extra].copy_from_slice(&chunk[count..got]);
+            buf.pos = 0;
+            buf.len = extra;
+        }
+        Ok(count)
     }
     pub(crate) fn write(
         &self,
@@ -461,13 +736,12 @@ impl CompatPipe {
         stop: &AtomicBool,
     ) -> io::Result<()> {
         while !buffer.is_empty() {
-            let bytes = transfer_with_wake(
-                self.pipe.0,
+            let bytes = self.transfer_reusable(
+                &self.write_op,
                 Buffer::Write(buffer),
                 deadline,
                 stop,
                 &mut || {},
-                false,
             )?;
             if bytes == 0 {
                 return Err(io::Error::new(
@@ -660,7 +934,7 @@ fn write_frame_with_wake(
 }
 
 pub(super) fn serve(handler: &mut impl ControlHandler, stop: &AtomicBool) -> io::Result<()> {
-    let pipe = create_server(&current_sid()?)?;
+    let pipe = create_server(current_sid()?)?;
     handler.ready()?;
     while !stop.load(Ordering::Acquire) {
         handler.poll();
@@ -821,7 +1095,7 @@ pub(super) fn request_owned(
             "serialized request exceeds 256 KiB",
         ));
     }
-    let pipe = connect_client(&sid, deadline, expected_process)?;
+    let pipe = connect_client(sid, deadline, expected_process)?;
     let stop = AtomicBool::new(false);
     // A client in this daemon process must not steal the control owner's wake.
     write_frame_with_wake(pipe.0, &bytes, deadline, &stop, &mut || {}, false)?;
@@ -843,7 +1117,6 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
-    use windows_sys::Win32::System::Threading::SetEvent;
 
     /// An idle server sleeps until it is woken: no timer polls its handler.
     #[test]

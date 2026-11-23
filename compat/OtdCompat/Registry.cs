@@ -52,13 +52,14 @@ sealed class RegistryGeneration : IDisposable
                     || string.Equals(Path.GetFileName(path), "OpenTabletDriver.Desktop.dll", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(Path.GetFileName(path), "OpenTabletDriver.Native.dll", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(Path.GetFileName(path), "OpenTabletDriver.dll", StringComparison.OrdinalIgnoreCase)) continue;
-                try { _ = AssemblyName.GetAssemblyName(path); }
+                string? assemblyIdentity;
+                try { assemblyIdentity = AssemblyName.GetAssemblyName(path).FullName; }
                 catch (BadImageFormatException) { SkippedNative.Add(path); continue; }
                 context ??= new PluginContext(path, inspect: true);
                 if (!Contexts.Contains(context)) Contexts.Add(context);
                 // Stream-backed loading releases installation files immediately,
                 // while this generation retains the actual managed assemblies.
-                Assembly assembly = context.LoadPluginAssembly(path);
+                Assembly assembly = context.LoadPluginAssembly(path, assemblyIdentity);
                 AddAssembly(path, assembly);
             }
         }
@@ -75,9 +76,31 @@ sealed class RegistryGeneration : IDisposable
         }
     }
     static readonly Type[] Contracts = typeof(IDriver).Assembly.GetExportedTypes().Where(type => type.IsAbstract || type.IsInterface).ToArray();
-    static bool IsPluginType(Type type) => !type.IsAbstract && !type.IsInterface && type.FullName != null
-        && Contracts.Any(contract => contract.IsAssignableFrom(type)
-            || type.GetInterfaces().Any(value => value.IsGenericType && value.GetGenericTypeDefinition() == contract));
+    static readonly HashSet<Type> GenericContractDefinitions = Contracts.Where(type => type.IsGenericTypeDefinition).ToHashSet();
+    static readonly Type[] NonGenericContracts = Contracts.Where(type => !type.IsGenericTypeDefinition).ToArray();
+    byte[]? cachedPluginTypesJson;
+    internal byte[] GetPluginTypesJson()
+    {
+        if (Volatile.Read(ref cachedPluginTypesJson) is { } cached) return cached;
+        var array = new JArray();
+        foreach (var entry in Entries) array.Add(EntryPoints.DescribeTypeSummary(entry.Type));
+        byte[] bytes = Encoding.UTF8.GetBytes(array.ToString(Formatting.None));
+        Volatile.Write(ref cachedPluginTypesJson, bytes);
+        return bytes;
+    }
+    static bool IsPluginType(Type type)
+    {
+        if (type.IsAbstract || type.IsInterface || type.FullName == null) return false;
+        foreach (Type contract in NonGenericContracts)
+            if (contract.IsAssignableFrom(type)) return true;
+        if (GenericContractDefinitions.Count != 0)
+        {
+            foreach (Type iface in type.GetInterfaces())
+                if (iface.IsGenericType && GenericContractDefinitions.Contains(iface.GetGenericTypeDefinition()))
+                    return true;
+        }
+        return false;
+    }
 }
 
 static class InstalledRegistry
@@ -202,6 +225,12 @@ static class InstalledRegistry
         }
     }
     internal static Type[] TypeSnapshot() { lock (Gate) return current?.Entries.Select(entry => entry.Type).ToArray() ?? []; }
+    internal static byte[] PluginTypesJson()
+    {
+        RegistryGeneration? snapshot;
+        lock (Gate) snapshot = current;
+        return snapshot?.GetPluginTypesJson() ?? "[]"u8.ToArray();
+    }
     internal static void Release(RegistryGeneration value) { lock (Gate) { if (--value.References == 0) value.Dispose(); } }
 }
 

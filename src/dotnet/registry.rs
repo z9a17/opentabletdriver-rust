@@ -1,6 +1,6 @@
 //! Installed managed registry and concrete report serialization. These APIs
 //! belong to setup/control/background threads, never the native report tap.
-use super::{InspectedFilter, bridge, inspect_metadata_bytes, last_error};
+use super::{InspectedFilter, RawInspectedEntry, bridge, inspected_from_entry, last_error};
 use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::path::Path;
@@ -385,7 +385,7 @@ fn publish_registry_bytes(bytes: &[u8]) -> Result<ManagedRegistryInfo, String> {
     #[derive(serde::Deserialize)]
     struct TypeInfo {
         assembly_path: std::path::PathBuf,
-        metadata: serde_json::Value,
+        metadata: RawInspectedEntry,
     }
     #[derive(serde::Deserialize)]
     struct Info {
@@ -395,12 +395,11 @@ fn publish_registry_bytes(bytes: &[u8]) -> Result<ManagedRegistryInfo, String> {
         skipped_native: Vec<String>,
     }
     let info: Info = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-    let mut plugins = Vec::with_capacity(info.types.len());
-    for item in info.types {
-        let metadata =
-            serde_json::to_vec(&vec![item.metadata]).map_err(|error| error.to_string())?;
-        plugins.extend(inspect_metadata_bytes(&metadata, &item.assembly_path)?);
-    }
+    let plugins: Vec<InspectedFilter> = info
+        .types
+        .into_iter()
+        .map(|item| inspected_from_entry(item.metadata, &item.assembly_path))
+        .collect();
     let info = ManagedRegistryInfo {
         generation: info.generation,
         assemblies: info.assemblies,

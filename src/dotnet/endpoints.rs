@@ -9,6 +9,7 @@ use otd_core::tablets::{DeviceIdentifier, TabletConfiguration};
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 type Create = unsafe extern "C" fn(*const u8, usize) -> *mut c_void;
@@ -74,15 +75,10 @@ fn next_deadline(next: i64, error: impl FnOnce() -> String) -> io::Result<Option
         _ => Err(io::Error::other(error())),
     }
 }
-fn envelope(
-    config: &PluginConfig,
-    profile: &Profile,
-    tablet: &TabletConfiguration,
-    owner: u32,
-    identifiers: Option<&[DeviceIdentifier]>,
-) -> Result<serde_json::Value, String> {
-    config.validate()?;
-    let keys: serde_json::Map<String, serde_json::Value> = if cfg!(windows) {
+static HOST_KEYS_CACHED: AtomicBool = AtomicBool::new(false);
+
+fn host_keys_map() -> serde_json::Map<String, serde_json::Value> {
+    if cfg!(windows) {
         otd_core::keys::windows_names()
             .map(|(name, code)| {
                 (
@@ -122,13 +118,34 @@ fn envelope(
             .filter(|(_, key)| crate::action_output::supports(Action::Key(*key)))
             .map(|(name, usage)| (name.into(), serde_json::json!(usage.usage())))
             .collect()
-    };
-    Ok(
-        serde_json::json!({ "assembly_path": config.path.canonicalize().map_err(|error| format!("{}: {error}", config.path.display()))?,
-        "type_name": config.type_name, "settings": serde_json::from_str::<serde_json::Value>(&config.settings_json).map_err(|error| error.to_string())?,
-        "tablet": tablet, "identifiers": identifiers, "source_session":super::source_session_json(), "pen": profile.output == OutputKind::Pen,
-        "rotation_supported": profile.output == OutputKind::Pen || cfg!(target_os = "macos"), "relative": profile.relative.is_some(), "owner": owner, "keys": keys }),
-    )
+    }
+}
+
+fn envelope(
+    config: &PluginConfig,
+    profile: &Profile,
+    tablet: &TabletConfiguration,
+    owner: u32,
+    identifiers: Option<&[DeviceIdentifier]>,
+) -> Result<serde_json::Value, String> {
+    config.validate()?;
+    let mut value = serde_json::json!({
+        "assembly_path": config.path.canonicalize().map_err(|error| format!("{}: {error}", config.path.display()))?,
+        "type_name": config.type_name,
+        "settings": serde_json::from_str::<serde_json::Value>(&config.settings_json).map_err(|error| error.to_string())?,
+        "tablet": tablet,
+        "identifiers": identifiers,
+        "source_session": super::source_session_json(),
+        "pen": profile.output == OutputKind::Pen,
+        "rotation_supported": profile.output == OutputKind::Pen || cfg!(target_os = "macos"),
+        "relative": profile.relative.is_some(),
+        "owner": owner,
+    });
+    if !HOST_KEYS_CACHED.load(Ordering::Acquire) {
+        value["keys"] = serde_json::Value::Object(host_keys_map());
+        value["cache_keys"] = serde_json::Value::Bool(true);
+    }
+    Ok(value)
 }
 struct Endpoint {
     context: *mut c_void,
@@ -150,6 +167,13 @@ impl Endpoint {
         let context = unsafe { create(encoded.as_ptr(), encoded.len()) };
         if context.is_null() {
             return Err(super::last_error());
+        }
+        if config
+            .get("cache_keys")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            HOST_KEYS_CACHED.store(true, Ordering::Release);
         }
         Ok(Self {
             context,

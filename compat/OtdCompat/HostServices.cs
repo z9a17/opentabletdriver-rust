@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Numerics;
 using Newtonsoft.Json.Linq;
 using System.Reflection;
@@ -113,25 +114,60 @@ sealed class HostServices(Func<ITimer>? timer = null, Func<Type, object?>? input
 unsafe sealed class WindowsScreen : IVirtualScreen
 {
     readonly record struct Monitor(float Width, float Height, Vector2 Position, bool Primary);
+    readonly record struct MetricsKey(int X, int Y, int Width, int Height, int Count);
     sealed record Display(int Index, float Width, float Height, Vector2 Position) : IDisplay;
+    static readonly long MetricsCheckInterval = Stopwatch.Frequency / 4; // 250 ms
+    readonly object cacheGate = new();
+    MetricsKey cachedMetrics;
+    float cachedWidth, cachedHeight;
+    long lastChecked;
     public int Index => 0;
     public Vector2 Position { get; }
     public IEnumerable<IDisplay> Displays { get; }
-    public float Width => Extent(ReadMonitors(), horizontal: true);
-    public float Height => Extent(ReadMonitors(), horizontal: false);
+    public float Width { get { EnsureFreshDimensions(); return cachedWidth; } }
+    public float Height { get { EnsureFreshDimensions(); return cachedHeight; } }
 
     internal WindowsScreen()
     {
         List<Monitor> monitors = ReadMonitors();
+        cachedMetrics = ReadMetrics();
+        cachedWidth = Extent(monitors, horizontal: true);
+        cachedHeight = Extent(monitors, horizontal: false);
+        lastChecked = Stopwatch.GetTimestamp();
         Monitor primary = monitors.FirstOrDefault(monitor => monitor.Primary);
         Position = primary.Position - new Vector2(monitors.Min(m => m.Position.X), monitors.Min(m => m.Position.Y));
         Displays = new IDisplay[] { this }.Concat(monitors.Select((monitor, index) =>
             (IDisplay)new Display(index + 1, monitor.Width, monitor.Height, monitor.Position))).ToArray();
     }
 
+    void EnsureFreshDimensions()
+    {
+        long now = Stopwatch.GetTimestamp();
+        if (now - Volatile.Read(ref lastChecked) < MetricsCheckInterval) return;
+        lock (cacheGate)
+        {
+            if (now - lastChecked < MetricsCheckInterval) return;
+            MetricsKey current = ReadMetrics();
+            if (current != cachedMetrics)
+            {
+                List<Monitor> monitors = ReadMonitors();
+                cachedWidth = Extent(monitors, horizontal: true);
+                cachedHeight = Extent(monitors, horizontal: false);
+                cachedMetrics = current;
+            }
+            Volatile.Write(ref lastChecked, now);
+        }
+    }
+
+    static MetricsKey ReadMetrics() => new(
+        GetSystemMetrics(76), GetSystemMetrics(77), GetSystemMetrics(78), GetSystemMetrics(79), GetSystemMetrics(80));
+
     static float Extent(List<Monitor> monitors, bool horizontal) => horizontal
         ? monitors.Max(m => m.Position.X + m.Width) - monitors.Min(m => m.Position.X)
         : monitors.Max(m => m.Position.Y + m.Height) - monitors.Min(m => m.Position.Y);
+
+    [DllImport("user32.dll")]
+    static extern int GetSystemMetrics(int index);
 
     [StructLayout(LayoutKind.Sequential)]
     struct Rect { public int Left, Top, Right, Bottom; }

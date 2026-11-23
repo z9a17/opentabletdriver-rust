@@ -29,7 +29,7 @@ unsafe sealed class CommandQueue : IDisposable
     readonly ManagedCommand[] entries = new ManagedCommand[256];
     readonly object gate = new();
     readonly int ownerThread = Environment.CurrentManagedThreadId;
-    int head, count;
+    int head, count, pendingSignal;
     bool closed;
     string? failure;
     delegate* unmanaged[Cdecl]<nint, void> wake;
@@ -49,34 +49,68 @@ unsafe sealed class CommandQueue : IDisposable
         }
     }
     public uint Owner { get; set; }
-    public bool Pending { get { lock (gate) return count != 0 || failure != null; } }
-    public int PendingCount { get { lock (gate) return failure != null ? Math.Max(1, count) : count; } }
+    public bool Pending => Volatile.Read(ref pendingSignal) != 0;
+    public int PendingCount
+    {
+        get
+        {
+            if (Volatile.Read(ref pendingSignal) == 0) return 0;
+            lock (gate) return failure != null ? Math.Max(1, count) : count;
+        }
+    }
     public void Add(ManagedCommand command)
     {
         lock (gate)
         {
             ObjectDisposedException.ThrowIf(closed, this);
             if (failure != null) throw new InvalidOperationException(failure);
-            if (count == entries.Length) { failure = "Managed input service queue exceeded 256 commands."; WakeProducer(); throw new InvalidOperationException(failure); }
+            if (count == entries.Length) { failure = "Managed input service queue exceeded 256 commands."; Volatile.Write(ref pendingSignal, 1); WakeProducer(); throw new InvalidOperationException(failure); }
             command.Owner = Owner;
             entries[(head + count++) % entries.Length] = command;
+            Volatile.Write(ref pendingSignal, 1);
             WakeProducer();
         }
     }
     public bool Take(out ManagedCommand command)
     {
+        if (Volatile.Read(ref pendingSignal) == 0) { command = default; return false; }
         lock (gate)
         {
             if (failure != null)
             {
                 string error = failure; failure = null; count = 0; closed = true;
+                Volatile.Write(ref pendingSignal, 0);
                 throw new InvalidOperationException(error);
             }
-            if (count == 0) { command = default; return false; }
-            command = entries[head]; head = (head + 1) % entries.Length; count--; return true;
+            if (count == 0) { Volatile.Write(ref pendingSignal, 0); command = default; return false; }
+            command = entries[head]; head = (head + 1) % entries.Length; count--;
+            if (count == 0) Volatile.Write(ref pendingSignal, 0);
+            return true;
         }
     }
-    public void Dispose() { lock (gate) { closed = true; count = 0; wake = null; wakeScope = 0; } }
+    public int TakeBatch(Span<ManagedCommand> destination)
+    {
+        if (destination.IsEmpty || Volatile.Read(ref pendingSignal) == 0) return 0;
+        lock (gate)
+        {
+            if (failure != null)
+            {
+                string error = failure; failure = null; count = 0; closed = true;
+                Volatile.Write(ref pendingSignal, 0);
+                throw new InvalidOperationException(error);
+            }
+            int take = Math.Min(count, destination.Length);
+            if (take == 0) { Volatile.Write(ref pendingSignal, 0); return 0; }
+            int first = Math.Min(take, entries.Length - head);
+            entries.AsSpan(head, first).CopyTo(destination);
+            if (take > first) entries.AsSpan(0, take - first).CopyTo(destination.Slice(first));
+            head = (head + take) % entries.Length;
+            count -= take;
+            if (count == 0) Volatile.Write(ref pendingSignal, 0);
+            return take;
+        }
+    }
+    public void Dispose() { lock (gate) { closed = true; count = 0; wake = null; wakeScope = 0; Volatile.Write(ref pendingSignal, 0); } }
 }
 
 // Services target the already prepared native session, never an independent
@@ -137,9 +171,34 @@ class SessionPointer(CommandQueue queue, bool relative, bool pen) : IAbsolutePoi
 sealed class RotatingSessionPointer(CommandQueue queue, bool relative, bool pen)
     : SessionPointer(queue, relative, pen), IRotationHandler { }
 
-sealed class SessionKeyboard(CommandQueue queue, JObject keys) : IVirtualKeyboard
+sealed class SessionKeyboard : IVirtualKeyboard
 {
-    readonly Dictionary<string, uint> names = keys.Properties().ToDictionary(property => property.Name, property => property.Value.Value<uint>());
+    static Dictionary<string, uint>? cachedHostKeys;
+    readonly CommandQueue queue;
+    readonly Dictionary<string, uint> names;
+    public SessionKeyboard(CommandQueue queue, JObject? keys, bool cacheKeys)
+    {
+        this.queue = queue;
+        if (keys != null)
+        {
+            if (cacheKeys && Volatile.Read(ref cachedHostKeys) is { } existing)
+            {
+                names = existing;
+            }
+            else
+            {
+                var parsed = new Dictionary<string, uint>(keys.Count, StringComparer.Ordinal);
+                foreach (var property in keys.Properties())
+                    parsed[property.Name] = property.Value.Value<uint>();
+                if (cacheKeys) Volatile.Write(ref cachedHostKeys, parsed);
+                names = parsed;
+            }
+        }
+        else
+        {
+            names = Volatile.Read(ref cachedHostKeys) ?? new Dictionary<string, uint>(StringComparer.Ordinal);
+        }
+    }
     public IEnumerable<string> SupportedKeys => names.Keys;
     public void Press(string key) => Key(key, true);
     public void Release(string key) => Key(key, false);
@@ -179,7 +238,7 @@ abstract class EndpointInstance : IDisposable
         bool pen = config.Value<bool>("pen"), isRelative = config.Value<bool>("relative");
         Pointer = (config.Value<bool?>("rotation_supported") ?? pen)
             ? new RotatingSessionPointer(Queue, isRelative, pen) : new SessionPointer(Queue, isRelative, pen);
-        var keyboard = new SessionKeyboard(Queue, config["keys"] as JObject ?? new JObject());
+        var keyboard = new SessionKeyboard(Queue, config["keys"] as JObject, config.Value<bool>("cache_keys"));
         object? actualPointer = null;
         if (config.Value<ulong?>("output_context") is { } handle)
         {
@@ -369,9 +428,7 @@ public static unsafe partial class EntryPoints
         {
             if (commands == null || capacity > 256) throw new ArgumentException("Invalid service command buffer.");
             var endpoint = (EndpointInstance)GCHandle.FromIntPtr(context).Target!;
-            int count = 0;
-            while (count < capacity && endpoint.Queue.Take(out var command)) commands[count++] = command;
-            return count;
+            return endpoint.Queue.TakeBatch(new Span<ManagedCommand>(commands, (int)capacity));
         }
         catch (Exception error) { lastError = error.GetBaseException().Message; return -1; }
     }

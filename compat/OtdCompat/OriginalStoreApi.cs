@@ -23,17 +23,8 @@ public static unsafe partial class EntryPoints
     public static int GetPluginTypes(byte* output, int capacity, int refresh)
     {
         try {
-            if (refresh != 0 || originalTypesJson == null) {
-                var entries = InstalledRegistry.TypeSnapshot().Select(type => {
-                    JObject description = JObject.FromObject(DescribeType(type));
-                    return new JObject { ["path"] = type.FullName,
-                        ["name"] = description.Value<string>("display_name") ?? type.FullName, ["category"] = description["kind"],
-                        ["supported"] = description["supported"],
-                        ["absolute_output"] = description["absolute_output"],
-                        ["relative_output"] = description["relative_output"] };
-                });
-                originalTypesJson = Encoding.UTF8.GetBytes(new JArray(entries).ToString(Formatting.None));
-            }
+            if (refresh != 0 || originalTypesJson == null)
+                originalTypesJson = InstalledRegistry.PluginTypesJson();
             return CopyOriginal(originalTypesJson, output, capacity);
         } catch (Exception error) { originalTypesJson = null; lastError = error.GetBaseException().Message; return -1; }
     }
@@ -51,8 +42,8 @@ public static unsafe partial class EntryPoints
                 object? instance = null;
                 using var services = new HostServices();
                 try {
-                    JObject metadata = JObject.FromObject(DescribeType(selected.Type));
-                    if (metadata.Value<string>("kind") != category || metadata.Value<bool>("supported") != true)
+                    var (kind, supported, _, _) = ClassifyType(selected.Type);
+                    if (kind != category || !supported)
                         throw new ArgumentException($"'{name}' is not a supported '{category}' plugin.");
                     instance = HostServices.Construct(selected.Type) ?? throw new InvalidOperationException("Plugin construction returned null.");
                     services.Inject(selected.Type, instance);
