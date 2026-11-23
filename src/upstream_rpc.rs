@@ -214,6 +214,7 @@ impl Listener {
                 std::thread::Builder::new()
                     .name(format!("upstream-rpc-{index}"))
                     .spawn(move || {
+                        crate::priority::demote_background_thread();
                         while !stop.load(Ordering::Acquire) {
                             if pipe.connect_with_stop(&stop, &stop_event).is_err() {
                                 pipe.disconnect();

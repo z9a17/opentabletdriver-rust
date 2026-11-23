@@ -351,6 +351,8 @@ pub struct Publisher {
     engine: Arc<Engine>,
 }
 fn run_lane(worker: Arc<Engine>, backend: Arc<dyn Backend>, lane: usize) {
+    #[cfg(windows)]
+    crate::priority::demote_background_thread();
     loop {
         backend.maintain(lane);
         let deadline = backend.maintenance_deadline(lane);

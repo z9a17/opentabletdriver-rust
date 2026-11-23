@@ -301,6 +301,7 @@ impl NativeBackend {
         if let Ok(observer) = std::thread::Builder::new()
             .name("managed-service-state".into())
             .spawn(move || {
+                crate::priority::demote_background_thread();
                 while !observer_stop.load(Ordering::Acquire) && !cancelled.load(Ordering::Acquire) {
                     if !observer_backend.activated.load(Ordering::Acquire) {
                         std::thread::park();
