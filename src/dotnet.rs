@@ -21,11 +21,17 @@ mod graph;
 mod parser;
 #[path = "dotnet/registry.rs"]
 mod registry;
-pub use parser::{RuntimeDecoder, installed_report_parser};
-pub use registry::{HostedRpc, construct_plugin_store, get_plugin_types};
+#[allow(unused_imports)]
+// Re-exported by `otd-platform` for Unix crates (`otd-linux` / `otd-macos`).
+pub use parser::{ManagedReportParser, RuntimeDecoder, installed_report_parser};
+#[allow(unused_imports)]
 pub use registry::{
-    ManagedDebugDecoder, ManagedRegistryInfo, drain_managed_retirements, mutate_installed_plugins,
-    registry_snapshot, reload_installed_plugins,
+    HostedRpc, construct_plugin_store, get_plugin_types, original_display_snapshot,
+};
+#[allow(unused_imports)]
+pub use registry::{
+    ManagedDebugDecoder, ManagedDebugReport, ManagedRegistryInfo, drain_managed_retirements,
+    known_report_parser, mutate_installed_plugins, registry_snapshot, reload_installed_plugins,
 };
 pub(crate) fn source_session_json() -> Option<serde_json::Value> {
     #[cfg(windows)]
