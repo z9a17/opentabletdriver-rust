@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use crate::actions::Action;
 use crate::config::{ContactPolicy, OutputKind, Profile};
-use crate::decoders::DecodedInput;
+use crate::decoders::{CompactPen, DecodedInput};
 use crate::mapping::Mapper;
 use crate::output::buttons::{ActionSink, ButtonOutput};
 use crate::output::pen::{PenOutput, PenSample, PenSink};
@@ -23,6 +23,14 @@ pub struct DispatchStats {
     pub reports: u64,
     /// Acknowledged sink packets; a shared sink may coalesce before OS output.
     pub packets: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FastMode {
+    Absolute,
+    Relative,
+    Pen,
+    Full,
 }
 
 pub struct ReportPipeline {
@@ -46,13 +54,16 @@ pub struct ReportPipeline {
     pen_requested: bool,
     pen: Option<PenOutput>,
     max_pressure: u32,
-    tablet_spec: crate::spec::TabletSpec,
+    inv_max_pressure: f32,
+    inv_rotation_span: Option<(f64, f64)>,
     is_eraser: bool,
     desired_contact: bool,
     faulted: bool,
     physical_present: bool,
     managed_input: bool,
     managed_graph: bool,
+    fast_mode: FastMode,
+    managed_pen_actions_mask: u8,
     managed_pen_holds: Option<Box<[(u32, u8); 128]>>,
 }
 
@@ -86,7 +97,13 @@ impl ReportPipeline {
                 *percent = None;
             }
         }
-        Ok(Self {
+        let has_managed_slots = ButtonOutput::has_managed_slots(profile);
+        let max_pressure = u32::from(profile.tablet.max_pressure);
+        let inv_rotation_span = profile.tablet.rotation_range.and_then(|(min, max)| {
+            let span = f64::from(max) - f64::from(min);
+            (span > 0.0).then_some((f64::from(min), 1.0 / span))
+        });
+        let mut pipeline = Self {
             contact,
             filters: profile
                 .radial_follow
@@ -111,22 +128,75 @@ impl ReportPipeline {
             controls: profile.tablet.controls,
             pen_requested,
             pen: None,
-            max_pressure: u32::from(profile.tablet.max_pressure),
-            tablet_spec: profile.tablet,
+            max_pressure,
+            inv_max_pressure: 1.0 / max_pressure.max(1) as f32,
+            inv_rotation_span,
             is_eraser: false,
             desired_contact: false,
             faulted: false,
             physical_present: false,
-            managed_input: !ButtonOutput::managed_slots(profile).is_empty(),
+            managed_input: has_managed_slots,
             managed_graph: false,
+            fast_mode: FastMode::Full,
+            managed_pen_actions_mask: 0,
             managed_pen_holds: (profile.output == OutputKind::Pen
                 && (profile
                     .managed_output
                     .as_ref()
                     .is_some_and(|config| config.enabled)
-                    || !ButtonOutput::managed_slots(profile).is_empty()))
-            .then(|| Box::new([(0, 0); 128])),
-        })
+                    || has_managed_slots))
+                .then(|| Box::new([(0, 0); 128])),
+        };
+        pipeline.refresh_fast_mode();
+        Ok(pipeline)
+    }
+
+    fn refresh_fast_mode(&mut self) {
+        self.fast_mode = if self.managed_input
+            || self.managed_tip_binding.is_some()
+            || self.managed_eraser_binding.is_some()
+            || self.buttons.observes_pointer()
+        {
+            FastMode::Full
+        } else if self.pen.is_some() {
+            FastMode::Pen
+        } else if self.pen_requested {
+            FastMode::Full
+        } else if self.relative.is_some() {
+            FastMode::Relative
+        } else {
+            FastMode::Absolute
+        };
+    }
+
+    #[inline]
+    fn normalize_rotation(&self, raw: i32) -> Option<f32> {
+        let (min, inv_span) = self.inv_rotation_span?;
+        Some(((f64::from(raw) - min) * inv_span).clamp(0.0, 1.0) as f32)
+    }
+
+    #[inline]
+    pub(crate) fn can_use_compact_pen(&self, plugins: &impl Filters) -> bool {
+        self.fast_mode != FastMode::Full
+            && !self.faulted
+            && !self.buttons.is_unsettled()
+            && !self.buttons.is_inhibition_active()
+            && self.managed_pen_actions_mask == 0
+            && plugins.is_passthrough()
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn fault_and_release(
+        &mut self,
+        error: io::Error,
+        send: &mut impl FnMut(MousePacket) -> io::Result<()>,
+    ) -> io::Error {
+        self.faulted = true;
+        if self.release_all(&mut *send).is_ok() {
+            self.faulted = false;
+        }
+        error
     }
 
     pub fn is_relative(&self) -> bool {
@@ -153,6 +223,7 @@ impl ReportPipeline {
         // storage needed by a later managed PenAction belongs to setup too.
         self.prepare_managed_pen_owners();
         self.pen = Some(PenOutput::new(sink, self.max_pressure));
+        self.refresh_fast_mode();
     }
 
     fn prepare_managed_pen_owners(&mut self) {
@@ -182,6 +253,7 @@ impl ReportPipeline {
         rejected.extend(buttons.set_mouse(&self.mouse_buttons));
         rejected.extend(buttons.set_mouse_scroll(&self.mouse_scroll_up, &self.mouse_scroll_down));
         self.buttons = buttons;
+        self.refresh_fast_mode();
         rejected
     }
 
@@ -233,7 +305,7 @@ impl ReportPipeline {
         now: Instant,
         mapper: Option<Mapper>,
         plugins: &mut impl Filters,
-        send: impl FnMut(MousePacket) -> io::Result<()>,
+        mut send: impl FnMut(MousePacket) -> io::Result<()>,
     ) -> io::Result<DispatchStats> {
         match input {
             DecodedInput::Pen(decoded) => self.process_pen(
@@ -245,19 +317,92 @@ impl ReportPipeline {
                 plugins,
                 send,
             ),
-            DecodedInput::Report { kind, report, pen } => self.process_report(
-                DispatchInput {
-                    kind,
-                    values: report.values,
-                    raw: report.raw,
-                    pen,
-                    now,
-                },
-                mapper,
-                plugins,
-                send,
-            ),
+            DecodedInput::Report { kind, report, pen } => {
+                if self.can_use_compact_pen(plugins)
+                    && let Some(compact) = Self::compact_from_values(kind, &report, pen)
+                {
+                    return self.process_compact_pen(compact, now, mapper.as_ref(), &mut send);
+                }
+                self.process_report(
+                    DispatchInput {
+                        kind,
+                        values: report.values,
+                        raw: report.raw,
+                        pen,
+                        now,
+                    },
+                    mapper,
+                    plugins,
+                    send,
+                )
+            }
         }
+    }
+
+    #[inline]
+    fn compact_from_values(
+        kind: ReportKind,
+        report: &crate::reports::ReportEnvelope<'_>,
+        pen: Option<PenReport>,
+    ) -> Option<CompactPen> {
+        let v = &report.values;
+        if v.aux_buttons.is_some()
+            || v.mouse_buttons.is_some()
+            || v.mouse_scroll.is_some()
+            || v.absolute_analog.is_some()
+            || v.relative_analog.is_some()
+            || v.wheel_buttons.is_some()
+            || v.touches.is_some()
+            || v.managed_report.is_some()
+        {
+            return None;
+        }
+        let physical_loss =
+            kind == ReportKind::OutOfRange || pen.is_some_and(|pen| !pen.in_range && !pen.sense);
+        if physical_loss {
+            let (has_position, pos_f32) = match v.position {
+                Some(pos) => (true, pos),
+                None => (false, [0.0, 0.0]),
+            };
+            return Some(CompactPen {
+                x: 0,
+                y: 0,
+                position_exact: false,
+                pos_f32,
+                has_position,
+                pressure: v.pressure.unwrap_or(0),
+                pen_buttons: v.pen_buttons,
+                tilt: v.tilt,
+                eraser: v
+                    .eraser
+                    .or_else(|| v.tool.map(|tool| tool.tool == ToolType::Eraser)),
+                rotation: v.rotation,
+                tip_switch: v.tip_switch,
+                physical_loss: true,
+            });
+        }
+        let pos = v.position?;
+        let pressure = v.pressure?;
+        let (x, y, position_exact) = match pen {
+            Some(p) if pos == [p.x as f32, p.y as f32] => (p.x, p.y, true),
+            _ => (0, 0, false),
+        };
+        Some(CompactPen {
+            x,
+            y,
+            position_exact,
+            pos_f32: pos,
+            has_position: true,
+            pressure,
+            pen_buttons: v.pen_buttons,
+            tilt: v.tilt,
+            eraser: v
+                .eraser
+                .or_else(|| v.tool.map(|tool| tool.tool == ToolType::Eraser)),
+            rotation: v.rotation,
+            tip_switch: v.tip_switch,
+            physical_loss: false,
+        })
     }
 
     /// `process_with_raw` with an IntuosV2 decoder's pen buttons. Generic
@@ -273,21 +418,26 @@ impl ReportPipeline {
         plugins: &mut impl Filters,
         mut send: impl FnMut(MousePacket) -> io::Result<()>,
     ) -> io::Result<DispatchStats> {
-        // Fast path for native absolute mouse profiles without DLL plugins,
-        // managed bindings, or pointer-attribute observers: avoids constructing
-        // and copying the full multi-capability ReportValues envelope per report.
-        if !self.faulted
-            && !self.managed_input
-            && self.pen.is_none()
-            && self.relative.is_none()
-            && self.managed_tip_binding.is_none()
-            && self.managed_eraser_binding.is_none()
-            && !self.buttons.observes_pointer()
-            && !self.buttons.is_unsettled()
-            && !self.buttons.is_inhibition_active()
-            && plugins.is_passthrough()
-        {
-            return self.process_pen_native_absolute(pen, buttons, now, mapper, &mut send);
+        // Fast path for native absolute mouse, relative mouse, and pen output
+        // profiles without DLL plugins, managed bindings, or pointer-attribute
+        // observers: avoids constructing and copying the full ~1 KiB
+        // ReportValues envelope per report.
+        if self.can_use_compact_pen(plugins) {
+            let compact = CompactPen {
+                x: pen.x,
+                y: pen.y,
+                position_exact: true,
+                pos_f32: [pen.x as f32, pen.y as f32],
+                has_position: true,
+                pressure: u32::from(pen.pressure),
+                pen_buttons: buttons,
+                tilt: Some([f32::from(pen.tilt[0]), f32::from(pen.tilt[1])]),
+                eraser: Some(pen.eraser),
+                rotation: pen.rotation.map(i32::from),
+                tip_switch: Some(pen.tip_switch),
+                physical_loss: !pen.in_range && !pen.sense,
+            };
+            return self.process_compact_pen(compact, now, mapper.as_ref(), &mut send);
         }
         // Upstream IntuosV2Report always implements ITabletReport, including
         // when proximity flags clear. Filters must still consume its position.
@@ -320,16 +470,84 @@ impl ReportPipeline {
     }
 
     #[inline]
-    fn process_pen_native_absolute(
+    pub(crate) fn process_compact_pen(
         &mut self,
-        pen: PenReport,
-        buttons: Option<Buttons>,
+        pen: CompactPen,
         now: Instant,
-        mapper: Option<Mapper>,
+        mapper: Option<&Mapper>,
+        send: &mut impl FnMut(MousePacket) -> io::Result<()>,
+    ) -> io::Result<DispatchStats> {
+        match self.fast_mode {
+            FastMode::Absolute => self.process_compact_absolute(pen, now, mapper, send),
+            FastMode::Relative => self.process_compact_relative(pen, now, send),
+            FastMode::Pen => self.process_compact_pen_output(pen, now, mapper, send),
+            FastMode::Full => unreachable!("can_use_compact_pen excludes FastMode::Full"),
+        }
+    }
+
+    #[inline]
+    fn compute_contact(&mut self, pen: &CompactPen) -> bool {
+        if let Some(eraser) = pen.eraser {
+            self.is_eraser = eraser;
+        }
+        let policy = self.contact;
+        let (enabled, threshold) = if self.is_eraser {
+            (policy.eraser_enabled, policy.eraser_threshold_raw)
+        } else {
+            (policy.tip_enabled, policy.tip_threshold_raw)
+        };
+        self.desired_contact = enabled
+            && threshold.map_or_else(
+                || pen.tip_switch.unwrap_or(pen.pressure != 0),
+                |threshold| pen.pressure >= u32::from(threshold),
+            );
+        self.desired_contact
+    }
+
+    #[inline]
+    fn apply_compact_pen_buttons(
+        &mut self,
+        pen: &CompactPen,
+        now: Instant,
+        send: &mut impl FnMut(MousePacket) -> io::Result<()>,
+    ) -> io::Result<()> {
+        if self.buttons.has_pen_bindings() {
+            let raw_bits = pen.pen_buttons.map_or(0, Buttons::bits);
+            if raw_bits != 0 || self.buttons.pen_held() != 0 {
+                self.buttons.set_time(now);
+                let drag_pressure = if self.contact.drag_only {
+                    self.contact.drag_pressure(
+                        Some(pen.pressure),
+                        self.max_pressure,
+                        self.is_eraser,
+                    )
+                } else {
+                    Some(pen.pressure)
+                };
+                let wanted = self.buttons.wanted_with_pressure(
+                    pen.pen_buttons,
+                    true,
+                    drag_pressure,
+                    self.contact.drag_only,
+                );
+                if let Err(error) = self.buttons.apply(wanted) {
+                    return Err(self.fault_and_release(error, send));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn process_compact_absolute(
+        &mut self,
+        pen: CompactPen,
+        now: Instant,
+        mapper: Option<&Mapper>,
         send: &mut impl FnMut(MousePacket) -> io::Result<()>,
     ) -> io::Result<DispatchStats> {
         self.managed_graph = false;
-        let physical_loss = !pen.in_range && !pen.sense;
+        let physical_loss = pen.physical_loss;
         self.physical_present = !physical_loss;
         let Some(mapper) = mapper else {
             let packets = u64::from(self.release_all(&mut *send)?);
@@ -338,7 +556,14 @@ impl ReportPipeline {
                 packets,
             });
         };
-        let mapped = if self.filters.is_empty() {
+        if !pen.has_position {
+            let packets = u64::from(self.release_all(&mut *send)?);
+            return Ok(DispatchStats {
+                reports: 1,
+                packets,
+            });
+        }
+        let mapped = if self.filters.is_empty() && pen.position_exact {
             if physical_loss {
                 let packets = u64::from(self.release_all(&mut *send)?);
                 return Ok(DispatchStats {
@@ -346,26 +571,22 @@ impl ReportPipeline {
                     packets,
                 });
             }
-            let Some(mapped) = mapper.map(pen.x, pen.y) else {
+            let Some(mapped) = mapper.map_ref(pen.x, pen.y) else {
                 return Ok(DispatchStats::default());
             };
             mapped
         } else {
-            let (mut fx, mut fy) = (pen.x as f32, pen.y as f32);
+            let (mut fx, mut fy) = (pen.pos_f32[0], pen.pos_f32[1]);
             for filter in &mut self.filters {
                 (fx, fy) = filter.filter_raw_at(fx, fy, now);
             }
             if !fx.is_finite() || !fy.is_finite() {
-                self.faulted = true;
-                if self.release_all(&mut *send).is_ok() {
-                    self.faulted = false;
-                }
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "nonfinite filter position",
+                return Err(self.fault_and_release(
+                    io::Error::new(io::ErrorKind::InvalidData, "nonfinite filter position"),
+                    send,
                 ));
             }
-            let Some((px, py)) = mapper.map_filtered_pixels(fx, fy) else {
+            let Some((px, py)) = mapper.map_filtered_finite_pixels_ref(fx, fy) else {
                 if physical_loss {
                     let packets = u64::from(self.release_all(&mut *send)?);
                     return Ok(DispatchStats {
@@ -376,13 +597,12 @@ impl ReportPipeline {
                 return Ok(DispatchStats::default());
             };
             if !(px as f32).is_finite() || !(py as f32).is_finite() {
-                self.faulted = true;
-                if self.release_all(&mut *send).is_ok() {
-                    self.faulted = false;
-                }
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "transformed position exceeds finite range",
+                return Err(self.fault_and_release(
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "transformed position exceeds finite range",
+                    ),
+                    send,
                 ));
             }
             if physical_loss {
@@ -392,55 +612,244 @@ impl ReportPipeline {
                     packets,
                 });
             }
-            let Some(mapped) = mapper.normalize_pixels(px, py) else {
-                return Ok(DispatchStats::default());
-            };
-            mapped
+            mapper.normalize_finite_pixels_ref(px, py)
         };
-        self.is_eraser = pen.eraser;
-        let pressure = u32::from(pen.pressure);
-        let policy = self.contact;
-        let (enabled, threshold) = if self.is_eraser {
-            (policy.eraser_enabled, policy.eraser_threshold_raw)
-        } else {
-            (policy.tip_enabled, policy.tip_threshold_raw)
-        };
-        self.desired_contact = enabled
-            && threshold.map_or(pen.tip_switch, |threshold| pressure >= u32::from(threshold));
-        let emitted = match self
-            .output
-            .emit_mapped(Some(mapped), self.desired_contact, &mut *send)
-        {
+        let contact = self.compute_contact(&pen);
+        let emitted = match self.output.emit_mapped(Some(mapped), contact, &mut *send) {
             Ok(sent) => sent,
-            Err(error) => {
-                self.faulted = true;
-                if self.release_all(&mut *send).is_ok() {
-                    self.faulted = false;
+            Err(error) => return Err(self.fault_and_release(error, send)),
+        };
+        self.apply_compact_pen_buttons(&pen, now, send)?;
+        Ok(DispatchStats {
+            reports: 1,
+            packets: u64::from(emitted),
+        })
+    }
+
+    #[inline]
+    fn process_compact_relative(
+        &mut self,
+        pen: CompactPen,
+        now: Instant,
+        send: &mut impl FnMut(MousePacket) -> io::Result<()>,
+    ) -> io::Result<DispatchStats> {
+        self.managed_graph = false;
+        let physical_loss = pen.physical_loss;
+        if physical_loss {
+            self.physical_present = false;
+            if let Some(relative) = &mut self.relative {
+                relative.note_range_loss();
+            }
+            if pen.has_position {
+                let (mut fx, mut fy) = (pen.pos_f32[0], pen.pos_f32[1]);
+                for filter in &mut self.filters {
+                    (fx, fy) = filter.filter_raw_at(fx, fy, now);
                 }
-                return Err(error);
+                if !fx.is_finite() || !fy.is_finite() {
+                    return Err(self.fault_and_release(
+                        io::Error::new(io::ErrorKind::InvalidData, "nonfinite filter position"),
+                        send,
+                    ));
+                }
+            }
+            let packets = u64::from(self.release_all(&mut *send)?);
+            return Ok(DispatchStats {
+                reports: 1,
+                packets,
+            });
+        }
+        if !pen.has_position {
+            let contact = self.compute_contact(&pen);
+            let emitted = match self.output.emit_contact(contact, &mut *send) {
+                Ok(sent) => sent,
+                Err(error) => return Err(self.fault_and_release(error, send)),
+            };
+            self.apply_compact_pen_buttons(&pen, now, send)?;
+            return Ok(DispatchStats {
+                reports: 1,
+                packets: u64::from(emitted),
+            });
+        }
+        self.physical_present = true;
+        let (mut fx, mut fy) = (pen.pos_f32[0], pen.pos_f32[1]);
+        {
+            let relative = self
+                .relative
+                .as_mut()
+                .expect("FastMode::Relative requires relative mapper");
+            if !relative.begin_input((fx, fy), now) {
+                return Ok(DispatchStats::default());
+            }
+        }
+        for filter in &mut self.filters {
+            (fx, fy) = filter.filter_raw_at(fx, fy, now);
+        }
+        if !fx.is_finite() || !fy.is_finite() {
+            return Err(self.fault_and_release(
+                io::Error::new(io::ErrorKind::InvalidData, "nonfinite filter position"),
+                send,
+            ));
+        }
+        let delta = {
+            let relative = self
+                .relative
+                .as_mut()
+                .expect("FastMode::Relative requires relative mapper");
+            let point = relative.transform_emission((fx, fy));
+            if !(point.0 as f32).is_finite() || !(point.1 as f32).is_finite() {
+                return Err(self.fault_and_release(
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "transformed position exceeds finite range",
+                    ),
+                    send,
+                ));
+            }
+            match relative.quantize(point) {
+                Ok(delta) => delta,
+                Err(error) => return Err(self.fault_and_release(error, send)),
             }
         };
-        if self.buttons.has_pen_bindings() {
-            self.buttons.set_time(now);
-            let drag_pressure = if self.contact.drag_only {
-                self.contact
-                    .drag_pressure(Some(pressure), self.max_pressure, self.is_eraser)
-            } else {
-                Some(pressure)
-            };
-            let wanted = self.buttons.wanted_with_pressure(
-                buttons,
-                true,
-                drag_pressure,
-                self.contact.drag_only,
-            );
-            if let Err(error) = self.buttons.apply(wanted) {
-                self.faulted = true;
-                if self.release_all(&mut *send).is_ok() {
-                    self.faulted = false;
-                }
-                return Err(error);
+        let contact = self.compute_contact(&pen);
+        let emitted = match self.output.emit_relative(delta, contact, &mut *send) {
+            Ok(sent) => sent,
+            Err(error) => return Err(self.fault_and_release(error, send)),
+        };
+        self.apply_compact_pen_buttons(&pen, now, send)?;
+        Ok(DispatchStats {
+            reports: 1,
+            packets: u64::from(emitted),
+        })
+    }
+
+    #[inline]
+    fn process_compact_pen_output(
+        &mut self,
+        pen: CompactPen,
+        now: Instant,
+        mapper: Option<&Mapper>,
+        send: &mut impl FnMut(MousePacket) -> io::Result<()>,
+    ) -> io::Result<DispatchStats> {
+        self.managed_graph = false;
+        let physical_loss = pen.physical_loss;
+        self.physical_present = !physical_loss;
+        let Some(mapper) = mapper else {
+            let packets = u64::from(self.release_all(&mut *send)?);
+            return Ok(DispatchStats {
+                reports: 0,
+                packets,
+            });
+        };
+        if !pen.has_position {
+            let packets = u64::from(self.release_all(&mut *send)?);
+            return Ok(DispatchStats {
+                reports: 1,
+                packets,
+            });
+        }
+        let (mut fx, mut fy) = (pen.pos_f32[0], pen.pos_f32[1]);
+        for filter in &mut self.filters {
+            (fx, fy) = filter.filter_raw_at(fx, fy, now);
+        }
+        if !fx.is_finite() || !fy.is_finite() {
+            return Err(self.fault_and_release(
+                io::Error::new(io::ErrorKind::InvalidData, "nonfinite filter position"),
+                send,
+            ));
+        }
+        let Some((px, py)) = mapper.map_filtered_finite_pixels_ref(fx, fy) else {
+            if physical_loss {
+                let packets = u64::from(self.release_all(&mut *send)?);
+                return Ok(DispatchStats {
+                    reports: 0,
+                    packets,
+                });
             }
+            return Ok(DispatchStats::default());
+        };
+        if !(px as f32).is_finite() || !(py as f32).is_finite() {
+            return Err(self.fault_and_release(
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "transformed position exceeds finite range",
+                ),
+                send,
+            ));
+        }
+        if physical_loss {
+            let packets = u64::from(self.release_all(&mut *send)?);
+            return Ok(DispatchStats {
+                reports: 1,
+                packets,
+            });
+        }
+        let contact = self.compute_contact(&pen);
+        let wanted = if self.buttons.has_pen_bindings() {
+            let raw_bits = pen.pen_buttons.map_or(0, Buttons::bits);
+            if raw_bits != 0 || self.buttons.pen_held() != 0 {
+                self.buttons.set_time(now);
+                let drag_pressure = if self.contact.drag_only {
+                    self.contact.drag_pressure(
+                        Some(pen.pressure),
+                        self.max_pressure,
+                        self.is_eraser,
+                    )
+                } else {
+                    Some(pen.pressure)
+                };
+                self.buttons.wanted_with_pressure(
+                    pen.pen_buttons,
+                    true,
+                    drag_pressure,
+                    self.contact.drag_only,
+                )
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+        let barrel = self.buttons.barrel(wanted);
+        let rotation = if self.contact.disable_rotation {
+            None
+        } else {
+            pen.rotation.and_then(|raw| self.normalize_rotation(raw))
+        };
+        let emitted = match mapper.clamp_pixels_ref(px, py) {
+            Some((x, y)) => {
+                let pen_out = self
+                    .pen
+                    .as_mut()
+                    .expect("FastMode::Pen requires pen output");
+                match pen_out.sample(PenSample {
+                    x,
+                    y,
+                    pressure: if self.contact.disable_pressure {
+                        None
+                    } else {
+                        Some(pen.pressure)
+                    },
+                    tilt: if self.contact.disable_tilt {
+                        None
+                    } else {
+                        pen.tilt
+                    },
+                    rotation,
+                    eraser: self.is_eraser,
+                    contact,
+                    barrel,
+                }) {
+                    Ok(sent) => sent,
+                    Err(error) => return Err(self.fault_and_release(error, send)),
+                }
+            }
+            None => false,
+        };
+        if self.buttons.has_pen_bindings()
+            && (wanted != 0 || self.buttons.pen_held() != 0)
+            && let Err(error) = self.buttons.apply(wanted)
+        {
+            return Err(self.fault_and_release(error, send));
         }
         Ok(DispatchStats {
             reports: 1,
@@ -637,18 +1046,27 @@ impl ReportPipeline {
         send: impl FnOnce(MousePacket) -> io::Result<()>,
     ) -> io::Result<bool> {
         self.desired_contact = false;
+        self.managed_pen_actions_mask = 0;
         if let Some(holds) = &mut self.managed_pen_holds {
             holds.fill((0, 0));
         }
         // Attempt all cleanup even if one optional pointer handler fails.
-        let attributes = self.buttons.pointer_attributes(MouseAttributes {
-            reset: true,
-            ..MouseAttributes::default()
-        });
+        let attributes = if self.buttons.observes_pointer() {
+            self.buttons.pointer_attributes(MouseAttributes {
+                reset: true,
+                ..MouseAttributes::default()
+            })
+        } else {
+            Ok(())
+        };
         let pen = self.pen.as_mut().map_or(Ok(false), PenOutput::release);
         let mouse = self.output.release_all(send);
         let buttons = self.buttons.release_all();
-        let pointer = self.buttons.flush_pointer();
+        let pointer = if self.buttons.observes_pointer() {
+            self.buttons.flush_pointer()
+        } else {
+            Ok(())
+        };
         let result = match (attributes, pen, mouse, buttons, pointer) {
             (Ok(()), Ok(pen), Ok(mouse), Ok(buttons), Ok(())) => Ok(pen || mouse || buttons),
             (Err(error), _, _, _, _)
@@ -755,7 +1173,8 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
             } else {
                 let Some(point) = self
                     .mapper
-                    .and_then(|mapper| mapper.map_filtered_pixels(x, y))
+                    .as_ref()
+                    .and_then(|mapper| mapper.map_filtered_finite_pixels_ref(x, y))
                 else {
                     return Ok(false);
                 };
@@ -867,7 +1286,10 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
         } else {
             (values, None)
         };
-        self.pipeline.buttons.set_report(kind, values, raw)?;
+        let observes_pointer = self.pipeline.buttons.observes_pointer();
+        if self.pipeline.buttons.has_managed_sink() || observes_pointer {
+            self.pipeline.buttons.set_report(kind, values, raw)?;
+        }
         // A plugin may retain a contact report after transport range loss.
         // Timers still advance, but cannot revive that output without new input.
         if self.timer && !self.pipeline.physical_present && kind != ReportKind::OutOfRange {
@@ -887,7 +1309,7 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
         {
             self.pipeline.is_eraser = eraser;
         }
-        if kind == ReportKind::Data {
+        if kind == ReportKind::Data && self.pipeline.buttons.has_aux_bindings() {
             // Express keys and wheels follow their own readings; a pen
             // leaving range does not release them (upstream's
             // `HandleOutOfRangeReport` releases pen buttons only).
@@ -937,10 +1359,13 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
             && position.is_some()
         {
             if let Some((x, y)) = self.unfiltered_raw {
-                self.mapper.and_then(|mapper| mapper.map(x, y))
+                self.mapper.as_ref().and_then(|mapper| mapper.map_ref(x, y))
             } else {
-                position
-                    .and_then(|(x, y)| self.mapper.and_then(|mapper| mapper.normalize_pixels(x, y)))
+                position.and_then(|(x, y)| {
+                    self.mapper
+                        .as_ref()
+                        .map(|mapper| mapper.normalize_finite_pixels_ref(x, y))
+                })
             }
         } else {
             None
@@ -951,7 +1376,7 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
             } else {
                 mapped.is_some()
             };
-        if self.pipeline.pen.is_none() {
+        if self.pipeline.pen.is_none() && observes_pointer {
             // Original ThresholdBindingState rewrites pressure before output.
             // Avoid a second remap when the managed binding path already did it.
             let policy = self.pipeline.contact;
@@ -990,7 +1415,7 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
                 pressure: if policy.disable_pressure {
                     None
                 } else {
-                    pressure.map(|raw| raw as f32 / self.pipeline.max_pressure.max(1) as f32)
+                    pressure.map(|raw| raw as f32 * self.pipeline.inv_max_pressure)
                 },
                 tilt: if self.pipeline.contact.disable_tilt {
                     None
@@ -1002,7 +1427,7 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
                 } else {
                     values
                         .rotation
-                        .and_then(|rotation| self.pipeline.tablet_spec.normalize_rotation(rotation))
+                        .and_then(|rotation| self.pipeline.normalize_rotation(rotation))
                 },
                 eraser: values.eraser,
                 reset: kind == ReportKind::OutOfRange,
@@ -1015,28 +1440,37 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
         {
             // Tool/aux/wheel/touch packets remain visible to filters, but must
             // not replay an old pointer position or emit unrelated contact.
-            return self.pipeline.buttons.flush_pointer();
+            return if observes_pointer {
+                self.pipeline.buttons.flush_pointer()
+            } else {
+                Ok(())
+            };
         }
         let contact = self.pipeline.desired_contact;
+        let has_pen_bindings = self.pipeline.buttons.has_pen_bindings();
         // Side buttons follow the report after the pointer has moved, so a
         // click lands where the pen is. A pen out of range holds none.
-        let drag_pressure = if threshold_contact.is_some() || self.pipeline.managed_graph {
-            values.pressure
-        } else if self.pipeline.contact.drag_only {
-            self.pipeline.contact.drag_pressure(
-                values.pressure,
-                self.pipeline.max_pressure,
-                self.pipeline.is_eraser,
+        let wanted = if has_pen_bindings || self.pipeline.managed_input {
+            let drag_pressure = if threshold_contact.is_some() || self.pipeline.managed_graph {
+                values.pressure
+            } else if self.pipeline.contact.drag_only {
+                self.pipeline.contact.drag_pressure(
+                    values.pressure,
+                    self.pipeline.max_pressure,
+                    self.pipeline.is_eraser,
+                )
+            } else {
+                values.pressure
+            };
+            self.pipeline.buttons.wanted_with_pressure(
+                values.pen_buttons,
+                kind != ReportKind::OutOfRange,
+                drag_pressure,
+                self.pipeline.contact.drag_only,
             )
         } else {
-            values.pressure
+            0
         };
-        let wanted = self.pipeline.buttons.wanted_with_pressure(
-            values.pen_buttons,
-            kind != ReportKind::OutOfRange,
-            drag_pressure,
-            self.pipeline.contact.drag_only,
-        );
         if self.pipeline.managed_input {
             if values.pressure.is_some() {
                 self.pipeline
@@ -1047,18 +1481,33 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
             self.drain_binding_commands()?;
         }
         let managed_actions = self.managed_pen_actions();
-        let barrel = self.pipeline.buttons.barrel(wanted) | (managed_actions >> 2);
+        let barrel = if has_pen_bindings {
+            self.pipeline.buttons.barrel(wanted)
+        } else {
+            0
+        } | (managed_actions >> 2);
         let native_contact = if self.pipeline.is_eraser {
             self.pipeline.managed_eraser_binding.is_none()
         } else {
             self.pipeline.managed_tip_binding.is_none()
         };
         let contact = contact && native_contact || managed_actions & 3 != 0;
+        let rotation = if self.pipeline.contact.disable_rotation {
+            None
+        } else {
+            values
+                .rotation
+                .and_then(|rotation| self.pipeline.normalize_rotation(rotation))
+        };
         if let Some(pen) = &mut self.pipeline.pen {
             let emitted = if kind == ReportKind::OutOfRange {
                 pen.release()?
             } else if let Some((x, y)) = position {
-                match self.mapper.and_then(|mapper| mapper.clamp_pixels(x, y)) {
+                match self
+                    .mapper
+                    .as_ref()
+                    .and_then(|mapper| mapper.clamp_pixels_ref(x, y))
+                {
                     Some((x, y)) => pen.sample(PenSample {
                         x,
                         y,
@@ -1072,13 +1521,7 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
                         } else {
                             values.tilt
                         },
-                        rotation: if self.pipeline.contact.disable_rotation {
-                            None
-                        } else {
-                            values.rotation.and_then(|rotation| {
-                                self.pipeline.tablet_spec.normalize_rotation(rotation)
-                            })
-                        },
+                        rotation,
                         eraser: self.pipeline.is_eraser,
                         contact,
                         barrel,
@@ -1094,17 +1537,15 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
                         values.pressure
                     },
                     barrel,
-                    if self.pipeline.contact.disable_rotation {
-                        None
-                    } else {
-                        values.rotation.and_then(|rotation| {
-                            self.pipeline.tablet_spec.normalize_rotation(rotation)
-                        })
-                    },
+                    rotation,
                 )?
             };
             self.stats.packets += u64::from(emitted);
-            return self.pipeline.buttons.apply(wanted);
+            return if has_pen_bindings || self.pipeline.buttons.is_unsettled() {
+                self.pipeline.buttons.apply(wanted)
+            } else {
+                Ok(())
+            };
         }
         let emitted = if position.is_none() && kind == ReportKind::Data {
             self.pipeline
@@ -1121,8 +1562,14 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> PipelineRuntime for Runtime<'_, F>
                 .emit_mapped(mapped, contact, &mut *self.send)?
         };
         self.stats.packets += u64::from(emitted);
-        self.pipeline.buttons.apply(wanted)?;
-        self.pipeline.buttons.flush_pointer()
+        if has_pen_bindings || self.pipeline.buttons.is_unsettled() {
+            self.pipeline.buttons.apply(wanted)?;
+        }
+        if observes_pointer {
+            self.pipeline.buttons.flush_pointer()
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -1179,10 +1626,9 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> Runtime<'_, F> {
         values.pressure = Some(remapped);
         Some(active)
     }
+    #[inline]
     fn managed_pen_actions(&self) -> u8 {
-        self.pipeline.managed_pen_holds.as_ref().map_or(0, |holds| {
-            holds.iter().fold(0, |bits, (_, actions)| bits | actions)
-        })
+        self.pipeline.managed_pen_actions_mask
     }
     fn drain_binding_commands(&mut self) -> io::Result<()> {
         while let Some(command) = self.pipeline.buttons.next_managed_command() {
@@ -1262,8 +1708,11 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> Runtime<'_, F> {
                             "relative managed pointer cannot use the native absolute pen backend",
                         ));
                     }
-                    let pressure = (command.flags & 4 != 0)
-                        .then(|| (fraction * self.pipeline.max_pressure as f32).round() as u32);
+                    let pressure = (command.flags & 4 != 0).then(|| {
+                        let v = f64::from(fraction * self.pipeline.max_pressure as f32);
+                        let t = v.max(0.0) as u64;
+                        (t + u64::from(v.max(0.0) - (t as f64) >= 0.5)) as u32
+                    });
                     let barrel = (managed >> 2)
                         | self
                             .pipeline
@@ -1383,6 +1832,8 @@ impl<F: FnMut(MousePacket) -> io::Result<()>> Runtime<'_, F> {
                 } else {
                     holds[index].1 &= !bit;
                 }
+                self.pipeline.managed_pen_actions_mask =
+                    holds.iter().fold(0, |bits, (_, actions)| bits | actions);
             }
             _ => {
                 return Err(io::Error::new(
@@ -2284,6 +2735,97 @@ mod tests {
         });
         // Per 5-report cycle: right down, middle down, right up, middle up.
         assert_eq!(injected.get(), 8_000);
+    }
+
+    #[test]
+    fn compact_pen_fast_path_matches_full_path_for_relative_and_pen_modes() {
+        use crate::decoders::PenDecoder;
+        let screen = Rect {
+            left: 0,
+            top: 0,
+            right: 2560,
+            bottom: 1440,
+        };
+        let display = DisplaySnapshot {
+            virtual_screen: screen,
+            monitors: vec![screen],
+        };
+        let start = Instant::now();
+        // 1. Relative mode parity + zero allocations.
+        let rel_profile = profile(true, false);
+        let mut fast = ReportPipeline::new(&rel_profile).unwrap();
+        let mut full = ReportPipeline::new(&rel_profile).unwrap();
+        assert_eq!(fast.fast_mode, FastMode::Relative);
+        let mut fast_packets = Vec::new();
+        let mut full_packets = Vec::new();
+        let mut plugins = crate::plugins::NoFilters;
+        let mut decoder = crate::decoders::TabletDecoder::pth_660();
+        for (index, bytes) in CAPTURE.iter().enumerate() {
+            let now = start + Duration::from_millis(index as u64 * 5);
+            let compact = decoder.decode_compact_pen(bytes).unwrap().unwrap().unwrap();
+            let pen = protocol::parse(bytes).unwrap().unwrap();
+            fast.process_compact_pen(compact, now, None, &mut |p| {
+                fast_packets.push(p);
+                Ok(())
+            })
+            .unwrap();
+            full.process_with_raw(pen, bytes, now, None, &mut plugins, |p| {
+                full_packets.push(p);
+                Ok(())
+            })
+            .unwrap();
+        }
+        assert_eq!(fast_packets, full_packets);
+        assert!(!fast_packets.is_empty());
+
+        crate::test_alloc::assert_no_allocations(|| {
+            for index in 0..2_000usize {
+                let bytes = black_box(&CAPTURE[index % CAPTURE.len()]);
+                let compact = decoder.decode_compact_pen(bytes).unwrap().unwrap().unwrap();
+                fast.process_compact_pen(
+                    compact,
+                    start + Duration::from_millis(index as u64 * 5),
+                    None,
+                    &mut |_| Ok(()),
+                )
+                .unwrap();
+            }
+        });
+
+        // 2. Pen (Windows Ink) mode parity + zero allocations.
+        let pen_profile = Profile {
+            output: crate::config::OutputKind::Pen,
+            ..profile(false, false)
+        };
+        let mapper = display.mapper(&pen_profile).unwrap();
+        let mut fast_pen = ReportPipeline::new(&pen_profile).unwrap();
+        let mut full_pen = ReportPipeline::new(&pen_profile).unwrap();
+        let fast_out = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let full_out = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let fast_sink = std::rc::Rc::clone(&fast_out);
+        let full_sink = std::rc::Rc::clone(&full_out);
+        fast_pen.set_pen_sink(Box::new(move |p| {
+            fast_sink.borrow_mut().push(p);
+            Ok(())
+        }));
+        full_pen.set_pen_sink(Box::new(move |p| {
+            full_sink.borrow_mut().push(p);
+            Ok(())
+        }));
+        assert_eq!(fast_pen.fast_mode, FastMode::Pen);
+        for (index, bytes) in CAPTURE.iter().enumerate() {
+            let now = start + Duration::from_millis(index as u64 * 5);
+            let compact = decoder.decode_compact_pen(bytes).unwrap().unwrap().unwrap();
+            let pen = protocol::parse(bytes).unwrap().unwrap();
+            fast_pen
+                .process_compact_pen(compact, now, Some(&mapper), &mut |_| Ok(()))
+                .unwrap();
+            full_pen
+                .process_with_raw(pen, bytes, now, Some(mapper), &mut plugins, |_| Ok(()))
+                .unwrap();
+        }
+        assert_eq!(*fast_out.borrow(), *full_out.borrow());
+        assert!(!fast_out.borrow().is_empty());
     }
 
     #[test]

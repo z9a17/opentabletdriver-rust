@@ -483,6 +483,7 @@ impl Editor {
 
     /// Only a detected, selected device supplies usable preview bounds. The
     /// profile's transient/default spec is not evidence of connected hardware.
+    #[allow(dead_code)]
     pub fn detected_tablet_bounds(&self, connected: &[String]) -> Option<Bounds> {
         let target = self.profile.tablet_name().ok()?;
         let name = match target.as_deref() {
@@ -500,6 +501,7 @@ impl Editor {
 
     /// The buttons and wheels of the detected, selected tablet, which size
     /// the binding editors. Saved bindings do not prove which exist.
+    #[allow(dead_code)]
     pub fn detected_controls(&self, connected: &[String]) -> Option<otd_core::spec::Controls> {
         let target = self.profile.tablet_name().ok()?;
         let name = match target.as_deref() {

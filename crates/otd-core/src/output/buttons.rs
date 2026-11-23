@@ -478,11 +478,10 @@ struct Slot {
     barrel: u8,
     scroll: Option<ScrollAction>,
     next_scroll: Option<Instant>,
-    managed: Option<crate::plugins::PluginConfig>,
+    managed: Option<Box<crate::plugins::PluginConfig>>,
     toggle: bool,
     active: bool,
-    preset: Option<crate::presets::PresetName>,
-    blocked: std::cell::Cell<bool>,
+    preset: Option<Box<crate::presets::PresetName>>,
 }
 
 /// The binding owner IDs of each group in the shared action state. Two
@@ -495,6 +494,12 @@ const WHEEL_ROTATION_OWNERS: u32 = WHEEL_BUTTON_OWNERS + 64 * crate::reports::MA
 #[derive(Default)]
 struct Group {
     slots: Vec<Slot>,
+    /// Bitmask of configured slot indices (`(1 << slots.len()) - 1`).
+    slot_mask: u64,
+    /// Bitmask of currently inhibited slots (cleared on first physical release).
+    blocked_mask: std::cell::Cell<u64>,
+    /// Bitmask of latched toggle slots currently active.
+    active_toggles: u64,
     /// Buttons currently wanted down, by index.
     held: u64,
     /// Owner ID of index 0.
@@ -548,6 +553,8 @@ pub struct ButtonOutput {
     unsettled: bool,
     /// Cached setup-time capabilities for zero-overhead native fast paths.
     has_pen_bindings: bool,
+    has_barrel_bindings: bool,
+    has_aux_bindings: bool,
     has_scroll_bindings: bool,
     observes_pointer: bool,
     has_managed_sink: bool,
@@ -642,7 +649,9 @@ fn group(
     name: &dyn Fn(usize) -> String,
     rejected: &mut Vec<String>,
 ) -> Group {
-    let slots = bindings
+    let mut blocked_mask = 0u64;
+    let inhibited = sink.inhibited_binding();
+    let slots: Vec<Slot> = bindings
         .iter()
         .take(64)
         .enumerate()
@@ -658,6 +667,9 @@ fn group(
                 rejected,
                 &mut scroll,
             );
+            if inhibited == Some(owners + index as u32) {
+                blocked_mask |= 1u64 << index;
+            }
             Slot {
                 actions,
                 barrel,
@@ -666,25 +678,32 @@ fn group(
                 toggle: matches!(binding, ButtonAction::Toggle(_)),
                 active: false,
                 preset: match binding {
-                    ButtonAction::Preset(name) if sink.supports_presets() => Some(name.clone()),
+                    ButtonAction::Preset(name) if sink.supports_presets() => {
+                        Some(Box::new(name.clone()))
+                    }
                     _ => None,
                 },
-                blocked: std::cell::Cell::new(
-                    sink.inhibited_binding() == Some(owners + index as u32),
-                ),
                 managed: match binding {
                     ButtonAction::Managed(config)
                         if config.enabled && sink.supports_managed(config) =>
                     {
-                        Some(config.clone())
+                        Some(Box::new(config.clone()))
                     }
                     _ => None,
                 },
             }
         })
         .collect();
+    let slot_mask = if slots.len() >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << slots.len()) - 1
+    };
     Group {
         slots,
+        slot_mask,
+        blocked_mask: std::cell::Cell::new(blocked_mask),
+        active_toggles: 0,
         held: 0,
         owners,
     }
@@ -693,25 +712,36 @@ fn group(
 impl Group {
     fn observe_buttons(&self, buttons: Option<Buttons>) {
         if let Some(buttons) = buttons {
-            for (index, slot) in self.slots.iter().enumerate().take(buttons.len()) {
-                if buttons.get(index) == Some(false) {
-                    slot.blocked.set(false);
-                }
-            }
+            let len = buttons.len();
+            let valid = if len >= 64 {
+                u64::MAX
+            } else {
+                (1u64 << len) - 1
+            };
+            let released = (!buttons.bits()) & valid & self.slot_mask;
+            self.blocked_mask.set(self.blocked_mask.get() & !released);
         }
     }
+    #[inline]
     fn active(&self) -> bool {
-        self.held != 0 || self.slots.iter().any(|slot| slot.active)
+        self.held != 0 || self.active_toggles != 0
     }
     /// Cleanup releases latched holds too, even when their physical key is up.
     fn release(&mut self, sink: &mut dyn ActionSink, now: Instant) -> io::Result<()> {
         let result = self.hold(sink, 0, now);
-        for (index, slot) in self.slots.iter_mut().enumerate() {
-            if slot.toggle && slot.active {
-                for action in slot.actions.iter() {
-                    sink.hold(self.owners + index as u32, *action, false)?;
+        if self.active_toggles != 0 {
+            let mut toggles = self.active_toggles;
+            while toggles != 0 {
+                let index = toggles.trailing_zeros() as usize;
+                toggles &= toggles - 1;
+                let slot = &mut self.slots[index];
+                if slot.toggle && slot.active {
+                    for action in slot.actions.iter() {
+                        sink.hold(self.owners + index as u32, *action, false)?;
+                    }
+                    slot.active = false;
                 }
-                slot.active = false;
+                self.active_toggles &= !(1u64 << index);
             }
         }
         result
@@ -724,6 +754,9 @@ impl Group {
                 || slot.preset.is_some()
                 || slot.managed.is_some()
         })
+    }
+    fn has_barrel(&self) -> bool {
+        self.slots.iter().any(|slot| slot.barrel != 0)
     }
     fn has_scroll(&self) -> bool {
         self.slots.iter().any(|slot| slot.scroll.is_some())
@@ -753,24 +786,24 @@ impl Group {
         }
     }
 
+    #[inline]
     fn wanted(&self, buttons: Buttons) -> u64 {
-        let mut wanted = 0;
-        for (index, slot) in self.slots.iter().enumerate().take(buttons.len()) {
-            if buttons.get(index) == Some(true) && !slot.blocked.get() {
-                wanted |= 1 << index;
-            }
-        }
-        wanted
+        let len = buttons.len();
+        let valid = if len >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << len) - 1
+        };
+        buttons.bits() & valid & self.slot_mask & !self.blocked_mask.get()
     }
 
     /// Records the holds that reach `wanted`; the caller flushes.
     fn hold(&mut self, sink: &mut dyn ActionSink, wanted: u64, now: Instant) -> io::Result<()> {
-        let changed = wanted ^ self.held;
-        for index in 0..self.slots.len() {
+        let mut changed = (wanted ^ self.held) & self.slot_mask;
+        while changed != 0 {
+            let index = changed.trailing_zeros() as usize;
             let bit = 1u64 << index;
-            if changed & bit == 0 {
-                continue;
-            }
+            changed &= changed - 1;
             let down = wanted & bit != 0;
             let slot = &mut self.slots[index];
             if let Some(name) = &slot.preset
@@ -790,6 +823,13 @@ impl Group {
                 sink.hold(self.owners + index as u32, *action, output_down)?;
             }
             self.slots[index].active = output_down;
+            if self.slots[index].toggle {
+                if output_down {
+                    self.active_toggles |= bit;
+                } else {
+                    self.active_toggles &= !bit;
+                }
+            }
             if let Some(scroll) = self.slots[index].scroll {
                 if down {
                     sink.flush()?;
@@ -865,6 +905,33 @@ impl ButtonOutput {
         }
         slots
     }
+    /// Allocation-free check for whether any managed binding slot is enabled.
+    pub fn has_managed_slots(profile: &crate::config::Profile) -> bool {
+        let is_managed = |action: &ButtonAction| matches!(action, ButtonAction::Managed(config) if config.enabled);
+        profile
+            .managed_tip_binding
+            .as_ref()
+            .is_some_and(|config| config.enabled)
+            || profile
+                .managed_eraser_binding
+                .as_ref()
+                .is_some_and(|config| config.enabled)
+            || profile.pen_buttons.iter().take(64).any(is_managed)
+            || profile.aux_buttons.iter().take(64).any(is_managed)
+            || profile.mouse_buttons.iter().take(64).any(is_managed)
+            || is_managed(&profile.mouse_scroll_down)
+            || is_managed(&profile.mouse_scroll_up)
+            || profile
+                .wheels
+                .iter()
+                .take(crate::reports::MAX_WHEELS)
+                .any(|bindings| {
+                    bindings.buttons.iter().take(64).any(is_managed)
+                        || is_managed(&bindings.clockwise)
+                        || is_managed(&bindings.counter_clockwise)
+                })
+    }
+
     /// Resolves `bindings` (index = pen button) for mouse output, or for pen
     /// output when `pen` is set. Returns a message for each binding the
     /// platform cannot carry out; those buttons do nothing.
@@ -883,6 +950,7 @@ impl ButtonOutput {
             &mut rejected,
         );
         let has_pen_bindings = pen.has_bindings();
+        let has_barrel_bindings = pen.has_barrel();
         let has_scroll_bindings = pen.has_scroll();
         let observes_pointer = sink.observes_pointer();
         let has_managed_sink = sink.has_managed();
@@ -900,6 +968,8 @@ impl ButtonOutput {
                 sink,
                 unsettled: false,
                 has_pen_bindings,
+                has_barrel_bindings,
+                has_aux_bindings: false,
                 has_scroll_bindings,
                 observes_pointer,
                 has_managed_sink,
@@ -910,6 +980,12 @@ impl ButtonOutput {
 
     fn refresh_flags(&mut self) {
         self.has_pen_bindings = self.pen.has_bindings();
+        self.has_barrel_bindings = self.pen.has_barrel();
+        self.has_aux_bindings = self.aux.has_bindings()
+            || self.mouse.has_bindings()
+            || self.mouse_scroll.has_bindings()
+            || self.wheel_buttons.iter().any(Group::has_bindings)
+            || !self.rotations.is_empty();
         self.has_scroll_bindings = [
             &self.pen,
             &self.contact,
@@ -925,6 +1001,26 @@ impl ButtonOutput {
     #[inline]
     pub fn has_pen_bindings(&self) -> bool {
         self.has_pen_bindings
+    }
+
+    #[inline]
+    pub fn has_barrel_bindings(&self) -> bool {
+        self.has_barrel_bindings
+    }
+
+    #[inline]
+    pub fn has_aux_bindings(&self) -> bool {
+        self.has_aux_bindings
+    }
+
+    #[inline]
+    pub fn has_managed_sink(&self) -> bool {
+        self.has_managed_sink
+    }
+
+    #[inline]
+    pub fn pen_held(&self) -> u64 {
+        self.pen.held
     }
 
     #[inline]
@@ -993,15 +1089,16 @@ impl ButtonOutput {
                     toggle: matches!(action, ButtonAction::Toggle(_)),
                     active: false,
                     preset: match action {
-                        ButtonAction::Preset(name) if sink.supports_presets() => Some(name.clone()),
+                        ButtonAction::Preset(name) if sink.supports_presets() => {
+                            Some(Box::new(name.clone()))
+                        }
                         _ => None,
                     },
-                    blocked: std::cell::Cell::new(false),
                     managed: match action {
                         ButtonAction::Managed(config)
                             if config.enabled && sink.supports_managed(config) =>
                         {
-                            Some(config.clone())
+                            Some(Box::new(config.clone()))
                         }
                         _ => None,
                     },
@@ -1044,6 +1141,7 @@ impl ButtonOutput {
 
     /// The pen buttons wanted down after a report. A report without a button
     /// reading leaves them as they are; a pen out of range holds none.
+    #[inline]
     pub fn wanted_with_pressure(
         &self,
         buttons: Option<Buttons>,
@@ -1095,10 +1193,10 @@ impl ButtonOutput {
         if self.contact.slots.is_empty() {
             return Ok(());
         }
-        if self.contact.slots[usize::from(eraser)].blocked.get() {
+        let bit = 1u64 << u32::from(eraser);
+        if self.contact.blocked_mask.get() & bit != 0 {
             return Ok(());
         }
-        let bit = 1u64 << u32::from(eraser);
         let wanted = (self.contact.held & !bit) | if pressed { bit } else { 0 };
         if wanted == self.contact.held && !self.unsettled {
             return Ok(());
@@ -1107,15 +1205,23 @@ impl ButtonOutput {
         self.contact.hold(self.sink.as_mut(), wanted, self.now)?;
         self.flush()
     }
+    #[inline]
     pub fn set_time(&mut self, now: Instant) {
         self.now = now;
     }
     /// Observe untouched source capabilities before any filter/remap. A changed
     /// threshold or a filter changing buttons must not arm a still-held source.
+    #[inline]
     pub fn observe_source(&self, values: &crate::reports::ReportValues) {
         if !self.inhibition_active.get() {
             return;
         }
+        self.observe_source_slow(values);
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn observe_source_slow(&self, values: &crate::reports::ReportValues) {
         self.pen.observe_buttons(values.pen_buttons);
         self.aux.observe_buttons(values.aux_buttons);
         self.mouse.observe_buttons(values.mouse_buttons);
@@ -1131,20 +1237,18 @@ impl ButtonOutput {
             }
         }
         if values.pressure == Some(0) {
-            for slot in &self.contact.slots {
-                slot.blocked.set(false);
-            }
+            self.contact.blocked_mask.set(0);
         }
-        let remaining = [
-            &self.pen,
-            &self.contact,
-            &self.aux,
-            &self.mouse,
-            &self.mouse_scroll,
-        ]
-        .into_iter()
-        .chain(self.wheel_buttons.iter())
-        .any(|group| group.slots.iter().any(|slot| slot.blocked.get()));
+        let remaining = (self.pen.blocked_mask.get()
+            | self.contact.blocked_mask.get()
+            | self.aux.blocked_mask.get()
+            | self.mouse.blocked_mask.get()
+            | self.mouse_scroll.blocked_mask.get())
+            != 0
+            || self
+                .wheel_buttons
+                .iter()
+                .any(|group| group.blocked_mask.get() != 0);
         self.inhibition_active.set(remaining);
     }
     pub fn set_report(
@@ -1264,6 +1368,7 @@ impl ButtonOutput {
         rejected
     }
 
+    #[inline]
     pub fn wanted(&self, buttons: Option<Buttons>, present: bool) -> u64 {
         if !present {
             return 0;
@@ -1275,7 +1380,11 @@ impl ButtonOutput {
     }
 
     /// The barrel buttons of a pen device that `wanted` presses.
+    #[inline]
     pub fn barrel(&self, wanted: u64) -> u8 {
+        if !self.has_barrel_bindings || (wanted == 0 && self.pen.active_toggles == 0) {
+            return 0;
+        }
         self.pen
             .slots
             .iter()
@@ -1302,10 +1411,17 @@ impl ButtonOutput {
 
     /// Presses and releases pen buttons to reach `wanted`. Allocation-free,
     /// and does no work when nothing changed.
+    #[inline]
     pub fn apply(&mut self, wanted: u64) -> io::Result<()> {
         if wanted == self.pen.held && !self.unsettled {
             return Ok(());
         }
+        self.apply_slow(wanted)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn apply_slow(&mut self, wanted: u64) -> io::Result<()> {
         self.unsettled = true;
         self.pen.hold(self.sink.as_mut(), wanted, self.now)?;
         self.flush()
@@ -1523,36 +1639,36 @@ impl ButtonOutput {
     /// Releases everything, including what an earlier failure left down.
     /// Returns whether any release was sent.
     pub fn release_all(&mut self) -> io::Result<bool> {
-        for rotation in &mut self.rotations {
-            rotation.reset();
+        if !self.rotations.is_empty() {
+            for rotation in &mut self.rotations {
+                rotation.reset();
+            }
         }
-        for group in [
-            &mut self.pen,
-            &mut self.contact,
-            &mut self.aux,
-            &mut self.mouse,
-            &mut self.mouse_scroll,
-        ]
-        .into_iter()
-        .chain(self.wheel_buttons.iter_mut())
-        {
-            group.clear_timers();
+        if self.has_scroll_bindings {
+            for group in [
+                &mut self.pen,
+                &mut self.contact,
+                &mut self.aux,
+                &mut self.mouse,
+                &mut self.mouse_scroll,
+            ]
+            .into_iter()
+            .chain(self.wheel_buttons.iter_mut())
+            {
+                group.clear_timers();
+            }
         }
-        let held = [
-            &self.contact,
-            &self.mouse_scroll,
-            &self.mouse,
-            &self.pen,
-            &self.aux,
-        ]
-        .into_iter()
-        .any(|group| group.active())
-            || self.wheel_buttons.iter().any(Group::active)
-            || self
-                .rotations
-                .iter()
-                .any(|rotation| rotation.clockwise.active || rotation.counter_clockwise.active);
-        if !held && !self.unsettled && !self.sink.has_managed() {
+        let held = self.pen.active()
+            || self.contact.active()
+            || self.aux.active()
+            || self.mouse.active()
+            || self.mouse_scroll.active()
+            || (!self.wheel_buttons.is_empty() && self.wheel_buttons.iter().any(Group::active))
+            || (!self.rotations.is_empty()
+                && self.rotations.iter().any(|rotation| {
+                    rotation.clockwise.active || rotation.counter_clockwise.active
+                }));
+        if !held && !self.unsettled && !self.has_managed_sink {
             return Ok(false);
         }
         // Plugin Release must run before host-wide input ownership is dropped.
@@ -1594,6 +1710,7 @@ impl ButtonOutput {
         .into_iter()
         .chain(self.wheel_buttons.iter_mut())
         {
+            group.active_toggles = 0;
             for slot in &mut group.slots {
                 slot.active = false;
             }

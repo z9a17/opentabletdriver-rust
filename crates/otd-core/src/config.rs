@@ -971,7 +971,7 @@ fn radial_settings(store: &OtdStore) -> Result<RadialFollowSettings, String> {
 /// Resolves ranges for profile editing without requiring runtime parser support.
 /// A named tablet never silently acquires another tablet's dimensions.
 pub fn spec_for_tablet(name: &str) -> Result<TabletSpec, String> {
-    spec_for_tablet_in(name, configured_tablets()?.as_ref())
+    with_configured_tablets(|database| spec_for_tablet_in(name, database))?
 }
 
 pub fn spec_for_tablet_in(
@@ -989,23 +989,69 @@ pub fn spec_for_tablet_in(
 
 /// The specification of a named tablet whose parser the runtime supports.
 pub fn runtime_tablet(name: &str) -> Result<TabletSpec, String> {
-    runtime_tablet_in(name, configured_tablets()?.as_ref())
+    with_configured_tablets(|database| runtime_tablet_in(name, database))?
 }
 
-/// The effective configuration set, shared by import and runtime selection.
-/// This performs setup-time file I/O; report processing uses the selected spec.
-pub fn configured_tablets() -> Result<std::borrow::Cow<'static, crate::tablets::Database>, String> {
+struct CachedOverrideDatabase {
+    directory: PathBuf,
+    signature: crate::tablets::DirectorySignature,
+    database: crate::tablets::Database,
+    file_count: usize,
+}
+
+static OVERRIDE_DATABASE_CACHE: std::sync::Mutex<Option<CachedOverrideDatabase>> =
+    std::sync::Mutex::new(None);
+
+fn configured_directory() -> Result<Option<PathBuf>, String> {
     let directory = configurations_directory();
-    let directory = match directory {
+    match directory {
         Some(directory)
             if directory
                 .try_exists()
                 .map_err(|error| format!("cannot inspect tablet configurations: {error}"))? =>
         {
-            Some(directory)
+            Ok(Some(directory))
         }
-        _ => None,
+        _ => Ok(None),
+    }
+}
+
+/// Borrows the effective tablet database without cloning cached override entries.
+fn with_configured_tablets<R>(
+    use_db: impl FnOnce(&crate::tablets::Database) -> R,
+) -> Result<R, String> {
+    use crate::tablets::{Database, directory_signature, read_directory};
+    let Some(directory) = configured_directory()? else {
+        return Ok(use_db(Database::builtin()));
     };
+    let signature = directory_signature(&directory).map_err(|error| error.to_string())?;
+    if signature.is_empty() {
+        return Ok(use_db(Database::builtin()));
+    }
+    let mut cache = OVERRIDE_DATABASE_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let hit = cache
+        .as_ref()
+        .is_some_and(|entry| entry.directory == directory && entry.signature == signature);
+    if !hit {
+        let files = read_directory(&directory).map_err(|error| error.to_string())?;
+        let file_count = files.len();
+        let database = Database::with_overrides(&files);
+        *cache = Some(CachedOverrideDatabase {
+            directory,
+            signature,
+            database,
+            file_count,
+        });
+    }
+    Ok(use_db(&cache.as_ref().expect("populated cache").database))
+}
+
+/// The effective configuration set, shared by import and runtime selection.
+/// This performs setup-time file I/O; report processing uses the selected spec.
+pub fn configured_tablets() -> Result<std::borrow::Cow<'static, crate::tablets::Database>, String> {
+    let directory = configured_directory()?;
     tablets_from_directory(directory.as_deref()).map(|(database, _)| database)
 }
 
@@ -1017,17 +1063,36 @@ pub fn configurations_directory() -> Option<PathBuf> {
 pub fn tablets_from_directory(
     directory: Option<&Path>,
 ) -> Result<(std::borrow::Cow<'static, crate::tablets::Database>, usize), String> {
-    use crate::tablets::{Database, read_directory};
-    let files = match directory {
-        Some(directory) => read_directory(directory).map_err(|error| error.to_string())?,
-        None => Vec::new(),
+    use crate::tablets::{Database, directory_signature, read_directory};
+    let Some(directory) = directory else {
+        return Ok((std::borrow::Cow::Borrowed(Database::builtin()), 0));
     };
-    let database = if files.is_empty() {
-        std::borrow::Cow::Borrowed(Database::builtin())
-    } else {
-        std::borrow::Cow::Owned(Database::with_overrides(&files))
-    };
-    Ok((database, files.len()))
+    let signature = directory_signature(directory).map_err(|error| error.to_string())?;
+    if signature.is_empty() {
+        return Ok((std::borrow::Cow::Borrowed(Database::builtin()), 0));
+    }
+    let mut cache = OVERRIDE_DATABASE_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(entry) = cache.as_ref()
+        && entry.directory == directory
+        && entry.signature == signature
+    {
+        return Ok((
+            std::borrow::Cow::Owned(entry.database.clone()),
+            entry.file_count,
+        ));
+    }
+    let files = read_directory(directory).map_err(|error| error.to_string())?;
+    let file_count = files.len();
+    let database = Database::with_overrides(&files);
+    *cache = Some(CachedOverrideDatabase {
+        directory: directory.to_path_buf(),
+        signature,
+        database: database.clone(),
+        file_count,
+    });
+    Ok((std::borrow::Cow::Owned(database), file_count))
 }
 
 pub fn runtime_tablet_in(

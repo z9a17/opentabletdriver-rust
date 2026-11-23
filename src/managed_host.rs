@@ -59,10 +59,13 @@ impl Published {
 }
 struct NativeBackend {
     stopped: Arc<AtomicBool>,
+    cancelled: Arc<AtomicBool>,
     published: Mutex<Published>,
     activated: AtomicBool,
+    configurations_published: AtomicBool,
     native: Mutex<NativeState>,
     refreshing: Mutex<()>,
+    observer: Mutex<Option<JoinHandle<()>>>,
     observer_thread: OnceLock<std::thread::Thread>,
 }
 struct NativeState {
@@ -107,23 +110,12 @@ pub struct Owner {
     tools: Option<crate::tool_host::Owner>,
     host: Option<Host>,
     stop: Arc<AtomicBool>,
-    observer: Option<JoinHandle<()>>,
     backend: Arc<NativeBackend>,
 }
 impl Owner {
     pub fn start(identity: WorkerIdentity, cancelled: Arc<AtomicBool>) -> Result<Self, String> {
-        let configurations = crate::config::configured_tablets()
-            .ok()
-            .and_then(|database| {
-                let values: Vec<_> = database
-                    .entries()
-                    .iter()
-                    .filter_map(|entry| entry.usable())
-                    .collect();
-                serde_json::to_value(values).ok()
-            });
-        // Malformed optional compatibility settings must not stop a native-only
-        // driver. Their unavailable provider returns an explicit error later.
+        // Defer loading/serializing the static tablet configuration catalog and
+        // spawning background service threads until CLR actually initializes.
         let snapshot = Snapshot {
             version: 1,
             daemon_identity: Some(identity.clone()),
@@ -131,14 +123,17 @@ impl Owner {
             diagnostic_build_date: Some(env!("OTD_BUILD_DATE").into()),
             settings: crate::upstream_rpc::initial_original_settings().ok(),
             application_info: crate::upstream_rpc::original_application_info().ok(),
-            configurations,
+            configurations: None,
             tablets: Some(json!([])),
             ..Snapshot::default()
         };
         let stop = Arc::new(AtomicBool::new(false));
+        let already_initialized = crate::dotnet::initialized();
         let backend = Arc::new(NativeBackend {
             stopped: Arc::clone(&stop),
-            activated: AtomicBool::new(crate::dotnet::initialized()),
+            cancelled,
+            activated: AtomicBool::new(already_initialized),
+            configurations_published: AtomicBool::new(false),
             native: Mutex::new(NativeState {
                 identity,
                 devices: None,
@@ -146,6 +141,7 @@ impl Owner {
                 logs: None,
             }),
             refreshing: Mutex::new(()),
+            observer: Mutex::new(None),
             observer_thread: OnceLock::new(),
             published: Mutex::new(Published {
                 publisher: None,
@@ -158,7 +154,7 @@ impl Owner {
                 dirty: false,
             }),
         });
-        let host = Host::start(snapshot, backend.clone())?;
+        let host = Host::start_lazy(snapshot, backend.clone())?;
         backend
             .published
             .lock()
@@ -168,45 +164,17 @@ impl Owner {
             .get_or_init(|| Mutex::new(Weak::new()))
             .lock()
             .map_err(|_| "Managed backend lock poisoned")? = Arc::downgrade(&backend);
-        let observer_backend = Arc::clone(&backend);
-        let observer_stop = Arc::clone(&stop);
-        let observer = std::thread::Builder::new()
-            .name("managed-service-state".into())
-            .spawn(move || {
-                while !observer_stop.load(Ordering::Acquire) && !cancelled.load(Ordering::Acquire) {
-                    if !observer_backend.activated.load(Ordering::Acquire) {
-                        std::thread::park();
-                        continue;
-                    }
-                    // Native-only profiles do not initialize CLR, enumerate devices
-                    // or send recurring control requests for managed services.
-                    if crate::dotnet::initialized()
-                        && crate::managed_services::snapshots_requested()
-                    {
-                        let _ = observer_backend.refresh(false, false, true);
-                        std::thread::park_timeout(Duration::from_millis(250));
-                    } else {
-                        // The first Snapshot request explicitly wakes this owner;
-                        // CLR initialization alone does not need recurring work.
-                        std::thread::park();
-                    }
-                }
-            })
-            .map_err(|error| error.to_string())?;
-        let _ = backend.observer_thread.set(observer.thread().clone());
-        // A prime/first request can race thread-handle installation. Its flag
-        // is already visible; this token prevents losing that initial wake.
-        observer.thread().unpark();
         // Establish teardown ownership before any later startup step can fail.
-        // Dropping a bare JoinHandle would leave the parked observer and its
-        // retained backend alive after a failed tool-owner initialization.
         let mut owner = Self {
             tools: None,
             host: Some(host),
             stop,
-            observer: Some(observer),
             backend,
         };
+        if already_initialized {
+            let _ = owner.backend.prime_metadata();
+            owner.backend.ensure_observer();
+        }
         owner.tools = Some(crate::tool_host::Owner::start()?);
         if let Some(settings) = crate::upstream_rpc::cached_original_settings() {
             crate::tool_host::initialize_document((*settings).clone())?;
@@ -218,7 +186,16 @@ impl Drop for Owner {
     fn drop(&mut self) {
         drop(self.tools.take());
         self.stop.store(true, Ordering::Release);
-        if let Some(observer) = self.observer.take() {
+        if let Some(thread) = self.backend.observer_thread.get() {
+            thread.unpark();
+        }
+        let observer = self
+            .backend
+            .observer
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take());
+        if let Some(observer) = observer {
             observer.thread().unpark();
             let _ = observer.join();
         }
@@ -249,6 +226,7 @@ pub fn prime() {
     if let Some(backend) = backend {
         let _ = backend.prime_metadata();
         backend.activated.store(true, Ordering::Release);
+        backend.ensure_observer();
         if let Some(observer) = backend.observer_thread.get() {
             observer.unpark();
         }
@@ -260,10 +238,11 @@ pub(crate) fn wake_observer() {
         .lock()
         .ok()
         .and_then(|current| current.upgrade());
-    if let Some(backend) = backend
-        && let Some(observer) = backend.observer_thread.get()
-    {
-        observer.unpark();
+    if let Some(backend) = backend {
+        backend.ensure_observer();
+        if let Some(observer) = backend.observer_thread.get() {
+            observer.unpark();
+        }
     }
 }
 fn call(command: Command) -> Result<Reply, String> {
@@ -306,7 +285,74 @@ pub(crate) fn publish_native_state(
     }
 }
 impl NativeBackend {
+    fn ensure_observer(self: &Arc<Self>) {
+        if self.stopped.load(Ordering::Acquire) || self.observer_thread.get().is_some() {
+            return;
+        }
+        let Ok(mut slot) = self.observer.lock() else {
+            return;
+        };
+        if slot.is_some() || self.stopped.load(Ordering::Acquire) {
+            return;
+        }
+        let observer_backend = Arc::clone(self);
+        let observer_stop = Arc::clone(&self.stopped);
+        let cancelled = Arc::clone(&self.cancelled);
+        if let Ok(observer) = std::thread::Builder::new()
+            .name("managed-service-state".into())
+            .spawn(move || {
+                crate::priority::demote_background_thread();
+                while !observer_stop.load(Ordering::Acquire) && !cancelled.load(Ordering::Acquire) {
+                    if !observer_backend.activated.load(Ordering::Acquire) {
+                        std::thread::park();
+                        continue;
+                    }
+                    // Native-only profiles do not initialize CLR, enumerate devices
+                    // or send recurring control requests for managed services.
+                    if crate::dotnet::initialized()
+                        && crate::managed_services::snapshots_requested()
+                    {
+                        let _ = observer_backend.refresh(false, false, true);
+                        std::thread::park_timeout(Duration::from_millis(250));
+                    } else {
+                        // The first Snapshot request explicitly wakes this owner;
+                        // CLR initialization alone does not need recurring work.
+                        std::thread::park();
+                    }
+                }
+            })
+        {
+            let _ = self.observer_thread.set(observer.thread().clone());
+            observer.thread().unpark();
+            *slot = Some(observer);
+        }
+    }
     fn prime_metadata(&self) -> Result<(), String> {
+        let publisher = {
+            self.published
+                .lock()
+                .map_err(|_| "Managed snapshot lock poisoned")?
+                .publisher
+                .clone()
+        };
+        if let Some(publisher) = publisher {
+            publisher.ensure_workers()?;
+            if !self.configurations_published.swap(true, Ordering::AcqRel)
+                && let Ok(database) = crate::config::configured_tablets()
+            {
+                let values: Vec<_> = database
+                    .entries()
+                    .iter()
+                    .filter_map(|entry| entry.usable())
+                    .collect();
+                if let Ok(encoded) = serde_json::to_value(values)
+                    && publisher.publish_configurations(&encoded).is_err()
+                {
+                    self.configurations_published
+                        .store(false, Ordering::Release);
+                }
+            }
+        }
         let mut state = self
             .published
             .lock()

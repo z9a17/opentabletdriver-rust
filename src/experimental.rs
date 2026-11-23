@@ -2,9 +2,10 @@
 //! report callbacks. Empty CPU lists retain the Windows scheduler defaults.
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use windows_sys::Win32::System::Threading::{
-    GetActiveProcessorGroupCount, GetCurrentProcess, GetProcessAffinityMask, SetProcessAffinityMask,
+    GetActiveProcessorGroupCount, GetCurrentProcess, GetCurrentThread, GetProcessAffinityMask,
+    SetProcessAffinityMask, SetThreadAffinityMask,
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -17,9 +18,76 @@ pub struct Settings {
 
 // New sessions read this once; applying settings never interrupts input.
 static DRIVER_MMCSS: AtomicBool = AtomicBool::new(false);
+// Target logical-CPU mask for the report-reader thread(s) only (0 = All CPUs).
+// Kept separate from the daemon's process affinity mask so background threads
+// and the .NET GC are never forced onto the reader's isolated core(s).
+static DRIVER_AFFINITY_MASK: AtomicUsize = AtomicUsize::new(0);
+static DRIVER_AFFINITY_EPOCH: AtomicU64 = AtomicU64::new(0);
 
 pub fn mmcss_enabled() -> bool {
     DRIVER_MMCSS.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+pub fn driver_affinity_mask() -> usize {
+    DRIVER_AFFINITY_MASK.load(Ordering::Relaxed)
+}
+
+/// Applies the configured `driver_cpus` affinity mask to the calling report
+/// thread only, restoring the previous thread affinity on drop.
+pub struct ThreadAffinity {
+    previous: Option<usize>,
+    epoch: u64,
+}
+
+impl ThreadAffinity {
+    pub fn apply_driver_thread() -> Self {
+        let mut this = Self {
+            previous: None,
+            epoch: u64::MAX,
+        };
+        this.refresh();
+        this
+    }
+
+    /// Re-applies the thread affinity mask if `experimental.toml` changed while
+    /// this session was running. Fast path is a single relaxed atomic load.
+    #[inline]
+    pub fn refresh(&mut self) {
+        let epoch = DRIVER_AFFINITY_EPOCH.load(Ordering::Acquire);
+        if epoch == self.epoch {
+            return;
+        }
+        self.epoch = epoch;
+        if unsafe { GetActiveProcessorGroupCount() } > 1 {
+            return;
+        }
+        let target = DRIVER_AFFINITY_MASK.load(Ordering::Relaxed);
+        let mask = if target != 0 {
+            target
+        } else if let Some(previous) = self.previous.take() {
+            unsafe {
+                let _ = SetThreadAffinityMask(GetCurrentThread(), previous);
+            }
+            return;
+        } else {
+            return;
+        };
+        let prev = unsafe { SetThreadAffinityMask(GetCurrentThread(), mask) };
+        if prev != 0 && self.previous.is_none() {
+            self.previous = Some(prev);
+        }
+    }
+}
+
+impl Drop for ThreadAffinity {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.take() {
+            unsafe {
+                let _ = SetThreadAffinityMask(GetCurrentThread(), previous);
+            }
+        }
+    }
 }
 
 pub fn path() -> Result<PathBuf, String> {
@@ -158,32 +226,35 @@ pub fn apply(cpus: &[u16]) -> Result<(), String> {
     set_mask(selected_mask(cpus, system)?)
 }
 
-/// Persist only after successful application. A failed save restores the
-/// previous daemon mask, without stopping or recreating the tablet worker.
+fn resolve_driver_mask(cpus: &[u16]) -> Result<usize, String> {
+    if cpus.is_empty() {
+        return Ok(0);
+    }
+    if unsafe { GetActiveProcessorGroupCount() } > 1 {
+        return Err("CPU pinning requires a single Windows processor group.".into());
+    }
+    let (_, system) = masks()?;
+    selected_mask(cpus, system)
+}
+
+fn publish_driver_mask(mask: usize) {
+    DRIVER_AFFINITY_MASK.store(mask, Ordering::Relaxed);
+    DRIVER_AFFINITY_EPOCH.fetch_add(1, Ordering::Release);
+}
+
+/// Persist first, then publish the reader-thread CPU mask and MMCSS flag.
+/// A failed save leaves the running driver's affinity untouched.
 pub fn save_driver_at(path: &Path, settings: &Settings) -> Result<(), String> {
     validate(settings)?;
+    let next_mask = resolve_driver_mask(&settings.driver_cpus)?;
     let snapshot = otd_core::storage::capture(path)?;
     let text = toml::to_string_pretty(settings).map_err(|error| error.to_string())?;
-    let previous = if unsafe { GetActiveProcessorGroupCount() } == 1 {
-        Some(masks()?.0)
-    } else {
-        None
-    };
-    apply(&settings.driver_cpus)?;
-    if let Err(error) = otd_core::storage::save(
+    otd_core::storage::save(
         path,
         text.as_bytes(),
         otd_core::storage::SaveMode::Replace(&snapshot),
-    ) {
-        if let Some(previous) = previous
-            && let Err(rollback) = set_mask(previous)
-        {
-            return Err(format!(
-                "{error}; restoring the previous CPU affinity also failed: {rollback}"
-            ));
-        }
-        return Err(error);
-    }
+    )?;
+    publish_driver_mask(next_mask);
     DRIVER_MMCSS.store(settings.mmcss, Ordering::Relaxed);
     Ok(())
 }
@@ -197,18 +268,16 @@ pub fn apply_saved(ui: bool) -> Result<(), String> {
     let settings = load()?;
     if !ui {
         DRIVER_MMCSS.store(settings.mmcss, Ordering::Relaxed);
+        let mask = resolve_driver_mask(&settings.driver_cpus)?;
+        publish_driver_mask(mask);
+        return Ok(());
     }
     // Default GUI settings retain external launcher affinity. An explicit All
     // in the dialog resets a prior app selection.
-    let cpus = if ui {
-        &settings.ui_cpus
-    } else {
-        &settings.driver_cpus
-    };
-    if ui && cpus.is_empty() {
+    if settings.ui_cpus.is_empty() {
         Ok(())
     } else {
-        apply(cpus)
+        apply(&settings.ui_cpus)
     }
 }
 
@@ -279,18 +348,28 @@ mod tests {
             mmcss: true,
         };
         save_driver_at(&path, &settings).unwrap();
-        assert_eq!(masks().unwrap().0, 1usize << cpu);
+        assert_eq!(
+            masks().unwrap().0,
+            original,
+            "driver CPU pinning must not restrict the daemon process mask"
+        );
+        assert_eq!(driver_affinity_mask(), 1usize << cpu);
         assert_eq!(load_at(&path).unwrap(), settings);
         assert!(mmcss_enabled());
-        apply(&[]).unwrap();
-        assert_eq!(masks().unwrap().0, system);
+        std::thread::spawn(move || {
+            let guard = ThreadAffinity::apply_driver_thread();
+            assert!(guard.previous.is_some());
+            drop(guard);
+        })
+        .join()
+        .unwrap();
         let invalid = Settings {
             ui_cpus: vec![64],
             driver_cpus: Vec::new(),
             mmcss: false,
         };
         assert!(save_driver_at(&path, &invalid).is_err());
-        assert_eq!(masks().unwrap().0, system);
+        assert_eq!(driver_affinity_mask(), 1usize << cpu);
         assert_eq!(load_at(&path).unwrap(), settings);
         assert!(
             mmcss_enabled(),
@@ -300,13 +379,14 @@ mod tests {
         permissions.set_readonly(true);
         std::fs::set_permissions(&path, permissions).unwrap();
         assert!(save_driver_at(&path, &settings).is_err());
-        assert_eq!(masks().unwrap().0, system);
+        assert_eq!(driver_affinity_mask(), 1usize << cpu);
         assert_eq!(load_at(&path).unwrap(), settings);
         let mut permissions = std::fs::metadata(&path).unwrap().permissions();
         #[allow(clippy::permissions_set_readonly_false)]
         permissions.set_readonly(false);
         std::fs::set_permissions(&path, permissions).unwrap();
         save_driver_at(&path, &Settings::default()).unwrap();
+        assert_eq!(driver_affinity_mask(), 0);
         assert_eq!(load_at(&path).unwrap(), Settings::default());
         assert!(!mmcss_enabled());
         std::fs::remove_dir_all(directory).unwrap();

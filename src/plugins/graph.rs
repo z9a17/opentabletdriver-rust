@@ -1,4 +1,4 @@
-use super::{PipelineStage, Plugin, PluginChain};
+use super::{NativeEntry, PipelineStage, Plugin, PluginChain};
 use crate::dotnet::{Graph, GraphNode, GraphReport};
 use otd_core::plugins::{DispatchInput, PipelineRuntime};
 use otd_core::reports::{ReportKind, ReportValues};
@@ -92,32 +92,27 @@ impl Scope<'_> {
             plugin.reset();
             return Ok(());
         }
-        let Some([x, y]) = values.position else {
+        let Some([mut x, mut y]) = values.position else {
             return Ok(());
         };
-        let mut sample = Sample {
-            x,
-            y,
-            time_ns: self.time_ns,
-            pressure: values.pressure.unwrap_or(0),
-            // V1's proximity flag means a detected positional sample, including
-            // the PTH Sense-only band. The separate near-proximity interface
-            // remains available to managed consumers without redefining v1.
-            flags: otd_plugin_api::PROXIMITY
-                | if values.eraser.unwrap_or(false) {
-                    otd_plugin_api::ERASER
-                } else {
-                    0
-                },
-        };
-        if !plugin.process(&mut sample) {
+        let pressure = values.pressure.unwrap_or(0);
+        // V1's proximity flag means a detected positional sample, including
+        // the PTH Sense-only band. The separate near-proximity interface
+        // remains available to managed consumers without redefining v1.
+        let flags = otd_plugin_api::PROXIMITY
+            | if values.eraser.unwrap_or(false) {
+                otd_plugin_api::ERASER
+            } else {
+                0
+            };
+        if !plugin.process_xy(&mut x, &mut y, self.time_ns, pressure, flags) {
             *self.failure = Some(index);
             return Err(io::Error::other(format!(
                 "Native filter {} failed or returned a nonfinite position",
                 plugin.name
             )));
         }
-        values.position = Some([sample.x, sample.y]);
+        values.position = Some([x, y]);
         Ok(())
     }
 
@@ -283,9 +278,25 @@ impl PluginChain {
             // them. The fused bridge leaves them to the host, which saves a
             // native continuation per report.
             let builtins_in_graph = self.builtin_slot.is_some();
-            // Admission in the graph runs pressure rewriting and host built-ins
-            // after Internal elements, including when transform/output is fused.
-            let frame = GraphReport::new(input.kind, &values, raw)?;
+            // When there are no Internal nodes and no managed output mode,
+            // pre-prepare pressure and built-in filters in Rust before FFI so
+            // C# skips the per-report Call(7) round-trip entirely.
+            let pre_prepared =
+                !self.has_internal && self.managed_output.is_none() && graph.supports_pre_prepare();
+            if pre_prepared {
+                let old_pressure = values.pressure;
+                runtime.prepare_report(&mut values)?;
+                if values.pressure != old_pressure {
+                    values.tip_switch = None;
+                }
+                if !builtins_in_graph {
+                    runtime.builtins(&mut values)?;
+                }
+            }
+            let mut frame = GraphReport::new(input.kind, &values, raw)?;
+            if pre_prepared {
+                frame.set_pre_prepared();
+            }
             // Disjoint field borrows: graph owns only managed references; this
             // callback scope owns the native nodes and host stages for this call.
             let mut scope = Scope {
@@ -319,35 +330,86 @@ impl PluginChain {
             }
             result
         } else {
-            let mut scope = Scope {
-                plugins: &mut self.plugins,
-                runtime,
-                failure: &mut self.failure,
-                time_ns,
-                builtins_in_graph: false,
-                error: None,
-            };
-            // The built-in filters run before the plugin at their slot, or first.
-            let slot = self.builtin_slot.unwrap_or(0);
-            for stage in [PipelineStage::PreTransform, PipelineStage::Pixels] {
-                if stage == PipelineStage::Pixels
-                    && !scope.runtime.transform(input.kind, &mut values)?
-                {
+            let run_slice = |entries: &mut [NativeEntry],
+                             plugins: &mut [Plugin],
+                             failure: &mut Option<usize>,
+                             kind: ReportKind,
+                             values: &mut ReportValues|
+             -> io::Result<()> {
+                if entries.is_empty() {
                     return Ok(());
                 }
-                for index in 0..scope.plugins.len() {
-                    if stage == PipelineStage::PreTransform && index == slot {
-                        scope.runtime.builtins(&mut values)?;
+                if kind == ReportKind::OutOfRange {
+                    for entry in entries.iter() {
+                        if !entry.disabled {
+                            unsafe { (entry.reset)(entry.context) };
+                        }
                     }
-                    if scope.plugins[index].stage == stage {
-                        scope.native(index, input.kind, &mut values)?;
+                    return Ok(());
+                }
+                let Some([mut x, mut y]) = values.position else {
+                    return Ok(());
+                };
+                let pressure = values.pressure.unwrap_or(0);
+                let flags = otd_plugin_api::PROXIMITY
+                    | if values.eraser.unwrap_or(false) {
+                        otd_plugin_api::ERASER
+                    } else {
+                        0
+                    };
+                for entry in entries.iter_mut() {
+                    if entry.disabled {
+                        continue;
                     }
+                    let mut sample = Sample {
+                        x,
+                        y,
+                        time_ns,
+                        pressure,
+                        flags,
+                    };
+                    let status = unsafe { (entry.process)(entry.context, &mut sample) };
+                    if status != 0 || !sample.x.is_finite() || !sample.y.is_finite() {
+                        entry.disabled = true;
+                        plugins[entry.index].disabled = true;
+                        *failure = Some(entry.index);
+                        return Err(io::Error::other(format!(
+                            "Native filter {} failed or returned a nonfinite position",
+                            plugins[entry.index].name
+                        )));
+                    }
+                    x = sample.x;
+                    y = sample.y;
                 }
-                if stage == PipelineStage::PreTransform && slot >= scope.plugins.len() {
-                    scope.runtime.builtins(&mut values)?;
-                }
+                values.position = Some([x, y]);
+                Ok(())
+            };
+            run_slice(
+                &mut self.native_pre_before,
+                &mut self.plugins,
+                &mut self.failure,
+                input.kind,
+                &mut values,
+            )?;
+            runtime.builtins(&mut values)?;
+            run_slice(
+                &mut self.native_pre_after,
+                &mut self.plugins,
+                &mut self.failure,
+                input.kind,
+                &mut values,
+            )?;
+            if !runtime.transform(input.kind, &mut values)? {
+                return Ok(());
             }
-            scope.runtime.output(input.kind, &values, raw)
+            run_slice(
+                &mut self.native_pixels,
+                &mut self.plugins,
+                &mut self.failure,
+                input.kind,
+                &mut values,
+            )?;
+            runtime.output(input.kind, &values, raw)
         }
     }
 }

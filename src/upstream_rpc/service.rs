@@ -741,27 +741,33 @@ impl Connection {
         super::collection::save(&document, self.settings_revision.unwrap())?;
         Ok(Value::Null)
     }
-    pub fn events(&mut self) -> Vec<Value> {
+    pub fn events(&mut self) -> Vec<Vec<u8>> {
         if self.stop.load(Ordering::Acquire) {
             return Vec::new();
         }
         let mut events = Vec::new();
+        let push_event = |events: &mut Vec<Vec<u8>>, value: Value| {
+            if let Ok(frame) = protocol::encode(&value) {
+                events.push(frame);
+            }
+        };
         if let Some(capture) = &mut self.debug {
             match capture.poll(Some(&self.debug_sessions)) {
                 Ok((reports, diagnostics)) => {
                     events.extend(reports);
-                    events.extend(
-                        diagnostics
-                            .iter()
-                            .map(|message| protocol::event("Message", native_log(message))),
-                    );
+                    for message in &diagnostics {
+                        push_event(&mut events, protocol::event("Message", native_log(message)));
+                    }
                 }
                 Err(error) => {
                     self.debug = None;
-                    events.push(protocol::event(
-                        "Message",
-                        native_log(&format!("Compatibility report capture stopped: {error}")),
-                    ));
+                    push_event(
+                        &mut events,
+                        protocol::event(
+                            "Message",
+                            native_log(&format!("Compatibility report capture stopped: {error}")),
+                        ),
+                    );
                 }
             }
         }
@@ -775,12 +781,9 @@ impl Connection {
             self.debug_sessions = sessions;
         }
         if let Ok((instance, sequence, messages)) = self.logs() {
-            events.extend(message_events(
-                &mut self.log_cursor,
-                instance,
-                sequence,
-                &messages,
-            ));
+            for event in message_events(&mut self.log_cursor, instance, sequence, &messages) {
+                push_event(&mut events, event);
+            }
         }
         if let Ok(tablets) = self.tablets() {
             if self
@@ -788,14 +791,17 @@ impl Connection {
                 .as_ref()
                 .is_some_and(|previous| previous != &tablets)
             {
-                events.push(protocol::event("TabletsChanged", tablets.clone()));
+                push_event(
+                    &mut events,
+                    protocol::event("TabletsChanged", tablets.clone()),
+                );
             }
             self.tablet_cursor = Some(tablets);
         }
         let resync = self.shared.resynchronize.load(Ordering::Acquire);
         if self.resync_cursor != resync {
             self.resync_cursor = resync;
-            events.push(protocol::event("Resynchronize", json!({})));
+            push_event(&mut events, protocol::event("Resynchronize", json!({})));
         }
         events
     }
@@ -1115,7 +1121,9 @@ impl Service for Connection {
         match method {
             "GetPluginTypes" => {
                 protocol::no_arguments(params)?;
-                crate::plugins::load_parser_registry()?;
+                if crate::dotnet::registry_snapshot().is_none() {
+                    crate::plugins::load_parser_registry()?;
+                }
                 Ok(crate::dotnet::get_plugin_types()?)
             }
             "ConstructPluginStore" => {
@@ -1132,7 +1140,9 @@ impl Service for Connection {
                 let path = path.ok_or_else(|| Error::invalid("plugin path must be a string"))?;
                 let category =
                     category.ok_or_else(|| Error::invalid("plugin category must be a string"))?;
-                crate::plugins::load_parser_registry()?;
+                if crate::dotnet::registry_snapshot().is_none() {
+                    crate::plugins::load_parser_registry()?;
+                }
                 Ok(crate::dotnet::construct_plugin_store(path, category)?)
             }
             "GetTablets" => {

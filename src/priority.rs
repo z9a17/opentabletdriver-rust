@@ -20,14 +20,69 @@ use std::io;
 use std::mem::size_of;
 
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcess, GetCurrentThread, GetPriorityClass, GetThreadPriority, HIGH_PRIORITY_CLASS,
+    AVRT_PRIORITY_HIGH, AvSetMmThreadPriority, GetCurrentProcess, GetCurrentThread,
+    GetPriorityClass, GetThreadPriority, HIGH_PRIORITY_CLASS,
     PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
     PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION, PROCESS_POWER_THROTTLING_STATE,
     ProcessPowerThrottling, REALTIME_PRIORITY_CLASS, SetPriorityClass, SetProcessInformation,
     SetThreadInformation, SetThreadPriority, THREAD_POWER_THROTTLING_CURRENT_VERSION,
     THREAD_POWER_THROTTLING_EXECUTION_SPEED, THREAD_POWER_THROTTLING_STATE,
-    THREAD_PRIORITY_TIME_CRITICAL, ThreadPowerThrottling,
+    THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_TIME_CRITICAL, ThreadPowerThrottling,
 };
+
+#[link(name = "winmm")]
+unsafe extern "system" {
+    fn timeBeginPeriod(uperiod: u32) -> u32;
+    fn timeEndPeriod(uperiod: u32) -> u32;
+}
+
+const TIMERR_NOERROR: u32 = 0;
+
+/// Scoped Windows multimedia timer resolution guard (`timeBeginPeriod` /
+/// `timeEndPeriod`). Acquired lazily only while sub-15 ms timer waits are
+/// active (e.g. timed filters/interpolators/scroll timers) and released when
+/// returning to idle so background power draw stays low.
+pub struct TimerResolution {
+    period_ms: u32,
+}
+
+impl TimerResolution {
+    pub fn acquire(period_ms: u32) -> Option<Self> {
+        let period_ms = period_ms.max(1);
+        if unsafe { timeBeginPeriod(period_ms) } == TIMERR_NOERROR {
+            Some(Self { period_ms })
+        } else {
+            None
+        }
+    }
+}
+
+impl Drop for TimerResolution {
+    fn drop(&mut self) {
+        unsafe { timeEndPeriod(self.period_ms) };
+    }
+}
+
+/// Demotes a cold daemon/control/discovery thread so it does not inherit the
+/// process's `HIGH_PRIORITY_CLASS` (priority 13) to preempt games or compete
+/// with the time-critical tablet reader thread.
+pub fn demote_background_thread() {
+    let thread = unsafe { GetCurrentThread() };
+    let _ = unsafe { SetThreadPriority(thread, THREAD_PRIORITY_BELOW_NORMAL) };
+    let state = THREAD_POWER_THROTTLING_STATE {
+        Version: THREAD_POWER_THROTTLING_CURRENT_VERSION,
+        ControlMask: THREAD_POWER_THROTTLING_EXECUTION_SPEED,
+        StateMask: THREAD_POWER_THROTTLING_EXECUTION_SPEED,
+    };
+    let _ = unsafe {
+        SetThreadInformation(
+            thread,
+            ThreadPowerThrottling,
+            (&state as *const THREAD_POWER_THROTTLING_STATE).cast::<c_void>(),
+            size_of::<THREAD_POWER_THROTTLING_STATE>() as u32,
+        )
+    };
+}
 
 /// Keeps the daemon process at High priority class and opted out of Windows 11
 /// process-level EcoQoS and timer-resolution throttling until dropped.
@@ -178,6 +233,12 @@ impl ProAudio {
         if handle.is_null() {
             Err(io::Error::last_os_error())
         } else {
+            if unsafe { AvSetMmThreadPriority(handle, AVRT_PRIORITY_HIGH) } == 0 {
+                eprintln!(
+                    "could not raise MMCSS Pro Audio thread priority: {}",
+                    io::Error::last_os_error()
+                );
+            }
             Ok(Self(handle))
         }
     }
@@ -221,6 +282,25 @@ fn set_high_qos(enabled: bool) -> bool {
 mod tests {
     use super::*;
     use windows_sys::Win32::System::Threading::THREAD_PRIORITY_NORMAL;
+
+    #[test]
+    fn demote_background_thread_lowers_thread_priority() {
+        std::thread::spawn(|| {
+            let current = || unsafe { GetThreadPriority(GetCurrentThread()) };
+            assert_eq!(current(), THREAD_PRIORITY_NORMAL);
+            demote_background_thread();
+            assert_eq!(current(), THREAD_PRIORITY_BELOW_NORMAL);
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn timer_resolution_guard_acquires_and_releases() {
+        let guard = TimerResolution::acquire(1);
+        assert!(guard.is_some());
+        drop(guard);
+    }
 
     #[test]
     fn guard_raises_the_thread_and_restores_it() {

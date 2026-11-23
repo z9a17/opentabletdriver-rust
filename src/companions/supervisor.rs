@@ -37,6 +37,7 @@ impl Supervisor {
         let thread = std::thread::Builder::new()
             .name("tablet-supervisor".into())
             .spawn(move || {
+                crate::priority::demote_background_thread();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     supervise(
                         profile,

@@ -95,9 +95,10 @@ unsafe sealed class SynchronousGraph : IDisposable
             snapshots = inFlightCompletion?.Task ?? Task.CompletedTask;
             ClearPending();
             asyncFailure = null; asyncError = null;
+            Volatile.Write(ref pendingSignal, 0);
         }
         foreach (Node node in AllNodes()) node.Filter?.AttachAsyncSink(null);
-        lock (admissionGate) admitted.Clear();
+        lock (admissionGate) { admitted.Clear(); syncAdmittedReport = null; syncAdmittedState = null; }
         if (sourceGeneration is { } generation)
         {
             sourceGeneration = null;
@@ -114,6 +115,8 @@ unsafe sealed class SynchronousGraph : IDisposable
     }
     readonly ConditionalWeakTable<IDeviceReport, Admission> admitted = new();
     readonly object admissionGate = new();
+    IDeviceReport? syncAdmittedReport;
+    Admission? syncAdmittedState;
     long emissionEpoch = 1;
     Admission unpreparedAdmission = new(1, false), preparedAdmission = new(1, true);
     // Ordinary continuations resume downstream of Prepare, including queued
@@ -128,7 +131,7 @@ unsafe sealed class SynchronousGraph : IDisposable
     string? outputFailure;
     readonly Node modeSource = new(new GraphNode { Index = uint.MaxValue }, _ => { });
     const int MaxPending = 1024, MaxNodePending = 64, MaxPendingBytes = 4 * 1024 * 1024;
-    sealed class PendingEmission
+    struct PendingEmission
     {
         internal Node? Node;
         internal IDeviceReport? Report;
@@ -149,13 +152,13 @@ unsafe sealed class SynchronousGraph : IDisposable
         {
             if (callback != null) ObjectDisposedException.ThrowIf(disposed, this);
             wake = callback; wakeScope = scope;
-            if (asyncFailure != null || pendingCount != 0 && pending[pendingHead].Ready) WakePending();
+            if (asyncFailure != null || pendingCount != 0 && pending![pendingHead].Ready) WakePending();
         }
     }
-    // Slots themselves are allocated at setup only. The async path owns copied
-    // report values; the native-only graph and synchronous Emit do no queue work.
-    readonly PendingEmission[] pending = Enumerable.Range(0, MaxPending).Select(_ => new PendingEmission()).ToArray();
-    int pendingHead, pendingCount, pendingBytes, inFlightBytes;
+    // Lazily allocated on first async Enqueue; projector-only and synchronous
+    // graphs pay zero allocation for the 1024-slot ring.
+    PendingEmission[]? pending;
+    int pendingHead, pendingCount, pendingBytes, inFlightBytes, pendingSignal;
     TaskCompletionSource? inFlightCompletion;
     ulong reservation;
     Node? asyncFailure;
@@ -165,14 +168,18 @@ unsafe sealed class SynchronousGraph : IDisposable
     void ClearPending()
     {
         // Called under asyncGate, also invalidating unfinished reservations.
-        while (pendingCount != 0)
+        if (pending != null)
         {
-            PendingEmission item = pending[pendingHead];
-            if (item.Node != null) item.Node.Pending--;
-            item.Node = null; item.Report = null; item.Resume = null; item.Ready = false; item.Reservation = 0; item.Bytes = 0;
-            pendingHead = (pendingHead + 1) % MaxPending; pendingCount--;
+            while (pendingCount != 0)
+            {
+                ref PendingEmission item = ref pending[pendingHead];
+                if (item.Node != null) item.Node.Pending--;
+                item = default;
+                pendingHead = (pendingHead + 1) % MaxPending; pendingCount--;
+            }
         }
         pendingBytes = 0;
+        Volatile.Write(ref pendingSignal, asyncFailure != null ? 1 : 0);
     }
     void ResetPending()
     {
@@ -185,17 +192,22 @@ unsafe sealed class SynchronousGraph : IDisposable
                 emissionEpoch = checked(emissionEpoch + 1);
                 unpreparedAdmission = new(emissionEpoch, false);
                 preparedAdmission = new(emissionEpoch, true);
+                if (syncAdmittedReport != null)
+                {
+                    admitted.AddOrUpdate(syncAdmittedReport, syncAdmittedState!);
+                    syncAdmittedReport = null; syncAdmittedState = null;
+                }
                 ClearPending();
             }
     }
 
     void AsyncError(Node node, string message)
     {
-        if (asyncFailure == null) { asyncFailure = node; asyncError = message; WakePending(); }
+        if (asyncFailure == null) { asyncFailure = node; asyncError = message; Volatile.Write(ref pendingSignal, 1); WakePending(); }
     }
     void Enqueue(Node node, IDeviceReport? report, Action<IDeviceReport>? resume = null)
     {
-        PendingEmission item;
+        int slot;
         ulong ticket;
         lock (asyncGate)
         {
@@ -210,11 +222,14 @@ unsafe sealed class SynchronousGraph : IDisposable
                     : "Asynchronous filter emission queue overflow; pending outputs were discarded and the emitting filter was disabled.");
                 return;
             }
-            item = pending[(pendingHead + pendingCount) % MaxPending];
+            pending ??= new PendingEmission[MaxPending];
+            slot = (pendingHead + pendingCount) % MaxPending;
+            ref PendingEmission item = ref pending[slot];
             ticket = ++reservation; item.Reservation = ticket; item.Node = node;
             item.Report = null; item.Resume = resume; item.Ready = false; item.Bytes = 0;
             if (inFlightBytes == 0) inFlightCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
             pendingCount++; node.Pending++; inFlightBytes += OwnedReportSnapshot.MaxBytes;
+            Volatile.Write(ref pendingSignal, 1);
         }
         IDeviceReport? copy = null;
         int bytes = 0;
@@ -226,7 +241,9 @@ unsafe sealed class SynchronousGraph : IDisposable
             else lock (admissionGate)
             {
                 ArgumentNullException.ThrowIfNull(report);
-                Admission identity = admitted.TryGetValue(report, out var known) ? known : unpreparedAdmission;
+                Admission identity = ReferenceEquals(report, syncAdmittedReport)
+                    ? syncAdmittedState!
+                    : (admitted.TryGetValue(report, out var known) ? known : unpreparedAdmission);
                 capturedEpoch = identity.Epoch;
                 if (capturedEpoch == emissionEpoch)
                 {
@@ -234,7 +251,7 @@ unsafe sealed class SynchronousGraph : IDisposable
                     // gate. A snapshot can never contain rewritten pressure
                     // paired with an unprepared admission identity.
                     copy = OwnedReportSnapshot.Capture(report, out bytes);
-                    admitted.Add(copy, identity);
+                    admitted.AddOrUpdate(copy, identity);
                 }
             }
         }
@@ -248,12 +265,13 @@ unsafe sealed class SynchronousGraph : IDisposable
                 // copy is in flight. Never fill a since-reused slot.
                 inFlightBytes -= OwnedReportSnapshot.MaxBytes;
                 if (inFlightBytes == 0) completed = inFlightCompletion;
-                if (disposed || item.Reservation != ticket) return;
+                if (disposed || pending == null || pending[slot].Reservation != ticket) return;
                 if (error != null) { AsyncError(node, error); return; }
                 // A reset can retire a capture between copying and publishing.
                 // Keep an empty ready slot so later reservations stay FIFO.
                 if (capturedEpoch != 0 && capturedEpoch != emissionEpoch) { copy = null; bytes = 0; }
                 pendingBytes += bytes;
+                ref PendingEmission item = ref pending[slot];
                 item.Bytes = bytes; item.Report = copy; item.Ready = true;
                 WakePending();
             }
@@ -263,6 +281,7 @@ unsafe sealed class SynchronousGraph : IDisposable
     }
     void DrainPending()
     {
+        if (Volatile.Read(ref pendingSignal) == 0) return;
         int limit;
         lock (asyncGate) limit = pendingCount;
         // A producer/downstream callback cannot make one tick drain forever.
@@ -282,13 +301,18 @@ unsafe sealed class SynchronousGraph : IDisposable
                     asyncFailure = null; asyncError = null; ClearPending();
                     throw new GraphAbort();
                 }
-                if (i == limit || pendingCount == 0) return;
-                PendingEmission item = pending[pendingHead];
+                if (i == limit || pendingCount == 0)
+                {
+                    Volatile.Write(ref pendingSignal, pendingCount != 0 ? 1 : 0);
+                    return;
+                }
+                ref PendingEmission item = ref pending![pendingHead];
                 if (!item.Ready) return; // Earlier admitted copy must finish first.
                 node = item.Node!; report = item.Report; resume = item.Resume;
                 pendingBytes -= item.Bytes; pendingCount--; node.Pending--;
-                item.Node = null; item.Report = null; item.Resume = null; item.Reservation = 0; item.Bytes = 0; item.Ready = false;
+                item = default;
                 pendingHead = (pendingHead + 1) % MaxPending;
+                if (pendingCount == 0 && asyncFailure == null) Volatile.Write(ref pendingSignal, 0);
             }
             if (node.Disabled || report == null) continue;
             int previous = currentEmitter; currentEmitter = ReferenceEquals(node, modeSource) ? -1 : checked((int)node.Index);
@@ -377,15 +401,28 @@ unsafe sealed class SynchronousGraph : IDisposable
             if (TracksAdmission)
                 lock (admissionGate)
                 {
-                    // A source parser may reuse its input object. Only this
-                    // newly received source gains the current epoch/identity.
-                    admitted.Remove(report); admitted.Add(report, unpreparedAdmission);
+                    // Single-report synchronous fast path avoids CWT churn on
+                    // the active in-flight report and reusing source parsers.
+                    if (!ReferenceEquals(syncAdmittedReport, report))
+                    {
+                        if (syncAdmittedReport != null)
+                            admitted.AddOrUpdate(syncAdmittedReport, syncAdmittedState!);
+                        admitted.Remove(report);
+                        syncAdmittedReport = report;
+                    }
+                    syncAdmittedState = unpreparedAdmission;
                 }
-            // Host built-ins can modify position before the graph dispatch. The
-            // concrete original report object remains the downstream identity.
+            // Host built-ins can modify position (and pressure when pre-prepared)
+            // before graph dispatch; the concrete report stays the downstream identity.
             if (originalReport is IAbsolutePositionReport position && (input->Flags & Position) != 0)
                 position.Position = new Vector2(input->X, input->Y);
             if (managedOutput is { } endpoint) { endpoint.Mode.Read(report); DrainOutput(); }
+            else if ((input->Reserved & 1) != 0 && internalNodes.Length == 0)
+            {
+                if (originalReport is ITabletReport tablet && (input->Flags & Tablet) != 0)
+                    tablet.Pressure = input->Pressure;
+                Visit(pre, 0, report, transform);
+            }
             else Visit(internalNodes, 0, report, Admit);
             return failed ? -1 : 0;
         }
@@ -399,10 +436,10 @@ unsafe sealed class SynchronousGraph : IDisposable
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         if (outputFailure != null) return -1;
-        if (hasManagedFilters || managedOutput != null)
+        if ((hasManagedFilters || managedOutput != null) && Volatile.Read(ref pendingSignal) != 0)
             lock (asyncGate)
             {
-                if (asyncFailure != null || pendingCount != 0 && pending[pendingHead].Ready) return 0;
+                if (asyncFailure != null || pendingCount != 0 && pending![pendingHead].Ready) return 0;
             }
         if (!hasManagedFilters && timed.Length == 0 && managedOutput == null) return -2;
         // Timer state may change on a foreign thread without notification.
@@ -525,11 +562,14 @@ unsafe sealed class SynchronousGraph : IDisposable
     {
         if (managedOutput is not { } endpoint) return;
         // Foreign producers cannot keep one native callback draining forever.
-        int limit = endpoint.Queue.PendingCount;
-        for (int index = 0; index < limit; index++)
+        int remaining = endpoint.Queue.PendingCount;
+        if (remaining == 0) return;
+        ManagedCommand* batch = stackalloc ManagedCommand[32];
+        while (remaining > 0)
         {
-            ManagedCommand command;
-            try { if (!endpoint.Queue.Take(out command)) return; }
+            int take = Math.Min(remaining, 32);
+            int taken;
+            try { taken = endpoint.Queue.TakeBatch(new Span<ManagedCommand>(batch, take)); }
             catch (Exception error)
             {
                 outputFailure = Error = error.GetBaseException().Message;
@@ -537,9 +577,15 @@ unsafe sealed class SynchronousGraph : IDisposable
                 lock (asyncGate) ClearPending();
                 throw new GraphAbort();
             }
-            GraphReport frame = new() { Version = 2, Size = (uint)sizeof(GraphReport), Kind = command.Kind, Reserved = command.Owner,
-                X = command.X, Y = command.Y, Pressure = command.Value, Flags = command.Flags, TiltX = command.TiltX, TiltY = command.TiltY, Rotation = BitConverter.SingleToInt32Bits(command.Rotation) };
-            if (callback(scope, 6, 0, &frame) != 0) { failed = true; throw new GraphAbort(); }
+            if (taken == 0) return;
+            remaining -= taken;
+            for (int index = 0; index < taken; index++)
+            {
+                ref ManagedCommand command = ref batch[index];
+                GraphReport frame = new() { Version = 2, Size = (uint)sizeof(GraphReport), Kind = command.Kind, Reserved = command.Owner,
+                    X = command.X, Y = command.Y, Pressure = command.Value, Flags = command.Flags, TiltX = command.TiltX, TiltY = command.TiltY, Rotation = BitConverter.SingleToInt32Bits(command.Rotation) };
+                if (callback(scope, 6, 0, &frame) != 0) { failed = true; throw new GraphAbort(); }
+            }
         }
     }
 
@@ -556,11 +602,16 @@ unsafe sealed class SynchronousGraph : IDisposable
         bool first = true;
         if (TracksAdmission)
             lock (admissionGate)
-                if (admitted.TryGetValue(report, out var identity))
+            {
+                Admission? identity = ReferenceEquals(report, syncAdmittedReport)
+                    ? syncAdmittedState
+                    : (admitted.TryGetValue(report, out var known) ? known : null);
+                if (identity != null)
                 {
                     if (identity.Epoch != emissionEpoch) return false;
                     first = !identity.Prepared;
                 }
+            }
         // Built-in ordinary filters still consume every Internal emission;
         // only the pressure rewrite is skipped for a previously admitted object.
         return Call(7, first ? 1u : 0u, report);
@@ -627,7 +678,11 @@ unsafe sealed class SynchronousGraph : IDisposable
                         if ((capabilities & Tablet) != 0) Unsafe.As<ITabletReport>(report).Pressure = frame.Pressure;
                         // A suppressed ordinary-filter result still rewrote
                         // pressure. Retained replay must not rewrite it again.
-                        if (index != 0) { admitted.Remove(report); admitted.Add(report, preparedAdmission); }
+                        if (index != 0)
+                        {
+                            if (ReferenceEquals(report, syncAdmittedReport)) syncAdmittedState = preparedAdmission;
+                            else admitted.AddOrUpdate(report, preparedAdmission);
+                        }
                     }
                 }
                 else if ((operation is 5 or 7) && (capabilities & Tablet) != 0)

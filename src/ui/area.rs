@@ -98,10 +98,55 @@ impl AreaView {
     }
 }
 
-pub struct AreaFonts {
+pub struct AreaFonts<'a> {
     pub small: HFONT,
     /// Pixel height of `small`, used to create rotated copies.
     pub small_pixels: i32,
+    /// Optional cache for rotated label fonts (`angle` and `angle + 900`).
+    pub rotated_cache: Option<&'a RotatedFontCache>,
+}
+
+/// Caches up to two rotated area-label fonts so dragging/repainting a rotated
+/// area does not call `CreateFontW` / `DeleteObject` every frame.
+#[derive(Default)]
+pub struct RotatedFontCache {
+    slots: std::cell::RefCell<[Option<(i32, i32, HFONT)>; 2]>,
+}
+
+impl RotatedFontCache {
+    pub fn get(&self, pixels: i32, angle: i32) -> HFONT {
+        let mut slots = self.slots.borrow_mut();
+        for entry in slots.iter().flatten() {
+            if entry.0 == pixels && entry.1 == angle {
+                return entry.2;
+            }
+        }
+        let font = super::create_font(pixels, 400, "Segoe UI", angle);
+        let replace_index = slots.iter().position(Option::is_none).unwrap_or(0);
+        if let Some((_, _, old)) = slots[replace_index].replace((pixels, angle, font)) {
+            unsafe { DeleteObject(old) };
+        }
+        // Keep the two most recent angles by moving slot 0 -> 1 on eviction.
+        if replace_index == 0 {
+            slots.swap(0, 1);
+        }
+        font
+    }
+
+    pub fn clear(&self) {
+        let mut slots = self.slots.borrow_mut();
+        for entry in slots.iter_mut() {
+            if let Some((_, _, font)) = entry.take() {
+                unsafe { DeleteObject(font) };
+            }
+        }
+    }
+}
+
+impl Drop for RotatedFontCache {
+    fn drop(&mut self) {
+        self.clear();
+    }
 }
 
 fn frame(canvas: &mut Canvas, rect: RECT, color: super::theme::Rgb) {
@@ -244,14 +289,20 @@ pub fn paint(canvas: &mut Canvas, scene: &AreaScene, fonts: &AreaFonts, palette:
         (place(height_x, 0.0), height_text, angle + 900),
     ];
     for (point, text, angle) in labels {
-        let rotated = angle.rem_euclid(3600) != 0;
-        let font = if rotated {
-            super::create_font(fonts.small_pixels, 400, "Segoe UI", angle.rem_euclid(3600))
+        let normalized = angle.rem_euclid(3600);
+        let rotated = normalized != 0;
+        let (font, owned) = if !rotated {
+            (fonts.small, false)
+        } else if let Some(cache) = fonts.rotated_cache {
+            (cache.get(fonts.small_pixels, normalized), false)
         } else {
-            fonts.small
+            (
+                super::create_font(fonts.small_pixels, 400, "Segoe UI", normalized),
+                true,
+            )
         };
         canvas.text_at(point, &text, font, palette.text, TA_CENTER | TA_TOP);
-        if rotated {
+        if owned {
             unsafe { DeleteObject(font) };
         }
     }

@@ -18,10 +18,10 @@ use windows_sys::{
                 SetupDiEnumDeviceInterfaces, SetupDiGetClassDevsW,
             },
             Usb::{
-                USB_INTERFACE_DESCRIPTOR, WINUSB_INTERFACE_HANDLE, WINUSB_PIPE_INFORMATION,
+                RAW_IO, USB_INTERFACE_DESCRIPTOR, WINUSB_INTERFACE_HANDLE, WINUSB_PIPE_INFORMATION,
                 WINUSB_SETUP_PACKET, WinUsb_ControlTransfer, WinUsb_FlushPipe, WinUsb_Free,
                 WinUsb_GetOverlappedResult, WinUsb_Initialize, WinUsb_QueryInterfaceSettings,
-                WinUsb_QueryPipe, WinUsb_ReadPipe, WinUsb_WritePipe,
+                WinUsb_QueryPipe, WinUsb_ReadPipe, WinUsb_SetPipePolicy, WinUsb_WritePipe,
             },
         },
         Foundation::{
@@ -124,6 +124,21 @@ impl Interface {
                 ));
             }
             *target = Some((pipe.PipeId, pipe.MaximumPacketSize));
+        }
+        if let Some((pipe_id, _)) = this.input {
+            // Bypass WinUSB's internal buffering on the IN pipe so overlapped
+            // reads go straight to the USB host controller (buffers are exact
+            // multiples of MaximumPacketSize). Best-effort if unsupported.
+            let enable: u8 = 1;
+            let _ = unsafe {
+                WinUsb_SetPipePolicy(
+                    this.raw,
+                    pipe_id,
+                    RAW_IO,
+                    size_of::<u8>() as u32,
+                    (&enable as *const u8).cast(),
+                )
+            };
         }
         Ok(this)
     }

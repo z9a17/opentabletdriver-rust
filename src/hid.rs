@@ -3,9 +3,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::c_void;
 use std::io;
-use std::mem::size_of;
+use std::mem::{offset_of, size_of};
 use std::os::windows::ffi::OsStringExt;
 use std::ptr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::dotnet::RuntimeDecoder;
 use otd_core::endpoint_match::{self, Endpoint, Transport};
@@ -25,15 +27,16 @@ use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
 use windows_sys::Win32::Devices::HumanInterfaceDevice::{
     HIDD_ATTRIBUTES, HIDP_CAPS, HIDP_STATUS_SUCCESS, HidD_FreePreparsedData, HidD_GetAttributes,
     HidD_GetHidGuid, HidD_GetIndexedString, HidD_GetManufacturerString, HidD_GetPreparsedData,
-    HidD_GetProductString, HidD_GetSerialNumberString, HidD_SetFeature, HidP_GetCaps,
-    PHIDP_PREPARSED_DATA,
+    HidD_GetProductString, HidD_GetSerialNumberString, HidD_SetFeature, HidD_SetNumInputBuffers,
+    HidP_GetCaps, PHIDP_PREPARSED_DATA,
 };
 use windows_sys::Win32::Foundation::{
     CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_NO_MORE_ITEMS, GENERIC_READ,
     GENERIC_WRITE, HANDLE, HWND, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_FLAG_OVERLAPPED, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, WriteFile,
+    CreateFileW, FILE_FLAG_OVERLAPPED, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    SetFileCompletionNotificationModes, WriteFile,
 };
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Threading::{
@@ -74,7 +77,10 @@ impl Drop for OwnedHandle {
     }
 }
 
-pub struct Event(OwnedHandle);
+pub struct Event {
+    handle: OwnedHandle,
+    signaled: Arc<AtomicBool>,
+}
 
 // SAFETY: An owned Windows event handle can be moved between threads. The UI
 // duplicates its event handle before starting the driver, preserving ownership.
@@ -83,11 +89,14 @@ unsafe impl Send for Event {}
 impl Event {
     pub fn create(manual_reset: bool) -> io::Result<Self> {
         let raw = unsafe { CreateEventW(ptr::null(), i32::from(manual_reset), 0, ptr::null()) };
-        Ok(Self(OwnedHandle::new(raw)?))
+        Ok(Self {
+            handle: OwnedHandle::new(raw)?,
+            signaled: Arc::new(AtomicBool::new(false)),
+        })
     }
 
     pub fn raw(&self) -> HANDLE {
-        self.0.raw()
+        self.handle.raw()
     }
 
     pub fn duplicate(&self) -> io::Result<Self> {
@@ -107,14 +116,41 @@ impl Event {
         {
             return Err(io::Error::last_os_error());
         }
-        Ok(Self(OwnedHandle::new(duplicate)?))
+        Ok(Self {
+            handle: OwnedHandle::new(duplicate)?,
+            signaled: Arc::clone(&self.signaled),
+        })
     }
 
     pub fn signal(&self) -> io::Result<()> {
+        self.signaled.store(true, Ordering::Release);
         if unsafe { SetEvent(self.raw()) } == 0 {
             return Err(io::Error::last_os_error());
         }
         Ok(())
+    }
+
+    /// Lock-free, syscall-free check of the mirrored signaled state set by
+    /// `Event::signal()`. Pair with `sync_signaled()` after any external
+    /// `ResetEvent(event.raw())`.
+    #[inline]
+    pub fn is_signaled_fast(&self) -> bool {
+        self.signaled.load(Ordering::Acquire)
+    }
+
+    /// Synchronizes the atomic mirror with the actual kernel event state.
+    pub fn sync_signaled(&self) -> io::Result<bool> {
+        match unsafe { WaitForSingleObject(self.raw(), 0) } {
+            WAIT_OBJECT_0 => {
+                self.signaled.store(true, Ordering::Release);
+                Ok(true)
+            }
+            WAIT_TIMEOUT => {
+                self.signaled.store(false, Ordering::Release);
+                Ok(false)
+            }
+            _ => Err(io::Error::last_os_error()),
+        }
     }
 }
 
@@ -123,6 +159,22 @@ mod event_tests {
     use super::*;
     use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
     use windows_sys::Win32::System::Threading::WaitForSingleObject;
+
+    #[test]
+    fn event_fast_signal_mirror_tracks_signal_and_external_reset() {
+        use windows_sys::Win32::System::Threading::ResetEvent;
+        let event = Event::create(true).unwrap();
+        let dup = event.duplicate().unwrap();
+        assert!(!event.is_signaled_fast());
+        assert!(!dup.is_signaled_fast());
+        event.signal().unwrap();
+        assert!(event.is_signaled_fast());
+        assert!(dup.is_signaled_fast());
+        assert!(dup.sync_signaled().unwrap());
+        assert_ne!(unsafe { ResetEvent(event.raw()) }, 0);
+        assert!(!dup.sync_signaled().unwrap());
+        assert!(!event.is_signaled_fast());
+    }
 
     #[test]
     fn ui_stop_event_wakes_worker_and_survives_duplicate_handle_drop() {
@@ -195,6 +247,21 @@ impl Candidate {
             &self.path,
             write || self.endpoint.transport == Transport::WinUsb,
         )
+    }
+}
+
+/// `FILE_SKIP_SET_EVENT_ON_HANDLE`: avoid signaling the file object's internal
+/// event when every overlapped I/O supplies its own `OVERLAPPED.hEvent`.
+const FILE_SKIP_SET_EVENT_ON_HANDLE: u8 = 0x02;
+
+/// Tunes an opened overlapped HID/WinUSB handle for low-overhead high-rate I/O.
+/// All calls are best-effort: filter drivers or virtual devices that reject
+/// a tuning call keep working with OS defaults.
+pub(crate) fn configure_overlapped_handle(handle: &OwnedHandle, is_hid: bool) {
+    let _ =
+        unsafe { SetFileCompletionNotificationModes(handle.raw(), FILE_SKIP_SET_EVENT_ON_HANDLE) };
+    if is_hid && !unsafe { HidD_SetNumInputBuffers(handle.raw(), 128) } {
+        let _ = unsafe { HidD_SetNumInputBuffers(handle.raw(), 64) };
     }
 }
 
@@ -1194,10 +1261,151 @@ impl Drop for Notification {
     }
 }
 
+struct RemovalContext {
+    event: HANDLE,
+    /// Target device interface path without trailing NUL.
+    path: Vec<u16>,
+}
+
+fn wide_eq_ascii_ignore_case(a: &[u16], b: &[u16]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).all(|(&x, &y)| {
+        let lower = |v: u16| {
+            if (b'A' as u16..=b'Z' as u16).contains(&v) {
+                v + 32
+            } else {
+                v
+            }
+        };
+        lower(x) == lower(y)
+    })
+}
+
+unsafe extern "system" fn removal_callback(
+    _notification: HCMNOTIFICATION,
+    context: *const c_void,
+    action: CM_NOTIFY_ACTION,
+    data: *const windows_sys::Win32::Devices::DeviceAndDriverInstallation::CM_NOTIFY_EVENT_DATA,
+    size: u32,
+) -> u32 {
+    if action != CM_NOTIFY_ACTION_DEVICEREMOVECOMPLETE || context.is_null() || data.is_null() {
+        return CR_SUCCESS;
+    }
+    use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
+        CM_NOTIFY_EVENT_DATA, CM_NOTIFY_EVENT_DATA_0_0,
+    };
+    let link_offset =
+        offset_of!(CM_NOTIFY_EVENT_DATA, u) + offset_of!(CM_NOTIFY_EVENT_DATA_0_0, SymbolicLink);
+    if (size as usize) < link_offset + size_of::<u16>() {
+        return CR_SUCCESS;
+    }
+    let event_data = unsafe { &*data };
+    if event_data.FilterType != CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE {
+        return CR_SUCCESS;
+    }
+    let max_units = ((size as usize) - link_offset) / size_of::<u16>();
+    let link_ptr =
+        unsafe { ptr::addr_of!(event_data.u.DeviceInterface.SymbolicLink).cast::<u16>() };
+    let raw = unsafe { std::slice::from_raw_parts(link_ptr, max_units) };
+    let length = raw.iter().position(|&unit| unit == 0).unwrap_or(raw.len());
+    let ctx = unsafe { &*context.cast::<RemovalContext>() };
+    if wide_eq_ascii_ignore_case(&raw[..length], &ctx.path) {
+        unsafe { SetEvent(ctx.event) };
+    }
+    CR_SUCCESS
+}
+
+/// Device-specific PnP removal watcher for an active report session. Filters
+/// unrelated USB/Bluetooth HID arrivals and removals inside the OS callback so
+/// the hot report thread never wakes up to run `CreateFileW` on foreign devices.
+pub struct DeviceRemovalNotification {
+    registrations: Vec<HCMNOTIFICATION>,
+    event: Event,
+    // Dropped only after `Drop` unregisters every notification handle (which
+    // waits for any in-flight callback to finish).
+    _context: Box<RemovalContext>,
+}
+
+impl DeviceRemovalNotification {
+    pub fn for_candidate(candidate: &Candidate) -> io::Result<Self> {
+        let event = Event::create(false)?;
+        let end = candidate
+            .path
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(candidate.path.len());
+        let context = Box::new(RemovalContext {
+            event: event.raw(),
+            path: candidate.path[..end].to_vec(),
+        });
+        let hid = [hid_guid()];
+        let guids: &[GUID] = match candidate.endpoint.transport {
+            Transport::WinUsb => &crate::winusb::INTERFACE_GUIDS,
+            Transport::UsbHid | Transport::BluetoothHid | Transport::Other => &hid,
+        };
+        let mut this = Self {
+            registrations: Vec::with_capacity(guids.len()),
+            event,
+            _context: context,
+        };
+        let ctx_ptr: *const c_void = (&*this._context as *const RemovalContext).cast();
+        for &guid in guids {
+            let filter = CM_NOTIFY_FILTER {
+                cbSize: size_of::<CM_NOTIFY_FILTER>() as u32,
+                Flags: 0,
+                FilterType: CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE,
+                Reserved: 0,
+                u: CM_NOTIFY_FILTER_0 {
+                    DeviceInterface: CM_NOTIFY_FILTER_0_0 { ClassGuid: guid },
+                },
+            };
+            let mut registration = ptr::null_mut();
+            let result = unsafe {
+                CM_Register_Notification(
+                    &filter,
+                    ctx_ptr,
+                    Some(removal_callback),
+                    &mut registration,
+                )
+            };
+            if result != CR_SUCCESS {
+                return Err(io::Error::other(format!(
+                    "CM_Register_Notification failed: {result}"
+                )));
+            }
+            this.registrations.push(registration);
+        }
+        Ok(this)
+    }
+
+    pub fn event(&self) -> HANDLE {
+        self.event.raw()
+    }
+}
+
+impl Drop for DeviceRemovalNotification {
+    fn drop(&mut self) {
+        for registration in self.registrations.drain(..) {
+            unsafe { CM_Unregister_Notification(registration) };
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use otd_core::tablets::{Database, Role};
+
+    #[test]
+    fn symbolic_link_matching_is_ascii_case_insensitive() {
+        let a: Vec<u16> = r"\\?\hid#vid_056a&pid_0357#7&123".encode_utf16().collect();
+        let b: Vec<u16> = r"\\?\HID#VID_056A&PID_0357#7&123".encode_utf16().collect();
+        let c: Vec<u16> = r"\\?\hid#vid_056a&pid_0358#7&123".encode_utf16().collect();
+        assert!(wide_eq_ascii_ignore_case(&a, &b));
+        assert!(!wide_eq_ascii_ignore_case(&a, &c));
+    }
 
     #[test]
     fn unrelated_usb_hid_devices_are_rejected_before_opening_descriptors() {

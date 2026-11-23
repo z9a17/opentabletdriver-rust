@@ -57,7 +57,7 @@ struct Pointer {
     attributes: MouseAttributes,
     clicks: Clicks,
     buttons: u8,
-    last_proximity: Instant,
+    last_proximity_ns: u64,
 }
 // Sole accessor is this module's mutex. CGEvents are not tied to a CFRunLoop.
 unsafe impl Send for Pointer {}
@@ -109,7 +109,7 @@ pub fn ensure() -> io::Result<()> {
             last_button: 0,
         },
         buttons: 0,
-        last_proximity: Instant::now(),
+        last_proximity_ns: event_timestamp().unwrap_or(0),
     });
     Ok(())
 }
@@ -227,12 +227,13 @@ impl Pointer {
             }
             self.attributes.rotation = Some(rotation.clamp(0.0, 1.0));
         }
-        if let Some(eraser) = attributes.eraser {
-            if self.attributes.eraser != Some(eraser) {
-                self.attributes.eraser = Some(eraser);
-                self.proximity()?;
-                self.last_proximity = Instant::now();
-            }
+        if let Some(eraser) = attributes.eraser
+            && self.attributes.eraser != Some(eraser)
+        {
+            self.attributes.eraser = Some(eraser);
+            let now_ns = event_timestamp()?;
+            self.proximity(now_ns)?;
+            self.last_proximity_ns = now_ns;
         }
         // Original Reset releases owned buttons; setters retain their values.
         Ok(())
@@ -254,7 +255,7 @@ impl Pointer {
             ffi::CGEventSetIntegerValueField(event, 33, 0x802);
         }
     }
-    fn proximity(&self) -> io::Result<()> {
+    fn proximity(&self, timestamp_ns: u64) -> io::Result<()> {
         let event = Owned(unsafe { ffi::CGEventCreate(self.source.0) });
         if event.0.is_null() {
             return Err(io::Error::other("Cannot create tablet proximity event"));
@@ -264,7 +265,7 @@ impl Pointer {
         }
         self.proximity_fields(event.0);
         unsafe {
-            ffi::CGEventSetTimestamp(event.0, event_timestamp()?);
+            ffi::CGEventSetTimestamp(event.0, timestamp_ns);
             ffi::post_event(event.0);
         }
         Ok(())
@@ -301,15 +302,17 @@ impl Pointer {
             ffi::CGEventSetDoubleValueField(event.0, 4, delta.x);
             ffi::CGEventSetDoubleValueField(event.0, 5, delta.y);
         }
-        let now = Instant::now();
+        // Reuse a single CLOCK_UPTIME_RAW timestamp for both the 200 ms
+        // proximity check and CGEventSetTimestamp.
+        let now_ns = event_timestamp()?;
         let proximity = buttons == 0
             && previous == 0
-            && now.duration_since(self.last_proximity) > Duration::from_millis(200);
+            && now_ns.saturating_sub(self.last_proximity_ns) > 200_000_000;
         if buttons == 0 && previous == 0 {
-            self.last_proximity = now;
+            self.last_proximity_ns = now_ns;
         }
         if proximity {
-            self.proximity()?;
+            self.proximity(now_ns)?;
             unsafe {
                 ffi::CGEventSetIntegerValueField(event.0, 7, 2);
             }
@@ -343,7 +346,7 @@ impl Pointer {
         }
         unsafe {
             ffi::CGEventSetFlags(event.0, if flags == 0 { u32::MAX as u64 } else { flags });
-            ffi::CGEventSetTimestamp(event.0, event_timestamp()?);
+            ffi::CGEventSetTimestamp(event.0, now_ns);
             ffi::post_event(event.0);
         }
         Ok(())

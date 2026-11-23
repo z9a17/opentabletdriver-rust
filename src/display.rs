@@ -1,14 +1,20 @@
 //! Reads the Windows desktop layout into the core's display types.
 
 use std::mem::size_of;
+use std::ptr;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
 
-use windows_sys::Win32::Foundation::{LPARAM, RECT};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
 };
+use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetSystemMetrics, SM_CMONITORS, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-    SM_YVIRTUALSCREEN,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetSystemMetrics, MSG,
+    RegisterClassW, SM_CMONITORS, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN, WM_DISPLAYCHANGE, WNDCLASSW,
 };
 
 pub use otd_core::display::{DisplayFingerprint, DisplaySnapshot};
@@ -87,15 +93,132 @@ pub fn read_snapshot() -> Result<DisplaySnapshot, String> {
     })
 }
 
+static DISPLAY_EPOCH: AtomicU64 = AtomicU64::new(1);
+static DISPLAY_WATCHER_ACTIVE: AtomicBool = AtomicBool::new(false);
+static DISPLAY_WATCHER: OnceLock<bool> = OnceLock::new();
+
+unsafe extern "system" fn display_wndproc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if msg == WM_DISPLAYCHANGE {
+        DISPLAY_EPOCH.fetch_add(1, Ordering::Release);
+    }
+    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+/// Starts a demoted cold background thread with a hidden top-level window
+/// (not `HWND_MESSAGE`, which does not receive broadcast `WM_DISPLAYCHANGE`)
+/// that bumps `DISPLAY_EPOCH` whenever the Windows display topology changes.
+fn ensure_display_watcher() {
+    let _ = DISPLAY_WATCHER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<bool>(1);
+        let spawned = std::thread::Builder::new()
+            .name("display-change-watcher".into())
+            .spawn(move || {
+                crate::priority::demote_background_thread();
+                let hinstance = unsafe { GetModuleHandleW(ptr::null()) };
+                let class_name = windows_sys::core::w!("OtdRustDisplayWatcher");
+                let wc = WNDCLASSW {
+                    lpfnWndProc: Some(display_wndproc),
+                    hInstance: hinstance,
+                    lpszClassName: class_name,
+                    ..unsafe { std::mem::zeroed() }
+                };
+                unsafe { RegisterClassW(&wc) };
+                // Hidden top-level window receives broadcast `WM_DISPLAYCHANGE`.
+                let hwnd = unsafe {
+                    CreateWindowExW(
+                        0,
+                        class_name,
+                        ptr::null(),
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        ptr::null_mut(),
+                        ptr::null_mut(),
+                        hinstance,
+                        ptr::null(),
+                    )
+                };
+                if hwnd.is_null() {
+                    let _ = tx.send(false);
+                    return;
+                }
+                DISPLAY_WATCHER_ACTIVE.store(true, Ordering::Release);
+                let _ = tx.send(true);
+                let mut msg: MSG = unsafe { std::mem::zeroed() };
+                while unsafe { GetMessageW(&mut msg, ptr::null_mut(), 0, 0) } > 0 {
+                    unsafe { DispatchMessageW(&msg) };
+                }
+                DISPLAY_WATCHER_ACTIVE.store(false, Ordering::Release);
+            });
+        if spawned.is_err() {
+            return false;
+        }
+        rx.recv_timeout(Duration::from_millis(500)).unwrap_or(false)
+    });
+}
+
 /// The desktop as seen from the report thread, for the core session loop.
-pub struct WindowsDisplays;
+/// Caches the last display fingerprint and snapshot keyed by the cold
+/// `WM_DISPLAYCHANGE` epoch so steady-state checks perform zero win32k calls.
+#[derive(Default)]
+pub struct WindowsDisplays {
+    fingerprint_epoch: u64,
+    cached_fingerprint: Option<DisplayFingerprint>,
+    snapshot_epoch: u64,
+    cached_snapshot: Option<DisplaySnapshot>,
+}
+
+impl WindowsDisplays {
+    pub fn new() -> Self {
+        ensure_display_watcher();
+        Self::default()
+    }
+}
 
 impl otd_core::session::Displays for WindowsDisplays {
     fn fingerprint(&mut self) -> DisplayFingerprint {
+        if DISPLAY_WATCHER_ACTIVE.load(Ordering::Acquire) {
+            let epoch = DISPLAY_EPOCH.load(Ordering::Acquire);
+            if epoch == self.fingerprint_epoch
+                && let Some(cached) = self.cached_fingerprint
+            {
+                return cached;
+            }
+            let fingerprint = read_fingerprint();
+            self.fingerprint_epoch = epoch;
+            self.cached_fingerprint = Some(fingerprint);
+            return fingerprint;
+        }
         read_fingerprint()
     }
 
+    fn topology_changed(&mut self) -> bool {
+        if DISPLAY_WATCHER_ACTIVE.load(Ordering::Acquire) {
+            return DISPLAY_EPOCH.load(Ordering::Acquire) != self.snapshot_epoch;
+        }
+        false
+    }
+
     fn snapshot(&mut self) -> Result<DisplaySnapshot, String> {
+        if DISPLAY_WATCHER_ACTIVE.load(Ordering::Acquire) {
+            let epoch = DISPLAY_EPOCH.load(Ordering::Acquire);
+            if epoch == self.snapshot_epoch
+                && let Some(cached) = &self.cached_snapshot
+            {
+                return Ok(cached.clone());
+            }
+            let snapshot = read_snapshot()?;
+            self.snapshot_epoch = epoch;
+            self.cached_snapshot = Some(snapshot.clone());
+            return Ok(snapshot);
+        }
         read_snapshot()
     }
 }
@@ -104,6 +227,24 @@ impl otd_core::session::Displays for WindowsDisplays {
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    #[test]
+    fn windows_displays_caches_by_epoch_and_detects_topology_bump() {
+        use otd_core::session::Displays;
+        let mut displays = WindowsDisplays::new();
+        let first_fp = displays.fingerprint();
+        let first_snap = displays.snapshot().unwrap();
+        assert_eq!(first_fp, first_snap.fingerprint());
+        assert!(!displays.topology_changed());
+        assert_eq!(displays.fingerprint(), first_fp);
+        DISPLAY_EPOCH.fetch_add(1, Ordering::Release);
+        if DISPLAY_WATCHER_ACTIVE.load(Ordering::Acquire) {
+            assert!(displays.topology_changed());
+        }
+        let refreshed = displays.snapshot().unwrap();
+        assert_eq!(refreshed.fingerprint(), displays.fingerprint());
+        assert!(!displays.topology_changed());
+    }
 
     #[test]
     fn fingerprint_matches_the_full_snapshot() {

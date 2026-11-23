@@ -296,27 +296,56 @@ impl ReportSource for Source<'_> {
                 queued: true,
             });
         }
+        if timeout.is_zero() {
+            return Ok(Read::Idle);
+        }
         let mut waits = self.waits();
-        let result = unsafe {
-            libc::poll(
-                waits.as_mut_ptr(),
-                waits.len() as libc::nfds_t,
-                timeout
-                    .min(Duration::from_secs(1))
-                    .as_micros()
-                    .div_ceil(1000) as i32,
-            )
-        };
-        if result < 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() != io::ErrorKind::Interrupted {
-                return Err(error);
+        let result = poll_fds(&mut waits, timeout.min(Duration::from_secs(1)))?;
+        if result > 0 {
+            if waits[0].revents != 0 {
+                self.wake.drain();
+            }
+            if waits[2].revents != 0 {
+                self.registration.endpoint.output.reader_wake().drain();
             }
         }
-        self.wake.drain();
-        self.registration.endpoint.output.reader_wake().drain();
         Ok(Read::Idle)
     }
+}
+
+fn poll_fds(waits: &mut [libc::pollfd], timeout: Duration) -> io::Result<libc::c_int> {
+    #[cfg(target_os = "linux")]
+    let result = {
+        let ts = libc::timespec {
+            tv_sec: timeout.as_secs() as _,
+            tv_nsec: timeout.subsec_nanos() as libc::c_long,
+        };
+        // SAFETY: `waits` is valid for its length and `ts` is a valid timespec.
+        unsafe {
+            libc::ppoll(
+                waits.as_mut_ptr(),
+                waits.len() as libc::nfds_t,
+                &ts,
+                std::ptr::null(),
+            )
+        }
+    };
+    #[cfg(not(target_os = "linux"))]
+    let result = unsafe {
+        libc::poll(
+            waits.as_mut_ptr(),
+            waits.len() as libc::nfds_t,
+            timeout.as_micros().div_ceil(1000) as i32,
+        )
+    };
+    if result < 0 {
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+        return Ok(0);
+    }
+    Ok(result)
 }
 pub trait NativeSource: ReportSource {
     fn tablet(&self, tablet: serde_json::Value);
@@ -357,48 +386,52 @@ impl<S: NativeSource> Input<'_, S> {
     }
     pub fn wait_pair(
         primary: &mut Self,
-        mut auxiliary: Option<&mut Self>,
+        auxiliary: Option<&mut Self>,
         timeout: Duration,
-    ) -> io::Result<()> {
+    ) -> io::Result<crate::paired_source::WaitWake> {
         let mut waits = [libc::pollfd {
             fd: -1,
             events: 0,
             revents: 0,
         }; 6];
         waits[..3].copy_from_slice(&primary.waits());
-        if let Some(auxiliary) = auxiliary.as_ref() {
+        let count = if let Some(auxiliary) = auxiliary.as_ref() {
             waits[3..].copy_from_slice(&auxiliary.waits());
-        }
+            6
+        } else {
+            3
+        };
         let mut timeout = timeout.min(Duration::from_secs(1));
         if cfg!(target_os = "macos") {
             timeout = timeout.min(Duration::from_millis(50));
             // IOKit callbacks are scheduled on this owner runloop; the original
             // custom stream has its own reader and its ring signals a pipe.
-            let signaled = unsafe { libc::poll(waits.as_mut_ptr(), 6, 0) } > 0;
-            if signaled {
-                return Ok(());
+            let has_managed_fd = waits[..count].iter().any(|p| p.fd >= 0);
+            if has_managed_fd
+                && unsafe { libc::poll(waits.as_mut_ptr(), count as libc::nfds_t, 0) } > 0
+            {
+                return Ok(crate::paired_source::WaitWake {
+                    primary: waits[..3].iter().any(|p| p.revents != 0),
+                    auxiliary: count > 3 && waits[3..6].iter().any(|p| p.revents != 0),
+                });
             }
             if let Self::Native(source) = primary {
-                return source.pump_native(timeout);
+                source.pump_native(timeout)?;
+                return Ok(crate::paired_source::WaitWake::BOTH);
             }
-            if let Some(Self::Native(source)) = auxiliary.as_deref_mut() {
-                return source.pump_native(timeout);
-            }
-        }
-        let result = unsafe {
-            libc::poll(
-                waits.as_mut_ptr(),
-                6,
-                timeout.as_micros().div_ceil(1000) as i32,
-            )
-        };
-        if result < 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() != io::ErrorKind::Interrupted {
-                return Err(error);
+            if let Some(Self::Native(source)) = auxiliary {
+                source.pump_native(timeout)?;
+                return Ok(crate::paired_source::WaitWake::BOTH);
             }
         }
-        Ok(())
+        let result = poll_fds(&mut waits[..count], timeout)?;
+        if result == 0 {
+            return Ok(crate::paired_source::WaitWake::NONE);
+        }
+        Ok(crate::paired_source::WaitWake {
+            primary: waits[..3].iter().any(|p| p.revents != 0),
+            auxiliary: count > 3 && waits[3..6].iter().any(|p| p.revents != 0),
+        })
     }
 }
 impl<S: NativeSource> ReportSource for Input<'_, S> {

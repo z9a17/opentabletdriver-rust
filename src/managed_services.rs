@@ -3,7 +3,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::ffi::c_void;
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -84,6 +85,15 @@ impl Operation {
             _ => return None,
         })
     }
+    fn lane(self) -> usize {
+        match self {
+            Self::Daemon => 0,
+            Self::OutputOwner => 2,
+            Self::Detect => 3,
+            Self::InputHold | Self::InputRelease => 4,
+            _ => 1,
+        }
+    }
 }
 #[derive(Clone, Debug)]
 pub struct Request {
@@ -116,6 +126,7 @@ struct Ticket {
 struct State {
     stopped: bool,
     snapshot: Arc<[u8]>,
+    configurations: Option<Arc<[u8]>>,
     version: u64,
     cache_version: u64,
     daemon_identity: Option<crate::control::WorkerIdentity>,
@@ -126,7 +137,63 @@ struct State {
 }
 struct Engine {
     state: Mutex<State>,
-    ready: Condvar,
+    ready: [Condvar; 5],
+    backend: Option<Arc<dyn Backend>>,
+    workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
+}
+impl Engine {
+    fn ensure_workers(self: &Arc<Self>) -> Result<(), String> {
+        let Some(backend) = &self.backend else {
+            return Ok(());
+        };
+        let mut workers = self
+            .workers
+            .lock()
+            .map_err(|_| "Managed worker lock poisoned.")?;
+        if !workers.is_empty() {
+            return Ok(());
+        }
+        if self
+            .state
+            .lock()
+            .map_err(|_| "Managed owner lock poisoned.")?
+            .stopped
+        {
+            return Err("Managed service owner stopped.".into());
+        }
+        for lane in 0..5 {
+            let worker = Arc::clone(self);
+            let backend = Arc::clone(backend);
+            let join = std::thread::Builder::new()
+                .name(
+                    [
+                        "managed-services",
+                        "managed-device-io",
+                        "managed-output-owner",
+                        "managed-device-detect",
+                        "managed-input-owner",
+                    ][lane]
+                        .into(),
+                )
+                .spawn(move || run_lane(worker, backend, lane));
+            match join {
+                Ok(join) => workers.push(join),
+                Err(error) => {
+                    if let Ok(mut state) = self.state.lock() {
+                        state.stopped = true;
+                        for ready in &self.ready {
+                            ready.notify_all();
+                        }
+                    }
+                    for worker in workers.drain(..) {
+                        let _ = worker.join();
+                    }
+                    return Err(error.to_string());
+                }
+            }
+        }
+        Ok(())
+    }
 }
 impl State {
     fn snapshot_ticket(
@@ -162,6 +229,34 @@ impl State {
         );
         Ok(id)
     }
+    fn configurations_ticket(&mut self, size: usize, now: Instant) -> Result<u64, i32> {
+        if self.stopped {
+            return Err(-5);
+        }
+        self.tickets.retain(|_, ticket| now < ticket.deadline);
+        let Some(bytes) = &self.configurations else {
+            return Err(-1);
+        };
+        if self.tickets.len() >= MAX_TICKETS
+            || self.queue.len() >= MAX_TICKETS
+            || self.queued_bytes + size > MAX_QUEUED_BYTES
+        {
+            return Err(-2);
+        }
+        let id = NEXT_TICKET
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| -5)?;
+        self.tickets.insert(
+            id,
+            Ticket {
+                deadline: now + TTL,
+                reply: Some(Arc::clone(bytes)),
+            },
+        );
+        Ok(id)
+    }
     fn completion(&mut self, id: u64, now: Instant) -> Result<Option<&[u8]>, i32> {
         let ticket = self.tickets.get(&id).ok_or(-3)?;
         if now >= ticket.deadline {
@@ -180,6 +275,19 @@ static NEXT_TICKET: AtomicU64 = AtomicU64::new(1);
 // process must never appear unchanged merely because its logical version is 1.
 static NEXT_CACHE_VERSION: AtomicU64 = AtomicU64::new(1);
 static SNAPSHOTS_REQUESTED: AtomicBool = AtomicBool::new(false);
+pub type CompletionCallback = unsafe extern "C" fn(u64);
+static COMPLETION_CALLBACK: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+pub fn set_completion_callback(callback: Option<CompletionCallback>) {
+    let ptr = callback.map_or(std::ptr::null_mut(), |cb| cb as *mut c_void);
+    COMPLETION_CALLBACK.store(ptr, Ordering::Release);
+}
+fn notify_completion(id: u64) {
+    let ptr = COMPLETION_CALLBACK.load(Ordering::Acquire);
+    if !ptr.is_null() {
+        let cb: CompletionCallback = unsafe { std::mem::transmute(ptr) };
+        unsafe { cb(id) };
+    }
+}
 pub fn snapshots_requested() -> bool {
     SNAPSHOTS_REQUESTED.load(Ordering::Acquire)
 }
@@ -237,13 +345,14 @@ fn snapshot_reply(snapshot: &Snapshot, cache_version: u64) -> Result<Arc<[u8]>, 
 /// be undone; backend teardown must wait for its own guarded transaction.
 pub struct Host {
     engine: Arc<Engine>,
-    workers: Vec<std::thread::JoinHandle<()>>,
 }
 #[derive(Clone)]
 pub struct Publisher {
     engine: Arc<Engine>,
 }
 fn run_lane(worker: Arc<Engine>, backend: Arc<dyn Backend>, lane: usize) {
+    #[cfg(windows)]
+    crate::priority::demote_background_thread();
     loop {
         backend.maintain(lane);
         let deadline = backend.maintenance_deadline(lane);
@@ -261,16 +370,11 @@ fn run_lane(worker: Arc<Engine>, backend: Arc<dyn Backend>, lane: usize) {
                     backend.shutdown(lane);
                     return;
                 }
-                if let Some(index) = state.queue.iter().position(|(_, _, request)| {
-                    let operation_lane = match request.operation {
-                        Operation::Daemon => 0,
-                        Operation::Detect => 3,
-                        Operation::OutputOwner => 2,
-                        Operation::InputHold | Operation::InputRelease => 4,
-                        _ => 1,
-                    };
-                    operation_lane == lane
-                }) {
+                if let Some(index) = state
+                    .queue
+                    .iter()
+                    .position(|(_, _, request)| request.operation.lane() == lane)
+                {
                     break Some(index);
                 }
                 if let Some(deadline) = deadline {
@@ -278,12 +382,12 @@ fn run_lane(worker: Arc<Engine>, backend: Arc<dyn Backend>, lane: usize) {
                     if remaining.is_zero() {
                         break None;
                     }
-                    let Ok((next, _)) = worker.ready.wait_timeout(state, remaining) else {
+                    let Ok((next, _)) = worker.ready[lane].wait_timeout(state, remaining) else {
                         return;
                     };
                     state = next;
                 } else {
-                    let Ok(next) = worker.ready.wait(state) else {
+                    let Ok(next) = worker.ready[lane].wait(state) else {
                         return;
                     };
                     state = next;
@@ -308,16 +412,35 @@ fn run_lane(worker: Arc<Engine>, backend: Arc<dyn Backend>, lane: usize) {
                     Err("Managed service backend panicked; application status is unknown.".into())
                 });
         let bytes = reply(result);
-        if let Ok(mut state) = worker.state.lock()
+        let completed = if let Ok(mut state) = worker.state.lock()
             && !state.stopped
             && let Some(ticket) = state.tickets.get_mut(&work.0)
         {
             ticket.reply = Some(bytes);
+            true
+        } else {
+            false
+        };
+        if completed {
+            notify_completion(work.0);
         }
     }
 }
 impl Host {
     pub fn start(snapshot: Snapshot, backend: Arc<dyn Backend>) -> Result<Self, String> {
+        let host = Self::start_inner(snapshot, backend, true)?;
+        Ok(host)
+    }
+    /// Starts the service host without spawning worker threads or eagerly
+    /// serializing static configuration metadata until CLR activates it.
+    pub fn start_lazy(snapshot: Snapshot, backend: Arc<dyn Backend>) -> Result<Self, String> {
+        Self::start_inner(snapshot, backend, false)
+    }
+    fn start_inner(
+        snapshot: Snapshot,
+        backend: Arc<dyn Backend>,
+        spawn_immediately: bool,
+    ) -> Result<Self, String> {
         let cache_version = next_cache_version()?;
         let bytes = snapshot_reply(&snapshot, cache_version)?;
         let mut slot = HOST
@@ -332,6 +455,7 @@ impl Host {
             state: Mutex::new(State {
                 stopped: false,
                 snapshot: bytes,
+                configurations: None,
                 version: snapshot.version,
                 cache_version,
                 daemon_identity: snapshot.daemon_identity,
@@ -340,40 +464,15 @@ impl Host {
                 queue: VecDeque::new(),
                 queued_bytes: 0,
             }),
-            ready: Condvar::new(),
+            ready: std::array::from_fn(|_| Condvar::new()),
+            backend: Some(backend),
+            workers: Mutex::new(Vec::new()),
         });
-        let mut workers = Vec::new();
-        for lane in 0..5 {
-            let worker = engine.clone();
-            let backend = Arc::clone(&backend);
-            let join = std::thread::Builder::new()
-                .name(
-                    [
-                        "managed-services",
-                        "managed-device-io",
-                        "managed-output-owner",
-                        "managed-device-detect",
-                        "managed-input-owner",
-                    ][lane]
-                        .into(),
-                )
-                .spawn(move || run_lane(worker, backend, lane));
-            match join {
-                Ok(join) => workers.push(join),
-                Err(error) => {
-                    if let Ok(mut state) = engine.state.lock() {
-                        state.stopped = true;
-                        engine.ready.notify_all();
-                    }
-                    for worker in workers {
-                        let _ = worker.join();
-                    }
-                    return Err(error.to_string());
-                }
-            }
+        if spawn_immediately {
+            engine.ensure_workers()?;
         }
         *slot = Some(engine.clone());
-        Ok(Self { engine, workers })
+        Ok(Self { engine })
     }
     pub fn publisher(&self) -> Publisher {
         Publisher {
@@ -385,6 +484,34 @@ impl Host {
     }
 }
 impl Publisher {
+    pub fn ensure_workers(&self) -> Result<(), String> {
+        self.engine.ensure_workers()
+    }
+    pub fn publish_configurations(&self, configurations: &Value) -> Result<(), String> {
+        #[derive(Serialize)]
+        struct Reply<'a> {
+            ok: bool,
+            result: &'a Value,
+        }
+        let bytes = serde_json::to_vec(&Reply {
+            ok: true,
+            result: configurations,
+        })
+        .map_err(|error| error.to_string())?;
+        if bytes.len() > MAX_BYTES {
+            return Err("Managed configurations payload exceeds 4 MiB.".into());
+        }
+        let mut state = self
+            .engine
+            .state
+            .lock()
+            .map_err(|_| "Managed owner lock poisoned.")?;
+        if state.stopped {
+            return Err("Managed service owner stopped.".into());
+        }
+        state.configurations = Some(bytes.into());
+        Ok(())
+    }
     pub fn publish(&self, snapshot: Snapshot) -> Result<(), String> {
         self.publish_ref(&snapshot)
     }
@@ -412,22 +539,34 @@ impl Publisher {
 }
 impl Drop for Host {
     fn drop(&mut self) {
+        let mut failed_tickets = Vec::new();
         if let Ok(mut state) = self.engine.state.lock() {
             state.stopped = true;
             state.queue.clear();
             state.queued_bytes = 0;
-            for ticket in state.tickets.values_mut() {
+            for (&id, ticket) in &mut state.tickets {
                 if ticket.reply.is_none() {
                     ticket.reply = Some(reply(Err(
                         "Managed owner stopped; an executing transaction may have applied.".into(),
                     )));
+                    failed_tickets.push(id);
                 }
             }
-            self.engine.ready.notify_all();
+            for ready in &self.engine.ready {
+                ready.notify_all();
+            }
+        }
+        for id in failed_tickets {
+            notify_completion(id);
         }
         // Never drop this owner on its backend thread or while holding a
         // native transaction lock the backend needs. The daemon owns teardown.
-        for worker in self.workers.drain(..) {
+        let workers = if let Ok(mut guard) = self.engine.workers.lock() {
+            std::mem::take(&mut *guard)
+        } else {
+            Vec::new()
+        };
+        for worker in workers {
             let _ = worker.join();
         }
         if let Ok(mut slot) = HOST.get_or_init(|| Mutex::new(None)).lock()
@@ -459,6 +598,8 @@ pub const CALLBACKS: Callbacks = Callbacks {
     poll,
     release,
 };
+const OP_CONFIGURATIONS: u32 = 14;
+
 unsafe extern "C" fn request(
     op: u32,
     scope: u64,
@@ -466,15 +607,30 @@ unsafe extern "C" fn request(
     len: u32,
     output: *mut u64,
 ) -> i32 {
-    let Some(operation) = Operation::parse(op) else {
-        return -3;
-    };
     if output.is_null() || (input.is_null() && len != 0) {
         return -3;
     }
     if len as usize > MAX_BYTES {
         return -4;
     }
+    if op == OP_CONFIGURATIONS {
+        let Some(engine) = host() else { return -1 };
+        let Ok(mut state) = engine.state.lock() else {
+            return -5;
+        };
+        return match state.configurations_ticket(len as usize, Instant::now()) {
+            Ok(ticket) => {
+                unsafe {
+                    *output = ticket;
+                }
+                0
+            }
+            Err(code) => code,
+        };
+    }
+    let Some(operation) = Operation::parse(op) else {
+        return -3;
+    };
     let Some(engine) = host() else { return -1 };
     let payload = if len == 0 {
         Value::Null
@@ -485,6 +641,9 @@ unsafe extern "C" fn request(
         };
         value
     };
+    if operation != Operation::Snapshot && engine.ensure_workers().is_err() {
+        return -5;
+    }
     let Ok(mut state) = engine.state.lock() else {
         return -5;
     };
@@ -579,6 +738,7 @@ unsafe extern "C" fn request(
     );
     {
         let expected_daemon = state.daemon_identity.clone();
+        let lane = operation.lane();
         state.queue.push_back((
             id,
             len as usize,
@@ -591,7 +751,7 @@ unsafe extern "C" fn request(
             },
         ));
         state.queued_bytes += len as usize;
-        engine.ready.notify_all();
+        engine.ready[lane].notify_one();
     }
     unsafe {
         *output = id;
@@ -639,6 +799,7 @@ mod snapshot_tests {
                 state: Mutex::new(State {
                     stopped: false,
                     snapshot: snapshot_reply(&snapshot, cache_version).unwrap(),
+                    configurations: None,
                     version: snapshot.version,
                     cache_version,
                     daemon_identity: None,
@@ -647,7 +808,9 @@ mod snapshot_tests {
                     queue: VecDeque::new(),
                     queued_bytes: 0,
                 }),
-                ready: Condvar::new(),
+                ready: std::array::from_fn(|_| Condvar::new()),
+                backend: None,
+                workers: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -823,7 +986,7 @@ mod snapshot_tests {
                     expected_source: None,
                 },
             ));
-            engine.ready.notify_all();
+            engine.ready[4].notify_one();
         }
         let publisher = publisher();
         let engine = publisher.engine.clone();
@@ -839,9 +1002,9 @@ mod snapshot_tests {
         let check = || {
             let next = || received.recv_timeout(Duration::from_secs(2)).unwrap();
             assert_eq!(next(), Event::Maintained);
-            // A different lane's admission can wake this condition. It must
-            // neither trigger maintenance nor reinstate the old 250ms tick.
-            engine.ready.notify_all();
+            // A spurious wake on this lane must neither trigger maintenance
+            // nor reinstate the old 250ms tick.
+            engine.ready[4].notify_all();
             assert!(received.recv_timeout(Duration::from_millis(300)).is_err());
             admit(&engine, 1, 80);
             assert_eq!(next(), Event::Executed);
@@ -850,7 +1013,7 @@ mod snapshot_tests {
             assert_eq!(next(), Event::Executed);
             assert_eq!(next(), Event::Maintained);
             // Renewal supersedes the first lease, even after spurious wakes.
-            engine.ready.notify_all();
+            engine.ready[4].notify_all();
             assert!(received.recv_timeout(Duration::from_millis(120)).is_err());
             assert_eq!(next(), Event::Maintained);
             assert!(received.recv_timeout(Duration::from_millis(300)).is_err());
@@ -860,7 +1023,7 @@ mod snapshot_tests {
         {
             let mut state = engine.state.lock().unwrap();
             state.stopped = true;
-            engine.ready.notify_all();
+            engine.ready[4].notify_all();
         }
         worker.join().unwrap();
         if let Err(error) = result {

@@ -51,7 +51,8 @@ impl DeviceScan {
 impl App {
     fn refresh_tablet_view(&mut self) {
         // Do not finish a pending drag against a tablet that disappeared.
-        let bounds = self.editor.detected_tablet_bounds(&self.connected_tablets);
+        self.invalidate_tablet_spec_cache();
+        let bounds = self.detected_tablet_bounds();
         if bounds != self.tablet_view.map(|view| view.bounds)
             && self
                 .drag

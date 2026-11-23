@@ -138,7 +138,7 @@ struct Plan {
 impl App {
     fn binding_plan(&self) -> Plan {
         let profile = &self.editor.profile;
-        let detected = self.editor.detected_controls(&self.connected_tablets);
+        let detected = self.detected_controls();
         let pen = detected.map_or(profile.pen_buttons.len(), |c| usize::from(c.pen_buttons));
         let aux = detected.map_or_else(
             || {
@@ -377,8 +377,7 @@ impl App {
 
     /// One wheel step in degrees, when the tablet declares it.
     fn wheel_step(&self, wheel: usize) -> Option<f64> {
-        self.editor
-            .detected_controls(&self.connected_tablets)
+        self.detected_controls()
             .or(Some(self.editor.profile.tablet.controls))
             .and_then(|controls| {
                 controls

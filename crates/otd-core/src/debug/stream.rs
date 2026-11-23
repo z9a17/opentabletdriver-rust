@@ -204,6 +204,7 @@ pub fn subscribe() -> Result<Subscription, String> {
         lost: LOST.load(Ordering::Acquire),
     };
     ENABLED.store(true, Ordering::Release);
+    super::set_active_bit(super::ACTIVE_STREAM, true);
     Ok(subscription)
 }
 impl Subscription {
@@ -227,14 +228,16 @@ impl Drop for Subscription {
             active.subscribers.remove(&self.id);
             if active.subscribers.is_empty() {
                 ENABLED.store(false, Ordering::Release);
+                super::set_active_bit(super::ACTIVE_STREAM, false);
                 *ring = None;
             }
         }
     }
 }
 
-#[inline]
-pub(super) fn record(session: u64, bytes: &[u8], auxiliary: bool) {
+#[cold]
+#[inline(never)]
+pub(super) fn record_slow(session: u64, bytes: &[u8], auxiliary: bool) {
     if !ENABLED.load(Ordering::Relaxed) || session == 0 {
         return;
     }

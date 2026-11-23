@@ -345,6 +345,467 @@ impl DecodedInput<'_> {
     }
 }
 
+/// Compact zero-copy pen sample for native passthrough fast paths (both
+/// IntuosV2 and stateless non-IntuosV2 pen parsers). Avoids constructing or
+/// copying the full ~1 KiB `ReportValues` envelope on every report.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug)]
+pub struct CompactPen {
+    pub x: u32,
+    pub y: u32,
+    pub position_exact: bool,
+    pub pos_f32: [f32; 2],
+    pub has_position: bool,
+    pub pressure: u32,
+    pub pen_buttons: Option<Buttons>,
+    pub tilt: Option<[f32; 2]>,
+    pub eraser: Option<bool>,
+    pub rotation: Option<i32>,
+    pub tip_switch: Option<bool>,
+    pub physical_loss: bool,
+}
+
+/// Fast-path tag for common stateless non-IntuosV2 pen parsers so
+/// `TabletDecoder::Values` can decode pen/OutOfRange packets into `CompactPen`
+/// without zeroing a 1 KiB `ReportValues` struct or calling `roundf`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FastParser {
+    None,
+    GenericTablet,
+    XpPenBase,
+    XpPenGen2,
+    XpPenOffsetPressure,
+    XpPenOffsetAux,
+    HuionGiano,
+    HuionInspiroy,
+    HuionTilt,
+    HuionKamvasOffset,
+    UcLogicBase,
+    UcLogicTilt,
+    UcLogicV1,
+    UcLogicV2,
+    VeikkBase,
+    VeikkA15,
+    VeikkTilt,
+    IntuosV3,
+}
+
+impl FastParser {
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    fn compact_pen(
+        x: u32,
+        y: u32,
+        pressure: u32,
+        buttons: Buttons,
+        tilt: Option<[f32; 2]>,
+        eraser: Option<bool>,
+        rotation: Option<i32>,
+        spec: TabletSpec,
+    ) -> CompactPen {
+        let fx = x as f32;
+        let fy = y as f32;
+        let position_exact =
+            x <= spec.max_x && y <= spec.max_y && (fx as u32) == x && (fy as u32) == y;
+        CompactPen {
+            x,
+            y,
+            position_exact,
+            pos_f32: [fx, fy],
+            has_position: true,
+            pressure,
+            pen_buttons: Some(buttons),
+            tilt,
+            eraser,
+            rotation,
+            tip_switch: None,
+            physical_loss: false,
+        }
+    }
+
+    #[inline]
+    fn out_of_range() -> CompactPen {
+        CompactPen {
+            x: 0,
+            y: 0,
+            position_exact: false,
+            pos_f32: [0.0, 0.0],
+            has_position: false,
+            pressure: 0,
+            pen_buttons: None,
+            tilt: None,
+            eraser: None,
+            rotation: None,
+            tip_switch: None,
+            physical_loss: true,
+        }
+    }
+
+    #[inline]
+    fn require(raw: &[u8], need: usize) -> Result<(), DecodeError> {
+        let Some(&id) = raw.first() else {
+            return Err(DecodeError::Report(ReportError::Empty));
+        };
+        if raw.len() < need {
+            return Err(DecodeError::Report(ReportError::Short {
+                id,
+                got: raw.len(),
+                need,
+            }));
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn decode(
+        self,
+        raw: &[u8],
+        spec: TabletSpec,
+    ) -> Option<Result<Option<CompactPen>, DecodeError>> {
+        if self == Self::None {
+            return None;
+        }
+        match self {
+            Self::None => None,
+            Self::GenericTablet => {
+                if let Err(e) = Self::require(raw, 8) {
+                    return Some(Err(e));
+                }
+                let x = u32::from(u16::from_le_bytes([raw[2], raw[3]]));
+                let y = u32::from(u16::from_le_bytes([raw[4], raw[5]]));
+                let pressure = u32::from(u16::from_le_bytes([raw[6], raw[7]]));
+                let buttons = Buttons::from_bits_unchecked(u64::from(raw[1] >> 1), 3);
+                Some(Ok(Some(Self::compact_pen(
+                    x, y, pressure, buttons, None, None, None, spec,
+                ))))
+            }
+            Self::XpPenBase | Self::XpPenOffsetPressure | Self::XpPenOffsetAux => {
+                if let Err(e) = Self::require(raw, 2) {
+                    return Some(Err(e));
+                }
+                let flags = raw[1];
+                if flags == 0xc0 {
+                    return Some(Ok(Some(Self::out_of_range())));
+                }
+                let (offset_pressure, allow_overflow) = match self {
+                    Self::XpPenOffsetAux => {
+                        if flags & 0x20 != 0 {
+                            return None;
+                        }
+                        (false, false)
+                    }
+                    Self::XpPenBase | Self::XpPenOffsetPressure => {
+                        if matches!(flags, 0xb4 | 0xf2 | 0xf8) || flags & 0x10 != 0 {
+                            return None;
+                        }
+                        (self == Self::XpPenOffsetPressure, true)
+                    }
+                    _ => unreachable!(),
+                };
+                if let Err(e) = Self::require(raw, 8) {
+                    return Some(Err(e));
+                }
+                let has_tilt = raw.len() >= 10;
+                let has_eraser = has_tilt || offset_pressure;
+                let mut x = u32::from(u16::from_le_bytes([raw[2], raw[3]]));
+                let mut y = u32::from(u16::from_le_bytes([raw[4], raw[5]]));
+                if allow_overflow && raw.len() >= 12 {
+                    x |= u32::from(raw[10]) << 16;
+                    y |= u32::from(raw[11]) << 16;
+                }
+                let mut pressure = u32::from(u16::from_le_bytes([raw[6], raw[7]]));
+                if offset_pressure && has_tilt {
+                    pressure &= 0x1fff;
+                }
+                let tilt = has_tilt.then(|| [f32::from(raw[8] as i8), f32::from(raw[9] as i8)]);
+                let eraser = has_eraser.then_some(flags & 0x08 != 0);
+                let buttons = Buttons::from_bits_unchecked(
+                    u64::from(flags >> 1),
+                    if has_eraser { 2 } else { 3 },
+                );
+                Some(Ok(Some(Self::compact_pen(
+                    x, y, pressure, buttons, tilt, eraser, None, spec,
+                ))))
+            }
+            Self::XpPenGen2 => {
+                if let Err(e) = Self::require(raw, 2) {
+                    return Some(Err(e));
+                }
+                let flags = raw[1];
+                if flags == 0xc0 {
+                    return Some(Ok(Some(Self::out_of_range())));
+                }
+                if flags & 0xf0 != 0xa0 {
+                    return None;
+                }
+                if let Err(e) = Self::require(raw, 14) {
+                    return Some(Err(e));
+                }
+                let x =
+                    u32::from(u16::from_le_bytes([raw[2], raw[3]])) | (u32::from(raw[10]) << 16);
+                let y =
+                    u32::from(u16::from_le_bytes([raw[4], raw[5]])) | (u32::from(raw[11]) << 16);
+                let pressure = (u32::from(u16::from_le_bytes([raw[6], raw[7]])) & 0x1fff)
+                    | (u32::from(raw[13] & 1) << 13);
+                let tilt = Some([f32::from(raw[8] as i8), f32::from(raw[9] as i8)]);
+                let eraser = Some(flags & 0x08 != 0);
+                let buttons = Buttons::from_bits_unchecked(u64::from(flags >> 1), 2);
+                Some(Ok(Some(Self::compact_pen(
+                    x, y, pressure, buttons, tilt, eraser, None, spec,
+                ))))
+            }
+            Self::HuionGiano => {
+                if let Err(e) = Self::require(raw, 2) {
+                    return Some(Err(e));
+                }
+                let flags = raw[1];
+                if flags == 0xf1 || flags == 0xf0 || flags & 0x60 == 0x60 {
+                    return None;
+                }
+                if let Err(e) = Self::require(raw, 12) {
+                    return Some(Err(e));
+                }
+                let x =
+                    u32::from(u16::from_le_bytes([raw[2], raw[3]])) | (u32::from(raw[8] & 1) << 16);
+                let y =
+                    u32::from(u16::from_le_bytes([raw[4], raw[5]])) | (u32::from(raw[9] & 1) << 16);
+                let pressure = u32::from(u16::from_le_bytes([raw[6], raw[7]]));
+                let tilt = Some([
+                    f32::from(-i16::from(raw[10] as i8)),
+                    f32::from(-i16::from(raw[11] as i8)),
+                ]);
+                let buttons = Buttons::from_bits_unchecked(u64::from(flags >> 1), 3);
+                Some(Ok(Some(Self::compact_pen(
+                    x,
+                    y,
+                    pressure,
+                    buttons,
+                    tilt,
+                    Some(flags & 0x20 != 0),
+                    None,
+                    spec,
+                ))))
+            }
+            Self::HuionInspiroy => {
+                if let Err(e) = Self::require(raw, 2) {
+                    return Some(Err(e));
+                }
+                let flags = raw[1];
+                if flags == 0x00 {
+                    return Some(Ok(Some(Self::out_of_range())));
+                }
+                if matches!(flags, 0xe0 | 0xe3 | 0xf1) || flags & 0x80 == 0 {
+                    return None;
+                }
+                if let Err(e) = Self::require(raw, 12) {
+                    return Some(Err(e));
+                }
+                let x = u32::from(u16::from_le_bytes([raw[2], raw[3]]));
+                let y = u32::from(u16::from_le_bytes([raw[4], raw[5]]));
+                let pressure = u32::from(u16::from_le_bytes([raw[6], raw[7]]));
+                let tilt = Some([
+                    f32::from(i16::from(raw[10] as i8)),
+                    f32::from(-i16::from(raw[11] as i8)),
+                ]);
+                let buttons = Buttons::from_bits_unchecked(u64::from(flags >> 1), 3);
+                Some(Ok(Some(Self::compact_pen(
+                    x, y, pressure, buttons, tilt, None, None, spec,
+                ))))
+            }
+            Self::HuionKamvasOffset => {
+                if let Err(e) = Self::require(raw, 2) {
+                    return Some(Err(e));
+                }
+                let flags = raw[1];
+                if flags == 0xf1 || flags == 0xf0 || flags & 0x60 == 0x60 {
+                    return None;
+                }
+                if let Err(e) = Self::require(raw, 12) {
+                    return Some(Err(e));
+                }
+                let x =
+                    u32::from(u16::from_le_bytes([raw[2], raw[3]])) | (u32::from(raw[4] & 1) << 16);
+                let y = u32::from(u16::from_le_bytes([raw[5], raw[6]]));
+                let pressure = u32::from(u16::from_le_bytes([raw[7], raw[8]]));
+                let tilt = Some([
+                    -f32::from(i16::from(raw[10] as i8)),
+                    -f32::from(i16::from(raw[11] as i8)),
+                ]);
+                let buttons = Buttons::from_bits_unchecked(u64::from(flags >> 1), 3);
+                Some(Ok(Some(Self::compact_pen(
+                    x, y, pressure, buttons, tilt, None, None, spec,
+                ))))
+            }
+            Self::UcLogicBase
+            | Self::UcLogicTilt
+            | Self::UcLogicV1
+            | Self::UcLogicV2
+            | Self::HuionTilt => {
+                if let Err(e) = Self::require(raw, 2) {
+                    return Some(Err(e));
+                }
+                let flags = raw[1];
+                let (is_tilt, invert_y) = match self {
+                    Self::UcLogicBase => {
+                        if flags == 0xc0 {
+                            return Some(Ok(Some(Self::out_of_range())));
+                        }
+                        if flags & 0x40 != 0 {
+                            return None;
+                        }
+                        (false, false)
+                    }
+                    Self::UcLogicTilt => {
+                        if flags & 0x40 != 0 {
+                            return None;
+                        }
+                        (true, true)
+                    }
+                    Self::UcLogicV1 => {
+                        if flags == 0xe0 {
+                            return None;
+                        }
+                        if flags & 0x40 == 0 {
+                            return Some(Ok(Some(Self::out_of_range())));
+                        }
+                        (false, false)
+                    }
+                    Self::UcLogicV2 | Self::HuionTilt => {
+                        if matches!(flags, 0xe0 | 0xf0) {
+                            return None;
+                        }
+                        (true, false)
+                    }
+                    _ => unreachable!(),
+                };
+                if let Err(e) = Self::require(raw, if is_tilt { 12 } else { 8 }) {
+                    return Some(Err(e));
+                }
+                let x = u32::from(u16::from_le_bytes([raw[2], raw[3]]));
+                let y = u32::from(u16::from_le_bytes([raw[4], raw[5]]));
+                let pressure = u32::from(u16::from_le_bytes([raw[6], raw[7]]));
+                let buttons = Buttons::from_bits_unchecked(u64::from(flags >> 1), 3);
+                let tilt = is_tilt.then(|| {
+                    let ty = i16::from(raw[11] as i8);
+                    [
+                        f32::from(raw[10] as i8),
+                        f32::from(if invert_y { -ty } else { ty }),
+                    ]
+                });
+                Some(Ok(Some(Self::compact_pen(
+                    x, y, pressure, buttons, tilt, None, None, spec,
+                ))))
+            }
+            Self::VeikkBase | Self::VeikkA15 | Self::VeikkTilt => {
+                if let Err(e) = Self::require(raw, 2) {
+                    return Some(Err(e));
+                }
+                let (a15, tilt) = match self {
+                    Self::VeikkTilt => {
+                        if raw[1] != 0x41 {
+                            return None;
+                        }
+                        if let Err(e) = Self::require(raw, 3) {
+                            return Some(Err(e));
+                        }
+                        if raw[2] == 0xc0 {
+                            return Some(Ok(Some(Self::out_of_range())));
+                        }
+                        (false, true)
+                    }
+                    Self::VeikkBase | Self::VeikkA15 => {
+                        if raw[1] == 0x43 {
+                            return None;
+                        }
+                        if let Err(e) = Self::require(raw, 3) {
+                            return Some(Err(e));
+                        }
+                        if raw[2] & 0x20 == 0 {
+                            return None;
+                        }
+                        (self == Self::VeikkA15, false)
+                    }
+                    _ => unreachable!(),
+                };
+                let need = if tilt {
+                    13
+                } else if a15 {
+                    9
+                } else {
+                    11
+                };
+                if let Err(e) = Self::require(raw, need) {
+                    return Some(Err(e));
+                }
+                let (x, y, pressure) = if a15 {
+                    (
+                        u32::from(u16::from_le_bytes([raw[3], raw[4]])),
+                        u32::from(u16::from_le_bytes([raw[5], raw[6]])),
+                        u32::from(u16::from_le_bytes([raw[7], raw[8]])),
+                    )
+                } else {
+                    (
+                        u32::from_le_bytes([raw[3], raw[4], raw[5], 0]),
+                        u32::from_le_bytes([raw[6], raw[7], raw[8], 0]),
+                        u32::from(u16::from_le_bytes([raw[9], raw[10]])),
+                    )
+                };
+                let buttons = Buttons::from_bits_unchecked(u64::from(raw[2] >> 1), 2);
+                let tilt_val = tilt.then(|| [f32::from(raw[11] as i8), f32::from(raw[12] as i8)]);
+                Some(Ok(Some(Self::compact_pen(
+                    x, y, pressure, buttons, tilt_val, None, None, spec,
+                ))))
+            }
+            Self::IntuosV3 => {
+                let Some(&id) = raw.first() else {
+                    return Some(Err(DecodeError::Report(ReportError::Empty)));
+                };
+                match id {
+                    0x1e => {
+                        if let Err(e) = Self::require(raw, 20) {
+                            return Some(Err(e));
+                        }
+                        let x = u32::from_le_bytes([raw[3], raw[4], raw[5], 0]);
+                        let y = u32::from_le_bytes([raw[6], raw[7], raw[8], 0]);
+                        let pressure = u32::from(u16::from_le_bytes([raw[9], raw[10]]));
+                        let tilt = Some([
+                            f32::from(i16::from_le_bytes([raw[11], raw[12]])),
+                            f32::from(i16::from_le_bytes([raw[13], raw[14]])),
+                        ]);
+                        let rotation = Some(i32::from(i16::from_le_bytes([raw[15], raw[16]])));
+                        let eraser = Some(raw[2] & 0x20 != 0);
+                        let buttons = Buttons::from_bits_unchecked(u64::from(raw[2] >> 1), 3);
+                        Some(Ok(Some(Self::compact_pen(
+                            x, y, pressure, buttons, tilt, eraser, rotation, spec,
+                        ))))
+                    }
+                    0x1f => {
+                        if let Err(e) = Self::require(raw, 2) {
+                            return Some(Err(e));
+                        }
+                        if raw[1] != 0x01 {
+                            return None;
+                        }
+                        if let Err(e) = Self::require(raw, 14) {
+                            return Some(Err(e));
+                        }
+                        let x = u32::from(u16::from_le_bytes([raw[3], raw[4]]));
+                        let y = u32::from(u16::from_le_bytes([raw[5], raw[6]]));
+                        let pressure = u32::from(u16::from_le_bytes([raw[7], raw[8]]));
+                        let tilt = Some([f32::from(raw[9] as i8), f32::from(raw[11] as i8)]);
+                        let eraser = Some(raw[2] & 0x20 != 0);
+                        let buttons = Buttons::from_bits_unchecked(u64::from(raw[2] >> 1), 2);
+                        Some(Ok(Some(Self::compact_pen(
+                            x, y, pressure, buttons, tilt, eraser, None, spec,
+                        ))))
+                    }
+                    _ => None,
+                }
+            }
+        }
+    }
+}
+
 /// Turns device packets into synchronous pipeline input.
 pub trait PenDecoder {
     /// Legacy pen view: `Ok(None)` for auxiliary, touch, status and unknown
@@ -357,17 +818,29 @@ pub trait PenDecoder {
         self.decode(raw)
             .map(|decoded| decoded.map(DecodedInput::Pen))
     }
+    /// Internal compact zero-copy decode for native passthrough sessions.
+    #[doc(hidden)]
+    #[inline]
+    fn decode_compact_pen(
+        &mut self,
+        _raw: &[u8],
+    ) -> Option<Result<Option<CompactPen>, DecodeError>> {
+        None
+    }
     /// Clears parser state when a session ends.
     fn reset(&mut self) {}
 }
 
 /// IntuosV2 pen buttons, with the same checked byte/bit ordering as
 /// `reports::from_pth660`: two buttons in 0x10 packets, three in 0x1e.
+#[inline]
 pub fn intuos_v2_pen_buttons(raw: &[u8]) -> Option<Buttons> {
     match raw {
-        [0x10, flags, ..] if raw.len() >= 17 => Buttons::from_bits(u64::from(flags >> 1), 2).ok(),
+        [0x10, flags, ..] if raw.len() >= 17 => {
+            Some(Buttons::from_bits_unchecked(u64::from(flags >> 1), 2))
+        }
         [0x1e, _, flags, ..] if raw.len() >= 13 => {
-            Buttons::from_bits(u64::from(flags >> 1), 3).ok()
+            Some(Buttons::from_bits_unchecked(u64::from(flags >> 1), 3))
         }
         _ => None,
     }
@@ -438,6 +911,55 @@ const SESSION_METADATA: ReportMetadata = ReportMetadata {
     sequence: 0,
 };
 
+impl FastParser {
+    #[inline]
+    fn from_report_parser(parser: &ReportParser) -> Self {
+        match parser {
+            ReportParser::Stateless(f) => {
+                if std::ptr::fn_addr_eq(*f, parse_tablet as Stateless) {
+                    Self::GenericTablet
+                } else if std::ptr::fn_addr_eq(*f, parse_xp_pen as Stateless) {
+                    Self::XpPenBase
+                } else if std::ptr::fn_addr_eq(*f, parse_xp_pen_gen2 as Stateless) {
+                    Self::XpPenGen2
+                } else if std::ptr::fn_addr_eq(*f, parse_xp_pen_offset_pressure as Stateless) {
+                    Self::XpPenOffsetPressure
+                } else if std::ptr::fn_addr_eq(*f, parse_xp_pen_offset_auxiliary as Stateless) {
+                    Self::XpPenOffsetAux
+                } else if std::ptr::fn_addr_eq(*f, parse_huion_giano as Stateless) {
+                    Self::HuionGiano
+                } else if std::ptr::fn_addr_eq(*f, parse_huion_inspiroy as Stateless) {
+                    Self::HuionInspiroy
+                } else if std::ptr::fn_addr_eq(*f, parse_huion_tilt as Stateless) {
+                    Self::HuionTilt
+                } else if std::ptr::fn_addr_eq(*f, parse_huion_kamvas_offset as Stateless) {
+                    Self::HuionKamvasOffset
+                } else if std::ptr::fn_addr_eq(*f, parse_uc_logic as Stateless) {
+                    Self::UcLogicBase
+                } else if std::ptr::fn_addr_eq(*f, parse_uc_logic_tilt as Stateless) {
+                    Self::UcLogicTilt
+                } else if std::ptr::fn_addr_eq(*f, parse_uc_logic_v1 as Stateless) {
+                    Self::UcLogicV1
+                } else if std::ptr::fn_addr_eq(*f, parse_uc_logic_v2 as Stateless) {
+                    Self::UcLogicV2
+                } else if std::ptr::fn_addr_eq(*f, parse_veikk as Stateless) {
+                    Self::VeikkBase
+                } else if std::ptr::fn_addr_eq(*f, parse_veikk_a15 as Stateless) {
+                    Self::VeikkA15
+                } else if std::ptr::fn_addr_eq(*f, parse_veikk_tilt as Stateless) {
+                    Self::VeikkTilt
+                } else {
+                    Self::None
+                }
+            }
+            ReportParser::Envelope(f) if std::ptr::fn_addr_eq(*f, parse_intuos_v3 as Envelope) => {
+                Self::IntuosV3
+            }
+            _ => Self::None,
+        }
+    }
+}
+
 impl PenDecoder for TabletDecoder {
     #[inline]
     fn decode<'a>(&mut self, raw: &'a [u8]) -> Result<Option<DecodedPen<'a>>, DecodeError> {
@@ -448,15 +970,20 @@ impl PenDecoder for TabletDecoder {
                 } else {
                     raw
                 };
-                protocol::parse_within(payload, spec.max_x, spec.max_y, spec.max_pressure)
-                    .map(|pen| {
-                        pen.map(|pen| DecodedPen {
-                            pen,
-                            raw: payload,
-                            buttons: intuos_v2_pen_buttons(payload),
-                        })
+                protocol::parse_within_with_buttons(
+                    payload,
+                    spec.max_x,
+                    spec.max_y,
+                    spec.max_pressure,
+                )
+                .map(|decoded| {
+                    decoded.map(|(pen, buttons)| DecodedPen {
+                        pen,
+                        raw: payload,
+                        buttons: Some(buttons),
                     })
-                    .map_err(DecodeError::Pen)
+                })
+                .map_err(DecodeError::Pen)
             }
             Self::Values { parser, spec } => {
                 let (kind, report) = parser
@@ -476,6 +1003,53 @@ impl PenDecoder for TabletDecoder {
     }
 
     #[inline]
+    fn decode_compact_pen(
+        &mut self,
+        raw: &[u8],
+    ) -> Option<Result<Option<CompactPen>, DecodeError>> {
+        match self {
+            Self::IntuosV2 { spec, prefixed, .. } => {
+                let payload = if *prefixed {
+                    raw.get(1..).unwrap_or_default()
+                } else {
+                    raw
+                };
+                if !matches!(payload.first(), Some(0x10 | 0x1e)) {
+                    return None;
+                }
+                Some(
+                    protocol::parse_within_with_buttons(
+                        payload,
+                        spec.max_x,
+                        spec.max_y,
+                        spec.max_pressure,
+                    )
+                    .map(|decoded| {
+                        decoded.map(|(pen, buttons)| CompactPen {
+                            x: pen.x,
+                            y: pen.y,
+                            position_exact: true,
+                            pos_f32: [pen.x as f32, pen.y as f32],
+                            has_position: true,
+                            pressure: u32::from(pen.pressure),
+                            pen_buttons: Some(buttons),
+                            tilt: Some([f32::from(pen.tilt[0]), f32::from(pen.tilt[1])]),
+                            eraser: Some(pen.eraser),
+                            rotation: pen.rotation.map(i32::from),
+                            tip_switch: Some(pen.tip_switch),
+                            physical_loss: !pen.in_range && !pen.sense,
+                        })
+                    })
+                    .map_err(DecodeError::Pen),
+                )
+            }
+            Self::Values { parser, spec } => {
+                FastParser::from_report_parser(parser).decode(raw, *spec)
+            }
+        }
+    }
+
+    #[inline]
     fn decode_input<'a>(&mut self, raw: &'a [u8]) -> Result<Option<DecodedInput<'a>>, DecodeError> {
         match self {
             Self::IntuosV2 {
@@ -489,9 +1063,22 @@ impl PenDecoder for TabletDecoder {
                     raw
                 };
                 if matches!(payload.first(), Some(0x10 | 0x1e)) {
-                    return self
-                        .decode(raw)
-                        .map(|decoded| decoded.map(DecodedInput::Pen));
+                    return protocol::parse_within_with_buttons(
+                        payload,
+                        spec.max_x,
+                        spec.max_y,
+                        spec.max_pressure,
+                    )
+                    .map(|decoded| {
+                        decoded.map(|(pen, buttons)| {
+                            DecodedInput::Pen(DecodedPen {
+                                pen,
+                                raw: payload,
+                                buttons: Some(buttons),
+                            })
+                        })
+                    })
+                    .map_err(DecodeError::Pen);
                 }
                 let (kind, report) = fallback
                     .parse(raw, SESSION_METADATA)
@@ -515,6 +1102,38 @@ impl PenDecoder for TabletDecoder {
             Self::Values { parser, .. } => parser.reset(),
         }
     }
+}
+
+#[inline]
+fn round_coord_u32(value: f32, max: u32) -> u32 {
+    if !value.is_finite() || value <= 0.0 {
+        return 0;
+    }
+    let v = f64::from(value);
+    let max_f = f64::from(max);
+    if v >= max_f {
+        return max;
+    }
+    let t = v as u64;
+    (t + u64::from(v - (t as f64) >= 0.5)).min(u64::from(max)) as u32
+}
+
+#[inline]
+fn round_tilt_i8(value: f32) -> i8 {
+    if !value.is_finite() {
+        return 0;
+    }
+    let clamped = value.clamp(-128.0, 127.0);
+    let t = clamped as i32;
+    let frac = clamped - (t as f32);
+    let rounded = if frac >= 0.5 {
+        t + 1
+    } else if frac <= -0.5 {
+        t - 1
+    } else {
+        t
+    };
+    rounded.clamp(-128, 127) as i8
 }
 
 /// The pipeline's pen report for one parsed packet, or `None` when it has no
@@ -546,32 +1165,19 @@ pub fn pen_from_values(
         });
     }
     let [x, y] = values.position?;
-    let coordinate = |value: f32, max: u32| {
-        if value.is_finite() {
-            (value.round().max(0.0) as u64).min(u64::from(max)) as u32
-        } else {
-            0
-        }
-    };
     let pressure = values
         .pressure
         .unwrap_or(0)
         .min(u32::from(spec.max_pressure)) as u16;
-    let tilt = values.tilt.unwrap_or([0.0, 0.0]).map(|value| {
-        if value.is_finite() {
-            value.round().clamp(-128.0, 127.0) as i8
-        } else {
-            0
-        }
-    });
+    let tilt = values.tilt.unwrap_or([0.0, 0.0]).map(round_tilt_i8);
     let eraser = values.eraser.unwrap_or(false)
         || values
             .tool
             .is_some_and(|tool| tool.tool == ToolType::Eraser);
     Some(PenReport {
         id,
-        x: coordinate(x, spec.max_x),
-        y: coordinate(y, spec.max_y),
+        x: round_coord_u32(x, spec.max_x),
+        y: round_coord_u32(y, spec.max_y),
         pressure,
         in_range: values.near_proximity.unwrap_or(true),
         sense: true,
@@ -879,5 +1485,119 @@ mod tests {
             failures.len(),
             failures.join("\n")
         );
+    }
+
+    #[test]
+    fn compact_pen_fast_parsers_match_generic_decode_without_allocating() {
+        let parsers = [
+            "OpenTabletDriver.Plugin.Tablet.TabletReportParser",
+            "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenReportParser",
+            "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenOffsetAuxReportParser",
+            "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenOffsetPressureReportParser",
+            "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenGen2ReportParser",
+            "OpenTabletDriver.Configurations.Parsers.Huion.GianoReportParser",
+            "OpenTabletDriver.Configurations.Parsers.Huion.InspiroyReportParser",
+            "OpenTabletDriver.Configurations.Parsers.Huion.KamvasOffsetReportParser",
+            "OpenTabletDriver.Configurations.Parsers.Huion.HuionTiltReportParser",
+            "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicReportParser",
+            "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicTiltReportParser",
+            "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicV1ReportParser",
+            "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicV2ReportParser",
+            "OpenTabletDriver.Configurations.Parsers.Veikk.VeikkReportParser",
+            "OpenTabletDriver.Configurations.Parsers.Veikk.VeikkTiltReportParser",
+            "OpenTabletDriver.Configurations.Parsers.Veikk.VeikkA15ReportParser",
+            "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV3.IntuosV3ReportParser",
+            "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV2.IntuosV2ReportParser",
+        ];
+        let mut packets: Vec<[u8; 32]> = Vec::new();
+        // Representative pen, hover, out-of-range, and aux/non-pen packets.
+        let headers: &[(u8, u8)] = &[
+            (0x02, 0x81),
+            (0x02, 0xa3),
+            (0x02, 0xc0),
+            (0x02, 0xf0),
+            (0x07, 0x80),
+            (0x08, 0x81),
+            (0x08, 0xe0),
+            (0x09, 0x85),
+            (0x10, 0x61),
+            (0x10, 0x42),
+            (0x10, 0x00),
+            (0x11, 0x01),
+            (0x1e, 0x81),
+        ];
+        for &(b0, b1) in headers {
+            let mut pkt = [0u8; 32];
+            pkt[0] = b0;
+            pkt[1] = b1;
+            for (i, slot) in pkt[2..].iter_mut().enumerate() {
+                *slot = ((b0 as usize * 31 + b1 as usize * 17 + i * 13) & 0xff) as u8;
+            }
+            packets.push(pkt);
+        }
+        let spec = TabletSpec::PTH_660;
+        for name in parsers {
+            let mut fast_decoder = TabletDecoder::for_parser(name, spec).unwrap();
+            let mut generic_decoder = TabletDecoder::for_parser(name, spec).unwrap();
+            for pkt in &packets {
+                let fast = fast_decoder.decode_compact_pen(pkt);
+                let generic = generic_decoder.decode_input(pkt);
+                match (fast, generic) {
+                    (
+                        Some(Ok(Some(compact))),
+                        Ok(Some(DecodedInput::Report { kind, report, .. })),
+                    ) => {
+                        if compact.physical_loss {
+                            assert_eq!(kind, ReportKind::OutOfRange, "loss mismatch for {name}");
+                        } else {
+                            assert_eq!(
+                                Some(compact.pos_f32),
+                                report.values.position,
+                                "position mismatch for {name}"
+                            );
+                            assert_eq!(
+                                Some(compact.pressure),
+                                report.values.pressure,
+                                "pressure mismatch for {name}"
+                            );
+                            assert_eq!(
+                                compact.pen_buttons, report.values.pen_buttons,
+                                "buttons mismatch for {name}"
+                            );
+                            assert_eq!(
+                                compact.tilt, report.values.tilt,
+                                "tilt mismatch for {name}"
+                            );
+                            assert_eq!(
+                                compact.eraser, report.values.eraser,
+                                "eraser mismatch for {name}"
+                            );
+                        }
+                    }
+                    (Some(Ok(Some(compact))), Ok(Some(DecodedInput::Pen(pen)))) => {
+                        assert_eq!(compact.x, pen.pen.x, "x mismatch for {name}");
+                        assert_eq!(compact.y, pen.pen.y, "y mismatch for {name}");
+                        assert_eq!(
+                            compact.pressure,
+                            u32::from(pen.pen.pressure),
+                            "pressure mismatch"
+                        );
+                        assert_eq!(compact.physical_loss, !pen.pen.in_range && !pen.pen.sense);
+                    }
+                    // Fallback to generic path (e.g. aux packet) or ignored/short packet.
+                    (None, Ok(_)) | (Some(Ok(None)), Ok(None)) | (Some(Err(_)), Err(_)) => {}
+                    (other_fast, other_generic) => panic!(
+                        "compact/generic mismatch for {name}: fast={other_fast:?} generic={other_generic:?}"
+                    ),
+                }
+            }
+            // Steady-state zero-allocation check on a pen packet.
+            let sample = &packets[0];
+            crate::test_alloc::assert_no_allocations(|| {
+                for _ in 0..1_000 {
+                    let _ = std::hint::black_box(fast_decoder.decode_compact_pen(sample));
+                }
+            });
+        }
     }
 }

@@ -42,20 +42,20 @@ public unsafe struct FilterApi
 // plugin's other managed/native dependencies from its own directory.
 sealed class PluginContext(string path, bool inspect = false) : OpenTabletDriver.Desktop.Reflection.DesktopPluginContext(new DirectoryInfo(Path.GetDirectoryName(Path.GetFullPath(path))!), hosted: true)
 {
+    static readonly Assembly[] SharedAssemblies =
+    [
+        typeof(ITabletReport).Assembly,
+        typeof(OpenTabletDriver.Configurations.ReportParserProvider).Assembly,
+        typeof(OpenTabletDriver.Driver).Assembly,
+        typeof(OpenTabletDriver.Native.Windows.Windows).Assembly,
+        typeof(OpenTabletDriver.Desktop.Contracts.IDriverDaemon).Assembly
+    ];
     readonly AssemblyDependencyResolver resolver = new(path);
     readonly string directory = Path.GetDirectoryName(path)!;
     protected override Assembly? Load(AssemblyName name)
     {
-        if (name.Name == typeof(ITabletReport).Assembly.GetName().Name)
-            return typeof(ITabletReport).Assembly;
-        if (name.Name == typeof(OpenTabletDriver.Configurations.ReportParserProvider).Assembly.GetName().Name)
-            return typeof(OpenTabletDriver.Configurations.ReportParserProvider).Assembly;
-        if (name.Name == typeof(OpenTabletDriver.Driver).Assembly.GetName().Name)
-            return typeof(OpenTabletDriver.Driver).Assembly;
-        if (name.Name == typeof(OpenTabletDriver.Native.Windows.Windows).Assembly.GetName().Name)
-            return typeof(OpenTabletDriver.Native.Windows.Windows).Assembly;
-        if (name.Name == typeof(OpenTabletDriver.Desktop.Contracts.IDriverDaemon).Assembly.GetName().Name)
-            return typeof(OpenTabletDriver.Desktop.Contracts.IDriverDaemon).Assembly;
+        foreach (Assembly shared in SharedAssemblies)
+            if (name.Name == shared.GetName().Name) return shared;
         string? dependency = resolver.ResolveAssemblyToPath(name);
         if (dependency == null)
         {
@@ -64,13 +64,10 @@ sealed class PluginContext(string path, bool inspect = false) : OpenTabletDriver
         }
         return dependency == null ? null : LoadPluginAssembly(dependency);
     }
-    internal Assembly LoadPluginAssembly(string file)
+    internal Assembly LoadPluginAssembly(string file, string? knownIdentity = null)
     {
-        string? identity = AssemblyName.GetAssemblyName(file).FullName;
-        foreach (Assembly shared in new[] { typeof(ITabletReport).Assembly,
-            typeof(OpenTabletDriver.Configurations.ReportParserProvider).Assembly,
-            typeof(OpenTabletDriver.Driver).Assembly, typeof(OpenTabletDriver.Native.Windows.Windows).Assembly,
-            typeof(OpenTabletDriver.Desktop.Contracts.IDriverDaemon).Assembly })
+        string? identity = knownIdentity ?? AssemblyName.GetAssemblyName(file).FullName;
+        foreach (Assembly shared in SharedAssemblies)
             if (shared.FullName == identity) return shared;
         var loaded = Assemblies.FirstOrDefault(assembly => assembly.FullName == identity);
         if (loaded != null) return loaded;
@@ -690,45 +687,97 @@ public static unsafe partial class EntryPoints
         finally { owner.Free(); }
     }
 
+    internal static (string Kind, bool Supported, bool AbsoluteOutput, bool RelativeOutput) ClassifyType(Type t)
+    {
+        bool isOutput = typeof(IOutputMode).IsAssignableFrom(t);
+        bool isBinding = typeof(OpenTabletDriver.Plugin.IBinding).IsAssignableFrom(t);
+        bool isTool = typeof(OpenTabletDriver.Plugin.ITool).IsAssignableFrom(t);
+        bool isFilter = typeof(IPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(t);
+        bool isParser = typeof(IReportParser<IDeviceReport>).IsAssignableFrom(t);
+        string kind = isOutput ? "output"
+            : isBinding ? "binding"
+            : isTool ? "tool"
+            : isFilter ? "filter"
+            : isParser ? "parser"
+            : typeof(IDeviceReport).IsAssignableFrom(t) ? "report" : "provider";
+        bool supported = isOutput || typeof(OpenTabletDriver.Plugin.IStateBinding).IsAssignableFrom(t)
+            || isTool || isFilter || isParser;
+        return (kind, supported, isOutput && typeof(AbsoluteOutputMode).IsAssignableFrom(t), isOutput && typeof(RelativeOutputMode).IsAssignableFrom(t));
+    }
+
+    internal static JObject DescribeTypeSummary(Type t)
+    {
+        var (kind, supported, absoluteOutput, relativeOutput) = ClassifyType(t);
+        return new JObject
+        {
+            ["path"] = t.FullName,
+            ["name"] = t.GetCustomAttribute<PluginNameAttribute>()?.Name ?? t.FullName,
+            ["category"] = kind,
+            ["supported"] = supported,
+            ["absolute_output"] = absoluteOutput,
+            ["relative_output"] = relativeOutput
+        };
+    }
+
     internal static object DescribeType(Type t)
     {
-        var properties = t.GetProperties()
-            .Where(p => p.GetCustomAttribute<PropertyAttribute>() != null).ToArray();
-        return new {
-            kind = typeof(IOutputMode).IsAssignableFrom(t) ? "output" : typeof(OpenTabletDriver.Plugin.IBinding).IsAssignableFrom(t) ? "binding" : typeof(OpenTabletDriver.Plugin.ITool).IsAssignableFrom(t) ? "tool" : typeof(IPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(t) ? "filter" : typeof(IReportParser<IDeviceReport>).IsAssignableFrom(t) ? "parser" : typeof(IDeviceReport).IsAssignableFrom(t) ? "report" : "provider",
-            supported = typeof(IOutputMode).IsAssignableFrom(t) || typeof(OpenTabletDriver.Plugin.IStateBinding).IsAssignableFrom(t) || typeof(OpenTabletDriver.Plugin.ITool).IsAssignableFrom(t) || typeof(IPositionedPipelineElement<IDeviceReport>).IsAssignableFrom(t) || typeof(IReportParser<IDeviceReport>).IsAssignableFrom(t),
-            relative_output = typeof(RelativeOutputMode).IsAssignableFrom(t),
-            absolute_output = typeof(AbsoluteOutputMode).IsAssignableFrom(t),
+        var (kind, supported, absoluteOutput, relativeOutput) = ClassifyType(t);
+        var settings = new Dictionary<string, object?>();
+        var described = new List<object>();
+        foreach (PropertyInfo p in t.GetProperties())
+        {
+            PropertyAttribute? propAttr = p.GetCustomAttribute<PropertyAttribute>();
+            if (propAttr == null) continue;
+            DefaultPropertyValueAttribute? defaultAttr = p.GetCustomAttribute<DefaultPropertyValueAttribute>();
+            SliderPropertyAttribute? sliderAttr = p.GetCustomAttribute<SliderPropertyAttribute>();
+            if (defaultAttr != null)
+                settings[p.Name] = defaultAttr.Value;
+            else if (sliderAttr != null && p.PropertyType == typeof(float))
+                settings[p.Name] = sliderAttr.DefaultValue;
+            Type underlying = Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType;
+            PropertyValidatedAttribute? validatedAttr = p.PropertyType == typeof(string)
+                ? p.GetCustomAttribute<PropertyValidatedAttribute>() : null;
+            string[]? validValues = null;
+            if (validatedAttr != null)
+            {
+                try { validValues = validatedAttr.GetValue<IEnumerable<string>>(p)?.ToArray(); }
+                catch { validValues = null; }
+            }
+            described.Add(new
+            {
+                name = p.Name,
+                display_name = propAttr.DisplayName,
+                unit = p.GetCustomAttribute<UnitAttribute>()?.Unit,
+                tooltip = p.GetCustomAttribute<ToolTipAttribute>()?.ToolTip,
+                placeholder = p.PropertyType == typeof(string) && validatedAttr == null
+                    ? p.GetCustomAttribute<PropertyUnvalidatedStringPlaceholderAttribute>()?.Placeholder : null,
+                property_type = underlying.FullName,
+                writable = p.SetMethod?.IsPublic == true && p.GetIndexParameters().Length == 0,
+                default_is_attribute = defaultAttr != null,
+                enum_flags = underlying.IsDefined(typeof(FlagsAttribute), false),
+                enum_underlying_type = EnumUnderlyingType(underlying),
+                enum_choices = EnumChoices(underlying),
+                valid_values = validValues,
+                slider = sliderAttr != null
+                    ? new { min = sliderAttr.Min, max = sliderAttr.Max, default_value = sliderAttr.DefaultValue }
+                    : null,
+                description = p.GetCustomAttribute<BooleanPropertyAttribute>()?.Description
+            });
+        }
+        return new
+        {
+            kind,
+            supported,
+            relative_output = relativeOutput,
+            absolute_output = absoluteOutput,
             type_name = t.FullName,
             display_name = t.GetCustomAttribute<PluginNameAttribute>()?.Name,
             // Omitted values preserve the plugin constructor's defaults.
             // A null placeholder would instead coerce many value types to zero.
             // GeneratedControls also saves a slider's DefaultValue
             // for a property that has no value yet.
-            settings = properties.Where(p => p.GetCustomAttribute<DefaultPropertyValueAttribute>() != null
-                    || (p.GetCustomAttribute<SliderPropertyAttribute>() != null && p.PropertyType == typeof(float)))
-                .ToDictionary(p => p.Name, p => p.GetCustomAttribute<DefaultPropertyValueAttribute>() is { } defaults
-                    ? defaults.Value
-                    : p.GetCustomAttribute<SliderPropertyAttribute>()!.DefaultValue),
-            properties = properties.Select(p => new {
-                name = p.Name,
-                display_name = p.GetCustomAttribute<PropertyAttribute>()?.DisplayName,
-                unit = p.GetCustomAttribute<UnitAttribute>()?.Unit,
-                tooltip = p.GetCustomAttribute<ToolTipAttribute>()?.ToolTip,
-                placeholder = p.PropertyType == typeof(string) && p.GetCustomAttribute<PropertyValidatedAttribute>() == null
-                    ? p.GetCustomAttribute<PropertyUnvalidatedStringPlaceholderAttribute>()?.Placeholder : null,
-                property_type = (Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType).FullName,
-                writable = p.SetMethod?.IsPublic == true && p.GetIndexParameters().Length == 0,
-                default_is_attribute = p.GetCustomAttribute<DefaultPropertyValueAttribute>() != null,
-                enum_flags = (Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType).IsDefined(typeof(FlagsAttribute), false),
-                enum_underlying_type = EnumUnderlyingType(Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType),
-                enum_choices = EnumChoices(Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType),
-                valid_values = ValidValues(p),
-                slider = p.GetCustomAttribute<SliderPropertyAttribute>() is { } slider
-                    ? new { min = slider.Min, max = slider.Max, default_value = slider.DefaultValue }
-                    : null,
-                description = p.GetCustomAttribute<BooleanPropertyAttribute>()?.Description
-            }).ToArray()
+            settings,
+            properties = described.ToArray()
         };
     }
 
@@ -759,18 +808,6 @@ public static unsafe partial class EntryPoints
             finally { context.Unload(); }
         }
         catch (Exception e) { lastError = e.GetBaseException().Message; Console.Error.WriteLine($".NET plugin inspection failed: {lastError}"); return -1; }
-    }
-
-    // A [PropertyValidated] string's choices come from a static member, as
-    // GeneratedControls reads them. This runs that member's code, like
-    // upstream's settings page; a failure leaves the plain text field.
-    static string[]? ValidValues(PropertyInfo property)
-    {
-        if (property.PropertyType != typeof(string)
-            || property.GetCustomAttribute<PropertyValidatedAttribute>() is not { } validated)
-            return null;
-        try { return validated.GetValue<IEnumerable<string>>(property)?.ToArray(); }
-        catch { return null; }
     }
 
     // Reflection only: inspecting controls must not construct or run a plugin.

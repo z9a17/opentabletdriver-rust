@@ -38,6 +38,16 @@ pub struct Device {
 /// Every hidraw node, by sysfs path. Device strings are read only for the
 /// indices a configuration for the same IDs asks for.
 pub fn enumerate(database: &Database) -> io::Result<Vec<Device>> {
+    enumerate_with_string_cache(database, &BTreeMap::new())
+}
+
+/// Like [`enumerate`], but reuses already-read USB string descriptors for known
+/// active `physical_id`s so periodic daemon scans do not issue live USB control
+/// transfers to connected tablets.
+pub fn enumerate_with_string_cache(
+    database: &Database,
+    cached_strings: &BTreeMap<String, BTreeMap<u8, String>>,
+) -> io::Result<Vec<Device>> {
     let mut devices = Vec::new();
     let entries = match fs::read_dir("/sys/class/hidraw") {
         Ok(entries) => entries,
@@ -52,10 +62,10 @@ pub fn enumerate(database: &Database) -> io::Result<Vec<Device>> {
         let Some(hid) = sys.parent().and_then(Path::parent) else {
             continue;
         };
-        let Some(id) = fs::read_to_string(hid.join("uevent"))
-            .ok()
-            .and_then(|uevent| sysfs::hid_id(&uevent))
-        else {
+        let Ok(uevent) = fs::read_to_string(hid.join("uevent")) else {
+            continue;
+        };
+        let Some(id) = sysfs::hid_id(&uevent) else {
             continue;
         };
         let Some(lengths) = fs::read(hid.join("report_descriptor"))
@@ -70,6 +80,15 @@ pub fn enumerate(database: &Database) -> io::Result<Vec<Device>> {
         } else {
             None
         };
+        let physical_id = usb
+            .as_ref()
+            .map(|usb| usb.to_string_lossy().into_owned())
+            .or_else(|| {
+                (id.bus == sysfs::BUS_BLUETOOTH)
+                    .then(|| sysfs::bluetooth_physical_id(&uevent))
+                    .flatten()
+            })
+            .unwrap_or_else(|| hid.to_string_lossy().into_owned());
         let mut strings = BTreeMap::new();
         let mut string_errors = BTreeMap::new();
         if let Some(usb) = &usb {
@@ -79,7 +98,12 @@ pub fn enumerate(database: &Database) -> io::Result<Vec<Device>> {
                 .flat_map(|strings| strings.keys())
                 .filter_map(|index| index.parse().ok())
                 .collect();
+            let cached = cached_strings.get(&physical_id);
             for index in indices {
+                if let Some(text) = cached.and_then(|map| map.get(&index)) {
+                    strings.insert(index, text.clone());
+                    continue;
+                }
                 match usb_string(usb, index) {
                     Ok(text) => {
                         strings.insert(index, text);
@@ -94,22 +118,19 @@ pub fn enumerate(database: &Database) -> io::Result<Vec<Device>> {
         if let Some(interface) = sysfs::interface_number(&sys) {
             attributes.insert("USB_INTERFACE_NUMBER".to_owned(), interface);
         }
+        let kernel_driver = uevent
+            .lines()
+            .find_map(|line| line.strip_prefix("DRIVER=").map(str::to_owned))
+            .filter(|driver| {
+                matches!(
+                    driver.as_str(),
+                    "wacom" | "hid_uclogic" | "hid_digimend_uclogic"
+                )
+            });
         devices.push(Device {
             endpoint: Endpoint {
                 path: sys.to_string_lossy().into_owned(),
-                physical_id: usb
-                    .as_ref()
-                    .map(|usb| usb.to_string_lossy().into_owned())
-                    .or_else(|| {
-                        (id.bus == sysfs::BUS_BLUETOOTH)
-                            .then(|| {
-                                fs::read_to_string(hid.join("uevent"))
-                                    .ok()
-                                    .and_then(|text| sysfs::bluetooth_physical_id(&text))
-                            })
-                            .flatten()
-                    })
-                    .unwrap_or_else(|| hid.to_string_lossy().into_owned()),
+                physical_id,
                 transport: if id.bus == sysfs::BUS_USB {
                     Transport::UsbHid
                 } else if id.bus == sysfs::BUS_BLUETOOTH {
@@ -129,19 +150,7 @@ pub fn enumerate(database: &Database) -> io::Result<Vec<Device>> {
             node,
             usb,
             uses_report_ids: lengths.uses_report_ids,
-            kernel_driver: fs::read_to_string(hid.join("uevent"))
-                .ok()
-                .and_then(|uevent| {
-                    uevent
-                        .lines()
-                        .find_map(|line| line.strip_prefix("DRIVER=").map(str::to_owned))
-                })
-                .filter(|driver| {
-                    matches!(
-                        driver.as_str(),
-                        "wacom" | "hid_uclogic" | "hid_digimend_uclogic"
-                    )
-                }),
+            kernel_driver,
             string_errors,
         });
     }
@@ -468,17 +477,24 @@ impl<'a> Hidraw<'a> {
             revents: 0,
         }; 6];
         waits[..3].copy_from_slice(&primary.waits());
-        if let Some(auxiliary) = auxiliary {
+        let count = if let Some(auxiliary) = auxiliary {
             waits[3..].copy_from_slice(&auxiliary.waits());
-        }
+            6
+        } else {
+            3
+        };
+        let wait = timeout.min(Duration::from_secs(1));
+        let ts = libc::timespec {
+            tv_sec: wait.as_secs() as _,
+            tv_nsec: wait.subsec_nanos() as libc::c_long,
+        };
+        // SAFETY: `waits` and `ts` are valid for the duration of `ppoll`.
         let result = unsafe {
-            libc::poll(
+            libc::ppoll(
                 waits.as_mut_ptr(),
-                waits.len() as libc::nfds_t,
-                timeout
-                    .min(Duration::from_secs(1))
-                    .as_micros()
-                    .div_ceil(1000) as i32,
+                count as libc::nfds_t,
+                &ts,
+                std::ptr::null(),
             )
         };
         if result < 0 {
@@ -589,53 +605,66 @@ impl ReportSource for Hidraw<'_> {
         if self.stop.load(Ordering::Acquire) {
             return Ok(Read::Ended);
         }
-        let mut waits = [
-            libc::pollfd {
-                fd: self.file.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            },
-            libc::pollfd {
-                fd: self
-                    .services
-                    .as_ref()
-                    .map_or(-1, |services| services.wake().raw()),
-                events: libc::POLLIN,
-                revents: 0,
-            },
-            libc::pollfd {
-                fd: self.registration.as_ref().map_or(-1, |registration| {
-                    registration.endpoint.output.reader_wake().raw()
-                }),
-                events: libc::POLLIN,
-                revents: 0,
-            },
-        ];
-        // SAFETY: one valid pollfd.
-        let queued = unsafe { libc::poll(waits.as_mut_ptr(), 3, 0) } > 0;
-        if !queued {
-            // SIGINT and SIGTERM end the wait: the driver has one thread, and
-            // poll is never restarted after a signal handler (signal(7)). The
-            // one-second cap covers a signal landing just before the call,
-            // without waking an idle driver ten times a second to look.
-            // Round up: a sub-millisecond filter timer deadline must not spin.
-            let wait = timeout
-                .min(Duration::from_secs(1))
-                .as_micros()
-                .div_ceil(1000) as i32;
-            // SAFETY: one valid pollfd.
-            match unsafe { libc::poll(waits.as_mut_ptr(), 3, wait) } {
-                0 => return Ok(Read::Idle),
-                n if n < 0 => {
-                    let error = io::Error::last_os_error();
-                    return if error.kind() == io::ErrorKind::Interrupted {
-                        Ok(Read::Idle)
-                    } else {
-                        Err(error)
-                    };
-                }
-                _ => {}
+        if let Some(registration) = &self.registration
+            && registration.endpoint.output.reader_wake().take_signal()
+        {
+            return Ok(Read::Idle);
+        }
+        let fd = self.file.as_raw_fd();
+        // Fast path: `self.file` is opened with O_NONBLOCK, so attempt a direct
+        // non-blocking read first. When a report is already queued in hidraw,
+        // this avoids all `poll`/`ppoll` syscalls and reports true `queued: true`.
+        let target = &mut self.buffer[self.offset..];
+        // SAFETY: `target` is valid for writes of its length.
+        let initial = unsafe { libc::read(fd, target.as_mut_ptr().cast(), target.len()) };
+        if initial > 0 {
+            let ready = Instant::now();
+            if self.offset == 1 {
+                self.buffer[0] = 0;
             }
+            let len = self.offset + initial as usize;
+            if let Some(registration) = &self.registration {
+                registration.publish(&self.buffer[..len]);
+            }
+            return Ok(Read::Report {
+                bytes: &self.buffer[..len],
+                ready,
+                queued: true,
+            });
+        }
+        if initial == 0 {
+            return Ok(Read::Ended);
+        }
+        let initial_error = io::Error::last_os_error();
+        match initial_error.raw_os_error() {
+            Some(libc::EAGAIN | libc::EINTR) => {}
+            Some(libc::ENODEV) => return Ok(Read::Ended),
+            _ => return Err(initial_error),
+        }
+        if timeout.is_zero() {
+            return Ok(Read::Idle);
+        }
+        let mut waits = self.waits();
+        // SIGINT and SIGTERM end the wait: ppoll is not restarted after a
+        // signal handler, and nanosecond timespec preserves sub-ms deadlines
+        // for filter/interpolator timers without millisecond rounding jitter.
+        let wait = timeout.min(Duration::from_secs(1));
+        let ts = libc::timespec {
+            tv_sec: wait.as_secs() as _,
+            tv_nsec: wait.subsec_nanos() as libc::c_long,
+        };
+        // SAFETY: `waits` and `ts` are valid for the duration of `ppoll`.
+        match unsafe { libc::ppoll(waits.as_mut_ptr(), 3, &ts, std::ptr::null()) } {
+            0 => return Ok(Read::Idle),
+            n if n < 0 => {
+                let error = io::Error::last_os_error();
+                return if error.kind() == io::ErrorKind::Interrupted {
+                    Ok(Read::Idle)
+                } else {
+                    Err(error)
+                };
+            }
+            _ => {}
         }
         if waits[1].revents != 0 {
             self.services();
@@ -671,13 +700,14 @@ impl ReportSource for Hidraw<'_> {
         if self.offset == 1 {
             self.buffer[0] = 0;
         }
+        let len = self.offset + read as usize;
         if let Some(registration) = &self.registration {
-            registration.publish(&self.buffer[..self.offset + read as usize]);
+            registration.publish(&self.buffer[..len]);
         }
         Ok(Read::Report {
-            bytes: &self.buffer[..self.offset + read as usize],
+            bytes: &self.buffer[..len],
             ready,
-            queued,
+            queued: false,
         })
     }
 }
@@ -798,20 +828,20 @@ impl Uinput {
         let blank: libc::input_event = unsafe { std::mem::zeroed() };
         let mut events = [blank; 4];
         let mut count = 0;
-        let mut push = |kind: u16, code: u16, value: i32| {
-            events[count].type_ = kind;
-            events[count].code = code;
-            events[count].value = value;
-            count += 1;
-        };
         if packet.flags & flags::MOVE != 0 {
             let kind = if packet.flags & flags::ABSOLUTE != 0 {
                 EV_ABS
             } else {
                 EV_REL
             };
-            push(kind, 0, packet.dx);
-            push(kind, 1, packet.dy);
+            events[count].type_ = kind;
+            events[count].code = 0;
+            events[count].value = packet.dx;
+            count += 1;
+            events[count].type_ = kind;
+            events[count].code = 1;
+            events[count].value = packet.dy;
+            count += 1;
         }
         let tip = if packet.flags & flags::LEFTDOWN != 0 {
             true
@@ -820,15 +850,20 @@ impl Uinput {
         } else {
             self.tip_held.get()
         };
-        push(EV_SYN, 0, 0);
-        // SAFETY: `events[..count]` is initialized plain data.
-        let bytes = unsafe {
-            std::slice::from_raw_parts(
-                events.as_ptr().cast::<u8>(),
-                count * size_of::<libc::input_event>(),
-            )
-        };
-        (&self.file).write_all(bytes)?;
+        if count > 0 {
+            events[count].type_ = EV_SYN;
+            events[count].code = 0;
+            events[count].value = 0;
+            count += 1;
+            // SAFETY: `events[..count]` is initialized plain data.
+            let bytes = unsafe {
+                std::slice::from_raw_parts(
+                    events.as_ptr().cast::<u8>(),
+                    count * size_of::<libc::input_event>(),
+                )
+            };
+            (&self.file).write_all(bytes)?;
+        }
         if packet.flags & (flags::LEFTDOWN | flags::LEFTUP) != 0 {
             self.contact_owner
                 .hold(otd_platform::input_owner::Code::Button(0), tip)?;
@@ -957,19 +992,19 @@ impl Drop for VirtualKeyboard {
     }
 }
 
-/// Key and button output for pen side buttons. A missing device means no
-/// binding of that kind was configured (`supports` refuses those actions).
+/// Key and button output for pen side buttons. `supports_keys` indicates
+/// whether keyboard bindings were configured (and shared input ownership
+/// verified); a missing device means `supports` refuses those actions.
 pub fn action_sink(
     pointer: Option<std::rc::Rc<Uinput>>,
-    keyboard: Option<VirtualKeyboard>,
+    supports_keys: bool,
 ) -> io::Result<Box<dyn ActionSink>> {
-    if pointer.is_some() || keyboard.is_some() {
+    if pointer.is_some() || supports_keys {
         ensure_shared_inputs()?;
     }
     let owner = otd_platform::input_owner::Native::new()?;
     let scroll_pointer = pointer.clone();
     let supports_mouse = pointer.is_some();
-    let supports_keys = keyboard.is_some();
     let actions = LocalActions::new(
         move |transition: ActionTransition| {
             let code = match transition.action {

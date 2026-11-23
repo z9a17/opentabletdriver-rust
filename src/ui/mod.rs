@@ -369,20 +369,24 @@ pub(crate) fn create_font(pixels: i32, weight: i32, face: &str, escapement: i32)
 struct FontSet {
     fonts: draw::Fonts,
     small_pixels: i32,
+    ui_height: i32,
 }
 
 impl FontSet {
     fn new(dpi: u32) -> Self {
         let points = |pt: i32| (pt * dpi as i32 + 36) / 72;
         let small_pixels = points(8);
+        let ui = create_font(points(9), 400, "Segoe UI", 0);
+        let ui_height = canvas::measure_font_height(ui);
         Self {
             fonts: draw::Fonts {
-                ui: create_font(points(9), 400, "Segoe UI", 0),
+                ui,
                 bold: create_font(points(9), 600, "Segoe UI", 0),
                 small: create_font(small_pixels, 400, "Segoe UI", 0),
                 mono: create_font(points(9), 400, "Consolas", 0),
             },
             small_pixels,
+            ui_height,
         }
     }
 }
@@ -868,6 +872,11 @@ struct App {
     /// Whether the notification area has the icon; without it minimizing
     /// keeps the taskbar button.
     in_tray: bool,
+    backbuffer: Option<canvas::Canvas>,
+    rotated_fonts: area::RotatedFontCache,
+    /// Cached `spec_for_tablet` lookup keyed by tablet name so `WM_SIZE` /
+    /// layout / bindings do not re-read `Configurations/` on disk.
+    cached_tablet_spec: RefCell<Option<(String, Option<otd_core::spec::TabletSpec>)>>,
 }
 
 impl Drop for App {
@@ -1027,15 +1036,34 @@ unsafe extern "system" fn window_proc(
             }
             0
         }
+        WM_SHOWWINDOW => {
+            with_app(|app| {
+                let visible = wp != 0 && unsafe { IsIconic(window) } == 0;
+                app.set_client_visible(visible);
+                if !visible {
+                    app.backbuffer = None;
+                }
+            });
+            default()
+        }
         WM_SIZE => {
             if wp as u32 == SIZE_MINIMIZED {
                 // Upstream hides a minimized window into the tray.
-                if with_app(|app| app.in_tray).unwrap_or(false) {
+                let hide = with_app(|app| {
+                    app.set_client_visible(false);
+                    app.backbuffer = None;
+                    app.in_tray
+                })
+                .unwrap_or(false);
+                if hide {
                     unsafe { ShowWindow(window, SW_HIDE) };
                 }
                 return 0;
             }
-            with_app(App::layout);
+            with_app(|app| {
+                app.set_client_visible(unsafe { IsWindowVisible(window) } != 0);
+                app.layout();
+            });
             0
         }
         WM_GETMINMAXINFO => {
@@ -1278,7 +1306,17 @@ unsafe extern "system" fn window_proc(
             0
         }
         WM_DEVICECHANGE => {
-            with_app(|app| app.refresh_tablets(false));
+            // Only re-scan HID devices on actual device arrival, removal, or
+            // tree change — ignore unrelated volume/power/docking broadcasts.
+            const DBT_DEVNODES_CHANGED: usize = 0x0007;
+            const DBT_DEVICEARRIVAL: usize = 0x8000;
+            const DBT_DEVICEREMOVECOMPLETE: usize = 0x8004;
+            if matches!(
+                wp,
+                DBT_DEVNODES_CHANGED | DBT_DEVICEARRIVAL | DBT_DEVICEREMOVECOMPLETE
+            ) {
+                with_app(|app| app.refresh_tablets(false));
+            }
             0
         }
         WM_AUTOSTART => {
@@ -1676,5 +1714,6 @@ pub fn run() -> Result<(), String> {
     };
     APP.with(|slot| drop(slot.borrow_mut().take()));
     LOOK.with(|slot| drop(slot.borrow_mut().take()));
+    paint::clear_scratch_canvas();
     result
 }

@@ -290,7 +290,7 @@ impl App {
         shown: &mut Vec<(HWND, RECT)>,
     ) {
         items.push(Item::Frame(frame, hwnd));
-        let text_height = canvas::measure_font_height(self.style().fonts.ui) + 2;
+        let text_height = self.fonts.ui_height + 2;
         let top = (frame.top + frame.bottom - text_height) / 2;
         shown.push((
             hwnd,
@@ -368,8 +368,7 @@ impl App {
                         }
                         AreaKind::Tablet => {
                             self.tablet_view = self
-                                .editor
-                                .detected_tablet_bounds(&self.connected_tablets)
+                                .detected_tablet_bounds()
                                 .and_then(|bounds| AreaView::new(canvas_rect, bounds));
                             let fields = with_units(&self.c.tablet, &TABLET_FIELDS);
                             self.unit_row(&fields, row, s(92), items, shown, measure);

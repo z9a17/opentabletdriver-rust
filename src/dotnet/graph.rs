@@ -384,6 +384,9 @@ impl GraphReport {
             self.y = y;
         }
     }
+    pub fn set_pre_prepared(&mut self) {
+        self.reserved |= 1;
+    }
 }
 
 pub struct Graph {
@@ -490,6 +493,9 @@ impl Graph {
             return Err(io::Error::other(super::last_error()));
         }
         Ok(())
+    }
+    pub fn supports_pre_prepare(&self) -> bool {
+        super::bridge().is_ok_and(|bridge| bridge.pre_prepare_supported)
     }
     pub fn failed_index(&self) -> Option<usize> {
         let bridge = super::bridge().ok()?;

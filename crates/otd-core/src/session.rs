@@ -119,6 +119,7 @@ struct Counters {
 struct Timing {
     micros: Box<[u64; Timing::BUCKETS]>,
     reports: u64,
+    sampled: u64,
     max: Duration,
     queued: u64,
 }
@@ -130,21 +131,45 @@ impl Timing {
         Self {
             micros: Box::new([0; Self::BUCKETS]),
             reports: 0,
+            sampled: 0,
             max: Duration::ZERO,
             queued: 0,
         }
     }
 
+    #[inline]
     fn record(&mut self, elapsed: Duration) {
-        let micros = usize::try_from(elapsed.as_micros()).unwrap_or(usize::MAX);
-        self.micros[micros.min(Self::BUCKETS - 1)] += 1;
+        let bucket = if elapsed.as_secs() == 0 {
+            elapsed.subsec_micros().min((Self::BUCKETS - 1) as u32) as usize
+        } else {
+            Self::BUCKETS - 1
+        };
+        self.micros[bucket] += 1;
         self.reports += 1;
-        self.max = self.max.max(elapsed);
+        self.sampled += 1;
+        if elapsed > self.max {
+            self.max = elapsed;
+        }
+    }
+
+    #[inline]
+    fn record_unsampled(&mut self) {
+        self.reports += 1;
+    }
+
+    #[inline]
+    fn should_sample(&self) -> bool {
+        self.reports < 64 || (self.reports & 15) == 0
     }
 
     /// The whole microseconds below which the given fraction of reports fell.
     fn percentile(&self, fraction: f64) -> String {
-        let target = ((self.reports as f64 * fraction).ceil() as u64).max(1);
+        let count = if self.sampled > 0 {
+            self.sampled
+        } else {
+            self.reports
+        };
+        let target = ((count as f64 * fraction).ceil() as u64).max(1);
         let mut seen = 0;
         for (micros, count) in self.micros.iter().enumerate() {
             seen += *count;
@@ -452,6 +477,7 @@ pub fn run_gated_with_endpoints(
     source.output_started();
     let mut native_output = true;
     source.output_acknowledged(native_output);
+    let wants_pen = pipeline.wants_pen();
 
     eprintln!("Tablet connected: {}", source.label());
     status("Tablet connected; receiving pen input");
@@ -539,7 +565,7 @@ pub fn run_gated_with_endpoints(
                     _ => None,
                 };
                 let binding_tick = if native_output && matches!(mode, Mode::Driver) {
-                    pipeline.next_binding_tick(source.now())
+                    pipeline.next_binding_tick_lazy(|| source.now())
                 } else {
                     None
                 };
@@ -607,46 +633,29 @@ pub fn run_gated_with_endpoints(
             if !native_output && matches!(mode, Mode::Driver) {
                 continue;
             }
-            let decoded = match auxiliary.as_deref_mut() {
-                Some(decoder) if from_auxiliary => decoder.decode_input(bytes),
-                _ => decoder.decode_input(bytes),
-            };
             let mut timed_output = false;
-            match decoded {
-                Ok(Some(decoded)) => {
-                    counters.accepted += 1;
-                    if let Mode::Capture { .. } = mode {
-                        if let Some(pen) = decoded.pen() {
-                            capture_trace.pen(bytes, pen);
-                        } else {
-                            capture_trace.ignored(bytes);
-                        }
-                    } else {
-                        // Paused mappings still enter the pipeline's cleanup
-                        // gate, which retries failed releases without filters.
-                        let emitted = pipeline.process_input(
-                            decoded,
+            // Fast path for native passthrough Driver sessions on the pen
+            // endpoint: avoids constructing the ~1.16 KiB DecodedInput enum.
+            if matches!(mode, Mode::Driver)
+                && !from_auxiliary
+                && pipeline.can_use_compact_pen(filters)
+                && let Some(compact_decoded) = decoder.decode_compact_pen(bytes)
+            {
+                match compact_decoded {
+                    Ok(Some(compact)) => {
+                        counters.accepted += 1;
+                        let emitted = pipeline.process_compact_pen(
+                            compact,
                             ready,
-                            layout.mapper,
-                            filters,
-                            |packet| {
+                            layout.mapper.as_ref(),
+                            &mut |packet| {
                                 send(packet)?;
-                                // Count acknowledged prefixes even if a later
-                                // emission from this input fails.
                                 counters.output_commits += 1;
                                 Ok(())
                             },
                         );
-                        // Pen packets bypass the mouse sink's commit count.
-                        if pipeline.wants_pen()
-                            && let Ok(stats) = &emitted
-                        {
+                        if wants_pen && let Ok(stats) = &emitted {
                             counters.output_commits += stats.packets;
-                        }
-                        if let Some(name) = filters.take_failure() {
-                            status(&format!(
-                                "Disabled failing plugin: {name}. Restart to retry."
-                            ));
                         }
                         if let Err(error) = emitted {
                             counters.output_failures += 1;
@@ -660,28 +669,91 @@ pub fn run_gated_with_endpoints(
                         }
                         timed_output = true;
                     }
-                }
-                Ok(None) => {
-                    counters.ignored += 1;
-                    if let Mode::Capture { .. } = mode {
-                        capture_trace.ignored(bytes);
+                    Ok(None) => {
+                        counters.ignored += 1;
+                    }
+                    Err(_) => {
+                        counters.malformed += 1;
                     }
                 }
-                Err(error) => {
-                    counters.malformed += 1;
-                    if let Mode::Capture { .. } = mode {
-                        eprintln!("malformed report: {error:?}");
-                        capture_trace.ignored(bytes);
+            } else {
+                let decoded = match auxiliary.as_deref_mut() {
+                    Some(decoder) if from_auxiliary => decoder.decode_input(bytes),
+                    _ => decoder.decode_input(bytes),
+                };
+                match decoded {
+                    Ok(Some(decoded)) => {
+                        counters.accepted += 1;
+                        if let Mode::Capture { .. } = mode {
+                            if let Some(pen) = decoded.pen() {
+                                capture_trace.pen(bytes, pen);
+                            } else {
+                                capture_trace.ignored(bytes);
+                            }
+                        } else {
+                            // Paused mappings still enter the pipeline's cleanup
+                            // gate, which retries failed releases without filters.
+                            let emitted = pipeline.process_input(
+                                decoded,
+                                ready,
+                                layout.mapper,
+                                filters,
+                                |packet| {
+                                    send(packet)?;
+                                    // Count acknowledged prefixes even if a later
+                                    // emission from this input fails.
+                                    counters.output_commits += 1;
+                                    Ok(())
+                                },
+                            );
+                            // Pen packets bypass the mouse sink's commit count.
+                            if wants_pen && let Ok(stats) = &emitted {
+                                counters.output_commits += stats.packets;
+                            }
+                            if let Some(name) = filters.take_failure() {
+                                status(&format!(
+                                    "Disabled failing plugin: {name}. Restart to retry."
+                                ));
+                            }
+                            if let Err(error) = emitted {
+                                counters.output_failures += 1;
+                                let now = source.now();
+                                if last_output_warning
+                                    .is_none_or(|last| now - last >= Duration::from_secs(5))
+                                {
+                                    eprintln!("Report pipeline failed: {error}");
+                                    last_output_warning = Some(now);
+                                }
+                            }
+                            timed_output = true;
+                        }
+                    }
+                    Ok(None) => {
+                        counters.ignored += 1;
+                        if let Mode::Capture { .. } = mode {
+                            capture_trace.ignored(bytes);
+                        }
+                    }
+                    Err(error) => {
+                        counters.malformed += 1;
+                        if let Mode::Capture { .. } = mode {
+                            eprintln!("malformed report: {error:?}");
+                            capture_trace.ignored(bytes);
+                        }
                     }
                 }
             }
-            // While reports flow, re-read the monitors only when the cheap
-            // fingerprint changed; the idle wait compares the full layout.
-            let now = source.now();
+            // Sample elapsed timing (100% of first 64 reports, 1-in-16 thereafter)
+            // so steady-state gameplay avoids a second clock read on every packet,
+            // and reuse `ready` for the 1 Hz display fingerprint check.
             if timed_output {
-                timing.record(now.saturating_duration_since(ready));
+                if timing.should_sample() {
+                    timing.record(source.now().saturating_duration_since(ready));
+                } else {
+                    timing.record_unsampled();
+                }
             }
-            if now >= next_refresh {
+            if ready >= next_refresh {
                 if layout.snapshot.is_some()
                     && (layout.snapshot_failed
                         || displays.fingerprint() != layout.fingerprint
@@ -689,7 +761,7 @@ pub fn run_gated_with_endpoints(
                 {
                     layout.refresh(displays, profile, &mut pipeline, &mut send);
                 }
-                next_refresh = source.now() + Duration::from_secs(1);
+                next_refresh = ready + Duration::from_secs(1);
             }
         }
         Ok(())

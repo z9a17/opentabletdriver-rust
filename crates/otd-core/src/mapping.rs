@@ -74,6 +74,8 @@ struct OtdTransform {
     max_x: f64,
     min_y: f64,
     max_y: f64,
+    clip_max_x: f64,
+    clip_max_y: f64,
     clipping: bool,
     limiting: bool,
 }
@@ -125,9 +127,27 @@ pub struct Mapper {
     rotation: u16,
     destination: Rect,
     virtual_screen: Rect,
+    screen_left: f64,
+    screen_top: f64,
+    screen_right_minus_1: f64,
+    screen_bottom_minus_1: f64,
     norm_x: f64,
     norm_y: f64,
+    inv_crop_w: f64,
+    inv_crop_h: f64,
+    dest_span_x: f64,
+    dest_span_y: f64,
     otd: Option<OtdTransform>,
+}
+
+/// Branchless round-half-away-from-zero for finite `f64` clamped to `0..=65_535`.
+/// Bit-identical to `value.round().clamp(0.0, 65_535.0) as i32` for every finite
+/// input, without calling the C runtime `round()` function.
+#[inline]
+fn round_clamped_u16(value: f64) -> i32 {
+    let clamped = value.clamp(0.0, 65_535.0);
+    let truncated = clamped as i32;
+    truncated + i32::from(clamped - f64::from(truncated) >= 0.5)
 }
 
 impl Mapper {
@@ -168,8 +188,16 @@ impl Mapper {
             rotation,
             destination,
             virtual_screen,
+            screen_left: f64::from(virtual_screen.left),
+            screen_top: f64::from(virtual_screen.top),
+            screen_right_minus_1: f64::from(virtual_screen.right - 1),
+            screen_bottom_minus_1: f64::from(virtual_screen.bottom - 1),
             norm_x,
             norm_y,
+            inv_crop_w: 1.0 / f64::from(crop.width),
+            inv_crop_h: 1.0 / f64::from(crop.height),
+            dest_span_x: f64::from(destination.width() - 1),
+            dest_span_y: f64::from(destination.height() - 1),
             otd: None,
         })
     }
@@ -199,6 +227,10 @@ impl Mapper {
         let d = cos * sy * mm_y;
         let tx = settings.display.x - cos * sx * settings.tablet.x + sin * sx * settings.tablet.y;
         let ty = settings.display.y - sin * sy * settings.tablet.x - cos * sy * settings.tablet.y;
+        let min_x = settings.display.x - settings.display.width / 2.0;
+        let max_x = settings.display.x + settings.display.width / 2.0;
+        let min_y = settings.display.y - settings.display.height / 2.0;
+        let max_y = settings.display.y + settings.display.height / 2.0;
         let transform = OtdTransform {
             a,
             b,
@@ -206,10 +238,12 @@ impl Mapper {
             d,
             tx,
             ty,
-            min_x: settings.display.x - settings.display.width / 2.0,
-            max_x: settings.display.x + settings.display.width / 2.0,
-            min_y: settings.display.y - settings.display.height / 2.0,
-            max_y: settings.display.y + settings.display.height / 2.0,
+            min_x,
+            max_x,
+            min_y,
+            max_y,
+            clip_max_x: (max_x - 1.0).max(min_x),
+            clip_max_y: (max_y - 1.0).max(min_y),
             clipping: settings.clipping,
             limiting: settings.limiting,
         };
@@ -231,13 +265,22 @@ impl Mapper {
             return None;
         }
         let (norm_x, norm_y) = Self::norm_scales(virtual_screen);
+        let crop = Crop::default();
         Some(Self {
-            crop: Crop::default(),
+            crop,
             rotation: 0,
             destination: virtual_screen,
             virtual_screen,
+            screen_left: f64::from(virtual_screen.left),
+            screen_top: f64::from(virtual_screen.top),
+            screen_right_minus_1: f64::from(virtual_screen.right - 1),
+            screen_bottom_minus_1: f64::from(virtual_screen.bottom - 1),
             norm_x,
             norm_y,
+            inv_crop_w: 1.0 / f64::from(crop.width),
+            inv_crop_h: 1.0 / f64::from(crop.height),
+            dest_span_x: f64::from(virtual_screen.width() - 1),
+            dest_span_y: f64::from(virtual_screen.height() - 1),
             otd: Some(transform),
         })
     }
@@ -249,9 +292,15 @@ impl Mapper {
     }
 
     /// Returns normalized virtual-desktop coordinates for SendInput.
+    #[inline]
     pub fn map(self, x: u32, y: u32) -> Option<(i32, i32)> {
-        if let Some(t) = self.otd {
-            return self.map_otd(t, f64::from(x), f64::from(y));
+        self.map_ref(x, y)
+    }
+
+    #[inline]
+    pub(crate) fn map_ref(&self, x: u32, y: u32) -> Option<(i32, i32)> {
+        if let Some(t) = &self.otd {
+            return self.map_otd_ref(t, f64::from(x), f64::from(y));
         }
         let crop = self.crop;
         let u = x.saturating_sub(crop.x).min(crop.width);
@@ -281,81 +330,106 @@ impl Mapper {
 
     /// The pre-transform filter returns fractional report coordinates. Keep
     /// those fractions through the area transform, as OpenTabletDriver does.
+    #[inline]
     pub fn map_filtered(self, x: f32, y: f32) -> Option<(i32, i32)> {
-        let (px, py) = self.map_filtered_pixels(x, y)?;
-        self.normalize_pixels(px, py)
+        let (px, py) = self.map_filtered_pixels_ref(x, y)?;
+        self.normalize_pixels_ref(px, py)
     }
 
     /// Returns desktop pixels before SendInput normalization, so a managed
     /// PostTransform filter sees the same units as OpenTabletDriver.
+    #[inline]
     pub fn map_filtered_pixels(self, x: f32, y: f32) -> Option<(f64, f64)> {
+        self.map_filtered_pixels_ref(x, y)
+    }
+
+    #[inline]
+    pub(crate) fn map_filtered_pixels_ref(&self, x: f32, y: f32) -> Option<(f64, f64)> {
         if !x.is_finite() || !y.is_finite() {
             return None;
         }
-        if let Some(transform) = self.otd {
-            return self.map_otd_pixels(transform, f64::from(x), f64::from(y));
+        self.map_filtered_finite_pixels_ref(x, y)
+    }
+
+    #[inline]
+    pub(crate) fn map_filtered_finite_pixels_ref(&self, x: f32, y: f32) -> Option<(f64, f64)> {
+        if let Some(transform) = &self.otd {
+            return Self::map_otd_pixels_ref(transform, f64::from(x), f64::from(y));
         }
         let u = (f64::from(x) - f64::from(self.crop.x)).clamp(0.0, f64::from(self.crop.width));
         let v = (f64::from(y) - f64::from(self.crop.y)).clamp(0.0, f64::from(self.crop.height));
         let (w, h) = (f64::from(self.crop.width), f64::from(self.crop.height));
-        let (u, v, w, h) = match self.rotation {
-            90 => (v, w - u, h, w),
-            180 => (w - u, h - v, w, h),
-            270 => (h - v, u, h, w),
-            _ => (u, v, w, h),
+        let (u, v, inv_w, inv_h) = match self.rotation {
+            90 => (v, w - u, self.inv_crop_h, self.inv_crop_w),
+            180 => (w - u, h - v, self.inv_crop_w, self.inv_crop_h),
+            270 => (h - v, u, self.inv_crop_h, self.inv_crop_w),
+            _ => (u, v, self.inv_crop_w, self.inv_crop_h),
         };
-        let px = f64::from(self.destination.left) + u / w * f64::from(self.destination.width() - 1);
-        let py = f64::from(self.destination.top) + v / h * f64::from(self.destination.height() - 1);
+        let px = f64::from(self.destination.left) + (u * inv_w) * self.dest_span_x;
+        let py = f64::from(self.destination.top) + (v * inv_h) * self.dest_span_y;
         Some((px, py))
     }
 
     /// The desktop area pixel positions are clamped to.
+    #[inline]
     pub fn virtual_screen(self) -> Rect {
         self.virtual_screen
     }
 
     /// A desktop pixel position moved inside the virtual screen.
+    #[inline]
     pub fn clamp_pixels(self, px: f64, py: f64) -> Option<(f64, f64)> {
+        self.clamp_pixels_ref(px, py)
+    }
+
+    #[inline]
+    pub(crate) fn clamp_pixels_ref(&self, px: f64, py: f64) -> Option<(f64, f64)> {
         if !px.is_finite() || !py.is_finite() {
             return None;
         }
-        let screen = self.virtual_screen;
         Some((
-            px.clamp(f64::from(screen.left), f64::from(screen.right - 1)),
-            py.clamp(f64::from(screen.top), f64::from(screen.bottom - 1)),
+            px.clamp(self.screen_left, self.screen_right_minus_1),
+            py.clamp(self.screen_top, self.screen_bottom_minus_1),
         ))
     }
 
     #[inline]
     pub fn normalize_pixels(self, px: f64, py: f64) -> Option<(i32, i32)> {
+        self.normalize_pixels_ref(px, py)
+    }
+
+    #[inline]
+    pub(crate) fn normalize_pixels_ref(&self, px: f64, py: f64) -> Option<(i32, i32)> {
         if !px.is_finite() || !py.is_finite() {
             return None;
         }
-        let screen = self.virtual_screen;
-        Some((
-            ((px - f64::from(screen.left)) * self.norm_x)
-                .round()
-                .clamp(0.0, 65_535.0) as i32,
-            ((py - f64::from(screen.top)) * self.norm_y)
-                .round()
-                .clamp(0.0, 65_535.0) as i32,
-        ))
+        Some(self.normalize_finite_pixels_ref(px, py))
     }
 
-    fn map_otd(self, t: OtdTransform, x: f64, y: f64) -> Option<(i32, i32)> {
-        let (px, py) = self.map_otd_pixels(t, x, y)?;
-        self.normalize_pixels(px, py)
+    #[inline]
+    pub(crate) fn normalize_finite_pixels_ref(&self, px: f64, py: f64) -> (i32, i32) {
+        (
+            round_clamped_u16((px - self.screen_left) * self.norm_x),
+            round_clamped_u16((py - self.screen_top) * self.norm_y),
+        )
     }
 
-    fn map_otd_pixels(self, t: OtdTransform, x: f64, y: f64) -> Option<(f64, f64)> {
+    #[inline]
+    fn map_otd_ref(&self, t: &OtdTransform, x: f64, y: f64) -> Option<(i32, i32)> {
+        let (px, py) = Self::map_otd_pixels_ref(t, x, y)?;
+        self.normalize_pixels_ref(px, py)
+    }
+
+    #[inline]
+    fn map_otd_pixels_ref(t: &OtdTransform, x: f64, y: f64) -> Option<(f64, f64)> {
         let mut px = t.a * x + t.b * y + t.tx;
         let mut py = t.c * x + t.d * y + t.ty;
         if t.limiting && (px < t.min_x || px > t.max_x || py < t.min_y || py > t.max_y) {
             return None;
         }
         if t.clipping || t.limiting {
-            px = px.clamp(t.min_x, (t.max_x - 1.0).max(t.min_x));
-            py = py.clamp(t.min_y, (t.max_y - 1.0).max(t.min_y));
+            px = px.clamp(t.min_x, t.clip_max_x);
+            py = py.clamp(t.min_y, t.clip_max_y);
         }
         Some((px, py))
     }
@@ -620,5 +694,36 @@ mod tests {
         let fractional = mapper.map_filtered(22_000.5, 4_780.5).unwrap();
         assert!(fractional.0 > integer.0);
         assert!(fractional.1 > integer.1);
+    }
+
+    #[test]
+    fn round_clamped_u16_matches_f64_round_clamp_across_edges() {
+        let cases = [
+            f64::NEG_INFINITY,
+            -1_000.0,
+            -1.0,
+            -0.5,
+            -0.0,
+            0.0,
+            0.25,
+            0.499_999_999_999_999_94,
+            0.5,
+            0.500_000_000_000_000_1,
+            1.499_999_999_999_999_8,
+            1.5,
+            2.5,
+            32_767.5,
+            65_534.499_999_999_99,
+            65_534.5,
+            65_535.0,
+            65_535.5,
+            100_000.0,
+            f64::INFINITY,
+        ];
+        for v in cases {
+            let expected = v.round().clamp(0.0, 65_535.0) as i32;
+            assert_eq!(round_clamped_u16(v), expected, "mismatch for {v:?}");
+        }
+        assert_eq!(round_clamped_u16(f64::NAN), 0);
     }
 }
