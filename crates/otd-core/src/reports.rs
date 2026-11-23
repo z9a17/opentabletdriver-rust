@@ -12,6 +12,7 @@
 //! device setup must reject capacities exceeding them instead of truncating.
 
 use crate::protocol::PenReport;
+use std::num::NonZeroU8;
 use std::time::Duration;
 
 mod bamboo;
@@ -85,23 +86,33 @@ pub enum ReportError {
 
 /// A fixed allocation with an explicit meaningful length. Unused entries are
 /// never exposed, and a full collection fails rather than dropping input.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Stores `len + 1` in `NonZeroU8` so `Option<InlineValues<T, N>>` uses its
+/// niche without extra discriminant padding.
+#[derive(Clone, Copy, Debug)]
 pub struct InlineValues<T: Copy + Default, const N: usize> {
     values: [T; N],
-    len: usize,
+    len_plus_one: NonZeroU8,
+}
+
+impl<T: Copy + Default + PartialEq, const N: usize> PartialEq for InlineValues<T, N> {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
+    }
 }
 
 impl<T: Copy + Default, const N: usize> Default for InlineValues<T, N> {
+    #[inline]
     fn default() -> Self {
         Self {
             values: [T::default(); N],
-            len: 0,
+            len_plus_one: NonZeroU8::MIN,
         }
     }
 }
 
 impl<T: Copy + Default, const N: usize> InlineValues<T, N> {
     pub fn from_slice(values: &[T]) -> Result<Self, ReportError> {
+        const { assert!(N <= 254, "InlineValues capacity must fit in NonZeroU8") };
         if values.len() > N {
             return Err(ReportError::Capacity {
                 field: "inline values",
@@ -111,49 +122,70 @@ impl<T: Copy + Default, const N: usize> InlineValues<T, N> {
         }
         let mut result = Self::default();
         result.values[..values.len()].copy_from_slice(values);
-        result.len = values.len();
+        result.len_plus_one =
+            NonZeroU8::new(values.len() as u8 + 1).expect("validated length + 1 fits in NonZeroU8");
         Ok(result)
     }
 
     pub fn push(&mut self, value: T) -> Result<(), ReportError> {
-        if self.len == N {
+        const { assert!(N <= 254, "InlineValues capacity must fit in NonZeroU8") };
+        let len = self.len();
+        if len == N {
             return Err(ReportError::Capacity {
                 field: "inline values",
-                got: self.len + 1,
+                got: len + 1,
                 maximum: N,
             });
         }
-        self.values[self.len] = value;
-        self.len += 1;
+        self.values[len] = value;
+        self.len_plus_one =
+            NonZeroU8::new(len as u8 + 2).expect("validated length + 2 fits in NonZeroU8");
         Ok(())
     }
 
+    #[inline]
     pub fn as_slice(&self) -> &[T] {
-        &self.values[..self.len]
+        &self.values[..self.len()]
     }
 
+    #[inline]
     pub fn as_mut_slice(&mut self) -> &mut [T] {
-        &mut self.values[..self.len]
+        let len = self.len();
+        &mut self.values[..len]
     }
 
+    #[inline]
     pub fn len(&self) -> usize {
-        self.len
+        usize::from(self.len_plus_one.get() - 1)
     }
 
+    #[inline]
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.len_plus_one.get() == 1
     }
 }
 
 /// Button index ordering is the parser's upstream bool-array ordering.
 /// A present empty button array differs from an absent button capability.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Stores `count + 1` in `NonZeroU8` so `Option<Buttons>` fits in 16 bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Buttons {
     bits: u64,
-    count: u8,
+    count_plus_one: NonZeroU8,
+}
+
+impl Default for Buttons {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            bits: 0,
+            count_plus_one: NonZeroU8::MIN,
+        }
+    }
 }
 
 impl Buttons {
+    #[inline]
     pub fn from_bits(bits: u64, count: usize) -> Result<Self, ReportError> {
         if count > MAX_BUTTONS {
             return Err(ReportError::Capacity {
@@ -162,30 +194,43 @@ impl Buttons {
                 maximum: MAX_BUTTONS,
             });
         }
-        let mask = if count == MAX_BUTTONS {
+        Ok(Self::from_bits_unchecked(bits, count as u8))
+    }
+
+    #[inline]
+    pub(crate) const fn from_bits_unchecked(bits: u64, count: u8) -> Self {
+        let mask = if count >= MAX_BUTTONS as u8 {
             u64::MAX
         } else {
             (1u64 << count) - 1
         };
-        Ok(Self {
+        let count_plus_one = match NonZeroU8::new(count + 1) {
+            Some(value) => value,
+            None => NonZeroU8::MAX,
+        };
+        Self {
             bits: bits & mask,
-            count: count as u8,
-        })
+            count_plus_one,
+        }
     }
 
+    #[inline]
     pub fn len(self) -> usize {
-        self.count as usize
+        usize::from(self.count_plus_one.get() - 1)
     }
 
+    #[inline]
     pub fn is_empty(self) -> bool {
-        self.count == 0
+        self.count_plus_one.get() == 1
     }
 
+    #[inline]
     pub fn bits(self) -> u64 {
         self.bits
     }
 
     /// `None` is an absent index; `Some(false)` is a released button.
+    #[inline]
     pub fn get(self, index: usize) -> Option<bool> {
         (index < self.len()).then(|| self.bits & (1u64 << index) != 0)
     }

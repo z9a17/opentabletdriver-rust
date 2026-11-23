@@ -4,7 +4,7 @@ use std::cell::Cell;
 pub mod stream;
 use std::sync::{
     Mutex,
-    atomic::{AtomicU32, AtomicU64, Ordering},
+    atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering},
 };
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -12,6 +12,22 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 // configured endpoints too; truncation makes debugger decoding misleading.
 pub const MAX_BYTES: usize = u16::MAX as usize;
 pub const ARM_REPORTS: u32 = 2_000;
+/// Single hot-path bitmask gating all debugger taps so idle report loops pay
+/// one relaxed byte load and never touch TLS or 3 separate cache lines.
+static ACTIVE_MASK: AtomicU8 = AtomicU8::new(0);
+pub(crate) const ACTIVE_STREAM: u8 = 1 << 0;
+const ACTIVE_SAMPLE: u8 = 1 << 1;
+const ACTIVE_FULL: u8 = 1 << 2;
+
+#[inline]
+pub(crate) fn set_active_bit(bit: u8, active: bool) {
+    if active {
+        ACTIVE_MASK.fetch_or(bit, Ordering::Release);
+    } else {
+        ACTIVE_MASK.fetch_and(!bit, Ordering::Release);
+    }
+}
+
 static ARMED: AtomicU32 = AtomicU32::new(0);
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 static SELECTED: AtomicU64 = AtomicU64::new(0);
@@ -137,30 +153,62 @@ impl Drop for Registration {
 
 #[inline]
 pub fn record(bytes: &[u8]) {
-    stream::record(SESSION.get(), bytes, false);
-    record_sample(bytes);
-    if FULL.state.load(Ordering::Relaxed) & ACTIVE != 0 {
-        FULL.record(SESSION.get(), bytes, Instant::now(), false);
+    let active = ACTIVE_MASK.load(Ordering::Relaxed);
+    if active != 0 {
+        record_slow(active, bytes);
     }
 }
 
 /// The source's read completion time, before decoding and IPC coalescing.
 #[inline]
 pub fn record_at(bytes: &[u8], ready: Instant, auxiliary: bool) {
-    stream::record(SESSION.get(), bytes, auxiliary);
-    record_sample(bytes);
-    if FULL.state.load(Ordering::Relaxed) & ACTIVE != 0 {
-        FULL.record(SESSION.get(), bytes, ready, auxiliary);
+    let active = ACTIVE_MASK.load(Ordering::Relaxed);
+    if active != 0 {
+        record_at_slow(active, bytes, ready, auxiliary);
     }
 }
 
-#[inline]
-fn record_sample(bytes: &[u8]) {
-    if ARMED.load(Ordering::Relaxed) != 0 {
-        let id = SESSION.get();
-        if id != 0 && SELECTED.load(Ordering::Acquire) == id {
-            record_for(id, bytes);
+#[cold]
+#[inline(never)]
+fn record_slow(active: u8, bytes: &[u8]) {
+    let id = SESSION.get();
+    if active & ACTIVE_STREAM != 0 {
+        stream::record_slow(id, bytes, false);
+    }
+    if active & ACTIVE_SAMPLE != 0 {
+        record_sample_slow(id, bytes);
+    }
+    if active & ACTIVE_FULL != 0 && FULL.state.load(Ordering::Relaxed) & ACTIVE != 0 {
+        FULL.record(id, bytes, Instant::now(), false);
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn record_at_slow(active: u8, bytes: &[u8], ready: Instant, auxiliary: bool) {
+    let id = SESSION.get();
+    if active & ACTIVE_STREAM != 0 {
+        stream::record_slow(id, bytes, auxiliary);
+    }
+    if active & ACTIVE_SAMPLE != 0 {
+        record_sample_slow(id, bytes);
+    }
+    if active & ACTIVE_FULL != 0 && FULL.state.load(Ordering::Relaxed) & ACTIVE != 0 {
+        FULL.record(id, bytes, ready, auxiliary);
+    }
+}
+
+fn record_sample_slow(id: u64, bytes: &[u8]) {
+    let armed = ARMED.load(Ordering::Relaxed);
+    if armed == 0 {
+        ACTIVE_MASK.fetch_and(!ACTIVE_SAMPLE, Ordering::AcqRel);
+        if ARMED.load(Ordering::Acquire) != 0 {
+            ACTIVE_MASK.fetch_or(ACTIVE_SAMPLE, Ordering::Release);
         }
+        return;
+    }
+    if id != 0 && SELECTED.load(Ordering::Acquire) == id {
+        record_for(id, bytes);
     }
 }
 #[cold]
@@ -169,13 +217,16 @@ fn record_for(id: u64, bytes: &[u8]) {
         if SELECTED.load(Ordering::Relaxed) != id {
             return;
         }
-        if ARMED
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |armed| {
-                armed.checked_sub(1)
-            })
-            .is_err()
-        {
+        let Ok(prev) = ARMED.try_update(Ordering::Relaxed, Ordering::Relaxed, |armed| {
+            armed.checked_sub(1)
+        }) else {
             return;
+        };
+        if prev == 1 {
+            ACTIVE_MASK.fetch_and(!ACTIVE_SAMPLE, Ordering::AcqRel);
+            if ARMED.load(Ordering::Acquire) != 0 {
+                ACTIVE_MASK.fetch_or(ACTIVE_SAMPLE, Ordering::Release);
+            }
         }
         let length = bytes.len().min(MAX_BYTES);
         capture.bytes[..length].copy_from_slice(&bytes[..length]);
@@ -239,7 +290,8 @@ pub fn select_device_key(key: &str) -> Result<(), CaptureError> {
 }
 
 pub fn poll() -> Snapshot {
-    ARMED.store(ARM_REPORTS, Ordering::Relaxed);
+    ARMED.store(ARM_REPORTS, Ordering::Release);
+    set_active_bit(ACTIVE_SAMPLE, true);
     match CAPTURE.lock() {
         Ok(capture) => {
             let selected = SELECTED.load(Ordering::Relaxed);
@@ -392,11 +444,13 @@ impl FullCapture {
         // concurrent renewal. The daemon polls even without incoming reports.
         if state & ACTIVE != 0 && state & SEQUENCE_MASK == SEQUENCE_MASK {
             self.state.fetch_and(!ACTIVE, Ordering::AcqRel);
+            set_active_bit(ACTIVE_FULL, false);
             ring.stop_reason = Some(CaptureStopReason::SequenceLimit);
         } else if state & ACTIVE != 0
             && self.micros(now) >= self.deadline_us.load(Ordering::Acquire)
         {
             self.state.fetch_and(!ACTIVE, Ordering::AcqRel);
+            set_active_bit(ACTIVE_FULL, false);
             ring.stop_reason = Some(CaptureStopReason::LeaseExpired);
         }
     }
@@ -527,6 +581,7 @@ impl FullCapture {
             Ordering::Release,
         );
         self.state.store((epoch << 32) | ACTIVE, Ordering::Release);
+        set_active_bit(ACTIVE_FULL, true);
         Ok(self.status(guard.as_ref().unwrap(), now))
     }
     fn retry_start(
@@ -659,7 +714,11 @@ impl FullCapture {
             self.micros(now).saturating_add(u64::from(lease_ms) * 1_000),
             Ordering::Release,
         );
-        let mut packets = Vec::new();
+        // Copy raw packet bytes into one flat staging buffer under the mutex,
+        // then drop the lock before allocating per-packet Vec<u8>s so the
+        // real-time report thread's try_lock() is held as briefly as possible.
+        let mut staged_slots: Vec<Slot> = Vec::new();
+        let mut staged_bytes: Vec<u8> = Vec::new();
         let mut budget = 0;
         let mut next = after_sequence;
         let mut remaining = false;
@@ -670,25 +729,34 @@ impl FullCapture {
                 continue;
             }
             let cost = slot.length * 2 + PACKET_JSON_OVERHEAD;
-            if packets.len() == limit || budget + cost > CAPTURE_PACKET_JSON_BUDGET {
+            if staged_slots.len() == limit || budget + cost > CAPTURE_PACKET_JSON_BUDGET {
                 remaining = true;
                 break;
             }
             budget += cost;
             let start = index * ring.report_length;
-            packets.push(CapturePacket {
-                sequence: slot.sequence,
-                elapsed_us: slot.elapsed_us,
-                auxiliary: slot.auxiliary,
-                bytes: ring.bytes[start..start + slot.length].to_vec(),
-            });
+            staged_bytes.extend_from_slice(&ring.bytes[start..start + slot.length]);
+            staged_slots.push(slot);
             next = slot.sequence;
         }
         let status = self.status(ring, now);
+        drop(guard);
         // Only one selected session thread produces reports. Once all its
         // reservations resolve, gaps above the last retained report are final.
         if !remaining && status.pending_reports == 0 {
             next = status.last_sequence;
+        }
+        let mut packets = Vec::with_capacity(staged_slots.len());
+        let mut cursor = 0;
+        for slot in staged_slots {
+            let end = cursor + slot.length;
+            packets.push(CapturePacket {
+                sequence: slot.sequence,
+                elapsed_us: slot.elapsed_us,
+                auxiliary: slot.auxiliary,
+                bytes: staged_bytes[cursor..end].to_vec(),
+            });
+            cursor = end;
         }
         Ok(CaptureBatch {
             capture: status,
@@ -701,6 +769,7 @@ impl FullCapture {
         let ring = self.checked(&mut guard, epoch, session)?;
         self.expire(ring, now);
         if self.state.fetch_and(!ACTIVE, Ordering::AcqRel) & ACTIVE != 0 {
+            set_active_bit(ACTIVE_FULL, false);
             ring.stop_reason = Some(CaptureStopReason::Requested);
         }
         Ok(self.status(ring, now))
@@ -729,6 +798,7 @@ impl FullCapture {
             && let Some(ring) = guard.as_mut().filter(|ring| ring.session == session)
             && self.state.fetch_and(!ACTIVE, Ordering::AcqRel) & ACTIVE != 0
         {
+            set_active_bit(ACTIVE_FULL, false);
             ring.stop_reason = Some(CaptureStopReason::SessionEnded);
         }
     }

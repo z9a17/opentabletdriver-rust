@@ -77,23 +77,41 @@ pub struct PenSample {
 pub struct PenOutput {
     sink: Box<dyn PenSink>,
     max_pressure: f32,
+    inv_max_pressure: f32,
     /// The last accepted packet, while the pen is in range.
     last: Option<PenPacket>,
 }
 
+#[inline]
+fn round_nonneg_u32(value: f32) -> u32 {
+    if !value.is_finite() || value <= 0.0 {
+        return 0;
+    }
+    let v = f64::from(value);
+    if v >= f64::from(u32::MAX) {
+        return u32::MAX;
+    }
+    let t = v as u64;
+    (t + u64::from(v - (t as f64) >= 0.5)).min(u64::from(u32::MAX)) as u32
+}
+
 impl PenOutput {
     pub fn new(sink: Box<dyn PenSink>, max_pressure: u32) -> Self {
+        let max_pressure = max_pressure.max(1) as f32;
         Self {
             sink,
-            max_pressure: max_pressure.max(1) as f32,
+            max_pressure,
+            inv_max_pressure: 1.0 / max_pressure,
             last: None,
         }
     }
 
+    #[inline]
     pub fn in_range(&self) -> bool {
         self.last.is_some()
     }
 
+    #[inline]
     pub fn in_contact(&self) -> bool {
         self.last
             .is_some_and(|last| matches!(last.phase, PenPhase::Down | PenPhase::Contact))
@@ -101,6 +119,7 @@ impl PenOutput {
 
     /// Sends what changed since the last accepted packet; returns whether
     /// anything was sent.
+    #[inline]
     pub fn sample(&mut self, sample: PenSample) -> io::Result<bool> {
         if !sample.x.is_finite() || !sample.y.is_finite() {
             return Err(io::Error::new(
@@ -118,9 +137,9 @@ impl PenOutput {
             .filter(|tilt| tilt.iter().all(|value| value.is_finite()))
             .map(|tilt| tilt.map(|value| value.clamp(-90.0, 90.0)));
         let pressure = if sample.contact {
-            sample
-                .pressure
-                .map_or(0.0, |raw| (raw as f32 / self.max_pressure).clamp(0.0, 1.0))
+            sample.pressure.map_or(0.0, |raw| {
+                (raw as f32 * self.inv_max_pressure).clamp(0.0, 1.0)
+            })
         } else {
             0.0
         };
@@ -189,7 +208,7 @@ impl PenOutput {
             x: last.x,
             y: last.y,
             pressure: pressure.or_else(|| {
-                (last.pressure > 0.0).then(|| (last.pressure * self.max_pressure).round() as u32)
+                (last.pressure > 0.0).then(|| round_nonneg_u32(last.pressure * self.max_pressure))
             }),
             tilt: last.tilt,
             rotation: rotation.or(last.rotation),

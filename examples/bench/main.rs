@@ -84,13 +84,16 @@ use serde_json::{Value, json};
 use windows_sys::Win32::Foundation::POINT;
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetCursorPos, SetCursorPos};
 
-use otd_core::config::Profile;
+use otd_core::config::{OutputKind, Profile};
+use otd_core::decoders::{PenDecoder, TabletDecoder};
 use otd_core::display::{DisplayFingerprint, DisplaySnapshot};
 use otd_core::mapping::{Mapper, OtdArea, Rect};
+use otd_core::output::buttons::{LocalActions, default_pen_buttons};
 use otd_core::output::{MousePacket, flags};
 use otd_core::pipeline::ReportPipeline;
 use otd_core::plugins::{Filters, NoFilters, PluginConfig, PluginKind};
 use otd_core::session::{Displays, Mode, Read, ReportSource};
+use otd_core::spec::TabletSpec;
 use otd_core::test_alloc::Count;
 
 use crate::plugins::PluginChain;
@@ -463,10 +466,11 @@ fn chain(config: PluginConfig) -> Result<PluginChain, String> {
     PluginChain::load(std::slice::from_ref(&config))
 }
 
-/// Serves the trace to the real session loop without waiting, recording when
-/// the loop asks for each report.
+/// Serves a fixed-stride trace to the real session loop without waiting,
+/// recording when the loop asks for each report.
 struct TraceSource<'a> {
-    trace: &'a Trace,
+    bytes: &'a [u8],
+    stride: usize,
     next: usize,
     end: usize,
     stamps: Vec<u64>,
@@ -492,7 +496,9 @@ impl ReportSource for TraceSource<'_> {
             self.allocations = self.count.take().map(Count::finish);
             return Ok(Read::Ended);
         }
-        let report = self.trace.report(self.next % self.trace.len());
+        let reports = self.bytes.len() / self.stride;
+        let offset = (self.next % reports) * self.stride;
+        let report = &self.bytes[offset..offset + self.stride];
         self.next += 1;
         Ok(Read::Report {
             bytes: report,
@@ -514,20 +520,88 @@ impl Displays for FixedDisplays {
     }
 }
 
-/// The whole session loop over the trace: decoding, the pipeline, counters,
+/// Converts the PTH-660 synthetic trace into 10-byte XP-Pen packets
+/// (`XP_PenReportParser` layout) preserving position, pressure, tilt and range.
+fn xp_pen_trace_bytes(trace: &Trace) -> Vec<u8> {
+    let mut out = Vec::with_capacity(trace.len() * 10);
+    for index in 0..trace.len() {
+        let src = trace.report(index);
+        let pen = protocol::parse(src).unwrap().unwrap();
+        let mut pkt = [0u8; 10];
+        pkt[0] = 0x02;
+        if !pen.in_range {
+            pkt[1] = 0xc0;
+        } else {
+            let tip = u8::from(pen.pressure > 20);
+            pkt[1] = 0xa0 | tip;
+            pkt[2..4].copy_from_slice(&(pen.x.min(u32::from(u16::MAX)) as u16).to_le_bytes());
+            pkt[4..6].copy_from_slice(&(pen.y.min(u32::from(u16::MAX)) as u16).to_le_bytes());
+            pkt[6..8].copy_from_slice(&pen.pressure.to_le_bytes());
+            pkt[8] = pen.tilt[0] as u8;
+            pkt[9] = pen.tilt[1] as u8;
+        }
+        out.extend_from_slice(&pkt);
+    }
+    out
+}
+
+/// Clones the PTH-660 synthetic trace and toggles barrel button 1/2 bits
+/// periodically so button state transitions and steady-state checks both run.
+fn buttons_trace_bytes(trace: &Trace) -> Vec<u8> {
+    let mut out = trace.bytes().to_vec();
+    for index in 0..trace.len() {
+        let flag = &mut out[index * trace::REPORT_BYTES + 1];
+        if *flag & 0x20 != 0 {
+            let phase = (index / 32) % 4;
+            let bits = match phase {
+                1 => 0x02,
+                2 => 0x06,
+                3 => 0x04,
+                _ => 0x00,
+            };
+            *flag = (*flag & !0x06) | bits;
+        }
+    }
+    out
+}
+
+/// The whole session loop over a trace: decoding, the pipeline, counters,
 /// timing, the once-a-second display check and the output call, without the
 /// HID read. Per-report time runs from one request for a report to the next.
 fn session_case<F: Filters>(
     bench: &mut Bench,
     profile: &Profile,
     name: &str,
+    make_filters: impl FnMut() -> Result<F, String>,
+) -> Result<Option<Value>, String> {
+    session_case_with(
+        bench,
+        profile,
+        name,
+        "session::run over the trace with the osu! profile: decoding, pipeline, counters, timing and display checks; no HID read or SendInput",
+        bench.trace.bytes(),
+        trace::REPORT_BYTES,
+        || Ok(TabletDecoder::pth_660()),
+        make_filters,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn session_case_with<F: Filters>(
+    bench: &mut Bench,
+    profile: &Profile,
+    name: &str,
+    description: &str,
+    trace_bytes: &[u8],
+    stride: usize,
+    mut make_decoder: impl FnMut() -> Result<TabletDecoder, String>,
     mut make_filters: impl FnMut() -> Result<F, String>,
 ) -> Result<Option<Value>, String> {
     if !bench.wanted(name) {
         return Ok(None);
     }
     eprintln!("case {name}");
-    let reports = bench.trace.len();
+    let reports = trace_bytes.len() / stride;
     let mut rounds = Vec::new();
     let mut allocations = 0;
     for _ in 0..bench.options.rounds {
@@ -537,7 +611,8 @@ fn session_case<F: Filters>(
             let mut stamps = vec![0; end + 1];
             stamps.clear();
             let mut source = TraceSource {
-                trace: bench.trace,
+                bytes: trace_bytes,
+                stride,
                 next: 0,
                 end,
                 stamps,
@@ -545,13 +620,14 @@ fn session_case<F: Filters>(
                 allocations: None,
             };
             let mut displays = FixedDisplays(desktop());
+            let mut decoder = make_decoder()?;
             let mut filters = make_filters()?;
             otd_core::session::run(
                 &mut source,
                 &mut displays,
                 profile,
                 Mode::Driver,
-                &mut otd_core::decoders::TabletDecoder::pth_660(),
+                &mut decoder,
                 &mut filters,
                 discard,
                 &|_: &str| {},
@@ -586,13 +662,7 @@ fn session_case<F: Filters>(
             allocations: source.allocations.unwrap_or(usize::MAX),
         });
     }
-    let mut value = bench.summary(
-        name,
-        "session::run over the trace with the osu! profile: decoding, pipeline, counters, timing and display checks; no HID read or SendInput",
-        &rounds,
-        &[],
-        &[],
-    );
+    let mut value = bench.summary(name, description, &rounds, &[], &[]);
     value["allocations"] = json!(allocations);
     value["allocations_note"] =
         json!("Rust heap only, from the 100th report; managed heap allocations are not counted");
@@ -770,6 +840,94 @@ fn run() -> Result<(), String> {
         "decode, contact state and relative mapping at 10 counts/mm; packets discarded",
         || pipeline(&relative, None, NoFilters, discard),
     )?);
+    let mut pen_profile = plain.clone();
+    pen_profile.output = OutputKind::Pen;
+    cases.push(bench.case(
+        "pen",
+        "decode, contact state, absolute mapping and Pen (Windows Ink) packet output; packets discarded",
+        || {
+            let mut pipeline = ReportPipeline::new(&pen_profile)?;
+            pipeline.set_pen_sink(Box::new(|packet| {
+                black_box(packet);
+                Ok(())
+            }));
+            Ok(Box::new(move |report, now| {
+                if let Ok(Some(pen)) = protocol::parse(report) {
+                    let _ = black_box(pipeline.process_with_raw(
+                        pen,
+                        report,
+                        now,
+                        mapper,
+                        &mut NoFilters,
+                        discard,
+                    ));
+                }
+            }))
+        },
+    )?);
+    let mut buttons_profile = plain.clone();
+    buttons_profile.pen_buttons = default_pen_buttons();
+    let buttons_bytes = buttons_trace_bytes(&trace);
+    let buttons_reports = trace.len();
+    cases.push(bench.case(
+        "buttons",
+        "as absolute, with default barrel button bindings and LocalActions sink on periodic barrel transitions",
+        || {
+            let mut pipeline = ReportPipeline::new(&buttons_profile)?;
+            pipeline.set_action_sink(Box::new(LocalActions::new(
+                |transition| {
+                    black_box(transition);
+                    Ok(())
+                },
+                |_| true,
+            )));
+            let bytes = buttons_bytes.clone();
+            let mut cursor = 0usize;
+            Ok(Box::new(move |_report, now| {
+                let offset = (cursor % buttons_reports) * trace::REPORT_BYTES;
+                cursor += 1;
+                let report = &bytes[offset..offset + trace::REPORT_BYTES];
+                if let Ok(Some(pen)) = protocol::parse(report) {
+                    let _ = black_box(pipeline.process_with_raw(
+                        pen,
+                        report,
+                        now,
+                        mapper,
+                        &mut NoFilters,
+                        discard,
+                    ));
+                }
+            }))
+        },
+    )?);
+    const XP_PEN_PARSER: &str = "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenReportParser";
+    let xp_pen_bytes = xp_pen_trace_bytes(&trace);
+    let xp_pen_reports = trace.len();
+    cases.push(bench.case(
+        "non_intuos_v2",
+        "XP-Pen 10-byte packets decoded via TabletDecoder::for_parser + ReportPipeline::process_input",
+        || {
+            let mut decoder = TabletDecoder::for_parser(XP_PEN_PARSER, TabletSpec::PTH_660)
+                .ok_or_else(|| format!("missing parser {XP_PEN_PARSER}"))?;
+            let mut pipeline = ReportPipeline::new(&plain)?;
+            let bytes = xp_pen_bytes.clone();
+            let mut cursor = 0usize;
+            Ok(Box::new(move |_report, now| {
+                let offset = (cursor % xp_pen_reports) * 10;
+                cursor += 1;
+                let report = &bytes[offset..offset + 10];
+                if let Ok(Some(decoded)) = decoder.decode_input(black_box(report)) {
+                    let _ = black_box(pipeline.process_input(
+                        decoded,
+                        now,
+                        mapper,
+                        &mut NoFilters,
+                        discard,
+                    ));
+                }
+            }))
+        },
+    )?);
     if options.ema.exists() {
         let config = PluginConfig {
             path: options.ema.clone(),
@@ -800,6 +958,19 @@ fn run() -> Result<(), String> {
         &mut bench,
         &osu,
         "session/absolute+radial_follow",
+        || Ok(NoFilters),
+    )?);
+    cases.push(session_case_with(
+        &mut bench,
+        &plain,
+        "session/non_intuos_v2",
+        "session::run over 10-byte XP-Pen packets using TabletDecoder::for_parser (exercises compact pen fast path)",
+        &xp_pen_bytes,
+        10,
+        || {
+            TabletDecoder::for_parser(XP_PEN_PARSER, TabletSpec::PTH_660)
+                .ok_or_else(|| format!("missing parser {XP_PEN_PARSER}"))
+        },
         || Ok(NoFilters),
     )?);
     if let Some(config) = &managed_config {

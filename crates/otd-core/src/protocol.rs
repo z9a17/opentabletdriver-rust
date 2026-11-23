@@ -40,13 +40,8 @@ pub enum ParseError {
 }
 
 #[inline]
-fn u24(data: &[u8], at: usize) -> u32 {
-    u32::from(data[at]) | (u32::from(data[at + 1]) << 8) | (u32::from(data[at + 2]) << 16)
-}
-
-#[inline]
-fn u16le(data: &[u8], at: usize) -> u16 {
-    u16::from(data[at]) | (u16::from(data[at + 1]) << 8)
+fn u24_bytes(b0: u8, b1: u8, b2: u8) -> u32 {
+    u32::from_le_bytes([b0, b1, b2, 0])
 }
 
 /// Unknown and touch IDs are deliberately ignored; known short reports are errors.
@@ -64,51 +59,78 @@ pub fn parse_within(
     max_y: u32,
     max_pressure: u16,
 ) -> Result<Option<PenReport>, ParseError> {
+    parse_within_with_buttons(data, max_x, max_y, max_pressure)
+        .map(|decoded| decoded.map(|(pen, _)| pen))
+}
+
+/// Single-pass IntuosV2 decode returning both `PenReport` and pen side buttons
+/// with one fixed-chunk length check and no per-byte bounds checks.
+#[inline]
+pub(crate) fn parse_within_with_buttons(
+    data: &[u8],
+    max_x: u32,
+    max_y: u32,
+    max_pressure: u16,
+) -> Result<Option<(PenReport, crate::reports::Buttons)>, ParseError> {
     let Some(&id) = data.first() else {
         return Err(ParseError::Empty);
     };
-    let need = match id {
-        0x10 => 17,
-        0x1e => 13,
+    let (report, button_bits, button_count) = match id {
+        0x10 => {
+            let Some(chunk) = data.first_chunk::<17>() else {
+                return Err(ParseError::Short {
+                    id,
+                    got: data.len(),
+                    need: 17,
+                });
+            };
+            let flags = chunk[1];
+            (
+                PenReport {
+                    id,
+                    x: u24_bytes(chunk[2], chunk[3], chunk[4]),
+                    y: u24_bytes(chunk[5], chunk[6], chunk[7]),
+                    pressure: u16::from_le_bytes([chunk[8], chunk[9]]),
+                    in_range: flags & (1 << 5) != 0,
+                    sense: flags & (1 << 6) != 0,
+                    tip_switch: flags & 1 != 0,
+                    eraser: flags & (1 << 4) != 0,
+                    tilt: [chunk[10] as i8, chunk[11] as i8],
+                    rotation: Some(i16::from_le_bytes([chunk[12], chunk[13]])),
+                    hover_distance: Some(chunk[16]),
+                },
+                u64::from(flags >> 1),
+                2u8,
+            )
+        }
+        0x1e => {
+            let Some(chunk) = data.first_chunk::<13>() else {
+                return Err(ParseError::Short {
+                    id,
+                    got: data.len(),
+                    need: 13,
+                });
+            };
+            let flags = chunk[2];
+            (
+                PenReport {
+                    id,
+                    x: u24_bytes(chunk[3], chunk[4], chunk[5]),
+                    y: u24_bytes(chunk[6], chunk[7], chunk[8]),
+                    pressure: u16::from_le_bytes([chunk[9], chunk[10]]),
+                    in_range: chunk[1] & (1 << 5) != 0,
+                    sense: chunk[1] & (1 << 6) != 0,
+                    tip_switch: flags & 1 != 0,
+                    eraser: flags & (1 << 4) != 0,
+                    tilt: [chunk[11] as i8, chunk[12] as i8],
+                    rotation: None,
+                    hover_distance: None,
+                },
+                u64::from(flags >> 1),
+                3u8,
+            )
+        }
         _ => return Ok(None),
-    };
-    if data.len() < need {
-        return Err(ParseError::Short {
-            id,
-            got: data.len(),
-            need,
-        });
-    }
-    let report = if id == 0x10 {
-        let flags = data[1];
-        PenReport {
-            id,
-            x: u24(data, 2),
-            y: u24(data, 5),
-            pressure: u16le(data, 8),
-            in_range: flags & (1 << 5) != 0,
-            sense: flags & (1 << 6) != 0,
-            tip_switch: flags & 1 != 0,
-            eraser: flags & (1 << 4) != 0,
-            tilt: [data[10] as i8, data[11] as i8],
-            rotation: Some(i16::from_le_bytes([data[12], data[13]])),
-            hover_distance: Some(data[16]),
-        }
-    } else {
-        let flags = data[2];
-        PenReport {
-            id,
-            x: u24(data, 3),
-            y: u24(data, 6),
-            pressure: u16le(data, 9),
-            in_range: data[1] & (1 << 5) != 0,
-            sense: data[1] & (1 << 6) != 0,
-            tip_switch: flags & 1 != 0,
-            eraser: flags & (1 << 4) != 0,
-            tilt: [data[11] as i8, data[12] as i8],
-            rotation: None,
-            hover_distance: None,
-        }
     };
     if report.x > max_x || report.y > max_y {
         return Err(ParseError::Position {
@@ -119,7 +141,10 @@ pub fn parse_within(
     if report.pressure > max_pressure {
         return Err(ParseError::Pressure(report.pressure));
     }
-    Ok(Some(report))
+    Ok(Some((
+        report,
+        crate::reports::Buttons::from_bits_unchecked(button_bits, button_count),
+    )))
 }
 
 #[cfg(test)]

@@ -165,6 +165,16 @@ pub struct Bytes(pub Vec<u8>);
 
 const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
+const BASE64_DECODE: [u8; 256] = {
+    let mut table = [0xffu8; 256];
+    let mut i = 0;
+    while i < 64 {
+        table[BASE64[i] as usize] = i as u8;
+        i += 1;
+    }
+    table
+};
+
 fn decode_base64(text: &str) -> Result<Vec<u8>, String> {
     let digits = text.trim_end_matches('=');
     if !text.len().is_multiple_of(4) || text.len() - digits.len() > 2 {
@@ -173,11 +183,11 @@ fn decode_base64(text: &str) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::with_capacity(digits.len() * 3 / 4);
     let (mut buffer, mut bits) = (0u32, 0);
     for character in digits.bytes() {
-        let value = BASE64
-            .iter()
-            .position(|&digit| digit == character)
-            .ok_or_else(|| format!("{text:?} is not base64"))?;
-        buffer = (buffer << 6) | value as u32;
+        let value = BASE64_DECODE[usize::from(character)];
+        if value == 0xff {
+            return Err(format!("{text:?} is not base64"));
+        }
+        buffer = (buffer << 6) | u32::from(value);
         bits += 6;
         if bits >= 8 {
             bits -= 8;
@@ -662,6 +672,19 @@ pub struct Database {
 }
 
 impl Database {
+    /// Parsed and validated embedded configurations before index diagnostics,
+    /// computed once per process and cloned by `with_overrides` so user
+    /// overrides never re-parse all 363 embedded JSON files.
+    fn builtin_entries() -> &'static [Entry] {
+        static BUILTIN_ENTRIES: OnceLock<Vec<Entry>> = OnceLock::new();
+        BUILTIN_ENTRIES.get_or_init(|| {
+            embedded::FILES
+                .iter()
+                .map(|(path, text)| Entry::parse((*path).to_owned(), Origin::BuiltIn, text))
+                .collect()
+        })
+    }
+
     /// The embedded upstream configurations, parsed once.
     pub fn builtin() -> &'static Database {
         static BUILTIN: OnceLock<Database> = OnceLock::new();
@@ -676,10 +699,7 @@ impl Database {
     /// not parse is kept with its error and replaces nothing; in
     /// OpenTabletDriver it stops detection (BC-25).
     pub fn with_overrides(files: &[(String, String)]) -> Database {
-        let mut entries: Vec<Entry> = embedded::FILES
-            .iter()
-            .map(|(path, text)| Entry::parse((*path).to_owned(), Origin::BuiltIn, text))
-            .collect();
+        let mut entries: Vec<Entry> = Self::builtin_entries().to_vec();
         let mut first_files: BTreeMap<String, &str> = BTreeMap::new();
         for (path, text) in files {
             let mut entry = Entry::parse(path.clone(), Origin::File, text);
@@ -712,7 +732,8 @@ impl Database {
     }
 
     fn build_index(&mut self) {
-        let mut shared: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        type InterfaceKey = (u16, u16, Option<u32>, Option<BTreeMap<String, String>>);
+        let mut shared: BTreeMap<InterfaceKey, Vec<usize>> = BTreeMap::new();
         for (position, entry) in self.entries.iter().enumerate() {
             let Some(configuration) = entry.usable() else {
                 continue;
@@ -734,41 +755,60 @@ impl Database {
                         .entry((vendor, product))
                         .or_default()
                         .push((position, role, index));
-                    let key = format!(
-                        "{vendor:04x}:{product:04x}, {:?} bytes, strings {:?}",
-                        identifier.input_report_length, identifier.device_strings
+                    let key = (
+                        vendor,
+                        product,
+                        identifier.input_report_length,
+                        identifier.device_strings.clone(),
                     );
-                    shared
-                        .entry(key)
-                        .or_default()
-                        .push(configuration.name.clone());
+                    shared.entry(key).or_default().push(position);
                 }
             }
         }
         // Two tablets that declare the same interface cannot be told apart by
         // the declaration alone; device selection (D02) must choose.
-        for (key, mut names) in shared {
-            names.dedup();
-            if names.len() > 1 {
-                for entry in &mut self.entries {
-                    if let Some(name) = entry.configuration.as_ref().map(|c| c.name.clone())
-                        && names.contains(&name)
-                    {
-                        let others: Vec<&str> = names
-                            .iter()
-                            .filter(|n| **n != name)
-                            .map(String::as_str)
-                            .collect();
-                        entry.diagnostics.push(Diagnostic {
-                            severity: Severity::Warning,
-                            message: format!(
-                                "interface {key} is also declared by {}",
-                                others.join(", ")
-                            ),
-                        });
-                    }
-                }
+        let mut warnings: Vec<(usize, String)> = Vec::new();
+        for ((vendor, product, input_len, device_strings), mut positions) in shared {
+            positions.dedup();
+            if positions.len() <= 1 {
+                continue;
             }
+            let mut names: Vec<&str> = positions
+                .iter()
+                .filter_map(|&pos| {
+                    self.entries[pos]
+                        .configuration
+                        .as_ref()
+                        .map(|c| c.name.as_str())
+                })
+                .collect();
+            names.dedup();
+            if names.len() <= 1 {
+                continue;
+            }
+            let key = format!(
+                "{vendor:04x}:{product:04x}, {input_len:?} bytes, strings {device_strings:?}"
+            );
+            for &pos in &positions {
+                let Some(name) = self.entries[pos]
+                    .configuration
+                    .as_ref()
+                    .map(|c| c.name.as_str())
+                else {
+                    continue;
+                };
+                let others: Vec<&str> = names.iter().copied().filter(|&n| n != name).collect();
+                warnings.push((
+                    pos,
+                    format!("interface {key} is also declared by {}", others.join(", ")),
+                ));
+            }
+        }
+        for (pos, message) in warnings {
+            self.entries[pos].diagnostics.push(Diagnostic {
+                severity: Severity::Warning,
+                message,
+            });
         }
     }
 
@@ -814,6 +854,40 @@ impl Database {
         }
         parsers
     }
+}
+
+/// Metadata signature for `directory`: captures sorted JSON paths, file sizes,
+/// and modification timestamps without reading or parsing file contents.
+pub(crate) type DirectorySignature = Vec<(std::path::PathBuf, u64, Option<std::time::SystemTime>)>;
+
+pub(crate) fn directory_signature(directory: &Path) -> io::Result<DirectorySignature> {
+    let context = |path: &Path, error: io::Error| {
+        io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+    };
+    let mut entries_sig = Vec::new();
+    let mut pending = VecDeque::from([directory.to_path_buf()]);
+    while let Some(directory) = pending.pop_front() {
+        let mut paths = std::fs::read_dir(&directory)
+            .and_then(|entries| {
+                entries
+                    .map(|entry| entry.map(|entry| entry.path()))
+                    .collect::<io::Result<Vec<_>>>()
+            })
+            .map_err(|error| context(&directory, error))?;
+        paths.sort_by_cached_key(|path| {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            (name.to_uppercase(), name.into_owned())
+        });
+        for path in paths {
+            let meta = std::fs::metadata(&path).map_err(|error| context(&path, error))?;
+            if meta.is_dir() {
+                pending.push_back(path);
+            } else if is_json(&path) {
+                entries_sig.push((path, meta.len(), meta.modified().ok()));
+            }
+        }
+    }
+    Ok(entries_sig)
 }
 
 /// Reads the `*.json` files under `directory` in the order OpenTabletDriver

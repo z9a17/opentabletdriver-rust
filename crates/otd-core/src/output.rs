@@ -61,6 +61,7 @@ pub struct MousePacket {
     pub flags: u32,
 }
 
+#[inline]
 fn contact_flag(desired: bool, emitted: bool) -> u32 {
     if desired == emitted {
         0
@@ -102,6 +103,7 @@ impl MouseOutput {
         self.emit_mapped(position, frame.contact, send)
     }
 
+    #[inline]
     pub fn emit_mapped(
         &mut self,
         position: Option<(i32, i32)>,
@@ -126,6 +128,7 @@ impl MouseOutput {
 
     /// An ordinary non-positional report does not invalidate the last known
     /// pointer position. Explicit range loss uses release_all/emit_mapped(None).
+    #[inline]
     pub fn emit_contact(
         &mut self,
         contact: bool,
@@ -134,6 +137,7 @@ impl MouseOutput {
         self.emit_motion_with(Motion::Absolute(self.last_position), contact, send)
     }
 
+    #[inline]
     pub fn emit_relative(
         &mut self,
         delta: (i32, i32),
@@ -143,6 +147,7 @@ impl MouseOutput {
         self.emit_motion_with(Motion::Relative(delta.0, delta.1), contact, send)
     }
 
+    #[inline]
     fn emit_motion_with(
         &mut self,
         motion: Motion,
