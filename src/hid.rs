@@ -1330,7 +1330,7 @@ pub struct DeviceRemovalNotification {
 
 impl DeviceRemovalNotification {
     pub fn for_candidate(candidate: &Candidate) -> io::Result<Self> {
-        let event = Event::create(true)?;
+        let event = Event::create(false)?;
         let end = candidate
             .path
             .iter()

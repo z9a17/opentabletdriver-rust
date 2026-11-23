@@ -139,14 +139,21 @@ impl SessionOutput {
         let owner = self
             .owner
             .ok_or_else(|| io::Error::other("output session ended"))?;
-        FAST_BUSY.store(true, Ordering::Relaxed);
-        compiler_fence(Ordering::SeqCst);
-        if !SLOW_PATH.load(Ordering::Relaxed) {
-            let result = send_fast_with(packet, sink);
-            FAST_BUSY.store(false, Ordering::Release);
-            return result;
+        if !SLOW_PATH.load(Ordering::Acquire) {
+            struct FastBusyGuard;
+            impl Drop for FastBusyGuard {
+                #[inline]
+                fn drop(&mut self) {
+                    FAST_BUSY.store(false, Ordering::Release);
+                }
+            }
+            FAST_BUSY.store(true, Ordering::Relaxed);
+            let _busy = FastBusyGuard;
+            compiler_fence(Ordering::SeqCst);
+            if !SLOW_PATH.load(Ordering::Acquire) {
+                return send_fast_with(packet, sink);
+            }
         }
-        FAST_BUSY.store(false, Ordering::Release);
         self.send_slow_with(owner, packet, sink)
     }
 

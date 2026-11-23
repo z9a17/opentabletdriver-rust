@@ -1267,6 +1267,9 @@ impl ReportSource for HidSource<'_> {
                 }
                 Ok(Some(index)) if index == timer_index => {
                     self.timer_deadline = None;
+                    if let Some(affinity) = &mut self.affinity {
+                        affinity.refresh();
+                    }
                     return Ok(Read::Idle);
                 }
                 Ok(Some(_)) => {
