@@ -205,13 +205,13 @@ impl WriterLock {
         const MARKER: &[u8] = b"OpenTabletDriver Rust OS writer lock v2\n";
         if !path.try_exists().map_err(|error| error.to_string())? {
             let marker = Temporary::write(path, MARKER)?;
-            if let Err(error) = publish(&marker.path, path, false) {
-                if !path.try_exists().map_err(|error| error.to_string())? {
-                    return Err(format!(
-                        "cannot publish writer lock {}: {error}",
-                        path.display()
-                    ));
-                }
+            if let Err(error) = publish(&marker.path, path, false)
+                && !path.try_exists().map_err(|error| error.to_string())?
+            {
+                return Err(format!(
+                    "cannot publish writer lock {}: {error}",
+                    path.display()
+                ));
             }
         }
         let mut options = OpenOptions::new();

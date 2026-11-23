@@ -21,12 +21,14 @@ use otd_core::tablets::Database;
 mod supervisor;
 pub use supervisor::Supervisor;
 
+type ReservationRequest = (String, String, mpsc::SyncSender<Result<(), String>>);
+
 /// One active generation. The primary path is reserved before this is created.
 pub struct Companions {
     stop: Arc<AtomicBool>,
     wake: Event,
     thread: Option<JoinHandle<Result<(), String>>>,
-    reservations: mpsc::Sender<(String, String, mpsc::SyncSender<Result<(), String>>)>,
+    reservations: mpsc::Sender<ReservationRequest>,
     primary: String,
     completed: Arc<AtomicBool>,
 }
@@ -154,6 +156,7 @@ struct Running {
 /// The rescan after it repairs a missed notification.
 const RESCAN: std::time::Duration = std::time::Duration::from_secs(60);
 
+#[allow(clippy::too_many_arguments)]
 fn supervise(
     profile: Profile,
     database: Database,
@@ -161,7 +164,7 @@ fn supervise(
     mut primary_name: String,
     stop: Arc<AtomicBool>,
     wake: Event,
-    requests: mpsc::Receiver<(String, String, mpsc::SyncSender<Result<(), String>>)>,
+    requests: mpsc::Receiver<ReservationRequest>,
     log: Arc<dyn Fn(&str) + Send + Sync>,
 ) -> Result<(), String> {
     let notification = match Notification::register() {

@@ -258,10 +258,9 @@ fn execute(args: &[String], connection: &mut Option<Client>) -> Result<(), Strin
                 if file
                     .extension()
                     .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+                    && let Some(name) = file.file_stem().and_then(|name| name.to_str())
                 {
-                    if let Some(name) = file.file_stem().and_then(|name| name.to_str()) {
-                        names.push(name.to_owned());
-                    }
+                    names.push(name.to_owned());
                 }
             }
             names.sort();

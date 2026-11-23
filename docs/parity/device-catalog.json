@@ -4,7 +4,7 @@
   "upstream": {
     "repository": "https://github.com/OpenTabletDriver/OpenTabletDriver",
     "branch": "0.6.x",
-    "revision": "2c4b9a5649eb34cd74bc8b1b1041dbb0356ae762",
+    "revision": "3345dc73a2d607d013a4762e0fa2672118ef132e",
     "tag": null
   },
   "configurations": [
@@ -367,7 +367,7 @@
     },
     {
       "path": "OpenTabletDriver.Configurations/Configurations/Bosto/BT-12HD.json",
-      "git_blob": "5d17d1f008f50ff39b39049052bc552fb1bc5cd9",
+      "git_blob": "9d72b6c141e329b4ddcfc669844e2d82dbf8ef90",
       "name": "Bosto BT-12HD",
       "parsers": [
         "OpenTabletDriver.Configurations.Parsers.Bosto.BostoReportParser"

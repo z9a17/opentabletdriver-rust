@@ -140,23 +140,27 @@ impl AcepenParser {
     }
 }
 
-/// `BostoReportParser`.
+/// `BostoReportParser` (upstream #5308: 0x01 with bit 4 set is a pen report,
+/// 0x04 is a UCLogicAuxReport, and all other packets are OutOfRange).
 pub fn parse_bosto(raw: &[u8], metadata: ReportMetadata) -> Parsed<'_> {
     require_length(raw, 2)?;
-    if raw[1] == 0 {
-        return out_of_range(raw, metadata);
+    match raw[0] {
+        0x01 if bit(raw[1], 4) => {
+            require_length(raw, 8)?;
+            data(
+                raw,
+                metadata,
+                ReportValues {
+                    position: position(raw, 2, 4),
+                    pressure: Some(u16_at(raw, 6)),
+                    pen_buttons: Some(buttons(raw[1], &[5, 1])?),
+                    ..ReportValues::default()
+                },
+            )
+        }
+        0x04 => data(raw, metadata, super::uc_logic::parse_uc_logic_aux(raw)?),
+        _ => out_of_range(raw, metadata),
     }
-    require_length(raw, 8)?;
-    data(
-        raw,
-        metadata,
-        ReportValues {
-            position: position(raw, 2, 4),
-            pressure: Some(u16_at(raw, 6)),
-            pen_buttons: Some(buttons(raw[1], &[5, 1])?),
-            ..ReportValues::default()
-        },
-    )
 }
 
 /// `FmaReportParser` (FlooGoo). An empty packet is ignored, as upstream's
@@ -428,9 +432,17 @@ mod tests {
 
     #[test]
     fn pen_layouts() {
-        let (_, r) = parse_bosto(&[0, 0x22, 1, 0, 2, 0, 3, 0], metadata()).unwrap();
+        let (_, r) = parse_bosto(&[0x01, 0x32, 1, 0, 2, 0, 3, 0], metadata()).unwrap();
         assert_eq!(r.values.position, Some([1.0, 2.0]));
         assert_eq!(r.values.pen_buttons.unwrap().bits(), 0b11);
+        let (_, aux) = parse_bosto(&[0x04, 0, 0, 0, 0b0101, 0, 0], metadata()).unwrap();
+        assert_eq!(aux.values.aux_buttons.unwrap().bits(), 0b0101);
+        assert_eq!(
+            parse_bosto(&[0x01, 0x22, 1, 0, 2, 0, 3, 0], metadata())
+                .unwrap()
+                .0,
+            ReportKind::OutOfRange
+        );
         assert_eq!(
             parse_bosto(&[0, 0], metadata()).unwrap().0,
             ReportKind::OutOfRange

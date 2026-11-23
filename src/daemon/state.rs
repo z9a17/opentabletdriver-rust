@@ -667,10 +667,11 @@ impl Daemon {
         ) {
             Ok(worker) => worker,
             Err(error) => {
-                if initial && !device_start {
-                    if let Some(mut devices) = self.devices.take() {
-                        let _ = devices.finish();
-                    }
+                if initial
+                    && !device_start
+                    && let Some(mut devices) = self.devices.take()
+                {
+                    let _ = devices.finish();
                 }
                 return Err(ControlError::new(ErrorCode::StartFailed, error));
             }
@@ -686,21 +687,19 @@ impl Daemon {
             self.cleanup_error = None;
             self.logs.clear();
         }
-        if let Some(devices) = &self.devices {
-            if let Ok(list) = devices.handle().snapshot() {
-                if let Some(primary) = list.sessions.into_iter().find(|session| session.primary) {
-                    if let Some(next) = primary.device_generation.checked_add(1) {
-                        devices.handle().primary_pending(
-                            next,
-                            if initial {
-                                crate::device_sessions::SessionState::Preparing
-                            } else {
-                                primary.state
-                            },
-                        );
-                    }
-                }
-            }
+        if let Some(devices) = &self.devices
+            && let Ok(list) = devices.handle().snapshot()
+            && let Some(primary) = list.sessions.into_iter().find(|session| session.primary)
+            && let Some(next) = primary.device_generation.checked_add(1)
+        {
+            devices.handle().primary_pending(
+                next,
+                if initial {
+                    crate::device_sessions::SessionState::Preparing
+                } else {
+                    primary.state
+                },
+            );
         }
         self.pending = Some(Pending {
             worker: Some(worker),
@@ -745,10 +744,10 @@ impl Daemon {
         self.stopping = true;
         self.state = DriverState::Stopping;
         let mut errors = Vec::new();
-        if let Some(devices) = &self.devices {
-            if let Err(error) = devices.stop() {
-                errors.push(error);
-            }
+        if let Some(devices) = &self.devices
+            && let Err(error) = devices.stop()
+        {
+            errors.push(error);
         }
         for worker in [
             self.worker.as_ref(),
@@ -910,11 +909,11 @@ impl Daemon {
                 if !self.send_active(Directive::Run) {
                     return;
                 }
-                if let Some(devices) = &self.devices {
-                    if let Err(error) = devices.handle().primary_commit(profile.clone()) {
-                        self.fail_stop(error);
-                        return;
-                    }
+                if let Some(devices) = &self.devices
+                    && let Err(error) = devices.handle().primary_commit(profile.clone())
+                {
+                    self.fail_stop(error);
+                    return;
                 }
                 self.generation = generation;
                 self.profile = Some(profile.source.clone());
@@ -1098,14 +1097,14 @@ impl Daemon {
                 self.generation = pending.generation;
                 self.profile = Some(pending.profile.clone());
                 self.configuration = Some(pending.text.clone());
-                if let Some(devices) = &self.devices {
-                    if let Err(error) = devices.handle().primary_commit_with_origin(
+                if let Some(devices) = &self.devices
+                    && let Err(error) = devices.handle().primary_commit_with_origin(
                         pending.applied_profile.clone(),
                         !pending.initial && !pending.device_start,
-                    ) {
-                        self.fail_stop(error);
-                        return;
-                    }
+                    )
+                {
+                    self.fail_stop(error);
+                    return;
                 }
                 self.last_error = None;
             }
@@ -1119,14 +1118,13 @@ impl Daemon {
                     devices
                         .handle()
                         .primary_state(crate::device_sessions::SessionState::Running, None);
-                    if let Ok(Some(id)) = devices.handle().primary_id() {
-                        if devices
+                    if let Ok(Some(id)) = devices.handle().primary_id()
+                        && devices
                             .handle()
                             .snapshot()
                             .is_ok_and(|list| list.selected_id.as_ref() == Some(&id))
-                        {
-                            let _ = devices.handle().select(&id);
-                        }
+                    {
+                        let _ = devices.handle().select(&id);
                     }
                     devices.enable();
                 }
@@ -1343,10 +1341,10 @@ impl Daemon {
             }
         }
         self.pending = None;
-        if let Some(mut devices) = self.devices.take() {
-            if let Err(error) = devices.finish() {
-                self.remember_cleanup_error(error);
-            }
+        if let Some(mut devices) = self.devices.take()
+            && let Err(error) = devices.finish()
+        {
+            self.remember_cleanup_error(error);
         }
         // The mutex remains owned through all worker joins above.
         self.ownership = None;
@@ -1795,15 +1793,15 @@ impl ControlHandler for Daemon {
                         .map_err(|_| {
                             ControlError::new(ErrorCode::Internal, "device registry poisoned")
                         })?;
-                    if let Some(registry) = &registry {
-                        if registry.entries.values().any(|entry| {
+                    if let Some(registry) = &registry
+                        && registry.entries.values().any(|entry| {
                             entry.snapshot.connected || entry.snapshot.pending_generation.is_some()
-                        }) {
-                            return Err(ControlError::new(
-                                ErrorCode::Conflict,
-                                "devices appeared or changed during idle settings admission; refresh before retrying",
-                            ));
-                        }
+                        })
+                    {
+                        return Err(ControlError::new(
+                            ErrorCode::Conflict,
+                            "devices appeared or changed during idle settings admission; refresh before retrying",
+                        ));
                     }
                     if settings_json.len() > control::MAX_PROFILE_BYTES {
                         return Err(ControlError::new(

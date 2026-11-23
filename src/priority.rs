@@ -20,10 +20,89 @@ use std::io;
 use std::mem::size_of;
 
 use windows_sys::Win32::System::Threading::{
-    GetCurrentThread, GetThreadPriority, SetThreadInformation, SetThreadPriority,
-    THREAD_POWER_THROTTLING_CURRENT_VERSION, THREAD_POWER_THROTTLING_EXECUTION_SPEED,
-    THREAD_POWER_THROTTLING_STATE, THREAD_PRIORITY_TIME_CRITICAL, ThreadPowerThrottling,
+    GetCurrentProcess, GetCurrentThread, GetPriorityClass, GetThreadPriority, HIGH_PRIORITY_CLASS,
+    PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+    PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION, PROCESS_POWER_THROTTLING_STATE,
+    ProcessPowerThrottling, REALTIME_PRIORITY_CLASS, SetPriorityClass, SetProcessInformation,
+    SetThreadInformation, SetThreadPriority, THREAD_POWER_THROTTLING_CURRENT_VERSION,
+    THREAD_POWER_THROTTLING_EXECUTION_SPEED, THREAD_POWER_THROTTLING_STATE,
+    THREAD_PRIORITY_TIME_CRITICAL, ThreadPowerThrottling,
 };
+
+/// Keeps the daemon process at High priority class and opted out of Windows 11
+/// process-level EcoQoS and timer-resolution throttling until dropped.
+/// Matches OpenTabletDriver's `DriverDaemon` Windows scheduling policy so a
+/// windowless background daemon is never power-throttled or timer-coalesced.
+pub struct ProcessPriority {
+    previous_class: Option<u32>,
+    throttling_applied: bool,
+}
+
+impl ProcessPriority {
+    pub fn raise() -> Self {
+        let process = unsafe { GetCurrentProcess() };
+        let current = unsafe { GetPriorityClass(process) };
+        let previous_class =
+            if current != 0 && current != HIGH_PRIORITY_CLASS && current != REALTIME_PRIORITY_CLASS
+            {
+                if unsafe { SetPriorityClass(process, HIGH_PRIORITY_CLASS) } == 0 {
+                    eprintln!(
+                        "could not raise the daemon process priority class: {}",
+                        io::Error::last_os_error()
+                    );
+                    None
+                } else {
+                    Some(current)
+                }
+            } else {
+                None
+            };
+        let throttling_applied = set_process_high_qos(true);
+        Self {
+            previous_class,
+            throttling_applied,
+        }
+    }
+}
+
+impl Drop for ProcessPriority {
+    fn drop(&mut self) {
+        if self.throttling_applied {
+            set_process_high_qos(false);
+        }
+        if let Some(previous) = self.previous_class {
+            unsafe { SetPriorityClass(GetCurrentProcess(), previous) };
+        }
+    }
+}
+
+/// Opts the daemon process out of EcoQoS and Windows 11 background
+/// timer-resolution throttling, or restores the system default policy.
+fn set_process_high_qos(enabled: bool) -> bool {
+    let apply = |control_mask: u32| -> bool {
+        let state = PROCESS_POWER_THROTTLING_STATE {
+            Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+            ControlMask: control_mask,
+            StateMask: 0,
+        };
+        unsafe {
+            SetProcessInformation(
+                GetCurrentProcess(),
+                ProcessPowerThrottling,
+                (&state as *const PROCESS_POWER_THROTTLING_STATE).cast::<c_void>(),
+                size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+            ) != 0
+        }
+    };
+    if !enabled {
+        return apply(0);
+    }
+    // Windows 11 supports both execution-speed and timer-resolution masks;
+    // fall back to execution-speed alone on older Windows 10 builds.
+    apply(
+        PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+    ) || apply(PROCESS_POWER_THROTTLING_EXECUTION_SPEED)
+}
 
 /// `GetThreadPriority` failure value (MAXLONG).
 const THREAD_PRIORITY_ERROR_RETURN: i32 = i32::MAX;
@@ -157,6 +236,25 @@ mod tests {
         })
         .join()
         .unwrap();
+    }
+
+    #[test]
+    fn process_priority_guard_raises_and_restores() {
+        let before = unsafe { GetPriorityClass(GetCurrentProcess()) };
+        assert_ne!(before, 0);
+        {
+            let guard = ProcessPriority::raise();
+            let during = unsafe { GetPriorityClass(GetCurrentProcess()) };
+            assert!(
+                during == HIGH_PRIORITY_CLASS || during == REALTIME_PRIORITY_CLASS,
+                "expected High priority class, got {during:#x}"
+            );
+            assert!(
+                guard.throttling_applied,
+                "process power throttling opt-out should succeed on Windows 10/11"
+            );
+        }
+        assert_eq!(unsafe { GetPriorityClass(GetCurrentProcess()) }, before);
     }
 
     #[test]

@@ -43,6 +43,8 @@ impl Default for Shared {
         }
     }
 }
+type NativeSettingsKey = (control::WorkerIdentity, Vec<(String, u64, Option<u64>)>);
+
 pub struct Connection {
     shared: Arc<Shared>,
     stop: Arc<AtomicBool>,
@@ -54,7 +56,7 @@ pub struct Connection {
     debug: Option<super::debug::Capture>,
     debug_sessions: Vec<crate::device_sessions::SessionSnapshot>,
     settings_revision: Option<u64>,
-    settings_native: Option<(control::WorkerIdentity, Vec<(String, u64, Option<u64>)>)>,
+    settings_native: Option<NativeSettingsKey>,
 }
 struct UpdateOwnership {
     token: String,
@@ -256,16 +258,16 @@ impl Connection {
                 }
             }
         })();
-        if !self.update.as_ref().is_some_and(|update| update.exit) {
-            if let Err(cleanup) = self.finish_update() {
-                return Err(Error::failed(format!(
-                    "{}; {}",
-                    result
-                        .err()
-                        .map_or_else(|| "update failed".into(), |error| error.message),
-                    cleanup.message
-                )));
-            }
+        if !self.update.as_ref().is_some_and(|update| update.exit)
+            && let Err(cleanup) = self.finish_update()
+        {
+            return Err(Error::failed(format!(
+                "{}; {}",
+                result
+                    .err()
+                    .map_or_else(|| "update failed".into(), |error| error.message),
+                cleanup.message
+            )));
         }
         result
     }
@@ -425,13 +427,13 @@ impl Connection {
                 .get(index)
                 .ok_or_else(|| Error::failed("selected exported profile is missing"))?
                 .clone();
-            if let Some(previous) = active.insert(session.tablet.clone(), selected.clone()) {
-                if previous != selected {
-                    return Err(Error::unsupported(
-                        "GetSettings",
-                        "same-model physical tablets have differing native profiles; upstream profiles are keyed by tablet name",
-                    ));
-                }
+            if let Some(previous) = active.insert(session.tablet.clone(), selected.clone())
+                && previous != selected
+            {
+                return Err(Error::unsupported(
+                    "GetSettings",
+                    "same-model physical tablets have differing native profiles; upstream profiles are keyed by tablet name",
+                ));
             }
         }
         let profiles = document["Profiles"]
@@ -543,17 +545,17 @@ impl Connection {
             .into_iter()
             .filter(|session| session.connected)
             .collect();
-        if let Some((id, generation)) = &expected_source {
-            if !sessions.iter().any(|session| {
+        if let Some((id, generation)) = &expected_source
+            && !sessions.iter().any(|session| {
                 &session.id == id
                     && session.device_generation == *generation
                     && session.pending_generation.is_none()
                     && session.state == crate::device_sessions::SessionState::Running
-            }) {
-                return Err(Error::failed(
-                    "source settings request no longer owns its admitted physical device generation",
-                ));
-            }
+            })
+        {
+            return Err(Error::failed(
+                "source settings request no longer owns its admitted physical device generation",
+            ));
         }
         let source = if let Some((tablet, owner)) = source {
             let mut matches = sessions.iter().filter(|session| {
@@ -767,10 +769,10 @@ impl Connection {
             return events;
         }
         self.next_poll = Instant::now() + Duration::from_millis(250);
-        if self.debug.is_some() {
-            if let Ok(sessions) = self.session_snapshots() {
-                self.debug_sessions = sessions;
-            }
+        if self.debug.is_some()
+            && let Ok(sessions) = self.session_snapshots()
+        {
+            self.debug_sessions = sessions;
         }
         if let Ok((instance, sequence, messages)) = self.logs() {
             events.extend(message_events(
@@ -886,24 +888,23 @@ impl super::apply::Backend for DeviceApply<'_> {
             }
             if session.device_generation == receipt.target_generation
                 && session.pending_generation.is_none()
-            {
-                if matches!(
+                && matches!(
                     session.state,
                     crate::device_sessions::SessionState::Running
                         | crate::device_sessions::SessionState::Stopped
                         | crate::device_sessions::SessionState::Waiting
-                ) {
-                    // This generation is committed only after actual Run or an
-                    // explicit stopped-profile commit. Verified native ports
-                    // may rewrite runtime TOML, so byte identity is not the
-                    // operation receipt's completion contract.
-                    let _ = self.connection.device_profile(
-                        &receipt.id,
-                        receipt.target_generation,
-                        &self.instance,
-                    )?;
-                    return Ok(());
-                }
+                )
+            {
+                // This generation is committed only after actual Run or an
+                // explicit stopped-profile commit. Verified native ports
+                // may rewrite runtime TOML, so byte identity is not the
+                // operation receipt's completion contract.
+                let _ = self.connection.device_profile(
+                    &receipt.id,
+                    receipt.target_generation,
+                    &self.instance,
+                )?;
+                return Ok(());
             }
             if session.pending_generation.is_none()
                 || session.state == crate::device_sessions::SessionState::Failed
@@ -1036,82 +1037,21 @@ fn message_events(
     messages: &[UpstreamLogMessage],
 ) -> Vec<Value> {
     let mut events = Vec::new();
-    if let Some((previous_instance, previous_sequence)) = cursor.as_ref() {
-        if previous_instance == &instance {
-            let available_start = sequence.saturating_sub(messages.len() as u64);
-            let start = previous_sequence
-                .saturating_sub(available_start)
-                .min(messages.len() as u64) as usize;
-            events.extend(
-                messages[start..]
-                    .iter()
-                    .map(|message| protocol::event("Message", json!(message))),
-            );
-        }
+    if let Some((previous_instance, previous_sequence)) = cursor.as_ref()
+        && previous_instance == &instance
+    {
+        let available_start = sequence.saturating_sub(messages.len() as u64);
+        let start = previous_sequence
+            .saturating_sub(available_start)
+            .min(messages.len() as u64) as usize;
+        events.extend(
+            messages[start..]
+                .iter()
+                .map(|message| protocol::event("Message", json!(message))),
+        );
     }
     *cursor = Some((instance, sequence));
     events
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn first_coalesced_write_and_lagging_retained_tail_preserve_original_typed_messages() {
-        let before = UpstreamLogMessage::native("preconnection history".into());
-        let written:UpstreamLogMessage = serde_json::from_value(json!({"Time":"2026-10-07T09:08:07.654+02:00",
-            "Group":null,"Message":"first immediate request","StackTrace":"original trace","Level":3,"Notification":true})).unwrap();
-        // Cursor comes from the read-only construction snapshot, not the first
-        // post-request IO-wait callback. No wait callback is needed to emit it.
-        let mut cursor = Some(("owned daemon".into(), 8));
-        let events = message_events(
-            &mut cursor,
-            "owned daemon".into(),
-            9,
-            &[before, written.clone()],
-        );
-        assert_eq!(events, vec![protocol::event("Message", json!(written))]);
-        assert!(
-            message_events(&mut cursor, "owned daemon".into(), 9, &[written.clone()]).is_empty()
-        );
-        let events = message_events(&mut cursor, "owned daemon".into(), 80, &[written.clone()]);
-        assert_eq!(events, vec![protocol::event("Message", json!(written))]);
-        assert!(message_events(&mut cursor, "replacement daemon".into(), 1, &[written]).is_empty());
-    }
-    #[test]
-    fn active_managed_stores_export_without_runtime_paths_or_dropping_settings() {
-        let source = json!({"Profiles":[{"Tablet":"Wacom PTH-660",
-            "OutputMode":{"Path":"OpenTabletDriver.Desktop.Output.AbsoluteMode","Enable":true},
-            "AbsoluteModeSettings":{"Display":{"Width":2560,"Height":1440,"X":1280,"Y":720,"Rotation":0},
-                "Tablet":{"Width":224,"Height":148,"X":112,"Y":74,"Rotation":0},"EnableClipping":true},
-            "Filters":[{"Path":"Example.Filter","Enable":true,"Settings":[{"Property":"Amount","Value":1}]}],
-            "Bindings":{}}],"Tools":[]});
-        let mut profile =
-            crate::config::Profile::from_otd_text(&source.to_string(), Path::new("source.json"))
-                .unwrap();
-        profile.plugins.push(otd_core::plugins::PluginConfig {
-            path: Path::new("E:/resolved/Example.dll").into(),
-            kind: otd_core::plugins::PluginKind::Dotnet,
-            enabled: true,
-            type_name: "Example.Filter".into(),
-            settings_json: r#"{"Amount":2,"Extra":null}"#.into(),
-        });
-        let original = profile.to_toml().unwrap();
-        let exported: Value = serde_json::from_str(&export_settings(&profile).unwrap()).unwrap();
-        assert_eq!(
-            exported["Profiles"][0]["Filters"][0]["Path"],
-            "Example.Filter"
-        );
-        assert_eq!(
-            exported["Profiles"][0]["Filters"][0]["Settings"],
-            json!([
-            {"Property":"Amount","Value":2},{"Property":"Extra","Value":null}])
-        );
-        assert!(!exported.to_string().contains("resolved"));
-        assert_eq!(profile.to_toml().unwrap(), original);
-        profile.plugins[0].type_name = "Another.Filter".into();
-        assert!(export_settings(&profile).is_err());
-    }
 }
 fn native_log(line: &str) -> Value {
     json!(UpstreamLogMessage::native(line.into()))
@@ -1126,10 +1066,11 @@ fn aliased_argument<'a>(
     name: &str,
     implementation_name: &str,
 ) -> Result<&'a Value, Error> {
-    if let Value::Object(values) = params {
-        if values.len() == 1 && values.contains_key(implementation_name) {
-            return protocol::argument(params, implementation_name);
-        }
+    if let Value::Object(values) = params
+        && values.len() == 1
+        && values.contains_key(implementation_name)
+    {
+        return protocol::argument(params, implementation_name);
     }
     protocol::argument(params, name)
 }
@@ -1406,5 +1347,77 @@ impl Service for Connection {
                 message: format!("Method not found: {method}"),
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn first_coalesced_write_and_lagging_retained_tail_preserve_original_typed_messages() {
+        let before = UpstreamLogMessage::native("preconnection history".into());
+        let written:UpstreamLogMessage = serde_json::from_value(json!({"Time":"2026-10-07T09:08:07.654+02:00",
+            "Group":null,"Message":"first immediate request","StackTrace":"original trace","Level":3,"Notification":true})).unwrap();
+        // Cursor comes from the read-only construction snapshot, not the first
+        // post-request IO-wait callback. No wait callback is needed to emit it.
+        let mut cursor = Some(("owned daemon".into(), 8));
+        let events = message_events(
+            &mut cursor,
+            "owned daemon".into(),
+            9,
+            &[before, written.clone()],
+        );
+        assert_eq!(events, vec![protocol::event("Message", json!(written))]);
+        assert!(
+            message_events(
+                &mut cursor,
+                "owned daemon".into(),
+                9,
+                std::slice::from_ref(&written)
+            )
+            .is_empty()
+        );
+        let events = message_events(
+            &mut cursor,
+            "owned daemon".into(),
+            80,
+            std::slice::from_ref(&written),
+        );
+        assert_eq!(events, vec![protocol::event("Message", json!(written))]);
+        assert!(message_events(&mut cursor, "replacement daemon".into(), 1, &[written]).is_empty());
+    }
+    #[test]
+    fn active_managed_stores_export_without_runtime_paths_or_dropping_settings() {
+        let source = json!({"Profiles":[{"Tablet":"Wacom PTH-660",
+            "OutputMode":{"Path":"OpenTabletDriver.Desktop.Output.AbsoluteMode","Enable":true},
+            "AbsoluteModeSettings":{"Display":{"Width":2560,"Height":1440,"X":1280,"Y":720,"Rotation":0},
+                "Tablet":{"Width":224,"Height":148,"X":112,"Y":74,"Rotation":0},"EnableClipping":true},
+            "Filters":[{"Path":"Example.Filter","Enable":true,"Settings":[{"Property":"Amount","Value":1}]}],
+            "Bindings":{}}],"Tools":[]});
+        let mut profile =
+            crate::config::Profile::from_otd_text(&source.to_string(), Path::new("source.json"))
+                .unwrap();
+        profile.plugins.push(otd_core::plugins::PluginConfig {
+            path: Path::new("E:/resolved/Example.dll").into(),
+            kind: otd_core::plugins::PluginKind::Dotnet,
+            enabled: true,
+            type_name: "Example.Filter".into(),
+            settings_json: r#"{"Amount":2,"Extra":null}"#.into(),
+        });
+        let original = profile.to_toml().unwrap();
+        let exported: Value = serde_json::from_str(&export_settings(&profile).unwrap()).unwrap();
+        assert_eq!(
+            exported["Profiles"][0]["Filters"][0]["Path"],
+            "Example.Filter"
+        );
+        assert_eq!(
+            exported["Profiles"][0]["Filters"][0]["Settings"],
+            json!([
+            {"Property":"Amount","Value":2},{"Property":"Extra","Value":null}])
+        );
+        assert!(!exported.to_string().contains("resolved"));
+        assert_eq!(profile.to_toml().unwrap(), original);
+        profile.plugins[0].type_name = "Another.Filter".into();
+        assert!(export_settings(&profile).is_err());
     }
 }

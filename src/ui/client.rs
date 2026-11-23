@@ -584,16 +584,16 @@ fn run(
                 if checked_build.as_deref() != Some(&status.instance) {
                     let reply = call(Command::BuildInfo);
                     let warning = build_warning(&status.instance, reply.as_ref().ok());
-                    if let Some(message) = warning {
-                        if !publish(
+                    if let Some(message) = warning
+                        && !publish(
                             &events,
                             ClientEvent::VersionWarning(message),
                             window,
                             &stop,
                             true,
-                        ) {
-                            return;
-                        }
+                        )
+                    {
+                        return;
                     }
                     checked_build = Some(status.instance.clone());
                 }

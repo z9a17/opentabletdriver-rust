@@ -481,7 +481,7 @@ pub fn run_gated_with_endpoints(
                 Mode::Capture { .. } => None,
             };
             let binding_tick = if native_output && matches!(mode, Mode::Driver) {
-                pipeline.next_binding_tick(source.now())
+                pipeline.next_binding_tick_lazy(|| source.now())
             } else {
                 None
             };

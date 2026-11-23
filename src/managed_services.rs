@@ -149,7 +149,7 @@ impl State {
             return Err(-2);
         }
         let id = NEXT_TICKET
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 value.checked_add(1)
             })
             .map_err(|_| -5)?;
@@ -200,7 +200,7 @@ fn reply(result: Result<Value, String>) -> Arc<[u8]> {
 }
 fn next_cache_version() -> Result<u64, String> {
     NEXT_CACHE_VERSION
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
             value.checked_add(1)
         })
         .map_err(|_| "Managed snapshot cache version exhausted.".into())
@@ -308,12 +308,11 @@ fn run_lane(worker: Arc<Engine>, backend: Arc<dyn Backend>, lane: usize) {
                     Err("Managed service backend panicked; application status is unknown.".into())
                 });
         let bytes = reply(result);
-        if let Ok(mut state) = worker.state.lock() {
-            if !state.stopped {
-                if let Some(ticket) = state.tickets.get_mut(&work.0) {
-                    ticket.reply = Some(bytes);
-                }
-            }
+        if let Ok(mut state) = worker.state.lock()
+            && !state.stopped
+            && let Some(ticket) = state.tickets.get_mut(&work.0)
+        {
+            ticket.reply = Some(bytes);
         }
     }
 }
@@ -431,13 +430,12 @@ impl Drop for Host {
         for worker in self.workers.drain(..) {
             let _ = worker.join();
         }
-        if let Ok(mut slot) = HOST.get_or_init(|| Mutex::new(None)).lock() {
-            if slot
+        if let Ok(mut slot) = HOST.get_or_init(|| Mutex::new(None)).lock()
+            && slot
                 .as_ref()
                 .is_some_and(|value| Arc::ptr_eq(value, &self.engine))
-            {
-                *slot = None;
-            }
+        {
+            *slot = None;
         }
     }
 }
@@ -457,9 +455,9 @@ pub struct Callbacks {
 pub const CALLBACKS: Callbacks = Callbacks {
     version: 1,
     size: std::mem::size_of::<Callbacks>() as u32,
-    request: request,
-    poll: poll,
-    release: release,
+    request,
+    poll,
+    release,
 };
 unsafe extern "C" fn request(
     op: u32,
@@ -567,7 +565,7 @@ unsafe extern "C" fn request(
     {
         return -2;
     }
-    let Ok(id) = NEXT_TICKET.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+    let Ok(id) = NEXT_TICKET.try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
         value.checked_add(1)
     }) else {
         return -5;
@@ -618,10 +616,10 @@ unsafe extern "C" fn poll(id: u64, output: *mut u8, capacity: u32) -> i32 {
     bytes.len() as i32
 }
 unsafe extern "C" fn release(id: u64) {
-    if let Some(engine) = host() {
-        if let Ok(mut state) = engine.state.lock() {
-            state.tickets.remove(&id);
-        }
+    if let Some(engine) = host()
+        && let Ok(mut state) = engine.state.lock()
+    {
+        state.tickets.remove(&id);
     }
 }
 

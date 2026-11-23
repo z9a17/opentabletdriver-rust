@@ -513,6 +513,9 @@ impl BindingSink {
     }
 }
 impl ActionSink for BindingSink {
+    fn observes_pointer(&self) -> bool {
+        true
+    }
     fn pointer_attributes(
         &mut self,
         attributes: otd_core::output::MouseAttributes,
@@ -605,10 +608,10 @@ impl ActionSink for BindingSink {
                 (api().map_err(io::Error::other)?.release)(self.bindings[index].endpoint.context)
             })
             .and_then(|()| self.drain(index));
-            if let Err(failure) = release {
-                if error.is_none() {
-                    error = Some(failure);
-                }
+            if let Err(failure) = release
+                && error.is_none()
+            {
+                error = Some(failure);
             }
         }
         // Host ownership cleanup must still happen after a plugin Release error.

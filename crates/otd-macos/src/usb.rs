@@ -5,7 +5,7 @@ use std::io;
 
 pub fn descriptor_payload(bytes: &[u8]) -> io::Result<&[u8]> {
     let length = bytes.first().copied().unwrap_or(0) as usize;
-    if length < 2 || length > bytes.len() || length % 2 != 0 || bytes.get(1) != Some(&3) {
+    if length < 2 || length > bytes.len() || !length.is_multiple_of(2) || bytes.get(1) != Some(&3) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid USB string descriptor",
@@ -17,7 +17,9 @@ pub fn descriptor_payload(bytes: &[u8]) -> io::Result<&[u8]> {
 pub fn language(bytes: &[u8]) -> io::Result<u16> {
     let payload = descriptor_payload(bytes)?;
     let mut languages = payload
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]));
     let first = languages
         .next()
@@ -39,7 +41,9 @@ pub fn language(bytes: &[u8]) -> io::Result<u16> {
 
 pub fn text(bytes: &[u8]) -> io::Result<String> {
     let words: Vec<_> = descriptor_payload(bytes)?
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
         .collect();
     String::from_utf16(&words)

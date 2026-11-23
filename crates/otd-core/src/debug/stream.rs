@@ -37,10 +37,10 @@ pub(super) fn register(metadata: SessionMetadata) {
     }
 }
 pub(super) fn unregister(id: u64) {
-    if let Ok(mut sessions) = METADATA.lock() {
-        if let Some(session) = sessions.iter_mut().find(|session| session.session == id) {
-            session.active = false;
-        }
+    if let Ok(mut sessions) = METADATA.lock()
+        && let Some(session) = sessions.iter_mut().find(|session| session.session == id)
+    {
+        session.active = false;
     }
 }
 /// Retired metadata remains bounded so already queued final reports still carry

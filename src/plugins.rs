@@ -1246,6 +1246,9 @@ impl PluginChain {
 }
 
 impl otd_core::plugins::Filters for PluginChain {
+    fn is_passthrough(&self) -> bool {
+        self.graph.is_none() && self.managed_output.is_none() && self.plugins.is_empty()
+    }
     fn owns_mapping(&self) -> bool {
         self.managed_output.is_some()
     }

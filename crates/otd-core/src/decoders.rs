@@ -795,13 +795,28 @@ mod tests {
                 let expected = &entry["report"];
                 let mut expected = expected.clone();
                 if let (Ok((_, report)), Some(object)) = (&ours, expected.as_object_mut()) {
-                    // Upstream #5232 and #5215 are adopted ahead of the fixture.
+                    // Upstream #5232, #5215, #5308 and #5311 are adopted ahead of the fixture.
                     if name.ends_with(".GianoReportParser") && object.contains_key("position") {
                         object.insert("eraser".into(), serde_json::json!(raw[1] & 0x20 != 0));
                     }
                     if name.ends_with(".IntuosV3ReportParser") && raw.starts_with(&[0x1f, 0x01]) {
                         let tilt = [raw[9] as i8, raw[11] as i8];
                         object.insert("tilt".into(), serde_json::json!(tilt));
+                    }
+                    if name.ends_with(".BostoReportParser") {
+                        if raw.first() == Some(&0x04) {
+                            *object = values_json(ReportKind::Data, &report.values)
+                                .as_object()
+                                .unwrap()
+                                .clone();
+                        } else if !(raw.first() == Some(&0x01)
+                            && raw.get(1).is_some_and(|b| b & 0x10 != 0))
+                        {
+                            *object = serde_json::json!({"kind": "out_of_range"})
+                                .as_object()
+                                .unwrap()
+                                .clone();
+                        }
                     }
                     // The 0x1E hover distance overlaps tilt X upstream (BC-23).
                     if intuos_v2
@@ -825,6 +840,18 @@ mod tests {
                 let matched = match (&ours, entry.get("error")) {
                     (Err(_), Some(_)) => {
                         touch_state_diverged |= touch;
+                        true
+                    }
+                    // Upstream #5311: 8-byte Bamboo reports now decode with a null wheel
+                    // instead of throwing IndexOutOfRangeException on byte 8.
+                    (Ok(_), Some(_)) if name.ends_with(".BambooReportParser") && raw.len() == 8 => {
+                        true
+                    }
+                    // Upstream #5308: BostoReportParser treats non-0x01/0x04 packets as
+                    // OutOfRange without reading past byte 1.
+                    (Ok((ReportKind::OutOfRange, _)), Some(_))
+                        if name.ends_with(".BostoReportParser") =>
+                    {
                         true
                     }
                     // Upstream's Unsafe.ReadUnaligned reads up to three bytes

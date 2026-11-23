@@ -370,18 +370,18 @@ fn record(
     })();
     // Even transport failure produces an explicit incomplete footer if the file
     // remains writable. Do not hide the primary failure behind a cleanup error.
-    if let Some(capture) = &status {
-        if let Ok(Reply::DebugCaptureStopped {
+    if let Some(capture) = &status
+        && let Ok(Reply::DebugCaptureStopped {
             capture: final_status,
         }) = request(
             transport,
             Command::DebugCaptureStop {
                 capture: capture.token.clone(),
             },
-        ) && same_token(&capture.token, &final_status.token)
-        {
-            status = Some(final_status);
-        }
+        )
+        && same_token(&capture.token, &final_status.token)
+    {
+        status = Some(final_status);
     }
     // Preserve both the primary failure and every known tap-loss counter on
     // the visible completion path, even when Stop/drain fails afterward.

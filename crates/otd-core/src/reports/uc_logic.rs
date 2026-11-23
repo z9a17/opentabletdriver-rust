@@ -202,6 +202,10 @@ fn tilt_pen(raw: &[u8], invert_y: bool) -> Result<ReportValues, ReportError> {
     Ok(values)
 }
 
+pub(super) fn parse_uc_logic_aux(raw: &[u8]) -> Result<ReportValues, ReportError> {
+    auxiliary(raw, false)
+}
+
 fn auxiliary(raw: &[u8], has_wheel_button: bool) -> Result<ReportValues, ReportError> {
     require_length(raw, 7)?;
     let bits = u64::from(raw[4]) | (u64::from(raw[5]) << 8) | (u64::from(raw[6] & 0x0f) << 16);

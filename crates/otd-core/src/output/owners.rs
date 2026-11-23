@@ -44,6 +44,7 @@ impl OutputOwners {
     }
 
     /// Neither local ownership nor global dedup state changes on send failure.
+    #[inline]
     pub fn send(
         &mut self,
         owner: Owner,
@@ -125,6 +126,7 @@ impl OutputOwners {
         self.pending_recovery = true;
     }
 
+    #[inline]
     pub fn recover(
         &mut self,
         mut send: impl FnMut(MousePacket) -> io::Result<()>,

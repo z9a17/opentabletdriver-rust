@@ -289,6 +289,11 @@ impl fmt::Display for ButtonAction {
 /// Where held actions become operating-system input. One sink serves one
 /// tablet session; the platform decides whether sessions share ownership.
 pub trait ActionSink {
+    /// Whether this sink observes per-report pointer attributes, raw reports,
+    /// or pointer flushes (e.g. macOS pointer metadata or managed bindings).
+    fn observes_pointer(&self) -> bool {
+        false
+    }
     fn pointer_attributes(
         &mut self,
         _attributes: crate::output::MouseAttributes,
@@ -412,6 +417,9 @@ impl<F: FnMut(ActionTransition) -> io::Result<()>> LocalActions<F> {
 }
 
 impl<F: FnMut(ActionTransition) -> io::Result<()>> ActionSink for LocalActions<F> {
+    fn observes_pointer(&self) -> bool {
+        self.pointer_attributes.is_some() || self.pointer_flush.is_some()
+    }
     fn pointer_attributes(&mut self, attributes: crate::output::MouseAttributes) -> io::Result<()> {
         self.pointer_attributes
             .as_mut()
@@ -538,6 +546,11 @@ pub struct ButtonOutput {
     sink: Box<dyn ActionSink>,
     /// A flush failed, so the sink still differs from the wanted state.
     unsettled: bool,
+    /// Cached setup-time capabilities for zero-overhead native fast paths.
+    has_pen_bindings: bool,
+    has_scroll_bindings: bool,
+    observes_pointer: bool,
+    has_managed_sink: bool,
 }
 
 /// The sink actions of `binding`. `pen` turns barrel buttons into the pen
@@ -703,12 +716,20 @@ impl Group {
         }
         result
     }
-    fn next_tick(&self, now: Instant) -> Option<Duration> {
-        self.slots
-            .iter()
-            .filter_map(|slot| slot.next_scroll)
-            .map(|deadline| deadline.saturating_duration_since(now))
-            .min()
+    fn has_bindings(&self) -> bool {
+        self.slots.iter().any(|slot| {
+            !slot.actions.is_empty()
+                || slot.barrel != 0
+                || slot.scroll.is_some()
+                || slot.preset.is_some()
+                || slot.managed.is_some()
+        })
+    }
+    fn has_scroll(&self) -> bool {
+        self.slots.iter().any(|slot| slot.scroll.is_some())
+    }
+    fn next_scroll_deadline(&self) -> Option<Instant> {
+        self.slots.iter().filter_map(|slot| slot.next_scroll).min()
     }
     fn tick(&mut self, sink: &mut dyn ActionSink, now: Instant) -> io::Result<()> {
         for slot in &mut self.slots {
@@ -734,11 +755,9 @@ impl Group {
 
     fn wanted(&self, buttons: Buttons) -> u64 {
         let mut wanted = 0;
-        for index in 0..self.slots.len().min(buttons.len()) {
-            if buttons.get(index) == Some(true) {
-                if !self.slots[index].blocked.get() {
-                    wanted |= 1 << index;
-                }
+        for (index, slot) in self.slots.iter().enumerate().take(buttons.len()) {
+            if buttons.get(index) == Some(true) && !slot.blocked.get() {
+                wanted |= 1 << index;
             }
         }
         wanted
@@ -754,10 +773,10 @@ impl Group {
             }
             let down = wanted & bit != 0;
             let slot = &mut self.slots[index];
-            if let Some(name) = &slot.preset {
-                if down {
-                    sink.preset(self.owners + index as u32, name)?;
-                }
+            if let Some(name) = &slot.preset
+                && down
+            {
+                sink.preset(self.owners + index as u32, name)?;
             }
             if slot.toggle && !down {
                 self.held &= !bit;
@@ -802,10 +821,10 @@ impl ButtonOutput {
             }
         }
         let mut add = |owner, action: &ButtonAction| {
-            if let ButtonAction::Managed(config) = action {
-                if config.enabled {
-                    slots.push((owner, config.clone()));
-                }
+            if let ButtonAction::Managed(config) = action
+                && config.enabled
+            {
+                slots.push((owner, config.clone()));
             }
         };
         for (base, actions) in [
@@ -863,6 +882,10 @@ impl ButtonOutput {
             &|index| format!("pen button {}", index + 1),
             &mut rejected,
         );
+        let has_pen_bindings = pen.has_bindings();
+        let has_scroll_bindings = pen.has_scroll();
+        let observes_pointer = sink.observes_pointer();
+        let has_managed_sink = sink.has_managed();
         (
             Self {
                 inhibition_active: std::cell::Cell::new(sink.inhibited_binding().is_some()),
@@ -876,9 +899,47 @@ impl ButtonOutput {
                 rotations: Vec::new(),
                 sink,
                 unsettled: false,
+                has_pen_bindings,
+                has_scroll_bindings,
+                observes_pointer,
+                has_managed_sink,
             },
             rejected,
         )
+    }
+
+    fn refresh_flags(&mut self) {
+        self.has_pen_bindings = self.pen.has_bindings();
+        self.has_scroll_bindings = [
+            &self.pen,
+            &self.contact,
+            &self.aux,
+            &self.mouse,
+            &self.mouse_scroll,
+        ]
+        .into_iter()
+        .chain(self.wheel_buttons.iter())
+        .any(Group::has_scroll);
+    }
+
+    #[inline]
+    pub fn has_pen_bindings(&self) -> bool {
+        self.has_pen_bindings
+    }
+
+    #[inline]
+    pub fn observes_pointer(&self) -> bool {
+        self.observes_pointer
+    }
+
+    #[inline]
+    pub fn is_unsettled(&self) -> bool {
+        self.unsettled
+    }
+
+    #[inline]
+    pub fn is_inhibition_active(&self) -> bool {
+        self.inhibition_active.get()
     }
 
     /// Adds the express keys and wheels. Barrel buttons on them click the
@@ -977,6 +1038,7 @@ impl ButtonOutput {
                 counter_clockwise_delta: 0.0,
             });
         }
+        self.refresh_flags();
         rejected
     }
 
@@ -1026,6 +1088,7 @@ impl ButtonOutput {
             },
             &mut rejected,
         );
+        self.refresh_flags();
         rejected
     }
     pub fn apply_contact(&mut self, eraser: bool, pressed: bool) -> io::Result<()> {
@@ -1130,11 +1193,26 @@ impl ButtonOutput {
             },
             &mut rejected,
         );
+        self.refresh_flags();
         rejected
     }
 
     pub fn next_tick(&self, now: Instant) -> Option<Duration> {
-        [
+        self.next_tick_lazy(|| now)
+    }
+
+    /// Evaluates the next binding timer without reading the clock when no
+    /// scroll timer is armed and no managed binding sink is attached.
+    #[inline]
+    pub fn next_tick_lazy(&self, now: impl FnOnce() -> Instant) -> Option<Duration> {
+        if !self.has_scroll_bindings {
+            return if self.has_managed_sink {
+                self.sink.managed_next_tick()
+            } else {
+                None
+            };
+        }
+        let scroll = [
             &self.pen,
             &self.contact,
             &self.aux,
@@ -1143,9 +1221,15 @@ impl ButtonOutput {
         ]
         .into_iter()
         .chain(self.wheel_buttons.iter())
-        .filter_map(|group| group.next_tick(now))
-        .chain(self.sink.managed_next_tick())
+        .filter_map(Group::next_scroll_deadline)
         .min()
+        .map(|deadline| deadline.saturating_duration_since(now()));
+        let managed = if self.has_managed_sink {
+            self.sink.managed_next_tick()
+        } else {
+            None
+        };
+        scroll.into_iter().chain(managed).min()
     }
 
     pub fn tick(&mut self, now: Instant) -> io::Result<()> {
@@ -1176,6 +1260,7 @@ impl ButtonOutput {
             &|index| format!("mouse button {}", index + 1),
             &mut rejected,
         );
+        self.refresh_flags();
         rejected
     }
 
@@ -1483,10 +1568,10 @@ impl ButtonOutput {
         .into_iter()
         .chain(self.wheel_buttons.iter_mut())
         {
-            if let Err(error) = group.release(self.sink.as_mut(), self.now) {
-                if binding_error.is_none() {
-                    binding_error = Some(error);
-                }
+            if let Err(error) = group.release(self.sink.as_mut(), self.now)
+                && binding_error.is_none()
+            {
+                binding_error = Some(error);
             }
         }
         self.pen.held = 0;
@@ -2357,8 +2442,10 @@ mod tests {
                 .is_empty()
         );
         out.apply(1).unwrap();
-        let mut values = crate::reports::ReportValues::default();
-        values.mouse_buttons = buttons(1);
+        let values = crate::reports::ReportValues {
+            mouse_buttons: buttons(1),
+            ..crate::reports::ReportValues::default()
+        };
         out.apply_auxiliary(&values).unwrap();
         out.apply(0).unwrap();
         assert_eq!(&*log.borrow(), &[(right(), true)]);
@@ -2371,7 +2458,7 @@ mod tests {
     fn mouse_and_drag_dispatch_allocate_nothing_after_setup() {
         let action: ButtonAction = "keys:Control+Z".parse().unwrap();
         let sink = Box::new(LocalActions::new(|_| Ok(()), |_| true));
-        let (mut out, rejected) = ButtonOutput::new(&[action.clone()], false, sink);
+        let (mut out, rejected) = ButtonOutput::new(std::slice::from_ref(&action), false, sink);
         assert!(rejected.is_empty());
         assert!(out.set_mouse(&[action]).is_empty());
         crate::test_alloc::assert_no_allocations(|| {

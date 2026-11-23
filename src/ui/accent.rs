@@ -633,58 +633,58 @@ mod tests {
                 }
                 assert_eq!(unsafe { GetTextColor(dc) }, palette.text.colorref());
                 assert_eq!(unsafe { GetBkColor(dc) }, palette.field.colorref());
-                if dpi == 96 {
-                    if let Some(directory) = std::env::var_os("OTD_AREA_TEST_OUTPUT") {
-                        for (control, _) in &state.borrow().controls {
-                            let mut origin = POINT::default();
-                            unsafe {
-                                MapWindowPoints(*control, window, &mut origin, 1);
-                                let saved = SaveDC(dc);
-                                SetViewportOrgEx(dc, origin.x, origin.y, ptr::null_mut());
-                                SendMessageW(
-                                    *control,
-                                    WM_PRINT,
-                                    dc as usize,
-                                    (PRF_CLIENT | PRF_ERASEBKGND) as isize,
-                                );
-                                RestoreDC(dc, saved);
-                            }
-                        }
+                if dpi == 96
+                    && let Some(directory) = std::env::var_os("OTD_AREA_TEST_OUTPUT")
+                {
+                    for (control, _) in &state.borrow().controls {
+                        let mut origin = POINT::default();
                         unsafe {
-                            GdiFlush();
+                            MapWindowPoints(*control, window, &mut origin, 1);
+                            let saved = SaveDC(dc);
+                            SetViewportOrgEx(dc, origin.x, origin.y, ptr::null_mut());
+                            SendMessageW(
+                                *control,
+                                WM_PRINT,
+                                dc as usize,
+                                (PRF_CLIENT | PRF_ERASEBKGND) as isize,
+                            );
+                            RestoreDC(dc, saved);
                         }
-                        let pixels =
-                            unsafe { std::slice::from_raw_parts(bits as *const u32, 1000 * 800) };
-                        let client = client_rect(window);
-                        let (width, height) = (client.right, client.bottom);
-                        let mut bmp = Vec::new();
-                        bmp.extend_from_slice(b"BM");
-                        bmp.extend_from_slice(&(54 + (width * height) as u32 * 4).to_le_bytes());
-                        bmp.extend_from_slice(&[0; 4]);
-                        bmp.extend_from_slice(&54u32.to_le_bytes());
-                        bmp.extend_from_slice(&40u32.to_le_bytes());
-                        bmp.extend_from_slice(&width.to_le_bytes());
-                        bmp.extend_from_slice(&(-height).to_le_bytes());
-                        bmp.extend_from_slice(&1u16.to_le_bytes());
-                        bmp.extend_from_slice(&32u16.to_le_bytes());
-                        bmp.extend_from_slice(&[0; 24]);
-                        for row in pixels.chunks(1000).take(height as usize) {
-                            for pixel in row.iter().take(width as usize) {
-                                bmp.extend_from_slice(&pixel.to_le_bytes());
-                            }
-                        }
-                        let directory = PathBuf::from(directory);
-                        std::fs::create_dir_all(&directory).unwrap();
-                        let name = if palette.high_contrast {
-                            "contrast"
-                        } else if palette.dark {
-                            "dark"
-                        } else {
-                            "light"
-                        };
-                        std::fs::write(directory.join(format!("custom-accent-{name}.bmp")), bmp)
-                            .unwrap();
                     }
+                    unsafe {
+                        GdiFlush();
+                    }
+                    let pixels =
+                        unsafe { std::slice::from_raw_parts(bits as *const u32, 1000 * 800) };
+                    let client = client_rect(window);
+                    let (width, height) = (client.right, client.bottom);
+                    let mut bmp = Vec::new();
+                    bmp.extend_from_slice(b"BM");
+                    bmp.extend_from_slice(&(54 + (width * height) as u32 * 4).to_le_bytes());
+                    bmp.extend_from_slice(&[0; 4]);
+                    bmp.extend_from_slice(&54u32.to_le_bytes());
+                    bmp.extend_from_slice(&40u32.to_le_bytes());
+                    bmp.extend_from_slice(&width.to_le_bytes());
+                    bmp.extend_from_slice(&(-height).to_le_bytes());
+                    bmp.extend_from_slice(&1u16.to_le_bytes());
+                    bmp.extend_from_slice(&32u16.to_le_bytes());
+                    bmp.extend_from_slice(&[0; 24]);
+                    for row in pixels.chunks(1000).take(height as usize) {
+                        for pixel in row.iter().take(width as usize) {
+                            bmp.extend_from_slice(&pixel.to_le_bytes());
+                        }
+                    }
+                    let directory = PathBuf::from(directory);
+                    std::fs::create_dir_all(&directory).unwrap();
+                    let name = if palette.high_contrast {
+                        "contrast"
+                    } else if palette.dark {
+                        "dark"
+                    } else {
+                        "light"
+                    };
+                    std::fs::write(directory.join(format!("custom-accent-{name}.bmp")), bmp)
+                        .unwrap();
                 }
             }
         }

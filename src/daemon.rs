@@ -61,6 +61,7 @@ fn serve_owned(
     if let Some(profile) = profile {
         daemon.foreground(profile);
     }
+    let _process_priority = crate::priority::ProcessPriority::raise();
     let managed_services =
         crate::managed_host::Owner::start(daemon.identity(), Arc::clone(&cancelled))
             .map_err(|error| format!("managed service owner: {error}"))?;
@@ -351,10 +352,10 @@ fn ensure_running_with_rpc(
         }
         if let Some(code) = child.try_wait().map_err(|error| error.to_string())? {
             // Another client may have won the launch race and owns the endpoint.
-            if upstream_pipe.is_none() {
-                if let Ok(status) = get_status() {
-                    return Ok(status);
-                }
+            if upstream_pipe.is_none()
+                && let Ok(status) = get_status()
+            {
+                return Ok(status);
             }
             return Err(format!(
                 "daemon exited with {code}; run 'daemon' from a terminal to see its error"

@@ -421,6 +421,12 @@ fn format_chord(keys: &[KeyboardUsage], native: bool) -> String {
     text
 }
 
+/// All pinned names, including aliases, for exact managed service lookup.
+pub fn names() -> impl Iterator<Item = (&'static str, KeyboardUsage)> {
+    KEYS.iter()
+        .filter_map(|(name, usage)| KeyboardUsage::new(*usage).map(|usage| (*name, usage)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -596,10 +602,4 @@ mod tests {
         assert_eq!(pending.transition().action, action);
         pending.acknowledge();
     }
-}
-
-/// All pinned names, including aliases, for exact managed service lookup.
-pub fn names() -> impl Iterator<Item = (&'static str, KeyboardUsage)> {
-    KEYS.iter()
-        .filter_map(|(name, usage)| KeyboardUsage::new(*usage).map(|usage| (*name, usage)))
 }

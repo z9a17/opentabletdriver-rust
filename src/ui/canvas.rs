@@ -416,7 +416,7 @@ pub fn app_icon(size: i32) -> HICON {
     unsafe {
         LoadImageW(
             GetModuleHandleW(ptr::null()),
-            1usize as *const u16,
+            std::ptr::dangling::<u16>(),
             IMAGE_ICON,
             size,
             size,

@@ -381,11 +381,11 @@ impl Transaction {
                 if matches!(
                     self.phase,
                     Some(Phase::Rollback | Phase::Quiescing | Phase::Activating)
-                ) && self.active.is_some()
+                ) && let Some(active) = self.active.as_ref()
                 {
                     self.phase = Some(Phase::Resuming);
                     handle.state(id, SessionState::Starting, Some(error));
-                    self.active.as_ref().unwrap().command(Directive::Activate)?;
+                    active.command(Directive::Activate)?;
                 } else {
                     handle.reject(id, error.clone());
                     self.phase = None;
@@ -411,13 +411,13 @@ impl Transaction {
             && self.retiring.is_none()
         {
             self.phase = None;
-            if let Ok(mut registry) = handle.registry.lock() {
-                if let Some(entry) = registry.entries.get_mut(id) {
-                    entry.enabled = false;
-                    entry.snapshot.device_generation = self.generation;
-                    entry.snapshot.pending_generation = None;
-                    entry.snapshot.state = SessionState::Stopped;
-                }
+            if let Ok(mut registry) = handle.registry.lock()
+                && let Some(entry) = registry.entries.get_mut(id)
+            {
+                entry.enabled = false;
+                entry.snapshot.device_generation = self.generation;
+                entry.snapshot.pending_generation = None;
+                entry.snapshot.state = SessionState::Stopped;
             }
         }
         Ok(())
@@ -512,11 +512,10 @@ fn supervise(
                 match hid::enumerate_with_database(database) {
                 Ok(devices) => {
                 failed_scan = false;
-                if handle.primary_id()?.is_none() {
-                    if let Ok(Some(primary)) = hid::select_device(&devices, database, profile.device_path.as_deref(), profile.tablet_name()?.as_deref()) {
+                if handle.primary_id()?.is_none()
+                    && let Ok(Some(primary)) = hid::select_device(&devices, database, profile.device_path.as_deref(), profile.tablet_name()?.as_deref()) {
                         handle.reserve_primary(&primary)?;
                     }
-                }
                 let mut keys = BTreeSet::new();
                 let mut connected = BTreeSet::new();
                 for device in &devices {
@@ -617,7 +616,7 @@ fn supervise(
                             if stopped && transaction.active.is_none() && transaction.phase.is_none() {
                                 transaction.profile = profile.clone();
                                 handle.commit(&id, generation, profile);
-                                if let Ok(mut registry) = handle.registry.lock() { if let Some(entry) = registry.entries.get_mut(&id) { entry.enabled = false; entry.snapshot.state = SessionState::Stopped; } }
+                                if let Ok(mut registry) = handle.registry.lock() && let Some(entry) = registry.entries.get_mut(&id) { entry.enabled = false; entry.snapshot.state = SessionState::Stopped; }
                                 Ok(())
                             } else { transaction.apply(&id, &handle, profile, generation) }
                         },
@@ -642,7 +641,7 @@ fn supervise(
                     let error = [Some(error), signalled.err(), joined.err()].into_iter().flatten().collect::<Vec<_>>().join("; ");
                     handle.reject(id, error.clone());
                     handle.state(id, SessionState::Failed, Some(error));
-                    if let Ok(mut registry) = handle.registry.lock() { if let Some(entry) = registry.entries.get_mut(id) { entry.enabled = false; } }
+                    if let Ok(mut registry) = handle.registry.lock() && let Some(entry) = registry.entries.get_mut(id) { entry.enabled = false; }
                     transaction.phase = None;
                 }
             }

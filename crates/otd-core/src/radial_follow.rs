@@ -80,6 +80,9 @@ pub struct RadialFollowCore {
     settings: RadialFollowSettings,
     x_offset: f64,
     scale_comp: f64,
+    span: f64,
+    one_minus_leak: f64,
+    has_knee: bool,
     cursor: (f32, f32),
     last_sample: Instant,
 }
@@ -87,7 +90,8 @@ pub struct RadialFollowCore {
 impl RadialFollowCore {
     pub fn new(settings: RadialFollowSettings) -> Self {
         let settings = settings.clamped();
-        let (x_offset, scale_comp) = if settings.soft_knee_scale > f64::from(0.0001_f32) {
+        let has_knee = settings.soft_knee_scale > f64::from(0.0001_f32);
+        let (x_offset, scale_comp) = if has_knee {
             let knee = settings.soft_knee_scale;
             let exponential = ((0.0 - 1.0) / knee).exp();
             let inverse_tanh = ((1.0 + exponential) / (1.0 - exponential)).ln() / 2.0;
@@ -98,18 +102,27 @@ impl RadialFollowCore {
         } else {
             (-1.0, 1.0)
         };
+        let outer = settings
+            .outer_radius
+            .max(settings.inner_radius + f64::from(0.0001_f32));
+        let span = outer - settings.inner_radius;
+        let one_minus_leak = 1.0 - settings.smoothing_leak_coefficient;
         Self {
             settings,
             x_offset,
             scale_comp,
+            span,
+            one_minus_leak,
+            has_knee,
             cursor: (0.0, 0.0),
             last_sample: Instant::now(),
         }
     }
 
+    #[inline]
     fn knee_scaled(&self, x: f64) -> f64 {
         let knee = self.settings.soft_knee_scale;
-        if knee > f64::from(0.0001_f32) {
+        if self.has_knee {
             let argument = x / knee;
             let value = if argument < -3.0 {
                 argument
@@ -127,24 +140,21 @@ impl RadialFollowCore {
     }
 
     /// Distance moved toward the latest report, in millimetres.
+    #[inline]
     pub fn sample_radial_curve(&self, distance: f32) -> f32 {
-        let outer = self
-            .settings
-            .outer_radius
-            .max(self.settings.inner_radius + f64::from(0.0001_f32));
         let inner = self.settings.inner_radius;
         let x = f64::from(distance);
         if x <= inner {
             return 0.0;
         }
-        let span = outer - inner;
-        let scaled = (x - inner) / span * self.settings.smoothing_coefficient / self.scale_comp;
-        let leaked = self.knee_scaled(scaled + self.x_offset)
-            * (1.0 - self.settings.smoothing_leak_coefficient)
+        let scaled =
+            (x - inner) / self.span * self.settings.smoothing_coefficient / self.scale_comp;
+        let leaked = self.knee_scaled(scaled + self.x_offset) * self.one_minus_leak
             + scaled * self.settings.smoothing_leak_coefficient * self.scale_comp;
-        (x - span * leaked - inner) as f32
+        (x - self.span * leaked - inner) as f32
     }
 
+    #[inline]
     pub fn filter_at(&mut self, target: (f32, f32), now: Instant) -> (f32, f32) {
         let direction = (target.0 - self.cursor.0, target.1 - self.cursor.1);
         let distance = (direction.0 * direction.0 + direction.1 * direction.1).sqrt();
@@ -188,6 +198,7 @@ impl RadialFollowSmoothingTabletSpace {
 
     /// Filters one position in report units. `now` is the report's
     /// processing time, which drives the 50 ms redetection reset.
+    #[inline]
     pub fn filter_raw_at(&mut self, x: f32, y: f32, now: Instant) -> (f32, f32) {
         let mm = (x * self.mm_scale.0, y * self.mm_scale.1);
         let filtered = self.core.filter_at(mm, now);

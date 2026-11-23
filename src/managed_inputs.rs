@@ -92,11 +92,12 @@ fn release(state: &mut State, id: u64) -> Result<(), String> {
             scope.keys.remove(&code);
             continue;
         };
-        if owners.len() == 1 && owners.contains(&id) {
-            if let Err(error) = raw_key(code, false) {
-                failure.get_or_insert(error.to_string());
-                continue;
-            }
+        if owners.len() == 1
+            && owners.contains(&id)
+            && let Err(error) = raw_key(code, false)
+        {
+            failure.get_or_insert(error.to_string());
+            continue;
         }
         owners.remove(&id);
         if owners.is_empty() {

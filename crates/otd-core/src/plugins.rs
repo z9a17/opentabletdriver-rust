@@ -133,6 +133,11 @@ impl PluginConfig {
 /// pipeline calls them. PreTransform filters receive report units; Pixels
 /// filters receive pixels after absolute mapping or deltas in relative mode.
 pub trait Filters {
+    /// True only when this filter chain has no plugins, graph, or observers
+    /// and can be bypassed directly to the host's built-in filters and output.
+    fn is_passthrough(&self) -> bool {
+        false
+    }
     fn owns_mapping(&self) -> bool {
         false
     }
@@ -195,6 +200,9 @@ pub trait Filters {
 pub struct NoFilters;
 
 impl Filters for NoFilters {
+    fn is_passthrough(&self) -> bool {
+        true
+    }
     fn has_pre(&self) -> bool {
         false
     }

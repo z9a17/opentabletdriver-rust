@@ -606,15 +606,14 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wp: WPARAM, lp: 
             if let Some(device) = choice
                 .checked_sub(1)
                 .and_then(|index| devices.get(index as usize))
+                && let Ok(state) = unsafe { &*state }.try_borrow()
             {
-                if let Ok(state) = unsafe { &*state }.try_borrow() {
-                    set_text(state.fields[0], &device["VendorID"].to_string());
-                    set_text(state.fields[1], &device["ProductID"].to_string());
-                    set_text(
-                        state.device,
-                        device["ProductName"].as_str().unwrap_or("Connected device"),
-                    );
-                }
+                set_text(state.fields[0], &device["VendorID"].to_string());
+                set_text(state.fields[1], &device["ProductID"].to_string());
+                set_text(
+                    state.device,
+                    device["ProductName"].as_str().unwrap_or("Connected device"),
+                );
             }
             return 1;
         }

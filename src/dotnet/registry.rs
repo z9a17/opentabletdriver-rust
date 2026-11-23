@@ -394,7 +394,7 @@ fn publish_registry_bytes(bytes: &[u8]) -> Result<ManagedRegistryInfo, String> {
         types: Vec<TypeInfo>,
         skipped_native: Vec<String>,
     }
-    let info: Info = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    let info: Info = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
     let mut plugins = Vec::with_capacity(info.types.len());
     for item in info.types {
         let metadata =

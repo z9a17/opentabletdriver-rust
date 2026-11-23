@@ -1035,8 +1035,10 @@ mod tests {
     #[test]
     fn disconnected_preview_preserves_default_named_and_invalid_profiles() {
         for target in [None, Some("*"), Some("Wacom PTH-660")] {
-            let mut profile = Profile::default();
-            profile.target_tablet = target.map(str::to_owned);
+            let profile = Profile {
+                target_tablet: target.map(str::to_owned),
+                ..Profile::default()
+            };
             let mut editor = Editor::new(profile);
             let mut mapping = editor.absolute(&displays());
             mapping.tablet.width = 82.6;

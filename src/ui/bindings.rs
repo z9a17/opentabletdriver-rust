@@ -379,7 +379,7 @@ impl App {
     fn wheel_step(&self, wheel: usize) -> Option<f64> {
         self.editor
             .detected_controls(&self.connected_tablets)
-            .or_else(|| Some(self.editor.profile.tablet.controls))
+            .or(Some(self.editor.profile.tablet.controls))
             .and_then(|controls| {
                 controls
                     .wheels()
@@ -987,10 +987,10 @@ pub(super) fn choose(window: HWND, control: HWND) {
                             format!("Preset {:?} is unavailable: {error}", preset.name),
                         )
                     });
-                } else if names.len() < 256 {
-                    if let Ok(name) = otd_core::presets::PresetName::parse(&preset.name) {
-                        names.push(name);
-                    }
+                } else if names.len() < 256
+                    && let Ok(name) = otd_core::presets::PresetName::parse(&preset.name)
+                {
+                    names.push(name);
                 }
             }
             names

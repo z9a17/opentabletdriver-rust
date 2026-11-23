@@ -170,7 +170,7 @@ fn record_for(id: u64, bytes: &[u8]) {
             return;
         }
         if ARMED
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |armed| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |armed| {
                 armed.checked_sub(1)
             })
             .is_err()
@@ -434,6 +434,7 @@ impl FullCapture {
                 / 1_000,
         }
     }
+    #[allow(clippy::too_many_arguments)]
     fn start(
         &self,
         start_id: u64,
@@ -488,7 +489,7 @@ impl FullCapture {
         }
         let epoch = self
             .next_epoch
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |epoch| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |epoch| {
                 (epoch < u64::from(u32::MAX)).then_some(epoch + 1)
             })
             .map_err(|_| CaptureError::Invalid("capture epoch exhausted"))?
@@ -618,6 +619,7 @@ impl FullCapture {
         }
         Ok(ring)
     }
+    #[allow(clippy::too_many_arguments)]
     fn read(
         &self,
         epoch: u64,
@@ -723,12 +725,11 @@ impl FullCapture {
         if self.session.load(Ordering::Acquire) != session {
             return;
         }
-        if let Ok(mut guard) = self.ring.lock() {
-            if let Some(ring) = guard.as_mut().filter(|ring| ring.session == session) {
-                if self.state.fetch_and(!ACTIVE, Ordering::AcqRel) & ACTIVE != 0 {
-                    ring.stop_reason = Some(CaptureStopReason::SessionEnded);
-                }
-            }
+        if let Ok(mut guard) = self.ring.lock()
+            && let Some(ring) = guard.as_mut().filter(|ring| ring.session == session)
+            && self.state.fetch_and(!ACTIVE, Ordering::AcqRel) & ACTIVE != 0
+        {
+            ring.stop_reason = Some(CaptureStopReason::SessionEnded);
         }
     }
 }
@@ -834,10 +835,10 @@ pub fn capture_poll() {
     if FULL.state.load(Ordering::Acquire) & ACTIVE == 0 {
         return;
     }
-    if let Ok(mut guard) = FULL.ring.try_lock() {
-        if let Some(ring) = guard.as_mut() {
-            FULL.expire(ring, Instant::now());
-        }
+    if let Ok(mut guard) = FULL.ring.try_lock()
+        && let Some(ring) = guard.as_mut()
+    {
+        FULL.expire(ring, Instant::now());
     }
 }
 
