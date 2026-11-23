@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 
 const LEASE_MS: u32 = 15_000;
 const CAPACITY_BYTES: u32 = 8 * 1024 * 1024;
+const SYNC_INTERVAL: Duration = Duration::from_millis(250);
+const SYNC_BYTES: usize = 256 * 1024;
 
 /// Each endpoint owns its parser's touch/tool history for this capture only.
 /// A global gap can belong to either endpoint, so invalidate both histories.
@@ -204,6 +206,10 @@ fn record(
     let mut writer = BufWriter::new(file);
     let mut status: Option<DebugCaptureStatus> = None;
     let mut cursor = 0;
+    let mut synced_cursor = 0;
+    let mut unsynced_packets = 0u64;
+    let mut unsynced_bytes = 0usize;
+    let mut last_sync = Instant::now();
     let mut statistics = Statistics::default();
     let mut decoded_continuity_lost = false;
     let result = (|| -> Result<(), String> {
@@ -234,6 +240,7 @@ fn record(
             "decoded_state_scope":"capture_local", "initial_prior_session_state_available":false,
             "capture":status.as_ref().unwrap()})).map_err(|error| error.to_string())?;
         durable(&mut writer)?;
+        last_sync = Instant::now();
         let token = status.as_ref().unwrap().token.clone();
         let mut decoders = CaptureDecoders::new(status.as_ref().unwrap());
         let mut frozen = None;
@@ -251,6 +258,14 @@ fn record(
                 && (stop.load(Ordering::Acquire) || failure.is_some() || !current.active)
             {
                 stop.store(true, Ordering::Release);
+                if unsynced_bytes > 0 || cursor > synced_cursor {
+                    durable(&mut writer)?;
+                    synced_cursor = cursor;
+                    written.fetch_add(unsynced_packets, Ordering::Relaxed);
+                    unsynced_packets = 0;
+                    unsynced_bytes = 0;
+                    last_sync = Instant::now();
+                }
                 let Reply::DebugCaptureStopped { capture } = request(
                     transport,
                     Command::DebugCaptureStop {
@@ -279,7 +294,7 @@ fn record(
                 Command::DebugCaptureRead {
                     capture: token.clone(),
                     after_sequence: cursor,
-                    acknowledge_through: cursor,
+                    acknowledge_through: synced_cursor,
                     limit: 512,
                     lease_ms: LEASE_MS,
                 },
@@ -331,30 +346,45 @@ fn record(
                 decoded_continuity_lost = decoders.continuity_lost;
                 statistics.observe(&report);
                 // Preserve the sampled recorder's elapsed_us/report row shape.
-                writeln!(writer, "{}", json!({"elapsed_us":packet.elapsed_us, "report":report,
+                let line = json!({"elapsed_us":packet.elapsed_us, "report":report,
                     "auxiliary":packet.auxiliary, "session":token.session, "epoch":token.epoch,
-                    "decoded_reset_before":reset_before, "decoded_continuity_lost":decoded_continuity_lost}))
-                    .map_err(|error| error.to_string())?;
+                    "decoded_reset_before":reset_before, "decoded_continuity_lost":decoded_continuity_lost})
+                .to_string();
+                unsynced_bytes += line.len() + 1;
+                writeln!(writer, "{line}").map_err(|error| error.to_string())?;
             }
             decoders.advance(batch.next_sequence);
             decoded_continuity_lost = decoders.continuity_lost;
-            // A gap cursor is durable too, including the explicit loss counters.
-            if batch.next_sequence != cursor
+            let batch_changed = batch.next_sequence != cursor
                 || !batch.capture.active
-                || loss(&batch.capture).is_some()
-            {
-                writeln!(
-                    writer,
-                    "{}",
-                    json!({"capture_batch":{"next_sequence":batch.next_sequence,
+                || loss(&batch.capture).is_some();
+            if batch_changed {
+                let marker = json!({"capture_batch":{"next_sequence":batch.next_sequence,
                     "decoded_continuity_lost":decoded_continuity_lost,
                     "capture":batch.capture}})
-                )
-                .map_err(|error| error.to_string())?;
-                durable(&mut writer)?;
-                written.fetch_add(batch.packets.len() as u64, Ordering::Relaxed);
+                .to_string();
+                unsynced_bytes += marker.len() + 1;
+                writeln!(writer, "{marker}").map_err(|error| error.to_string())?;
+                unsynced_packets += batch.packets.len() as u64;
             }
             cursor = batch.next_sequence;
+            // Batch fsyncs (~250 ms or 256 KiB) during active capture to avoid
+            // 100 FlushFileBuffers/sec stalls; always sync immediately on stop,
+            // drain, loss, or inactive capture. `acknowledge_through` only ever
+            // advances to `synced_cursor`, preserving crash-durability.
+            let must_sync = frozen.is_some()
+                || !batch.capture.active
+                || loss(&batch.capture).is_some()
+                || unsynced_bytes >= SYNC_BYTES
+                || (cursor > synced_cursor && last_sync.elapsed() >= SYNC_INTERVAL);
+            if must_sync && (unsynced_bytes > 0 || cursor > synced_cursor || batch_changed) {
+                durable(&mut writer)?;
+                synced_cursor = cursor;
+                written.fetch_add(unsynced_packets, Ordering::Relaxed);
+                unsynced_packets = 0;
+                unsynced_bytes = 0;
+                last_sync = Instant::now();
+            }
             status = Some(batch.capture);
             if frozen == Some(cursor) && status.as_ref().unwrap().pending_reports == 0 {
                 if let Some(error) = loss(status.as_ref().unwrap()) {
@@ -368,6 +398,9 @@ fn record(
             std::thread::sleep(Duration::from_millis(10));
         }
     })();
+    if unsynced_packets > 0 && durable(&mut writer).is_ok() {
+        written.fetch_add(unsynced_packets, Ordering::Relaxed);
+    }
     // Even transport failure produces an explicit incomplete footer if the file
     // remains writable. Do not hide the primary failure behind a cleanup error.
     if let Some(capture) = &status

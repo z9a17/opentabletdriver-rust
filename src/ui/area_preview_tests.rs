@@ -130,6 +130,9 @@ pub(in crate::ui) fn fixture(hwnd: HWND) -> App {
         validation_status: false,
         tray_icon: null,
         in_tray: false,
+        backbuffer: None,
+        rotated_fonts: area::RotatedFontCache::default(),
+        cached_tablet_spec: RefCell::new(None),
     }
 }
 

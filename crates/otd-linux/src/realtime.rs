@@ -29,21 +29,30 @@ fn scheduling_parameters(priority: libc::c_int) -> libc::sched_param {
     param
 }
 
-/// Keeps the calling thread at real-time priority until dropped.
+/// Keeps the calling thread at real-time (or elevated nice) priority until dropped.
 pub struct RealtimePriority {
     previous: Option<(libc::c_int, libc::sched_param)>,
+    previous_nice: Option<libc::c_int>,
 }
+
+const FALLBACK_NICE: libc::c_int = -10;
 
 impl RealtimePriority {
     pub fn raise() -> Self {
         if !enabled() {
-            return Self { previous: None };
+            return Self {
+                previous: None,
+                previous_nice: None,
+            };
         }
         // SAFETY: plain-data out-parameters for the calling thread (pid 0).
         let mut param = scheduling_parameters(0);
         let policy = unsafe { libc::sched_getscheduler(0) };
         if policy < 0 || unsafe { libc::sched_getparam(0, &mut param) } != 0 {
-            return Self { previous: None };
+            return Self {
+                previous: None,
+                previous_nice: None,
+            };
         }
         let mut limit = libc::rlimit {
             rlim_cur: 0,
@@ -66,6 +75,37 @@ impl RealtimePriority {
                 eprintln!("Report loop runs at real-time priority {priority} (SCHED_FIFO).");
                 return Self {
                     previous: Some((policy, param)),
+                    previous_nice: None,
+                };
+            }
+        }
+        // Fallback: try lowering the calling thread's nice value within
+        // RLIMIT_NICE (on Linux, setpriority(PRIO_PROCESS, 0, ...) applies to
+        // the calling thread) before leaving it at default normal priority.
+        let mut nice_limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        unsafe { libc::getrlimit(libc::RLIMIT_NICE, &mut nice_limit) };
+        let min_allowed_nice = if nice_limit.rlim_cur > 0 {
+            20i32
+                .saturating_sub(i32::try_from(nice_limit.rlim_cur).unwrap_or(40))
+                .clamp(-20, 19)
+        } else {
+            0
+        };
+        let before_nice = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
+        for wanted_nice in [FALLBACK_NICE, FALLBACK_NICE.max(min_allowed_nice)] {
+            if wanted_nice >= 0 || wanted_nice >= before_nice {
+                continue;
+            }
+            if unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, wanted_nice) } == 0 {
+                eprintln!(
+                    "Report loop runs at elevated priority (nice {wanted_nice}); grant RLIMIT_RTPRIO >= {PRIORITY} for SCHED_FIFO."
+                );
+                return Self {
+                    previous: None,
+                    previous_nice: Some(before_nice),
                 };
             }
         }
@@ -78,7 +118,10 @@ impl RealtimePriority {
                  audio, realtime or pipewire) and sign in again."
             );
         }
-        Self { previous: None }
+        Self {
+            previous: None,
+            previous_nice: None,
+        }
     }
 
     #[cfg(test)]
@@ -100,6 +143,12 @@ impl Drop for RealtimePriority {
             }) {
                 eprintln!("could not restore the report thread's scheduling: {error}");
             }
+        }
+        if let Some(nice) = self.previous_nice
+            && unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, nice) } != 0
+        {
+            let error = io::Error::last_os_error();
+            eprintln!("could not restore the report thread's nice value: {error}");
         }
     }
 }

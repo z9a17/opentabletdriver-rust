@@ -62,7 +62,7 @@ mod app {
     use otd_core::tablets::{Database, ParserSupport, Role, parser_support};
     use otd_platform::plugins::PluginChain;
 
-    use crate::linux::{self, Device, Hidraw, Uinput, VirtualKeyboard, VirtualTablet};
+    use crate::linux::{self, Device, Hidraw, Uinput, VirtualTablet};
     use otd_core::config::OutputKind;
     use otd_core::output::buttons::ButtonAction;
 
@@ -344,6 +344,7 @@ Source checkout setup: sudo ./packaging/linux/install.sh install";
                 profile,
                 screen,
                 tablet: tablet.or(profile_tablet),
+                string_cache: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             }),
             otd_platform::cli::Options::default(),
             &STOP,
@@ -541,10 +542,6 @@ Source checkout setup: sudo ./packaging/linux/install.sh install";
                 )
             })
             || non_pen_actions().any(|action| matches!(inner(action), ButtonAction::Barrel(1 | 2)));
-        let keyboard = keys
-            .then(VirtualKeyboard::create)
-            .transpose()
-            .map_err(SessionError::Fatal)?;
         if keys {
             linux::ensure_shared_inputs().map_err(SessionError::Fatal)?;
         }
@@ -634,7 +631,7 @@ Source checkout setup: sudo ./packaging/linux/install.sh install";
             .wrap_action_sink(
                 profile,
                 &selected.configuration,
-                linux::action_sink(pointer.clone(), keyboard).map_err(SessionError::Fatal)?,
+                linux::action_sink(pointer.clone(), keys).map_err(SessionError::Fatal)?,
             )
             .map_err(|error| SessionError::Fatal(std::io::Error::other(error)))?;
         let actions = match context {
@@ -725,44 +722,50 @@ Source checkout setup: sudo ./packaging/linux/install.sh install";
         profile: Option<Profile>,
         screen: Option<(i32, i32)>,
         tablet: Option<String>,
+        string_cache: std::sync::Mutex<
+            std::collections::BTreeMap<String, std::collections::BTreeMap<u8, String>>,
+        >,
     }
-    impl otd_platform::daemon::Platform for NativePlatform {
-        fn default_profile(&self, tablet: &str) -> Result<Option<Profile>, String> {
-            if self.tablet.as_deref().is_none_or(|name| name == tablet) {
-                Ok(self.profile.clone())
-            } else {
-                Ok(None)
+    impl NativePlatform {
+        fn enumerate_cached(&self, database: &Database) -> Result<Vec<Device>, String> {
+            let snapshot = self
+                .string_cache
+                .lock()
+                .map(|guard| guard.clone())
+                .unwrap_or_default();
+            let devices = linux::enumerate_with_string_cache(database, &snapshot)
+                .map_err(|error| error.to_string())?;
+            if let Ok(mut cache) = self.string_cache.lock() {
+                let mut next = std::collections::BTreeMap::new();
+                for device in &devices {
+                    if !device.endpoint.strings.is_empty() {
+                        next.entry(device.endpoint.physical_id.clone())
+                            .or_insert_with(std::collections::BTreeMap::new)
+                            .extend(
+                                device
+                                    .endpoint
+                                    .strings
+                                    .iter()
+                                    .map(|(&index, text)| (index, text.clone())),
+                            );
+                    }
+                }
+                *cache = next;
             }
+            Ok(devices)
         }
-        fn startup_tools(&self) -> Option<Vec<otd_core::plugins::PluginConfig>> {
-            self.profile.as_ref().map(|profile| {
-                profile
-                    .plugins
-                    .iter()
-                    .filter(|config| config.kind == otd_core::plugins::PluginKind::DotnetTool)
-                    .cloned()
-                    .collect()
-            })
-        }
-        fn prepare_start(&self) -> Result<(), String> {
-            let database = otd_core::config::configured_tablets()?;
-            let endpoints = linux::enumerate(&database)
-                .map_err(|error| error.to_string())?
-                .into_iter()
-                .map(|device| device.endpoint)
+        fn build_discovered(
+            &self,
+            database: &Database,
+            devices: &[Device],
+        ) -> Result<Vec<otd_platform::daemon::Device>, String> {
+            let mut endpoints = devices
+                .iter()
+                .map(|device| device.endpoint.clone())
                 .collect::<Vec<_>>();
-            otd_platform::daemon::prepare_connected(&database, &endpoints)
-        }
-        fn discover(&self) -> Result<Vec<otd_platform::daemon::Device>, String> {
-            let database = otd_core::config::configured_tablets()?;
-            let mut endpoints = linux::enumerate(&database)
-                .map_err(|error| error.to_string())?
-                .into_iter()
-                .map(|device| device.endpoint)
-                .collect::<Vec<_>>();
-            let custom = otd_platform::managed_source::endpoints(&database)?;
+            let custom = otd_platform::managed_source::endpoints(database)?;
             endpoints.extend(custom.iter().map(|(endpoint, _)| endpoint.clone()));
-            otd_platform::daemon::discover(&database, &endpoints).map(|devices| {
+            otd_platform::daemon::discover(database, &endpoints).map(|devices| {
                 devices
                     .into_iter()
                     .filter(|device| {
@@ -798,6 +801,56 @@ Source checkout setup: sudo ./packaging/linux/install.sh install";
                     .collect()
             })
         }
+        fn build_inventory(devices: &[Device]) -> Result<serde_json::Value, String> {
+            let mut inventory = linux::rpc_inventory(devices)
+                .as_array()
+                .cloned()
+                .ok_or("Native inventory is not an array")?;
+            inventory.extend(otd_platform::managed_source::inventory()?);
+            Ok(serde_json::json!(inventory))
+        }
+    }
+    impl otd_platform::daemon::Platform for NativePlatform {
+        fn default_profile(&self, tablet: &str) -> Result<Option<Profile>, String> {
+            if self.tablet.as_deref().is_none_or(|name| name == tablet) {
+                Ok(self.profile.clone())
+            } else {
+                Ok(None)
+            }
+        }
+        fn startup_tools(&self) -> Option<Vec<otd_core::plugins::PluginConfig>> {
+            self.profile.as_ref().map(|profile| {
+                profile
+                    .plugins
+                    .iter()
+                    .filter(|config| config.kind == otd_core::plugins::PluginKind::DotnetTool)
+                    .cloned()
+                    .collect()
+            })
+        }
+        fn prepare_start(&self) -> Result<(), String> {
+            let database = otd_core::config::configured_tablets()?;
+            let endpoints = self
+                .enumerate_cached(&database)?
+                .into_iter()
+                .map(|device| device.endpoint)
+                .collect::<Vec<_>>();
+            otd_platform::daemon::prepare_connected(&database, &endpoints)
+        }
+        fn discover(&self) -> Result<Vec<otd_platform::daemon::Device>, String> {
+            let database = otd_core::config::configured_tablets()?;
+            let devices = self.enumerate_cached(&database)?;
+            self.build_discovered(&database, &devices)
+        }
+        fn discover_with_inventory(
+            &self,
+        ) -> Result<(Vec<otd_platform::daemon::Device>, serde_json::Value), String> {
+            let database = otd_core::config::configured_tablets()?;
+            let devices = self.enumerate_cached(&database)?;
+            let discovered = self.build_discovered(&database, &devices)?;
+            let inventory = Self::build_inventory(&devices)?;
+            Ok((discovered, inventory))
+        }
         fn screen(&self) -> Result<otd_core::mapping::Rect, String> {
             Ok(match self.screen {
                 Some(screen) => crate::displays::explicit(screen),
@@ -807,13 +860,8 @@ Source checkout setup: sudo ./packaging/linux/install.sh install";
         }
         fn inventory(&self) -> Result<serde_json::Value, String> {
             let database = otd_core::config::configured_tablets()?;
-            let devices = linux::enumerate(&database).map_err(|error| error.to_string())?;
-            let mut inventory = linux::rpc_inventory(&devices)
-                .as_array()
-                .cloned()
-                .ok_or("Native inventory is not an array")?;
-            inventory.extend(otd_platform::managed_source::inventory()?);
-            Ok(serde_json::json!(inventory))
+            let devices = self.enumerate_cached(&database)?;
+            Self::build_inventory(&devices)
         }
         fn run(
             &self,

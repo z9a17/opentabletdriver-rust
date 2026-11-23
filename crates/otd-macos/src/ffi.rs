@@ -9,6 +9,7 @@ pub type Hid = *mut c_void;
 pub type ReportCallback =
     unsafe extern "C" fn(*mut c_void, i32, *mut c_void, u32, u32, *mut u8, isize);
 pub type RemovalCallback = unsafe extern "C" fn(*mut c_void, i32, *mut c_void);
+pub type DisplayReconfigurationCallback = unsafe extern "C" fn(u32, u32, *mut c_void);
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -115,6 +116,14 @@ unsafe extern "C" {
     pub fn CGPreflightPostEventAccess() -> bool;
     pub fn CGGetActiveDisplayList(maximum: u32, displays: *mut u32, count: *mut u32) -> i32;
     pub fn CGDisplayBounds(display: u32) -> Rect;
+    pub fn CGDisplayRegisterReconfigurationCallback(
+        callback: DisplayReconfigurationCallback,
+        user_info: *mut c_void,
+    ) -> i32;
+    pub fn CGDisplayRemoveReconfigurationCallback(
+        callback: DisplayReconfigurationCallback,
+        user_info: *mut c_void,
+    ) -> i32;
     pub fn CGEventSourceCreate(state: i32) -> Ref;
     pub fn CGEventCreate(source: Ref) -> Ref;
     pub fn CGEventCreateMouseEvent(source: Ref, kind: u32, position: Point, button: u32) -> Ref;

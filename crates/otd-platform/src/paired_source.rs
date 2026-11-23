@@ -5,6 +5,23 @@ use std::{
     io,
     time::{Duration, Instant},
 };
+/// Which endpoint(s) became ready during a combined wait.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WaitWake {
+    pub primary: bool,
+    pub auxiliary: bool,
+}
+impl WaitWake {
+    pub const BOTH: Self = Self {
+        primary: true,
+        auxiliary: true,
+    };
+    pub const NONE: Self = Self {
+        primary: false,
+        auxiliary: false,
+    };
+}
+
 enum ResultKind {
     Report(usize, Instant, bool),
     Idle,
@@ -24,11 +41,18 @@ pub struct PairedSource<S, W> {
 }
 impl<S, W> PairedSource<S, W> {
     pub fn new(primary: S, auxiliary: Option<S>, wait: W) -> Self {
+        // Only allocate the paired copy buffer when an auxiliary endpoint exists;
+        // single-endpoint sessions borrow directly from `primary`.
+        let delivery = if auxiliary.is_some() {
+            vec![0; 65535].into_boxed_slice()
+        } else {
+            Box::new([])
+        };
         Self {
             primary,
             auxiliary,
             wait,
-            delivery: vec![0; 65535].into_boxed_slice(),
+            delivery,
             aux_first: false,
         }
     }
@@ -65,7 +89,7 @@ fn copy(source: &mut impl ReportSource, delivery: &mut [u8]) -> io::Result<Resul
         Read::Idle => Ok(ResultKind::Idle),
     }
 }
-impl<S: ReportSource + Retire, W: FnMut(&mut S, Option<&mut S>, Duration) -> io::Result<()>>
+impl<S: ReportSource + Retire, W: FnMut(&mut S, Option<&mut S>, Duration) -> io::Result<WaitWake>>
     ReportSource for PairedSource<S, W>
 {
     fn label(&self) -> &str {
@@ -87,16 +111,30 @@ impl<S: ReportSource + Retire, W: FnMut(&mut S, Option<&mut S>, Duration) -> io:
         self.primary.output_acknowledged(enabled)
     }
     fn next(&mut self, timeout: Duration) -> io::Result<Read<'_>> {
-        let deadline = Instant::now() + timeout;
+        // Zero-copy fast path: without an auxiliary endpoint, delegate directly
+        // to `primary` so it owns its own wait/read with no extra poll or copy.
+        if self.auxiliary.is_none() {
+            return self.primary.next(timeout);
+        }
+        let mut deadline: Option<Instant> = None;
+        let mut check_primary = true;
+        let mut check_auxiliary = true;
+        let mut waited = false;
         loop {
             // Rotate priority when both streams are continuously readable.
             for auxiliary in [self.aux_first, !self.aux_first] {
                 let result = if auxiliary {
+                    if !check_auxiliary {
+                        continue;
+                    }
                     match &mut self.auxiliary {
                         Some(source) => copy(source, &mut self.delivery),
                         None => continue,
                     }
                 } else {
+                    if !check_primary {
+                        continue;
+                    }
                     copy(&mut self.primary, &mut self.delivery)
                 };
                 match result {
@@ -106,13 +144,13 @@ impl<S: ReportSource + Retire, W: FnMut(&mut S, Option<&mut S>, Duration) -> io:
                             Read::Auxiliary {
                                 bytes: &self.delivery[..length],
                                 ready,
-                                queued,
+                                queued: !waited && queued,
                             }
                         } else {
                             Read::Report {
                                 bytes: &self.delivery[..length],
                                 ready,
-                                queued,
+                                queued: !waited && queued,
                             }
                         });
                     }
@@ -136,16 +174,29 @@ impl<S: ReportSource + Retire, W: FnMut(&mut S, Option<&mut S>, Duration) -> io:
                     Ok(ResultKind::Idle) => {}
                 }
             }
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            if timeout.is_zero() {
+                return Ok(Read::Idle);
+            }
+            let now = Instant::now();
+            let deadline = *deadline.get_or_insert_with(|| now + timeout);
+            let remaining = deadline.saturating_duration_since(now);
             if remaining.is_zero() {
                 return Ok(Read::Idle);
             }
-            (self.wait)(&mut self.primary, self.auxiliary.as_mut(), remaining)?;
+            let wake = (self.wait)(&mut self.primary, self.auxiliary.as_mut(), remaining)?;
+            waited = true;
             // Output authority changes wake even when neither endpoint emits
             // a report. Core performs its release/reset before acknowledging.
             if !self.primary.native_output_enabled() {
                 return Ok(Read::Idle);
             }
+            if !wake.primary && !wake.auxiliary {
+                check_primary = true;
+                check_auxiliary = true;
+                continue;
+            }
+            check_primary = wake.primary;
+            check_auxiliary = wake.auxiliary;
         }
     }
 }

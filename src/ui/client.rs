@@ -18,6 +18,8 @@ use windows_sys::Win32::System::Threading::{
 use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
 
 pub(super) enum ClientCommand {
+    /// Wake the background client immediately (for example, when restored from tray).
+    Wake,
     Experimental(crate::experimental::Settings),
     /// Attach if a worker already exists; otherwise start with the supplied profile.
     Start(Box<Profile>),
@@ -69,26 +71,41 @@ pub(super) struct DaemonClient {
     commands: SyncSender<ClientCommand>,
     events: Receiver<ClientEvent>,
     cancelled: Arc<AtomicBool>,
+    visible: Arc<AtomicBool>,
 }
+
+const VISIBLE_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const TRAY_POLL_INTERVAL: Duration = Duration::from_secs(5);
+const COMMAND_WAIT_SLICE: Duration = Duration::from_millis(500);
 
 impl DaemonClient {
     pub fn new(window: HWND) -> Result<Self, String> {
         let (commands, receiver) = mpsc::sync_channel(4);
         let (sender, events) = mpsc::sync_channel(8);
         let cancelled = Arc::new(AtomicBool::new(false));
+        let visible = Arc::new(AtomicBool::new(true));
         let stop = Arc::clone(&cancelled);
+        let is_visible = Arc::clone(&visible);
         let window = window as isize;
         std::thread::Builder::new()
             .name("daemon-ui-client".into())
             .spawn(move || {
-                run(receiver, sender, stop, window);
+                run(receiver, sender, stop, is_visible, window);
             })
             .map_err(|error| error.to_string())?;
         Ok(Self {
             commands,
             events,
             cancelled,
+            visible,
         })
+    }
+
+    pub fn set_visible(&self, visible: bool) {
+        let was_visible = self.visible.swap(visible, Ordering::AcqRel);
+        if visible && !was_visible {
+            let _ = self.commands.try_send(ClientCommand::Wake);
+        }
     }
 
     pub fn submit(&self, command: ClientCommand) -> Result<(), String> {
@@ -227,6 +244,9 @@ fn execute(
                 expected: status.identity(),
                 profile_toml: text,
             }
+        }
+        ClientCommand::Wake => {
+            return Ok(());
         }
         ClientCommand::Close => {
             return Err("Close must wait for the watched daemon on the client thread.".into());
@@ -497,10 +517,46 @@ pub(super) fn exit_message(
     Some(message)
 }
 
+#[derive(PartialEq)]
+struct SnapshotFingerprint {
+    instance: String,
+    state: DriverState,
+    generation: u64,
+    profile: Option<String>,
+    last_error: Option<String>,
+    log_sequence: u64,
+    logs_len: usize,
+    last_log: Option<String>,
+    sessions: crate::device_sessions::SessionList,
+    editing_device: Option<String>,
+}
+
+impl SnapshotFingerprint {
+    fn from_snapshot(
+        status: &ControlStatus,
+        sessions: &crate::device_sessions::SessionList,
+        editing_device: &Option<String>,
+    ) -> Self {
+        Self {
+            instance: status.instance.clone(),
+            state: status.state,
+            generation: status.generation,
+            profile: status.profile.clone(),
+            last_error: status.last_error.clone(),
+            log_sequence: status.log_sequence,
+            logs_len: status.logs.len(),
+            last_log: status.logs.last().cloned(),
+            sessions: sessions.clone(),
+            editing_device: editing_device.clone(),
+        }
+    }
+}
+
 fn run(
     commands: Receiver<ClientCommand>,
     events: SyncSender<ClientEvent>,
     stop: Arc<AtomicBool>,
+    visible: Arc<AtomicBool>,
     window: isize,
 ) {
     let mut configured: Option<WorkerIdentity> = None;
@@ -508,6 +564,7 @@ fn run(
     let mut editing_device: Option<String> = None;
     let mut previous_error: Option<String> = None;
     let mut was_online = true;
+    let mut last_snapshot: Option<SnapshotFingerprint> = None;
     // Retain across disconnections and daemon replacement: a queued launch
     // preference must not undo an explicit stop/shutdown from another client.
     let mut observed_active = false;
@@ -603,37 +660,44 @@ fn run(
                 {
                     watched = Watched::open(&status.instance);
                 }
-                let identity = status.identity();
-                let loaded = profile.is_some();
-                let device_key = sessions
-                    .sessions
-                    .iter()
-                    .find(|session| Some(&session.id) == editing_device.as_ref())
-                    .map(|device| {
-                        (
-                            status.instance.clone(),
-                            device.id.clone(),
-                            device.device_generation,
-                        )
-                    });
-                if publish(
-                    &events,
-                    ClientEvent::Snapshot {
-                        status,
-                        profile,
-                        sessions,
-                        editing_device: editing_device.clone(),
-                    },
-                    window,
-                    &stop,
-                    false,
-                ) {
-                    if loaded {
-                        configured = Some(identity);
-                        configured_device = device_key;
+                let fingerprint =
+                    SnapshotFingerprint::from_snapshot(&status, &sessions, &editing_device);
+                let unchanged =
+                    profile.is_none() && was_online && last_snapshot.as_ref() == Some(&fingerprint);
+                if !unchanged {
+                    let identity = status.identity();
+                    let loaded = profile.is_some();
+                    let device_key = sessions
+                        .sessions
+                        .iter()
+                        .find(|session| Some(&session.id) == editing_device.as_ref())
+                        .map(|device| {
+                            (
+                                status.instance.clone(),
+                                device.id.clone(),
+                                device.device_generation,
+                            )
+                        });
+                    if publish(
+                        &events,
+                        ClientEvent::Snapshot {
+                            status,
+                            profile,
+                            sessions,
+                            editing_device: editing_device.clone(),
+                        },
+                        window,
+                        &stop,
+                        false,
+                    ) {
+                        if loaded {
+                            configured = Some(identity);
+                            configured_device = device_key;
+                        }
+                        last_snapshot = Some(fingerprint);
+                        was_online = true;
+                        previous_error = None;
                     }
-                    was_online = true;
-                    previous_error = None;
                 }
             }
             Err(error) => {
@@ -667,6 +731,7 @@ fn run(
                     )
                 {
                     was_online = false;
+                    last_snapshot = None;
                     previous_error = message;
                     configured = None;
                     configured_device = None;
@@ -674,25 +739,51 @@ fn run(
                 }
             }
         }
-        match commands.recv_timeout(Duration::from_millis(500)) {
-            Ok(command) => {
-                let closing = matches!(&command, ClientCommand::Close);
-                let event = if closing {
-                    ClientEvent::CloseFinished(shutdown_for_close(&stop, watched.as_ref()))
-                } else {
-                    ClientEvent::ActionFinished(execute(
-                        command,
-                        &stop,
-                        &mut observed_active,
-                        &mut editing_device,
-                    ))
-                };
-                if !publish(&events, event, window, &stop, true) {
+        // Back off polling while hidden in the tray, while still waking
+        // immediately on commands, panel restore, cancellation, or daemon exit.
+        let poll_interval = if visible.load(Ordering::Acquire) {
+            VISIBLE_POLL_INTERVAL
+        } else {
+            TRAY_POLL_INTERVAL
+        };
+        let next_poll = std::time::Instant::now() + poll_interval;
+        loop {
+            if stop.load(Ordering::Acquire) {
+                break;
+            }
+            let remaining = next_poll.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match commands.recv_timeout(remaining.min(COMMAND_WAIT_SLICE)) {
+                Ok(ClientCommand::Wake) => break,
+                Ok(command) => {
+                    let closing = matches!(&command, ClientCommand::Close);
+                    let event = if closing {
+                        ClientEvent::CloseFinished(shutdown_for_close(&stop, watched.as_ref()))
+                    } else {
+                        ClientEvent::ActionFinished(execute(
+                            command,
+                            &stop,
+                            &mut observed_active,
+                            &mut editing_device,
+                        ))
+                    };
+                    if !publish(&events, event, window, &stop, true) {
+                        return;
+                    }
                     break;
                 }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if visible.load(Ordering::Acquire) && poll_interval > VISIBLE_POLL_INTERVAL {
+                        break;
+                    }
+                    if watched.as_ref().and_then(Watched::exit_code).is_some() {
+                        break;
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
 }

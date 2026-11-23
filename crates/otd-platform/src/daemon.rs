@@ -54,6 +54,13 @@ pub trait Platform: Send + Sync + 'static {
     }
     /// Must only discover here. No output, initialization or CLR construction.
     fn discover(&self) -> Result<Vec<Device>, String>;
+    /// Single-pass discovery and RPC inventory for periodic scans, avoiding
+    /// double HID enumeration and duplicate USB descriptor reads.
+    fn discover_with_inventory(&self) -> Result<(Vec<Device>, Value), String> {
+        let devices = self.discover()?;
+        let inventory = self.inventory()?;
+        Ok((devices, inventory))
+    }
     fn screen(&self) -> Result<Rect, String>;
     /// Prepare graph/resources, call context.activate BEFORE opening HID, then
     /// call context.running AFTER real input/output initialization succeeds.
@@ -558,6 +565,8 @@ struct State {
     pending_tools: Option<crate::global_tools::Receipt>,
     tools_configured: bool,
     bindings: SyncSender<(u64, crate::binding_presets::Request)>,
+    cached_configurations: Option<Value>,
+    last_inventory: Option<Value>,
 }
 impl State {
     fn expected(&self, expected: &WorkerIdentity) -> Result<(), String> {
@@ -581,9 +590,26 @@ impl State {
     }
     fn scan(&mut self, platform: &Arc<dyn Platform>) -> Result<(), String> {
         let devices = platform.discover()?;
+        let _ = self.apply_discovered(platform, devices)?;
+        Ok(())
+    }
+    fn scan_with_inventory(
+        &mut self,
+        platform: &Arc<dyn Platform>,
+    ) -> Result<(bool, Value), String> {
+        let (devices, inventory) = platform.discover_with_inventory()?;
+        let slots_changed = self.apply_discovered(platform, devices)?;
+        Ok((slots_changed, inventory))
+    }
+    fn apply_discovered(
+        &mut self,
+        platform: &Arc<dyn Platform>,
+        devices: Vec<Device>,
+    ) -> Result<bool, String> {
         if devices.len() > MAX_DEVICES {
             return Err("Discovery exceeds 64 device owners".into());
         }
+        let mut changed = false;
         let mut keys = BTreeSet::new();
         for device in devices {
             keys.insert(device.key());
@@ -596,6 +622,7 @@ impl State {
                 if !slot.session.connected {
                     slot.session.connected = true;
                     slot.session.state = SessionState::Detected;
+                    changed = true;
                 }
                 continue;
             }
@@ -651,18 +678,26 @@ impl State {
             if self.selected.is_none() {
                 self.selected = Some(id);
             }
+            changed = true;
         }
         for slot in self.slots.values_mut() {
             if !keys.contains(&slot.device.key()) {
+                if slot.session.connected {
+                    changed = true;
+                }
                 slot.session.connected = false;
                 if let Some(mut worker) = slot.worker.take() {
+                    changed = true;
                     if let Err(error) = worker.retire() {
                         slot.session.last_error = Some(error);
                         slot.session.state = SessionState::Failed;
                         continue;
                     }
                 }
-                slot.session.state = SessionState::Waiting;
+                if slot.session.state != SessionState::Waiting {
+                    slot.session.state = SessionState::Waiting;
+                    changed = true;
+                }
             } else if slot
                 .worker
                 .as_ref()
@@ -675,6 +710,7 @@ impl State {
                 } else {
                     SessionState::Waiting
                 };
+                changed = true;
             }
         }
         if self.enabled {
@@ -690,6 +726,7 @@ impl State {
                 .map(|(id, _)| id.clone())
                 .collect();
             for id in ids {
+                changed = true;
                 let profile = self.slots[&id].profile.clone();
                 let generation = self.slots[&id].session.device_generation;
                 if let Err(error) = self.replace(platform, &id, generation, profile) {
@@ -699,7 +736,7 @@ impl State {
                 }
             }
         }
-        Ok(())
+        Ok(changed)
     }
     fn replace(
         &mut self,
@@ -1032,6 +1069,7 @@ impl State {
                 if self.retiring {
                     return Err("Daemon retirement reserves discovery".into());
                 }
+                self.cached_configurations = None;
                 self.scan(platform)?;
                 Ok(json!(self.tablets()))
             }
@@ -1262,6 +1300,7 @@ impl State {
                 if self.retiring {
                     return Err("Daemon retirement reserves discovery".into());
                 }
+                self.cached_configurations = None;
                 self.scan(platform)?;
                 Ok(json!(self.tablets()))
             }
@@ -1311,6 +1350,7 @@ impl State {
                 Ok(Value::Null)
             }
             "LoadPlugins" => {
+                self.cached_configurations = None;
                 crate::plugins::load_parser_registry()?;
                 Ok(Value::Null)
             }
@@ -1354,11 +1394,40 @@ impl State {
             _ => Err(format!("Unknown original daemon method {method}")),
         }
     }
+    fn configurations_json(&mut self) -> Option<Value> {
+        if let Some(cached) = &self.cached_configurations {
+            return Some(cached.clone());
+        }
+        let value = otd_core::config::configured_tablets().ok().and_then(|db| {
+            serde_json::to_value(
+                db.entries()
+                    .iter()
+                    .filter_map(|entry| entry.usable())
+                    .collect::<Vec<_>>(),
+            )
+            .ok()
+        });
+        self.cached_configurations = value.clone();
+        value
+    }
     fn snapshot(
-        &self,
+        &mut self,
         platform: &Arc<dyn Platform>,
         version: u64,
     ) -> crate::managed_services::Snapshot {
+        self.snapshot_with_inventory(platform, version, None)
+    }
+    fn snapshot_with_inventory(
+        &mut self,
+        platform: &Arc<dyn Platform>,
+        version: u64,
+        inventory: Option<Value>,
+    ) -> crate::managed_services::Snapshot {
+        let devices = inventory.or_else(|| platform.inventory().ok());
+        if let Some(devices) = &devices {
+            self.last_inventory = Some(devices.clone());
+        }
+        let configurations = self.configurations_json();
         crate::managed_services::Snapshot {
             diagnostic_app_version: Some(env!("OTD_RELEASE_VERSION").into()),
             diagnostic_build_date: Some(env!("OTD_BUILD_DATE").into()),
@@ -1378,17 +1447,9 @@ impl State {
                 .collect(),
             settings: self.settings(platform).ok(),
             application_info: crate::upstream_rpc::original_application_info().ok(),
-            devices: platform.inventory().ok(),
+            devices,
             tablets: Some(json!(self.tablets())),
-            configurations: otd_core::config::configured_tablets().ok().and_then(|db| {
-                serde_json::to_value(
-                    db.entries()
-                        .iter()
-                        .filter_map(|entry| entry.usable())
-                        .collect::<Vec<_>>(),
-                )
-                .ok()
-            }),
+            configurations,
             logs: Some(json!(self.logs)),
             log_sequence: self.log_sequence,
             resynchronize: self.resynchronize,
@@ -1515,7 +1576,7 @@ impl Owner {
         };
         let mut tools = crate::global_tools::Owner::start(|line| eprintln!("{line}"))?;
         let (bindings, binding_rx) = mpsc::sync_channel(64);
-        let state = State {
+        let mut state = State {
             identity: WorkerIdentity {
                 instance,
                 generation: 1,
@@ -1538,6 +1599,8 @@ impl Owner {
             pending_tools: None,
             tools_configured: false,
             bindings,
+            cached_configurations: None,
+            last_inventory: None,
         };
         let (tx, rx) = mpsc::sync_channel::<Call>(64);
         let handle = Handle {
@@ -1589,12 +1652,38 @@ impl Owner {
                         }
                     }
                     if !state.retiring && Instant::now() >= next_scan {
-                        discovery_error = state.scan(&platform).err();
+                        let scan_result = state.scan_with_inventory(&platform);
                         next_scan = Instant::now() + Duration::from_secs(2);
-                        version = version
-                            .checked_add(1)
-                            .ok_or("Snapshot generation exhausted")?;
-                        crate::managed_host::publish(state.snapshot(&platform, version))?;
+                        match scan_result {
+                            Ok((slots_changed, inventory)) => {
+                                let err_cleared = discovery_error.take().is_some();
+                                let inventory_changed =
+                                    state.last_inventory.as_ref() != Some(&inventory);
+                                if slots_changed || inventory_changed || err_cleared {
+                                    version = version
+                                        .checked_add(1)
+                                        .ok_or("Snapshot generation exhausted")?;
+                                    crate::managed_host::publish(state.snapshot_with_inventory(
+                                        &platform,
+                                        version,
+                                        Some(inventory),
+                                    ))?;
+                                }
+                            }
+                            Err(error) => {
+                                let err_changed =
+                                    discovery_error.as_deref() != Some(error.as_str());
+                                discovery_error = Some(error);
+                                if err_changed {
+                                    version = version
+                                        .checked_add(1)
+                                        .ok_or("Snapshot generation exhausted")?;
+                                    crate::managed_host::publish(
+                                        state.snapshot(&platform, version),
+                                    )?;
+                                }
+                            }
+                        }
                     }
                     if let Ok(call) = rx.recv_timeout(Duration::from_millis(100)) {
                         let result = state.command(&platform, call.command);
