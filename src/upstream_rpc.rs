@@ -8,7 +8,7 @@ pub(crate) mod protocol;
 mod service;
 mod settings;
 
-use crate::control::pipe::CompatPipe;
+use crate::control::pipe::{CompatPipe, StopEvent};
 use std::io;
 use std::sync::{
     Arc,
@@ -193,25 +193,29 @@ pub fn profile_for_tablet(
 
 pub struct Listener {
     stop: Arc<AtomicBool>,
+    stop_event: Arc<StopEvent>,
     workers: Vec<JoinHandle<()>>,
 }
 impl Listener {
     pub fn start(name: &str) -> io::Result<Self> {
         let pipes = CompatPipe::instances(name, MAX_CLIENTS)?;
         let shared = shared();
+        let stop_event = Arc::new(StopEvent::new()?);
         let mut listener = Self {
             stop: Arc::new(AtomicBool::new(false)),
+            stop_event,
             workers: Vec::new(),
         };
         for (index, pipe) in pipes.into_iter().enumerate() {
             let stop = Arc::clone(&listener.stop);
+            let stop_event = Arc::clone(&listener.stop_event);
             let shared = Arc::clone(&shared);
             listener.workers.push(
                 std::thread::Builder::new()
                     .name(format!("upstream-rpc-{index}"))
                     .spawn(move || {
                         while !stop.load(Ordering::Acquire) {
-                            if pipe.connect(&stop).is_err() {
+                            if pipe.connect_with_stop(&stop, &stop_event).is_err() {
                                 pipe.disconnect();
                                 if !stop.load(Ordering::Acquire) {
                                     std::thread::sleep(Duration::from_millis(25));
@@ -238,17 +242,11 @@ impl Listener {
 impl Drop for Listener {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+        self.stop_event.signal();
         for worker in self.workers.drain(..) {
             let _ = worker.join();
         }
     }
-}
-fn write(pipe: &CompatPipe, stop: &AtomicBool, value: &serde_json::Value) -> io::Result<()> {
-    pipe.write(
-        &protocol::encode(value)?,
-        Instant::now() + FRAME_BUDGET,
-        stop,
-    )
 }
 fn serve_connection(
     pipe: &CompatPipe,
@@ -260,8 +258,9 @@ fn serve_connection(
         let body = read_message(|buffer, deadline| {
             pipe.read(buffer, deadline, stop, &mut || {
                 if failure.is_none() {
-                    for event in service.events() {
-                        if let Err(error) = write(pipe, stop, &event) {
+                    for frame in service.events() {
+                        if let Err(error) = pipe.write(&frame, Instant::now() + FRAME_BUDGET, stop)
+                        {
                             failure = Some(error);
                             pipe.cancel_pending();
                             break;
@@ -286,8 +285,8 @@ fn serve_connection(
             return Ok(true);
         }
         // Busy clients must receive events too, rather than depending on IO wait.
-        for event in service.events() {
-            write(pipe, stop, &event)?;
+        for frame in service.events() {
+            pipe.write(&frame, Instant::now() + FRAME_BUDGET, stop)?;
         }
     }
     Ok(false)

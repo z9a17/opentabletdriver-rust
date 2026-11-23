@@ -645,8 +645,23 @@ fn validate_header(header: Header) -> Result<(), String> {
     Ok(())
 }
 
+pub(super) type ProcessFn = unsafe extern "C" fn(*mut c_void, *mut Sample) -> i32;
+pub(super) type ResetFn = unsafe extern "C" fn(*mut c_void);
+pub(super) type DestroyFn = unsafe extern "C" fn(*mut c_void);
+
+#[derive(Clone, Copy)]
+pub(super) struct NativeEntry {
+    pub index: usize,
+    pub process: ProcessFn,
+    pub reset: ResetFn,
+    pub context: *mut c_void,
+    pub disabled: bool,
+}
+
 pub struct Plugin {
-    api: FilterApi,
+    process_fn: ProcessFn,
+    reset_fn: ResetFn,
+    destroy_fn: DestroyFn,
     context: *mut c_void,
     pub name: String,
     pub stage: PipelineStage,
@@ -692,7 +707,7 @@ impl Plugin {
             (unsafe { ptr.read() }, Some(library))
         };
         validate_header(api.header)?;
-        let (Some(create), Some(_), Some(_), Some(_)) =
+        let (Some(create), Some(process_fn), Some(reset_fn), Some(destroy_fn)) =
             (api.create, api.process, api.reset, api.destroy)
         else {
             return Err("plugin has missing callbacks".into());
@@ -737,7 +752,7 @@ impl Plugin {
             match unsafe { crate::dotnet::position(context) } {
                 Ok(stage) => stage,
                 Err(error) => {
-                    unsafe { (api.destroy.unwrap())(context) };
+                    unsafe { destroy_fn(context) };
                     return Err(error);
                 }
             }
@@ -745,7 +760,9 @@ impl Plugin {
             PipelineStage::PreTransform
         };
         Ok(Self {
-            api,
+            process_fn,
+            reset_fn,
+            destroy_fn,
             context,
             name,
             stage,
@@ -760,8 +777,37 @@ impl Plugin {
             return true;
         }
         let original = *sample;
-        let status = unsafe { (self.api.process.unwrap())(self.context, sample) };
+        let status = unsafe { (self.process_fn)(self.context, sample) };
         self.finish_process(sample, original, status)
+    }
+
+    #[inline]
+    pub(super) fn process_xy(
+        &mut self,
+        x: &mut f32,
+        y: &mut f32,
+        time_ns: u64,
+        pressure: u32,
+        flags: u32,
+    ) -> bool {
+        if self.disabled {
+            return true;
+        }
+        let mut sample = Sample {
+            x: *x,
+            y: *y,
+            time_ns,
+            pressure,
+            flags,
+        };
+        let status = unsafe { (self.process_fn)(self.context, &mut sample) };
+        if status != 0 || !sample.x.is_finite() || !sample.y.is_finite() {
+            self.disabled = true;
+            return false;
+        }
+        *x = sample.x;
+        *y = sample.y;
+        true
     }
 
     fn process_report(
@@ -807,7 +853,7 @@ impl Plugin {
 
     pub fn reset(&mut self) {
         if !self.disabled {
-            unsafe { (self.api.reset.unwrap())(self.context) };
+            unsafe { (self.reset_fn)(self.context) };
         }
     }
 
@@ -841,7 +887,7 @@ fn current_tablet() -> &'static TabletConfiguration {
 
 impl Drop for Plugin {
     fn drop(&mut self) {
-        unsafe { (self.api.destroy.unwrap())(self.context) };
+        unsafe { (self.destroy_fn)(self.context) };
     }
 }
 
@@ -850,9 +896,13 @@ pub struct PluginChain {
     graph: Option<crate::dotnet::Graph>,
     managed_output: Option<crate::dotnet::endpoints::OutputSession>,
     plugins: Vec<Plugin>,
+    native_pre_before: Vec<NativeEntry>,
+    native_pre_after: Vec<NativeEntry>,
+    native_pixels: Vec<NativeEntry>,
     /// Matched, actually opened endpoints; captured only at session setup.
     identifiers: Option<Vec<DeviceIdentifier>>,
     source_session: Option<serde_json::Value>,
+    has_internal: bool,
     has_pre: bool,
     has_pixels: bool,
     /// Runs the host's built-in filters before `plugins[slot]` instead of
@@ -860,6 +910,40 @@ pub struct PluginChain {
     builtin_slot: Option<usize>,
     epoch: Instant,
     failure: Option<usize>,
+}
+
+fn partition_native(
+    plugins: &[Plugin],
+    builtin_slot: Option<usize>,
+) -> (Vec<NativeEntry>, Vec<NativeEntry>, Vec<NativeEntry>) {
+    let slot = builtin_slot.unwrap_or(0);
+    let mut pre_before = Vec::new();
+    let mut pre_after = Vec::new();
+    let mut pixels = Vec::new();
+    for (index, plugin) in plugins.iter().enumerate() {
+        if plugin.managed {
+            continue;
+        }
+        let entry = NativeEntry {
+            index,
+            process: plugin.process_fn,
+            reset: plugin.reset_fn,
+            context: plugin.context,
+            disabled: plugin.disabled,
+        };
+        match plugin.stage {
+            PipelineStage::PreTransform => {
+                if index < slot {
+                    pre_before.push(entry);
+                } else {
+                    pre_after.push(entry);
+                }
+            }
+            PipelineStage::Pixels => pixels.push(entry),
+            PipelineStage::Internal => {}
+        }
+    }
+    (pre_before, pre_after, pixels)
 }
 
 /// The profile's enabled tools, running until dropped. As upstream's
@@ -984,6 +1068,7 @@ impl PluginChain {
             .filter(|p| p.enabled && p.kind != PluginKind::DotnetTool)
             .map(|config| Plugin::load_with_identifiers(config, tablet, identifiers))
             .collect::<Result<Vec<_>, _>>()?;
+        let has_internal = plugins.iter().any(|p| p.stage == PipelineStage::Internal);
         let has_pre = plugins
             .iter()
             .any(|p| p.stage == PipelineStage::PreTransform);
@@ -993,12 +1078,21 @@ impl PluginChain {
             .filter(|&slot| slot > 0)
             .map(|slot| slot.min(plugins.len()));
         let graph = graph::create(&plugins, builtin_slot)?;
+        let (native_pre_before, native_pre_after, native_pixels) = if graph.is_none() {
+            partition_native(&plugins, builtin_slot)
+        } else {
+            (Vec::new(), Vec::new(), Vec::new())
+        };
         Ok(Self {
             graph,
             managed_output: None,
             identifiers: identifiers.map(<[DeviceIdentifier]>::to_vec),
             source_session: crate::dotnet::source_session_json(),
             plugins,
+            native_pre_before,
+            native_pre_after,
+            native_pixels,
+            has_internal,
             has_pre,
             has_pixels,
             builtin_slot,
@@ -1343,14 +1437,9 @@ mod tests {
             process: unsafe extern "C" fn(*mut c_void, *mut Sample) -> i32,
         ) -> Plugin {
             Plugin {
-                api: FilterApi {
-                    header: Header::V1,
-                    name: [0; 64],
-                    create: None,
-                    process: Some(process),
-                    reset: Some(reset),
-                    destroy: Some(destroy),
-                },
+                process_fn: process,
+                reset_fn: reset,
+                destroy_fn: destroy,
                 context,
                 name: "stage test".into(),
                 stage,
@@ -1362,23 +1451,29 @@ mod tests {
         let mut seen_pre = Seen::default();
         let mut seen_pixels = Seen::default();
         // Config order may interleave stages; execution order is by stage.
+        let plugins = vec![
+            fake(
+                PipelineStage::Pixels,
+                (&mut seen_pixels as *mut Seen).cast(),
+                pixels,
+            ),
+            fake(
+                PipelineStage::PreTransform,
+                (&mut seen_pre as *mut Seen).cast(),
+                pre,
+            ),
+        ];
+        let (native_pre_before, native_pre_after, native_pixels) = partition_native(&plugins, None);
         let mut chain = PluginChain {
             graph: None,
             managed_output: None,
             identifiers: None,
             source_session: None,
-            plugins: vec![
-                fake(
-                    PipelineStage::Pixels,
-                    (&mut seen_pixels as *mut Seen).cast(),
-                    pixels,
-                ),
-                fake(
-                    PipelineStage::PreTransform,
-                    (&mut seen_pre as *mut Seen).cast(),
-                    pre,
-                ),
-            ],
+            plugins,
+            native_pre_before,
+            native_pre_after,
+            native_pixels,
+            has_internal: false,
             has_pre: true,
             has_pixels: true,
             builtin_slot: None,
@@ -1456,27 +1551,29 @@ mod tests {
         let start = Instant::now();
         for (slot, expected) in [(None, 22_400.0), (Some(1), 22_440.0)] {
             let mut seen = 0f32;
+            let plugins = vec![Plugin {
+                process_fn: record,
+                reset_fn: ignore,
+                destroy_fn: ignore,
+                context: (&mut seen as *mut f32).cast(),
+                name: "recorder".into(),
+                stage: PipelineStage::PreTransform,
+                disabled: false,
+                managed: false,
+                _library: None,
+            }];
+            let (native_pre_before, native_pre_after, native_pixels) =
+                partition_native(&plugins, slot);
             let mut chain = PluginChain {
                 graph: None,
                 managed_output: None,
                 identifiers: None,
                 source_session: None,
-                plugins: vec![Plugin {
-                    api: FilterApi {
-                        header: Header::V1,
-                        name: [0; 64],
-                        create: None,
-                        process: Some(record),
-                        reset: Some(ignore),
-                        destroy: Some(ignore),
-                    },
-                    context: (&mut seen as *mut f32).cast(),
-                    name: "recorder".into(),
-                    stage: PipelineStage::PreTransform,
-                    disabled: false,
-                    managed: false,
-                    _library: None,
-                }],
+                plugins,
+                native_pre_before,
+                native_pre_after,
+                native_pixels,
+                has_internal: false,
                 has_pre: true,
                 has_pixels: false,
                 builtin_slot: slot,
@@ -1530,14 +1627,9 @@ mod tests {
         }
         let mut calls = 0u32;
         let mut plugin = Plugin {
-            api: FilterApi {
-                header: Header::V1,
-                name: [0; 64],
-                create: None,
-                process: Some(bad),
-                reset: Some(reset),
-                destroy: Some(destroy),
-            },
+            process_fn: bad,
+            reset_fn: reset,
+            destroy_fn: destroy,
             context: (&mut calls as *mut u32).cast(),
             name: "test".into(),
             stage: PipelineStage::PreTransform,

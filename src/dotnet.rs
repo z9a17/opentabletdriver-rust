@@ -126,6 +126,7 @@ struct Bridge {
     /// before dispatch, and transform plus output cross into Rust once.
     dispatch_graph2: Option<graph::DispatchGraph>,
     tick_graph2: Option<graph::TickGraph>,
+    pre_prepare_supported: bool,
     create_tool: Option<CreateTool>,
     destroy_tool: Option<DestroyTool>,
 }
@@ -279,7 +280,7 @@ fn load_bridge() -> Result<Bridge, String> {
         }
         Ok(entry)
     };
-    let bridge = Bridge {
+    let mut bridge = Bridge {
         endpoints: endpoints::Api::load(&entry).ok(),
         registry: registry::Api::load(&entry).ok(),
         custom_devices: custom_devices::Api::load(&entry).ok(),
@@ -313,6 +314,7 @@ fn load_bridge() -> Result<Bridge, String> {
         tick_graph2: entry("TickGraph2")
             .ok()
             .map(|entry| unsafe { std::mem::transmute::<*mut c_void, graph::TickGraph>(entry) }),
+        pre_prepare_supported: false,
         get_api: unsafe { std::mem::transmute::<*mut c_void, GetApi>(entry("GetApi")?) },
         get_position: unsafe {
             std::mem::transmute::<*mut c_void, GetPosition>(entry("GetPosition")?)
@@ -342,6 +344,19 @@ fn load_bridge() -> Result<Bridge, String> {
     let install: InstallServices = unsafe { std::mem::transmute(entry("InstallHostServices")?) };
     if unsafe { install(&crate::managed_services::CALLBACKS) } != 0 {
         return Err("Cannot install native managed-service callbacks.".into());
+    }
+    if let Ok(get_completion) = entry("GetServiceCompletionCallback") {
+        type GetCompletion = unsafe extern "C" fn() -> *mut c_void;
+        let get_completion: GetCompletion = unsafe { std::mem::transmute(get_completion) };
+        let callback = unsafe { get_completion() };
+        if !callback.is_null() {
+            crate::managed_services::set_completion_callback(Some(unsafe {
+                std::mem::transmute::<*mut c_void, crate::managed_services::CompletionCallback>(
+                    callback,
+                )
+            }));
+        }
+        bridge.pre_prepare_supported = true;
     }
     type ConfigureApp = unsafe extern "C" fn(*const u8, u32) -> i32;
     let configure: ConfigureApp =
@@ -589,55 +604,62 @@ pub fn inspect_details(path: &Path) -> Result<Vec<InspectedFilter>, String> {
     inspect_metadata_bytes(&output[..size], &path)
 }
 
-fn inspect_metadata_bytes(bytes: &[u8], path: &Path) -> Result<Vec<InspectedFilter>, String> {
-    #[derive(serde::Deserialize)]
-    struct Entry {
-        #[serde(default)]
-        kind: Option<String>,
-        #[serde(default = "property_writable")]
-        supported: bool,
-        #[serde(default)]
-        absolute_output: bool,
-        #[serde(default)]
-        relative_output: bool,
-        type_name: String,
-        display_name: Option<String>,
-        settings: serde_json::Value,
-        properties: Vec<PropertyMetadata>,
+#[derive(serde::Deserialize)]
+pub(super) struct RawInspectedEntry {
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default = "property_writable")]
+    supported: bool,
+    #[serde(default)]
+    absolute_output: bool,
+    #[serde(default)]
+    relative_output: bool,
+    type_name: String,
+    display_name: Option<String>,
+    settings: serde_json::Value,
+    properties: Vec<PropertyMetadata>,
+}
+
+pub(super) fn inspected_from_entry(entry: RawInspectedEntry, path: &Path) -> InspectedFilter {
+    let settings_json = entry.settings.to_string();
+    InspectedFilter {
+        config: crate::plugins::PluginConfig {
+            path: path.to_owned(),
+            kind: if entry.kind.as_deref() == Some("tool") {
+                crate::plugins::PluginKind::DotnetTool
+            } else {
+                crate::plugins::PluginKind::Dotnet
+            },
+            enabled: false,
+            type_name: entry.type_name.clone(),
+            settings_json: settings_json.clone(),
+        },
+        metadata: FilterMetadata {
+            category: entry.kind.unwrap_or_else(filter_category),
+            supported: entry.supported,
+            absolute_output: entry.absolute_output,
+            relative_output: entry.relative_output,
+            type_name: entry.type_name,
+            display_name: entry.display_name,
+            properties: entry
+                .properties
+                .into_iter()
+                .map(|mut property| {
+                    property.default_value = entry.settings.get(&property.name).cloned();
+                    property
+                })
+                .collect(),
+            default_settings_json: settings_json,
+        },
     }
-    let entries: Vec<Entry> = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+}
+
+fn inspect_metadata_bytes(bytes: &[u8], path: &Path) -> Result<Vec<InspectedFilter>, String> {
+    let entries: Vec<RawInspectedEntry> =
+        serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
     Ok(entries
         .into_iter()
-        .map(|entry| InspectedFilter {
-            config: crate::plugins::PluginConfig {
-                path: path.to_owned(),
-                kind: if entry.kind.as_deref() == Some("tool") {
-                    crate::plugins::PluginKind::DotnetTool
-                } else {
-                    crate::plugins::PluginKind::Dotnet
-                },
-                enabled: false,
-                type_name: entry.type_name.clone(),
-                settings_json: entry.settings.to_string(),
-            },
-            metadata: FilterMetadata {
-                category: entry.kind.unwrap_or_else(filter_category),
-                supported: entry.supported,
-                absolute_output: entry.absolute_output,
-                relative_output: entry.relative_output,
-                type_name: entry.type_name,
-                display_name: entry.display_name,
-                properties: entry
-                    .properties
-                    .into_iter()
-                    .map(|mut property| {
-                        property.default_value = entry.settings.get(&property.name).cloned();
-                        property
-                    })
-                    .collect(),
-                default_settings_json: entry.settings.to_string(),
-            },
-        })
+        .map(|entry| inspected_from_entry(entry, path))
         .collect())
 }
 

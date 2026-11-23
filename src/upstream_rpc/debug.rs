@@ -130,7 +130,7 @@ impl Capture {
     pub fn poll(
         &mut self,
         sessions: Option<&[SessionSnapshot]>,
-    ) -> Result<(Vec<Value>, Vec<String>), String> {
+    ) -> Result<(Vec<Vec<u8>>, Vec<String>), String> {
         if Instant::now() < self.next_poll {
             return Ok((Vec::new(), Vec::new()));
         }
@@ -192,8 +192,8 @@ impl Capture {
                         "DeviceReport",
                         json!({"Tablet":endpoint.tablet,"Path":report.path,"Data":report.data}),
                     );
-                    if protocol::encode(&event).is_ok() {
-                        events.push(event);
+                    if let Ok(frame) = protocol::encode(&event) {
+                        events.push(frame);
                     } else {
                         diagnostics.push(format!(
                             "Concrete debug report for {} exceeds RPC framing bound; omitted",

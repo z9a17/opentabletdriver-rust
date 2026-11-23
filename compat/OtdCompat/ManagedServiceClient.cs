@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -23,9 +24,23 @@ static class ServiceClient
     static bool installed;
     static readonly object SnapshotGate = new();
     static JObject? snapshot;
+    static JToken? staticConfigurations;
     static Task? snapshotMonitor;
+    static readonly ConcurrentDictionary<ulong, TaskCompletionSource> PendingCompletions = new();
+    static volatile bool completionNotificationsEnabled;
     internal static readonly object Gate = new();
     internal static bool Available { get { lock (Gate) return installed; } }
+    internal static void EnableCompletionNotifications() => completionNotificationsEnabled = true;
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    internal static void OnTicketCompleted(ulong ticket)
+    {
+        try
+        {
+            if (PendingCompletions.TryGetValue(ticket, out var waiter))
+                waiter.TrySetResult();
+        }
+        catch { }
+    }
     [ThreadStatic] internal static int ReportDepth;
     [ThreadStatic] internal static int SetupDepth;
     [ThreadStatic] internal static uint? BindingOwner;
@@ -93,6 +108,27 @@ static class ServiceClient
             return snapshot;
         }
     }
+    internal static unsafe JToken Configurations()
+    {
+        if (Volatile.Read(ref staticConfigurations) is { } cached) return cached;
+        if (ReportDepth != 0 || SynchronousGraph.CurrentReport != null)
+            throw new NotSupportedException("Managed host configurations are not ready for report callbacks.");
+        lock (SnapshotGate) {
+            if (staticConfigurations != null) return staticConfigurations;
+            ServiceCallbacks api;
+            lock (Gate) { if (!installed) throw new NotSupportedException("Native managed service owner is unavailable."); api = callbacks; }
+            ulong ticket = 0;
+            int code = api.Request(14, 0, null, 0, &ticket);
+            if (code != 0 || ticket == 0)
+                throw new NotSupportedException("The native host has not published 'configurations'.");
+            try {
+                var value = Completed(ticket) ?? throw new InvalidOperationException("Managed host configurations are unavailable.");
+                Volatile.Write(ref staticConfigurations, value);
+                return value;
+            }
+            finally { Release(ticket); }
+        }
+    }
     internal static void RefreshSnapshot() => RefreshSnapshot(force: true);
     static void RefreshSnapshot(bool force)
     {
@@ -125,13 +161,32 @@ static class ServiceClient
     static async Task<JToken> AwaitCompletion(ulong ticket, CancellationToken cancellation)
     {
         using var cancel = cancellation.Register(() => Release(ticket));
+        if (!completionNotificationsEnabled) {
+            try {
+                for (;;) {
+                    cancellation.ThrowIfCancellationRequested();
+                    if (Completed(ticket) is { } result) return result;
+                    await Task.Delay(10, cancellation).ConfigureAwait(false);
+                }
+            } finally { Release(ticket); }
+        }
+        var waiter = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        PendingCompletions[ticket] = waiter;
         try {
             for (;;) {
                 cancellation.ThrowIfCancellationRequested();
                 if (Completed(ticket) is { } result) return result;
-                await Task.Delay(10, cancellation).ConfigureAwait(false);
+                try { await waiter.Task.WaitAsync(TimeSpan.FromMilliseconds(50), cancellation).ConfigureAwait(false); }
+                catch (TimeoutException) { }
+                if (waiter.Task.IsCompleted) {
+                    waiter = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                    PendingCompletions[ticket] = waiter;
+                }
             }
-        } finally { Release(ticket); }
+        } finally {
+            PendingCompletions.TryRemove(ticket, out _);
+            Release(ticket);
+        }
     }
     static unsafe void Release(ulong ticket) => callbacks.Release(ticket);
     internal static void RequireIoAllowed()
@@ -180,5 +235,13 @@ public static unsafe partial class EntryPoints
     {
         try { if (callbacks == null) throw new ArgumentNullException(nameof(callbacks)); ServiceClient.Install(*callbacks); return 0; }
         catch (Exception error) { lastError = error.GetBaseException().Message; return -1; }
+    }
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static nint GetServiceCompletionCallback()
+    {
+        try {
+            ServiceClient.EnableCompletionNotifications();
+            return (nint)(delegate* unmanaged[Cdecl]<ulong, void>)&ServiceClient.OnTicketCompleted;
+        } catch (Exception error) { lastError = error.GetBaseException().Message; return 0; }
     }
 }
