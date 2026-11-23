@@ -13,7 +13,7 @@
 use std::io;
 use std::mem::size_of;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use otd_core::actions::{
     Action, ActionOwner, ActionState, ActionTransition, ConsumerKey, KeyboardUsage, MouseButton,
@@ -149,27 +149,60 @@ fn send_scroll(pulse: ScrollPulse) -> io::Result<()> {
     Ok(())
 }
 
+/// Emit a batch of encoded `INPUT` structs in a single `SendInput` syscall.
+/// Returns the number of accepted prefix events (`0..=inputs.len()`).
+fn send_input_batch(inputs: &[INPUT]) -> Result<usize, (usize, io::Error)> {
+    if inputs.is_empty() {
+        return Ok(0);
+    }
+    unsafe { SetLastError(0) };
+    let accepted = unsafe {
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_ptr(),
+            size_of::<INPUT>() as i32,
+        )
+    } as usize;
+    if accepted != inputs.len() {
+        let error = io::Error::last_os_error();
+        let error = if error.raw_os_error().is_some_and(|code| code != 0) {
+            error
+        } else {
+            io::Error::other("SendInput accepted fewer action events; input may be blocked")
+        };
+        return Err((accepted, error));
+    }
+    Ok(accepted)
+}
+
+fn send_left_button(pressed: bool) -> io::Result<()> {
+    // Share the tip's acknowledged left-button ownership. Lazily register
+    // this owner only when a left-button binding actually fires, so profiles
+    // without left-click side buttons stay on `SessionOutput`'s lock-free
+    // single-owner fast path.
+    let mut output = LEFT_ACTION_OUTPUT
+        .lock()
+        .map_err(|_| io::Error::other("left action output lock poisoned"))?;
+    let output = match output.as_mut() {
+        Some(existing) => existing,
+        None => output.insert(crate::output::SessionOutput::new()?),
+    };
+    output.send(otd_core::output::MousePacket {
+        dx: 0,
+        dy: 0,
+        flags: if pressed {
+            otd_core::output::flags::LEFTDOWN
+        } else {
+            otd_core::output::flags::LEFTUP
+        },
+    })
+}
+
 /// Emit exactly one transition. A successful return means SendInput accepted
 /// the event, not that any particular foreground application processed it.
 pub fn send_transition(transition: ActionTransition) -> io::Result<()> {
     if transition.action == Action::Mouse(MouseButton::Left) {
-        // Share the tip's acknowledged left-button ownership. A side-button
-        // release must not lift another session's tip or left binding.
-        let output = LEFT_ACTION_OUTPUT
-            .lock()
-            .map_err(|_| io::Error::other("left action output lock poisoned"))?;
-        let output = output
-            .as_ref()
-            .ok_or_else(|| io::Error::other("left action output was not prepared"))?;
-        return output.send(otd_core::output::MousePacket {
-            dx: 0,
-            dy: 0,
-            flags: if transition.pressed {
-                otd_core::output::flags::LEFTDOWN
-            } else {
-                otd_core::output::flags::LEFTUP
-            },
-        });
+        return send_left_button(transition.pressed);
     }
     let input = encode_transition(transition)?;
     // SendInput may report zero without setting an error (including UIPI cases).
@@ -423,9 +456,139 @@ impl SharedActions {
             }
         }
     }
-    fn flush(&mut self) -> io::Result<usize> {
-        self.flush_with(send_transition)
+    fn resolve_encoder(
+        encoders: &mut [Option<Encoder>],
+        sources: &[Option<SourceHold>],
+        transition: ActionTransition,
+    ) -> io::Result<Action> {
+        let encoder = encoders
+            .iter_mut()
+            .flatten()
+            .find(|entry| entry.canonical == transition.action)
+            .ok_or_else(|| io::Error::other("Held action has no retained output encoder"))?;
+        // A press not yet accepted must belong to a still-desired source.
+        // Once accepted, keep that exact encoder until its release succeeds.
+        if transition.pressed
+            && !sources.iter().flatten().any(|source| {
+                source.owner == encoder.owner
+                    && source.canonical == encoder.canonical
+                    && source.source == encoder.source
+            })
+        {
+            let source = sources
+                .iter()
+                .flatten()
+                .find(|source| source.canonical == encoder.canonical)
+                .ok_or_else(|| io::Error::other("Desired action has no retained source"))?;
+            encoder.source = source.source;
+            encoder.owner = source.owner;
+        }
+        Ok(encoder.source)
     }
+
+    fn flush(&mut self) -> io::Result<usize> {
+        self.flush_batched(send_input_batch, send_left_button)
+    }
+
+    /// Reconciles all pending transitions, batching consecutive non-left
+    /// transitions into a single `SendInput` array (up to 16 events per call)
+    /// while acknowledging only the exact prefix accepted by Windows.
+    fn flush_batched(
+        &mut self,
+        mut send_batch: impl FnMut(&[INPUT]) -> Result<usize, (usize, io::Error)>,
+        mut send_left: impl FnMut(bool) -> io::Result<()>,
+    ) -> io::Result<usize> {
+        const MAX_BATCH: usize = 16;
+        let mut count = 0;
+        loop {
+            // Collect pending canonical actions in the exact priority order
+            // used by `ActionState::next_pending`: releases before presses,
+            // non-modifier releases before modifier releases, modifier presses
+            // before non-modifier presses, then portable `Action` order.
+            let mut order: [(bool, bool, Action); 64] =
+                [(false, false, Action::Mouse(MouseButton::Left)); 64];
+            let mut pending_len = 0;
+            for entry in self.encoders.iter().flatten() {
+                let desired = self.actions.is_desired(entry.canonical);
+                let emitted = self.actions.is_emitted(entry.canonical);
+                if desired != emitted {
+                    let is_mod = matches!(entry.canonical, Action::Key(key) if key.is_modifier());
+                    order[pending_len] = (desired, is_mod != desired, entry.canonical);
+                    pending_len += 1;
+                }
+            }
+            if pending_len == 0 {
+                // Drain any unexpected entry lacking an encoder via fallback.
+                if let Some(pending) = self.actions.next_pending() {
+                    let transition = pending.transition();
+                    return Err(io::Error::other(format!(
+                        "Held action {:?} has no retained output encoder",
+                        transition.action
+                    )));
+                }
+                break;
+            }
+            order[..pending_len].sort_unstable();
+
+            let mut batch = [unsafe { std::mem::zeroed::<INPUT>() }; MAX_BATCH];
+            let mut batch_len = 0;
+            let mut hit_left: Option<bool> = None;
+            for &(pressed, _, canonical) in order[..pending_len].iter().take(MAX_BATCH) {
+                let source = Self::resolve_encoder(
+                    &mut self.encoders,
+                    &self.sources,
+                    ActionTransition {
+                        action: canonical,
+                        pressed,
+                    },
+                )?;
+                if source == Action::Mouse(MouseButton::Left) {
+                    if batch_len == 0 {
+                        hit_left = Some(pressed);
+                    }
+                    break;
+                }
+                batch[batch_len] = encode_transition(ActionTransition {
+                    action: source,
+                    pressed,
+                })?;
+                batch_len += 1;
+            }
+
+            if let Some(pressed) = hit_left {
+                send_left(pressed)?;
+                if let Some(pending) = self.actions.next_pending() {
+                    pending.acknowledge();
+                    count += 1;
+                }
+                continue;
+            }
+
+            match send_batch(&batch[..batch_len]) {
+                Ok(accepted) => {
+                    for _ in 0..accepted {
+                        if let Some(pending) = self.actions.next_pending() {
+                            pending.acknowledge();
+                            count += 1;
+                        }
+                    }
+                }
+                Err((accepted, error)) => {
+                    for _ in 0..accepted {
+                        if let Some(pending) = self.actions.next_pending() {
+                            pending.acknowledge();
+                        }
+                    }
+                    self.reap_encoders();
+                    return Err(error);
+                }
+            }
+        }
+        self.reap_encoders();
+        Ok(count)
+    }
+
+    #[cfg(test)]
     fn flush_with(
         &mut self,
         mut send: impl FnMut(ActionTransition) -> io::Result<()>,
@@ -433,32 +596,9 @@ impl SharedActions {
         let mut count = 0;
         while let Some(pending) = self.actions.next_pending() {
             let transition = pending.transition();
-            let encoder = self
-                .encoders
-                .iter_mut()
-                .flatten()
-                .find(|entry| entry.canonical == transition.action)
-                .ok_or_else(|| io::Error::other("Held action has no retained output encoder"))?;
-            // A press not yet accepted must belong to a still-desired source.
-            // Once accepted, keep that exact encoder until its release succeeds.
-            if transition.pressed
-                && !self.sources.iter().flatten().any(|source| {
-                    source.owner == encoder.owner
-                        && source.canonical == encoder.canonical
-                        && source.source == encoder.source
-                })
-            {
-                let source = self
-                    .sources
-                    .iter()
-                    .flatten()
-                    .find(|source| source.canonical == encoder.canonical)
-                    .ok_or_else(|| io::Error::other("Desired action has no retained source"))?;
-                encoder.source = source.source;
-                encoder.owner = source.owner;
-            }
+            let source = Self::resolve_encoder(&mut self.encoders, &self.sources, transition)?;
             send(ActionTransition {
-                action: encoder.source,
+                action: source,
                 pressed: transition.pressed,
             })?;
             pending.acknowledge();
@@ -469,8 +609,11 @@ impl SharedActions {
     }
 }
 static HELD: Mutex<SharedActions> = Mutex::new(SharedActions::new());
-// Created during session setup, so registration never allocates in a report.
-// One owner represents the combined left holds in HELD across every session.
+// Fast atomic gate so `SessionActions::flush()` skips acquiring `HELD` when no
+// action transition is pending.
+static PENDING_ACTIONS: AtomicBool = AtomicBool::new(false);
+// Lazily registered on first left-button action so profiles without left-click
+// bindings do not force `SessionOutput` out of its single-owner fast path.
 static LEFT_ACTION_OUTPUT: Mutex<Option<crate::output::SessionOutput>> = Mutex::new(None);
 static NEXT_DEVICE: AtomicU64 = AtomicU64::new(1);
 
@@ -559,12 +702,6 @@ impl SessionActions {
         Ok(())
     }
     pub fn new() -> io::Result<Self> {
-        let mut output = LEFT_ACTION_OUTPUT
-            .lock()
-            .map_err(|_| io::Error::other("left action output lock poisoned"))?;
-        if output.is_none() {
-            *output = Some(crate::output::SessionOutput::new()?);
-        }
         Ok(Self {
             device: NEXT_DEVICE.fetch_add(1, Ordering::Relaxed),
             aliases: [None; 128],
@@ -580,7 +717,10 @@ impl ActionSink for SessionActions {
         // Serialize with this application's held events. Scroll is a pulse;
         // one owner must never suppress another owner's independent wheel tick.
         let mut state = held()?;
-        state.flush()?;
+        if state.actions.has_pending() {
+            state.flush()?;
+            PENDING_ACTIONS.store(state.actions.has_pending(), Ordering::Release);
+        }
         send_scroll(pulse)
     }
 
@@ -589,30 +729,54 @@ impl ActionSink for SessionActions {
     }
 
     fn hold(&mut self, binding: u32, action: Action, down: bool) -> io::Result<()> {
+        let existing = self.aliases.iter().position(|alias| {
+            alias.is_some_and(|alias| alias.binding == binding && alias.source == action)
+        });
+        if existing.is_some() == down {
+            return Ok(());
+        }
         let mut state = held()?;
-        self.hold_in_state(&mut state, binding, action, down, canonical_action)
+        self.hold_in_state(&mut state, binding, action, down, canonical_action)?;
+        if state.actions.has_pending() {
+            PENDING_ACTIONS.store(true, Ordering::Release);
+        }
+        Ok(())
     }
 
     fn flush(&mut self) -> io::Result<usize> {
+        if !PENDING_ACTIONS.load(Ordering::Acquire) {
+            return Ok(0);
+        }
         let mut state = held()?;
-        state.flush()
+        let count = state.flush()?;
+        PENDING_ACTIONS.store(state.actions.has_pending(), Ordering::Release);
+        Ok(count)
     }
 
     fn release_all(&mut self) -> io::Result<usize> {
+        if self.aliases.iter().all(Option::is_none) && !PENDING_ACTIONS.load(Ordering::Acquire) {
+            return Ok(0);
+        }
         let mut state = held()?;
         state.release_device(self.device);
         self.aliases.fill(None);
-        state.flush()
+        let result = state.flush();
+        PENDING_ACTIONS.store(state.actions.has_pending(), Ordering::Release);
+        result
     }
 }
 
 impl Drop for SessionActions {
     fn drop(&mut self) {
+        if self.aliases.iter().all(Option::is_none) && !PENDING_ACTIONS.load(Ordering::Acquire) {
+            return;
+        }
         // Best effort: a release that fails stays pending, and the next flush
         // by any session retries it.
         if let Ok(mut state) = HELD.lock() {
             state.release_device(self.device);
             let _ = state.flush();
+            PENDING_ACTIONS.store(state.actions.has_pending(), Ordering::Release);
         }
     }
 }
@@ -765,6 +929,60 @@ mod scroll_tests {
             }
         }
     }
+    #[test]
+    fn batched_flush_groups_chord_into_single_send_and_handles_partial_acceptance() {
+        let ctrl = Action::Key(KeyboardUsage::new(0xe0).unwrap());
+        let shift = Action::Key(KeyboardUsage::new(0xe1).unwrap());
+        let key_z = Action::Key(KeyboardUsage::new(0x1d).unwrap());
+        let left = Action::Mouse(MouseButton::Left);
+        let owner = ActionOwner {
+            device: 1,
+            binding: 0,
+        };
+        let mut state = SharedActions::new();
+        state.set_held(owner, ctrl, ctrl, true).unwrap();
+        state.set_held(owner, shift, shift, true).unwrap();
+        state.set_held(owner, key_z, key_z, true).unwrap();
+        let mut batch_sizes = Vec::new();
+        // Simulate partial acceptance of 2 of 3 events on first attempt.
+        let err = state.flush_batched(
+            |inputs| {
+                batch_sizes.push(inputs.len());
+                Err((2, io::Error::other("partial")))
+            },
+            |_| panic!("no left click expected"),
+        );
+        assert!(err.is_err());
+        assert_eq!(batch_sizes, [3]);
+        // Only the remaining 1 unacknowledged event should be retried.
+        let flushed = state
+            .flush_batched(
+                |inputs| {
+                    batch_sizes.push(inputs.len());
+                    Ok(inputs.len())
+                },
+                |_| panic!("no left click expected"),
+            )
+            .unwrap();
+        assert_eq!(flushed, 1);
+        assert_eq!(batch_sizes, [3, 1]);
+
+        // Left button splits cleanly around non-left batches.
+        state.set_held(owner, left, left, true).unwrap();
+        let mut left_events = Vec::new();
+        let flushed = state
+            .flush_batched(
+                |inputs| Ok(inputs.len()),
+                |pressed| {
+                    left_events.push(pressed);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(flushed, 1);
+        assert_eq!(left_events, [true]);
+    }
+
     #[test]
     fn wheel_encoding_preserves_signed_amount_and_axis_without_injection() {
         for (axis, delta, flags) in [
