@@ -17,7 +17,7 @@ use otd_core::tablets::{
 };
 use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
     CM_Get_Device_IDW, CM_Get_Parent, CM_NOTIFY_ACTION, CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL,
-    CM_NOTIFY_ACTION_DEVICEREMOVECOMPLETE, CM_NOTIFY_FILTER, CM_NOTIFY_FILTER_0,
+    CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL, CM_NOTIFY_FILTER, CM_NOTIFY_FILTER_0,
     CM_NOTIFY_FILTER_0_0, CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE, CM_Register_Notification,
     CM_Unregister_Notification, CR_SUCCESS, DIGCF_DEVICEINTERFACE, DIGCF_PRESENT, HCMNOTIFICATION,
     HDEVINFO, SP_DEVICE_INTERFACE_DATA, SP_DEVICE_INTERFACE_DETAIL_DATA_W, SP_DEVINFO_DATA,
@@ -1155,7 +1155,7 @@ unsafe extern "system" fn notification_callback(
     _size: u32,
 ) -> u32 {
     if action == CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL
-        || action == CM_NOTIFY_ACTION_DEVICEREMOVECOMPLETE
+        || action == CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL
     {
         unsafe { SetEvent(context as HANDLE) };
     }
@@ -1290,7 +1290,9 @@ unsafe extern "system" fn removal_callback(
     data: *const windows_sys::Win32::Devices::DeviceAndDriverInstallation::CM_NOTIFY_EVENT_DATA,
     size: u32,
 ) -> u32 {
-    if action != CM_NOTIFY_ACTION_DEVICEREMOVECOMPLETE || context.is_null() || data.is_null() {
+    // Device-interface filters report removal as DEVICEINTERFACEREMOVAL;
+    // DEVICEREMOVECOMPLETE is only sent to device-handle filters.
+    if action != CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL || context.is_null() || data.is_null() {
         return CR_SUCCESS;
     }
     use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
