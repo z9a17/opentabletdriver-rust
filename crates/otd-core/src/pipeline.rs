@@ -2491,6 +2491,291 @@ mod tests {
         (pipeline, mapper, log)
     }
 
+    #[derive(Clone, Debug, PartialEq)]
+    enum DiffSent {
+        Mouse(MousePacket),
+        Action(crate::actions::ActionTransition),
+        Pen(crate::output::pen::PenPacket),
+    }
+
+    fn diff_pipeline(
+        profile: &Profile,
+        force_full: bool,
+    ) -> (
+        ReportPipeline,
+        std::rc::Rc<std::cell::RefCell<Vec<DiffSent>>>,
+    ) {
+        let mut pipeline = ReportPipeline::new(profile).unwrap();
+        let log: std::rc::Rc<std::cell::RefCell<Vec<DiffSent>>> = Default::default();
+        let actions = std::rc::Rc::clone(&log);
+        let rejected =
+            pipeline.set_action_sink(Box::new(crate::output::buttons::LocalActions::new(
+                move |transition| {
+                    actions.borrow_mut().push(DiffSent::Action(transition));
+                    Ok(())
+                },
+                |_| true,
+            )));
+        assert!(rejected.is_empty(), "{rejected:?}");
+        if profile.output == crate::config::OutputKind::Pen {
+            let pens = std::rc::Rc::clone(&log);
+            pipeline.set_pen_sink(Box::new(move |packet| {
+                pens.borrow_mut().push(DiffSent::Pen(packet));
+                Ok(())
+            }));
+        }
+        if force_full {
+            pipeline.fast_mode = FastMode::Full;
+        } else {
+            assert_ne!(pipeline.fast_mode, FastMode::Full, "fast path not selected");
+        }
+        (pipeline, log)
+    }
+
+    /// Fast paths must emit exactly what the original full path emits.
+    #[test]
+    fn fast_paths_match_forced_full_path_on_randomized_reports() {
+        let screen = Rect {
+            left: 0,
+            top: 0,
+            right: 2560,
+            bottom: 1440,
+        };
+        let display = DisplaySnapshot {
+            virtual_screen: screen,
+            monitors: vec![screen],
+        };
+        let cases: Vec<(&str, Profile)> = vec![
+            ("absolute", profile(false, false)),
+            ("absolute+rf", profile(false, true)),
+            ("relative", profile(true, false)),
+            ("relative+rf", profile(true, true)),
+            (
+                "pen",
+                Profile {
+                    output: crate::config::OutputKind::Pen,
+                    ..profile(false, false)
+                },
+            ),
+            (
+                "pen+rf",
+                Profile {
+                    output: crate::config::OutputKind::Pen,
+                    ..profile(false, true)
+                },
+            ),
+        ];
+        let mut failures = Vec::new();
+        for (name, profile) in cases {
+            let mapper = display.mapper(&profile).ok();
+            let (mut fast, fast_log) = diff_pipeline(&profile, false);
+            let (mut full, full_log) = diff_pipeline(&profile, true);
+            let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+            let mut rand = move || {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                seed
+            };
+            let start = Instant::now();
+            let mut now_ms: u64 = 0;
+            let (mut x, mut y): (i64, i64) = (20_000, 15_000);
+            let mut buttons: u8 = 0;
+            let mut in_range = true;
+            let mut pressure: u16 = 0;
+            let mut fed = 0usize;
+            for step in 0..20_000usize {
+                let r = rand();
+                now_ms += if r % 97 == 0 { 60 + r % 150 } else { 1 + r % 8 };
+                x = (x + (r >> 8) as i64 % 401 - 200).clamp(0, 44_000);
+                y = (y + (r >> 20) as i64 % 401 - 200).clamp(0, 29_000);
+                if r % 53 == 0 {
+                    buttons = [0, 0x02, 0x04, 0x06][(r >> 40) as usize % 4];
+                }
+                if r % 211 == 0 {
+                    in_range = !in_range;
+                }
+                if r % 17 == 0 {
+                    pressure = if pressure == 0 {
+                        (r >> 30) as u16 % 8000
+                    } else {
+                        0
+                    };
+                } else if pressure != 0 {
+                    pressure =
+                        (pressure as i32 + ((r >> 34) as i32 % 201 - 100)).clamp(1, 8191) as u16;
+                }
+                let mut report = CAPTURE[0];
+                let tip = if pressure > 0 { 0x01 } else { 0 };
+                report[1] = if in_range { 0x60 | buttons | tip } else { 0x00 };
+                let xb = (x as u32).to_le_bytes();
+                let yb = (y as u32).to_le_bytes();
+                report[2] = xb[0];
+                report[3] = xb[1];
+                report[5] = yb[0];
+                report[6] = yb[1];
+                let pb = if in_range { pressure } else { 0 }.to_le_bytes();
+                report[8] = pb[0];
+                report[9] = pb[1];
+                let Ok(Some(pen)) = protocol::parse(&report) else {
+                    continue;
+                };
+                fed += 1;
+                let now = start + Duration::from_millis(now_ms);
+                let mut plugins = crate::plugins::NoFilters;
+                let a = {
+                    let log = std::rc::Rc::clone(&fast_log);
+                    fast.process_with_raw(pen, &report, now, mapper, &mut plugins, move |p| {
+                        log.borrow_mut().push(DiffSent::Mouse(p));
+                        Ok(())
+                    })
+                };
+                let b = {
+                    let log = std::rc::Rc::clone(&full_log);
+                    full.process_with_raw(pen, &report, now, mapper, &mut plugins, move |p| {
+                        log.borrow_mut().push(DiffSent::Mouse(p));
+                        Ok(())
+                    })
+                };
+                let (a_ok, b_ok) = (
+                    a.as_ref()
+                        .map(|s| (s.reports, s.packets))
+                        .map_err(|e| e.to_string()),
+                    b.as_ref()
+                        .map(|s| (s.reports, s.packets))
+                        .map_err(|e| e.to_string()),
+                );
+                if fast_log.borrow().as_slice() != full_log.borrow().as_slice() {
+                    let f = fast_log.borrow();
+                    let g = full_log.borrow();
+                    let first = f
+                        .iter()
+                        .zip(g.iter())
+                        .position(|(a, b)| a != b)
+                        .unwrap_or(f.len().min(g.len()));
+                    failures.push(format!(
+                        "{name}: diverged at step {step} (report {fed}, t={now_ms}ms, in_range={in_range}, pressure={pressure}, buttons={buttons:#x}); stats fast={a_ok:?} full={b_ok:?}; fast[{first}..]={:?} full[{first}..]={:?}",
+                        &f[first..f.len().min(first + 3)],
+                        &g[first..g.len().min(first + 3)],
+                    ));
+                    break;
+                }
+                if a_ok.is_err() != b_ok.is_err() {
+                    failures.push(format!(
+                        "{name}: result diverged at step {step}: fast={a_ok:?} full={b_ok:?}"
+                    ));
+                    break;
+                }
+            }
+            println!(
+                "{name}: fed {fed} reports, {} events",
+                fast_log.borrow().len()
+            );
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Every compact decode must equal what the full path
+    /// would have reduced the generic decode to (`compact_from_values`).
+    #[test]
+    fn compact_decoders_match_generic_reduction_on_fuzzed_packets() {
+        use crate::decoders::{PenDecoder, TabletDecoder};
+        use crate::spec::TabletSpec;
+        let parsers = [
+            "OpenTabletDriver.Plugin.Tablet.TabletReportParser",
+            "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenReportParser",
+            "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenOffsetAuxReportParser",
+            "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenOffsetPressureReportParser",
+            "OpenTabletDriver.Configurations.Parsers.XP_Pen.XP_PenGen2ReportParser",
+            "OpenTabletDriver.Configurations.Parsers.Huion.GianoReportParser",
+            "OpenTabletDriver.Configurations.Parsers.Huion.InspiroyReportParser",
+            "OpenTabletDriver.Configurations.Parsers.Huion.KamvasOffsetReportParser",
+            "OpenTabletDriver.Configurations.Parsers.Huion.HuionTiltReportParser",
+            "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicReportParser",
+            "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicTiltReportParser",
+            "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicV1ReportParser",
+            "OpenTabletDriver.Configurations.Parsers.UCLogic.UCLogicV2ReportParser",
+            "OpenTabletDriver.Configurations.Parsers.Veikk.VeikkReportParser",
+            "OpenTabletDriver.Configurations.Parsers.Veikk.VeikkTiltReportParser",
+            "OpenTabletDriver.Configurations.Parsers.Veikk.VeikkA15ReportParser",
+            "OpenTabletDriver.Configurations.Parsers.Wacom.IntuosV3.IntuosV3ReportParser",
+        ];
+        let spec = TabletSpec::PTH_660;
+        let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut rand = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut failures = Vec::new();
+        for name in parsers {
+            let mut fast_decoder = TabletDecoder::for_parser(name, spec).unwrap();
+            let mut generic_decoder = TabletDecoder::for_parser(name, spec).unwrap();
+            let (mut compact_hits, mut checked) = (0usize, 0usize);
+            for _ in 0..200_000 {
+                let r = rand();
+                let len = [8usize, 10, 11, 12, 13, 14, 16, 17, 32][(r % 9) as usize];
+                let mut pkt = [0u8; 32];
+                for chunk in pkt.chunks_mut(8) {
+                    let v = rand().to_le_bytes();
+                    chunk.copy_from_slice(&v[..chunk.len()]);
+                }
+                // Bias the first bytes toward real report ids / status bits.
+                pkt[0] = [0x02, 0x07, 0x08, 0x09, 0x10, 0x11, 0x1e, pkt[0]][(r >> 8) as usize % 8];
+                if r & 0x1000 != 0 {
+                    pkt[1] = (pkt[1] & 0x0f)
+                        | [0x80, 0xa0, 0xc0, 0xe0, 0x00, 0x40, 0x60, 0xf0][(r >> 16) as usize % 8];
+                }
+                let pkt = &pkt[..len];
+                let fast = fast_decoder.decode_compact_pen(pkt);
+                let generic = generic_decoder.decode_input(pkt);
+                checked += 1;
+                let verdict: Result<(), String> = match (&fast, &generic) {
+                    (None, _) => Ok(()),
+                    (Some(Err(_)), Err(_)) => Ok(()),
+                    (Some(Ok(None)), Ok(None)) => Ok(()),
+                    (
+                        Some(Ok(Some(compact))),
+                        Ok(Some(DecodedInput::Report { kind, report, pen })),
+                    ) => {
+                        compact_hits += 1;
+                        match ReportPipeline::compact_from_values(*kind, report, *pen) {
+                            Some(expected) => {
+                                let norm = |mut c: crate::decoders::CompactPen| {
+                                    if !c.position_exact {
+                                        c.x = 0;
+                                        c.y = 0;
+                                    }
+                                    c
+                                };
+                                let (a, b) = (
+                                    format!("{:?}", norm(*compact)),
+                                    format!("{:?}", norm(expected)),
+                                );
+                                if a == b {
+                                    Ok(())
+                                } else {
+                                    Err(format!("fields differ: compact={a} reduced={b}"))
+                                }
+                            }
+                            None => Err(format!(
+                                "compact decoded a report the full path would not reduce: {compact:?}"
+                            )),
+                        }
+                    }
+                    (f, g) => Err(format!("shape mismatch fast={f:?} generic={g:?}")),
+                };
+                if let Err(why) = verdict {
+                    failures.push(format!("{name} len={len} pkt={:02x?}: {why}", pkt));
+                    break;
+                }
+            }
+            println!("{name}: {checked} packets, {compact_hits} compact hits");
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
     fn actions(
         log: &std::rc::Rc<std::cell::RefCell<Vec<Sent>>>,
     ) -> Vec<(crate::actions::Action, bool)> {
@@ -2755,6 +3040,9 @@ mod tests {
         let rel_profile = profile(true, false);
         let mut fast = ReportPipeline::new(&rel_profile).unwrap();
         let mut full = ReportPipeline::new(&rel_profile).unwrap();
+        // Force the reference onto the original path; otherwise
+        // `process_with_raw` would take the same fast path.
+        full.fast_mode = FastMode::Full;
         assert_eq!(fast.fast_mode, FastMode::Relative);
         let mut fast_packets = Vec::new();
         let mut full_packets = Vec::new();
@@ -2813,6 +3101,7 @@ mod tests {
             Ok(())
         }));
         assert_eq!(fast_pen.fast_mode, FastMode::Pen);
+        full_pen.fast_mode = FastMode::Full;
         for (index, bytes) in CAPTURE.iter().enumerate() {
             let now = start + Duration::from_millis(index as u64 * 5);
             let compact = decoder.decode_compact_pen(bytes).unwrap().unwrap().unwrap();
